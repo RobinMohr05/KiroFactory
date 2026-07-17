@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>KiroFactory</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@500;600;700&family=Barlow+Condensed:wght@600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- Header -->
+  <header class="header">
+    <span class="logo">Kiro<span class="logo-accent">Factory</span></span>
+    <div class="connection-status">
+      <span class="status-dot" id="statusDot"></span>
+      <span id="statusText">Connecting…</span>
+    </div>
+  </header>
+
+  <!-- Tabs -->
+  <nav class="tabs" role="tablist" aria-label="Main navigation">
+    <button class="tab active" id="tab-boards" role="tab" aria-selected="true" aria-controls="panel-boards">Boards</button>
+    <button class="tab" id="tab-sessions" role="tab" aria-selected="false" aria-controls="panel-sessions">Sessions</button>
+    <button class="tab" id="tab-agents" role="tab" aria-selected="false" aria-controls="panel-agents">Agents</button>
+  </nav>
+
+  <!-- Panel: Boards -->
+  <section id="panel-boards" role="tabpanel" aria-labelledby="tab-boards">
+    <!-- Toolbar -->
+    <div class="toolbar">
+      <select id="boardSelector" aria-label="Select board"></select>
+      <button class="btn btn-secondary" id="newBoardBtn">+ Board</button>
+      <button class="btn btn-primary" id="newTaskBtn">+ Task</button>
+    </div>
+
+    <!-- Kanban -->
+    <div class="kanban">
+      <div class="column" data-state="todo">
+        <div class="column-header">
+          <h2>To Do</h2>
+          <span class="column-count" id="count-todo">0</span>
+        </div>
+        <div class="column-cards" id="cards-todo"></div>
+      </div>
+
+      <div class="column" data-state="in-progress">
+        <div class="column-header">
+          <h2>In Progress</h2>
+          <span class="column-count" id="count-in-progress">0</span>
+        </div>
+        <div class="column-cards" id="cards-in-progress"></div>
+      </div>
+
+      <div class="column" data-state="developed">
+        <div class="column-header">
+          <h2>Developed</h2>
+          <span class="column-count" id="count-developed">0</span>
+        </div>
+        <div class="column-cards" id="cards-developed"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Panel: Sessions -->
+  <section id="panel-sessions" role="tabpanel" aria-labelledby="tab-sessions" hidden>
+    <div class="sessions-layout">
+      <!-- Left: Session List -->
+      <aside class="session-list-panel">
+        <div class="toolbar" role="toolbar" aria-label="Session actions">
+          <button id="newSessionBtn" class="btn btn-primary">+ New Agent</button>
+        </div>
+        <ul class="session-list" id="sessionList" aria-label="Agent sessions"></ul>
+      </aside>
+
+      <!-- Right: Session Detail / Output -->
+      <div class="session-detail-panel" id="sessionDetailPanel">
+        <div class="session-empty-state" id="sessionEmptyState">
+          <p>Select a session or create a new agent to get started.</p>
+        </div>
+
+        <div class="session-detail" id="sessionDetail" hidden>
+          <div class="session-detail-header">
+            <div class="session-info">
+              <h3 id="sessionDetailName">—</h3>
+              <span class="session-agent-badge" id="sessionDetailAgent">—</span>
+              <span class="session-status-badge" id="sessionDetailStatus">stopped</span>
+            </div>
+            <div class="session-controls">
+              <button class="btn btn-success btn-sm" id="sessionStartBtn" title="Start agent">Start</button>
+              <button class="btn btn-danger btn-sm" id="sessionStopBtn" title="Stop agent" disabled>Stop</button>
+              <button class="btn btn-secondary btn-sm" id="sessionDeleteBtn" title="Delete session">Delete</button>
+            </div>
+          </div>
+
+          <div class="session-activity" id="sessionActivityBar">
+            <span class="activity-dot" id="activityDot"></span>
+            <span id="activityText">Idle</span>
+          </div>
+
+          <div class="session-output" id="sessionOutput" role="log" aria-live="polite" aria-label="Agent output">
+            <pre class="output-pre" id="outputPre"></pre>
+          </div>
+
+          <div class="session-prompt-bar">
+            <input type="text" id="sessionPromptInput" placeholder="Send a follow-up prompt..." aria-label="Follow-up prompt" disabled />
+            <button class="btn btn-primary btn-sm" id="sessionPromptSendBtn" disabled>Send</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Panel: Agents -->
+  <section id="panel-agents" role="tabpanel" aria-labelledby="tab-agents" hidden>
+    <div class="agents-layout">
+      <!-- Left: Agent List -->
+      <aside class="agent-list-panel">
+        <div class="toolbar" role="toolbar" aria-label="Agent actions">
+          <button id="newAgentBtn" class="btn btn-primary">+ New Agent</button>
+        </div>
+        <ul class="agent-list" id="agentList" aria-label="Configured agents"></ul>
+      </aside>
+
+      <!-- Right: Agent Detail / Create -->
+      <div class="agent-detail-panel" id="agentDetailPanel">
+        <div class="agent-empty-state" id="agentEmptyState">
+          <p>Select an agent to view details, or create a new one.</p>
+        </div>
+
+        <div class="agent-detail" id="agentDetail" hidden>
+          <div class="agent-detail-header">
+            <div class="agent-info">
+              <h3 id="agentDetailName">—</h3>
+              <span class="agent-desc-text" id="agentDetailDesc">—</span>
+            </div>
+            <div class="agent-controls">
+              <button class="btn btn-secondary btn-sm" id="agentEditBtn" title="Edit agent">Edit</button>
+              <button class="btn btn-danger btn-sm" id="agentDeleteBtn" title="Delete agent">Delete</button>
+            </div>
+          </div>
+
+          <div class="agent-detail-body">
+            <div class="agent-section">
+              <h4>Prompt</h4>
+              <pre class="agent-prompt-pre" id="agentDetailPrompt"></pre>
+            </div>
+            <div class="agent-section">
+              <h4>Tools</h4>
+              <div class="agent-tags" id="agentDetailTools"></div>
+            </div>
+            <div class="agent-section">
+              <h4>Allowed Tools</h4>
+              <div class="agent-tags" id="agentDetailAllowed"></div>
+            </div>
+            <div class="agent-section">
+              <h4>Resources</h4>
+              <div class="agent-tags" id="agentDetailResources"></div>
+            </div>
+            <div class="agent-section">
+              <h4>Tools Settings (JSON)</h4>
+              <pre class="agent-json-pre" id="agentDetailSettings"></pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Agent Modal (Create/Edit) -->
+  <div class="modal-backdrop" id="agentModal" hidden>
+    <div class="modal modal-wide" role="dialog" aria-labelledby="agentModalTitle">
+      <h2 id="agentModalTitle">New Agent</h2>
+
+      <!-- Mode toggle: Guided vs JSON Upload -->
+      <div class="agent-mode-toggle">
+        <button type="button" class="btn btn-sm agent-mode-btn active" id="agentModeGuided">Guided</button>
+        <button type="button" class="btn btn-sm agent-mode-btn" id="agentModeJson">Upload JSON</button>
+      </div>
+
+      <!-- Guided Form -->
+      <form id="agentForm" class="agent-form-section">
+        <input type="hidden" id="agentFormOriginalName" />
+
+        <div class="form-group">
+          <label for="agentFormName">Name <span class="required">*</span></label>
+          <input type="text" id="agentFormName" required placeholder="e.g. code-reviewer" pattern="[a-zA-Z0-9_-]+" title="Only letters, numbers, dashes, and underscores" />
+          <small class="form-hint">Used as the file name. Only letters, numbers, dashes, underscores.</small>
+        </div>
+
+        <div class="form-group">
+          <label for="agentFormDescription">Description</label>
+          <textarea id="agentFormDescription" rows="2" placeholder="What does this agent do?"></textarea>
+        </div>
+
+        <div class="form-group">
+          <label for="agentFormPrompt">System Prompt <span class="required">*</span></label>
+          <textarea id="agentFormPrompt" rows="8" required placeholder="Instructions for the agent..."></textarea>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label for="agentFormTools">Tools <small>(comma-separated)</small></label>
+            <input type="text" id="agentFormTools" placeholder="read, write, shell, grep, glob, code" />
+          </div>
+          <div class="form-group">
+            <label for="agentFormAllowed">Allowed Tools <small>(comma-separated)</small></label>
+            <input type="text" id="agentFormAllowed" placeholder="read, grep, glob, code" />
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="agentFormResources">Resources <small>(one per line)</small></label>
+          <textarea id="agentFormResources" rows="3" placeholder="file://src/**/*.ts&#10;file://README.md"></textarea>
+        </div>
+
+        <div class="form-group">
+          <label for="agentFormSettings">Tools Settings <small>(JSON)</small></label>
+          <textarea id="agentFormSettings" rows="4" placeholder='{"shell": {"allowedCommands": ["npm run build"]}}'></textarea>
+        </div>
+
+        <div class="form-actions">
+          <button type="button" class="btn btn-secondary" id="cancelAgentBtn">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="submitAgentBtn">Create Agent</button>
+        </div>
+      </form>
+
+      <!-- JSON Upload Section -->
+      <div id="agentJsonSection" class="agent-form-section" hidden>
+        <div class="form-group">
+          <label for="agentJsonFile">Upload Agent JSON File</label>
+          <input type="file" id="agentJsonFile" accept=".json,application/json" />
+        </div>
+        <div class="form-group">
+          <label for="agentJsonRaw">Or paste JSON directly</label>
+          <textarea id="agentJsonRaw" rows="14" placeholder='{"name": "my-agent", "description": "...", "prompt": "...", "tools": [], ...}'></textarea>
+        </div>
+        <div id="agentJsonError" class="form-error" hidden></div>
+        <div class="form-actions">
+          <button type="button" class="btn btn-secondary" id="cancelAgentJsonBtn">Cancel</button>
+          <button type="button" class="btn btn-primary" id="submitAgentJsonBtn">Import Agent</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Task Modal -->
+  <div class="modal-backdrop" id="taskModal" hidden>
+    <div class="modal" role="dialog" aria-labelledby="modalTitle">
+      <h2 id="modalTitle">New Task</h2>
+      <form id="taskForm">
+        <input type="hidden" id="taskId" />
+
+        <div class="form-group">
+          <label for="taskTitle">Title</label>
+          <input type="text" id="taskTitle" required placeholder="Task title" />
+        </div>
+
+        <div class="form-group">
+          <label for="taskDescription">Description</label>
+          <textarea id="taskDescription" rows="3" placeholder="Optional description"></textarea>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label for="taskType">Type</label>
+            <select id="taskType">
+              <option value="improvement">Improvement</option>
+              <option value="problem">Problem</option>
+              <option value="idea">Idea</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="taskPriority">Priority</label>
+            <select id="taskPriority">
+              <option value="1">P1 — Critical</option>
+              <option value="2">P2 — High</option>
+              <option value="3">P3 — Medium</option>
+              <option value="4" selected>P4 — Low</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label for="taskState">State</label>
+            <select id="taskState">
+              <option value="todo">To Do</option>
+              <option value="in-progress">In Progress</option>
+              <option value="developed">Developed</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="taskOrigin">Origin</label>
+            <select id="taskOrigin">
+              <option value="user">User</option>
+              <option value="ai">AI</option>
+              <option value="user-assisted">User-Assisted</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-actions">
+          <button type="button" class="btn btn-secondary" id="cancelTaskBtn">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="submitTaskBtn">Create Task</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Session Modal -->
+  <div class="modal-backdrop" id="sessionModal" hidden>
+    <div class="modal" role="dialog" aria-labelledby="sessionModalTitle">
+      <h2 id="sessionModalTitle">New Agent Session</h2>
+      <form id="sessionForm">
+        <div class="form-group">
+          <label for="sessionName">Session Name</label>
+          <input type="text" id="sessionName" required placeholder="e.g. Feature Builder" />
+        </div>
+
+        <div class="form-group">
+          <label for="sessionAgent">Agent</label>
+          <select id="sessionAgent" required>
+            <option value="" disabled selected>Loading agents…</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="sessionPrompt">Task <small>(optional — what should the agent work on?)</small></label>
+          <textarea id="sessionPrompt" rows="4" placeholder="Leave empty to let the agent use its default prompt, or describe a specific task..."></textarea>
+        </div>
+
+        <div class="form-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="sessionInteractive" checked />
+            <span>Interactive — allow sending follow-up prompts</span>
+          </label>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label for="sessionCwd">Working Directory (optional)</label>
+            <input type="text" id="sessionCwd" placeholder="Defaults to project root" />
+          </div>
+          <div class="form-group">
+            <label for="sessionModel">Model (optional)</label>
+            <input type="text" id="sessionModel" placeholder="e.g. claude-sonnet-4" />
+          </div>
+        </div>
+
+        <div class="form-actions">
+          <button type="button" class="btn btn-secondary" id="cancelSessionBtn">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="submitSessionBtn">Create & Start</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
