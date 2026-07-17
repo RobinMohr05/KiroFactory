@@ -1,0 +1,9 @@
+{
+  "name": "kirofactory-client",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "echo \"Static frontend — no build step\"",
+    "build": "echo \"Static frontend — no build step\""
+  }
+}
