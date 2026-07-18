@@ -12,6 +12,7 @@ import tasksRouter from "./routes/tasks.js";
 import boardsRouter from "./routes/boards.js";
 import sessionsRouter from "./routes/sessions.js";
 import agentsRouter from "./routes/agents.js";
+import errorsRouter from "./routes/errors.js";
 import { runMigration } from "./db/migrate.js";
 import { tryConnect, isDbAvailable, closePool } from "./db/connection.js";
 import { shutdownAllSessions } from "./session-manager.js";
@@ -44,6 +45,7 @@ app.use("/api/tasks", requireDb, tasksRouter);
 app.use("/api/boards", requireDb, boardsRouter);
 app.use("/api/sessions", sessionsRouter);
 app.use("/api/agents", agentsRouter);
+app.use("/api/errors", errorsRouter);
 
 // Health endpoint
 app.get("/api/health", (_req, res) => {
