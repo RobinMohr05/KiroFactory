@@ -13,6 +13,8 @@ const config: sql.config = {
     encrypt: process.env.DB_ENCRYPT === "true",
     trustServerCertificate: process.env.DB_TRUST_SERVER_CERTIFICATE === "true",
   },
+  connectionTimeout: 60000, // 60s — allows Azure SQL serverless to wake from pause
+  requestTimeout: 30000,
   pool: {
     max: 10,
     min: 2,
@@ -29,27 +31,43 @@ export function isDbAvailable(): boolean {
 }
 
 /**
- * Attempts to connect to the database.
+ * Attempts to connect to the database with retries.
  * Returns the pool on success, or null on failure (without throwing).
  */
-export async function tryConnect(): Promise<sql.ConnectionPool | null> {
-  try {
-    if (!pool) {
+export async function tryConnect(
+  retries = 2,
+  delayMs = 5000
+): Promise<sql.ConnectionPool | null> {
+  for (let attempt = 1; attempt <= retries + 1; attempt++) {
+    try {
+      if (pool) {
+        // Previous pool object exists but may be disconnected — close it first
+        try { await pool.close(); } catch { /* ignore */ }
+        pool = null;
+      }
       pool = await new sql.ConnectionPool(config).connect();
+      dbAvailable = true;
+      console.log(`[db] Connected to ${config.server}/${config.database}`);
+      return pool;
+    } catch (err: any) {
+      const isLast = attempt === retries + 1;
+      if (isLast) {
+        dbAvailable = false;
+        console.warn(
+          `[db] ⚠ Could not connect to database (${config.server}/${config.database}) after ${attempt} attempt(s): ${err.message || err}`
+        );
+        console.warn(
+          "[db] ⚠ The server will continue running but database-dependent features will be unavailable."
+        );
+        return null;
+      }
+      console.log(
+        `[db] Connection attempt ${attempt} failed, retrying in ${delayMs / 1000}s... (${err.message || err})`
+      );
+      await new Promise((r) => setTimeout(r, delayMs));
     }
-    dbAvailable = true;
-    console.log(`[db] Connected to ${config.server}/${config.database}`);
-    return pool;
-  } catch (err: any) {
-    dbAvailable = false;
-    console.warn(
-      `[db] ⚠ Could not connect to database (${config.server}/${config.database}): ${err.message || err}`
-    );
-    console.warn(
-      "[db] ⚠ The server will continue running but database-dependent features will be unavailable."
-    );
-    return null;
   }
+  return null;
 }
 
 /**
