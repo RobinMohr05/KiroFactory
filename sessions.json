@@ -1,0 +1,17 @@
+[
+  {
+    "id": "8ae98869",
+    "name": "Developer",
+    "agent": "developer-agent",
+    "status": "error",
+    "prompt": "",
+    "interactive": false,
+    "loop": true,
+    "runs": 0,
+    "intervalSeconds": 10,
+    "cwd": "C:\\Projects\\1_Work\\19_Misc\\KiroFactory",
+    "timeoutSeconds": 0,
+    "createdAt": "2026-07-17T20:54:06.193Z",
+    "startedAt": "2026-07-18T07:56:27.664Z"
+  }
+]
