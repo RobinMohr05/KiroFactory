@@ -108,6 +108,26 @@ async function runUpgrades(pool: sql.ConnectionPool): Promise<void> {
     `);
     console.log("[migrate] Upgrade complete: task type 'idea' → 'feature'.");
   }
+
+  // Upgrade 3: Add agent_boards junction table (agents ↔ boards many-to-many)
+  const agentBoardsExists = await pool.request().query(`
+    SELECT COUNT(*) AS cnt
+    FROM INFORMATION_SCHEMA.TABLES
+    WHERE TABLE_NAME = 'agent_boards'
+  `);
+
+  if (agentBoardsExists.recordset[0].cnt === 0) {
+    console.log("[migrate] Upgrading: creating agent_boards junction table...");
+    await pool.request().query(`
+      CREATE TABLE agent_boards (
+        agent_name  NVARCHAR(100)   NOT NULL,
+        board_id    INT             NOT NULL,
+        PRIMARY KEY (agent_name, board_id),
+        FOREIGN KEY (board_id) REFERENCES boards(id) ON DELETE CASCADE
+      )
+    `);
+    console.log("[migrate] Upgrade complete: agent_boards table created.");
+  }
 }
 
 /**

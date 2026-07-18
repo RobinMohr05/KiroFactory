@@ -1,4 +1,5 @@
 -- Drop in reverse dependency order
+DROP TABLE IF EXISTS agent_boards;
 DROP TABLE IF EXISTS task_boards;
 DROP TABLE IF EXISTS tasks;
 DROP TABLE IF EXISTS boards;
@@ -35,5 +36,14 @@ CREATE TABLE task_boards (
     board_id    INT NOT NULL,
     PRIMARY KEY (task_id, board_id),
     FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+    FOREIGN KEY (board_id) REFERENCES boards(id) ON DELETE CASCADE
+);
+
+
+-- Junction: agents <-> boards (many-to-many)
+CREATE TABLE agent_boards (
+    agent_name  NVARCHAR(100)   NOT NULL,
+    board_id    INT             NOT NULL,
+    PRIMARY KEY (agent_name, board_id),
     FOREIGN KEY (board_id) REFERENCES boards(id) ON DELETE CASCADE
 );
