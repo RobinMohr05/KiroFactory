@@ -15,7 +15,7 @@ import agentsRouter from "./routes/agents.js";
 import errorsRouter from "./routes/errors.js";
 import { runMigration } from "./db/migrate.js";
 import { tryConnect, isDbAvailable, closePool } from "./db/connection.js";
-import { shutdownAllSessions } from "./session-manager.js";
+import { shutdownAllSessions, initSessions } from "./session-manager.js";
 import { getChangedTasksSince } from "./db/tasks.js";
 import { wasRecentlyBroadcast } from "./broadcast-tracker.js";
 
@@ -93,6 +93,9 @@ async function pollForChanges(): Promise<void> {
 const PORT = Number(process.env.PORT) || 3500;
 
 async function start(): Promise<void> {
+  // Restore sessions from disk (before DB — sessions don't require DB)
+  initSessions();
+
   // Attempt database connection — non-fatal if it fails
   await tryConnect();
 
