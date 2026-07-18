@@ -1,6 +1,8 @@
 // ===== State =====
 let boards = [];
 let tasks = [];
+let boardSessions = [];
+let boardAgents = [];
 let currentBoardId = null;
 let pendingOps = new Set();
 let ws = null;
@@ -18,6 +20,7 @@ const newTaskBtn = document.getElementById('newTaskBtn');
 const taskModal = document.getElementById('taskModal');
 const taskForm = document.getElementById('taskForm');
 const cancelTaskBtn = document.getElementById('cancelTaskBtn');
+const deleteTaskBtn = document.getElementById('deleteTaskBtn');
 const modalTitle = document.getElementById('modalTitle');
 const submitTaskBtn = document.getElementById('submitTaskBtn');
 
@@ -25,9 +28,11 @@ const submitTaskBtn = document.getElementById('submitTaskBtn');
 const tabBoards = document.getElementById('tab-boards');
 const tabSessions = document.getElementById('tab-sessions');
 const tabAgents = document.getElementById('tab-agents');
+const tabErrors = document.getElementById('tab-errors');
 const panelBoards = document.getElementById('panel-boards');
 const panelSessions = document.getElementById('panel-sessions');
 const panelAgents = document.getElementById('panel-agents');
+const panelErrors = document.getElementById('panel-errors');
 
 // ===== Priority & Origin & Type Maps =====
 const PRIORITY_COLORS = {
@@ -45,8 +50,8 @@ const ORIGIN_ICONS = {
 
 const TYPE_CLASSES = {
   improvement: 'badge-improvement',
-  problem: 'badge-problem',
-  idea: 'badge-idea'
+  bug: 'badge-bug',
+  feature: 'badge-feature'
 };
 
 // ===== WebSocket =====
@@ -139,8 +144,12 @@ function handleWsMessage(message) {
           // Task might have been added to this board
           const belongsToBoard = task.boards?.some(b => b.id == currentBoardId);
           if (belongsToBoard) {
-            tasks.push(task);
-            renderBoard();
+            // Final guard: only push if not already present (prevents duplicates)
+            const alreadyExists = tasks.find(t => t.id === task.id);
+            if (!alreadyExists) {
+              tasks.push(task);
+              renderBoard();
+            }
           }
         }
       }
@@ -156,8 +165,11 @@ function handleWsMessage(message) {
 
     case 'board-created':
       if (board) {
-        boards.push(board);
-        renderBoardSelector();
+        const boardExists = boards.find(b => b.id === board.id);
+        if (!boardExists) {
+          boards.push(board);
+          renderBoardSelector();
+        }
       }
       break;
 
@@ -176,7 +188,13 @@ function handleWsMessage(message) {
         if (currentBoardId == boardId) {
           currentBoardId = boards.length > 0 ? boards[0].id : null;
           if (currentBoardId) fetchBoardTasks(currentBoardId);
-          else { tasks = []; renderBoard(); }
+          else {
+            tasks = [];
+            boardSessions = [];
+            boardAgents = [];
+            renderBoard();
+            renderBoardMembers();
+          }
         }
       }
       break;
@@ -189,6 +207,10 @@ function handleWsMessage(message) {
       // Delegate session-related messages
       if (type && type.startsWith('session-')) {
         handleSessionWsMessage(message);
+      }
+      // Handle error messages
+      if (type === 'error-created') {
+        handleErrorWsMessage(message);
       }
       break;
   }
@@ -238,6 +260,10 @@ async function fetchBoardTasks(boardId) {
       lastTasksJson = newJson;
       renderBoard();
     }
+    // Update board sessions and agents
+    boardSessions = data.sessions || [];
+    boardAgents = data.agents || [];
+    renderBoardMembers();
   } catch (e) {
     console.error('Failed to fetch board tasks:', e);
   }
@@ -253,7 +279,15 @@ async function createTask(data) {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const task = await res.json();
     pendingOps.add(`task-created-${task.id}`);
-    tasks.push(task);
+    // Guard against duplicate: WebSocket broadcast may have already added this task
+    const exists = tasks.find(t => t.id === task.id);
+    if (!exists) {
+      tasks.push(task);
+    } else {
+      // Update in place with the authoritative REST response
+      const idx = tasks.findIndex(t => t.id === task.id);
+      tasks[idx] = task;
+    }
     lastTasksJson = JSON.stringify(tasks);
     renderBoard();
     return task;
@@ -305,13 +339,20 @@ async function createBoard(name) {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const board = await res.json();
     pendingOps.add(`board-created-${board.id}`);
-    boards.push(board);
+    // Guard against duplicate: WebSocket broadcast may have already added this board
+    const exists = boards.find(b => b.id === board.id);
+    if (!exists) {
+      boards.push(board);
+    }
     renderBoardSelector();
     currentBoardId = board.id;
     boardSelector.value = board.id;
     tasks = [];
+    boardSessions = [];
+    boardAgents = [];
     lastTasksJson = '[]';
     renderBoard();
+    renderBoardMembers();
     return board;
   } catch (e) {
     console.error('Failed to create board:', e);
@@ -332,7 +373,10 @@ async function deleteBoard(id) {
         await fetchBoardTasks(currentBoardId);
       } else {
         tasks = [];
+        boardSessions = [];
+        boardAgents = [];
         renderBoard();
+        renderBoardMembers();
       }
     }
   } catch (e) {
@@ -371,6 +415,61 @@ function renderBoard() {
   });
 }
 
+function renderBoardMembers() {
+  const sessionsList = document.getElementById('board-sessions-list');
+  const agentsList = document.getElementById('board-agents-list');
+  const sessionsCount = document.getElementById('count-board-sessions');
+  const agentsCount = document.getElementById('count-board-agents');
+
+  // Render sessions
+  sessionsCount.textContent = boardSessions.length;
+  if (boardSessions.length === 0) {
+    sessionsList.innerHTML = '<p class="board-members-empty">No sessions assigned to this board.</p>';
+  } else {
+    sessionsList.innerHTML = '';
+    boardSessions.forEach(session => {
+      const chip = document.createElement('div');
+      chip.className = 'board-member-chip';
+      chip.innerHTML = `
+        <span class="chip-status status-${session.status}"></span>
+        <span class="chip-name">${escapeHtml(session.name)}</span>
+        <span class="chip-detail">${escapeHtml(session.agent)} · ${session.status}</span>
+      `;
+      chip.addEventListener('click', () => {
+        // Switch to Sessions tab and select this session
+        tabSessions.click();
+        selectSession(session.id);
+      });
+      chip.style.cursor = 'pointer';
+      sessionsList.appendChild(chip);
+    });
+  }
+
+  // Render agents
+  agentsCount.textContent = boardAgents.length;
+  if (boardAgents.length === 0) {
+    agentsList.innerHTML = '<p class="board-members-empty">No agents assigned to this board.</p>';
+  } else {
+    agentsList.innerHTML = '';
+    boardAgents.forEach(agentName => {
+      const chip = document.createElement('div');
+      chip.className = 'board-member-chip';
+      const initials = (agentName || '?').substring(0, 2).toUpperCase();
+      chip.innerHTML = `
+        <span class="agent-item-icon" style="width:24px;height:24px;font-size:0.6rem;line-height:24px;">${initials}</span>
+        <span class="chip-name">${escapeHtml(agentName)}</span>
+      `;
+      chip.addEventListener('click', () => {
+        // Switch to Agents tab and select this agent
+        tabAgents.click();
+        fetchAgents().then(() => selectAgent(agentName));
+      });
+      chip.style.cursor = 'pointer';
+      agentsList.appendChild(chip);
+    });
+  }
+}
+
 function renderTaskCard(task) {
   const card = document.createElement('div');
   card.className = 'task-card';
@@ -397,6 +496,7 @@ function renderTaskCard(task) {
   // Drag events
   card.addEventListener('dragstart', (e) => {
     card.classList.add('dragging');
+    card.dataset.wasDragged = 'true';
     e.dataTransfer.setData('text/plain', task.id);
     e.dataTransfer.effectAllowed = 'move';
   });
@@ -405,8 +505,12 @@ function renderTaskCard(task) {
     card.classList.remove('dragging');
   });
 
-  // Double-click to edit
-  card.addEventListener('dblclick', () => {
+  // Single click to edit (skip if card was just dragged)
+  card.addEventListener('click', () => {
+    if (card.dataset.wasDragged === 'true') {
+      card.dataset.wasDragged = '';
+      return;
+    }
     showTaskForm(task);
   });
 
@@ -468,6 +572,7 @@ function showTaskForm(task = null) {
   if (task) {
     modalTitle.textContent = 'Edit Task';
     submitTaskBtn.textContent = 'Update Task';
+    deleteTaskBtn.hidden = false;
     document.getElementById('taskId').value = task.id;
     document.getElementById('taskTitle').value = task.title || '';
     document.getElementById('taskDescription').value = task.description || '';
@@ -475,11 +580,16 @@ function showTaskForm(task = null) {
     document.getElementById('taskPriority').value = task.priority || 4;
     document.getElementById('taskState').value = task.state || 'todo';
     document.getElementById('taskOrigin').value = task.origin || 'user';
+    document.getElementById('taskStateGroup').hidden = false;
+    document.getElementById('taskOrigin').closest('.form-group').hidden = false;
   } else {
     modalTitle.textContent = 'New Task';
     submitTaskBtn.textContent = 'Create Task';
+    deleteTaskBtn.hidden = true;
     taskForm.reset();
     document.getElementById('taskId').value = '';
+    document.getElementById('taskStateGroup').hidden = true;
+    document.getElementById('taskOrigin').closest('.form-group').hidden = true;
   }
 
   document.getElementById('taskTitle').focus();
@@ -492,8 +602,8 @@ function hideTaskForm() {
 
 // ===== Tab Switching =====
 function setupTabs() {
-  const tabs = [tabBoards, tabSessions, tabAgents];
-  const panels = [panelBoards, panelSessions, panelAgents];
+  const tabs = [tabBoards, tabSessions, tabAgents, tabErrors];
+  const panels = [panelBoards, panelSessions, panelAgents, panelErrors];
 
   function activateTab(activeTab, activePanel) {
     tabs.forEach(t => {
@@ -512,6 +622,10 @@ function setupTabs() {
   tabAgents.addEventListener('click', () => {
     activateTab(tabAgents, panelAgents);
     fetchAgents();
+  });
+  tabErrors.addEventListener('click', () => {
+    activateTab(tabErrors, panelErrors);
+    fetchErrors();
   });
 }
 
@@ -539,6 +653,15 @@ function setupEventListeners() {
   // Cancel task form
   cancelTaskBtn.addEventListener('click', hideTaskForm);
 
+  // Delete task from edit modal
+  deleteTaskBtn.addEventListener('click', async () => {
+    const id = document.getElementById('taskId').value;
+    if (!id) return;
+    if (!confirm('Delete this task? This cannot be undone.')) return;
+    await deleteTask(id);
+    hideTaskForm();
+  });
+
   // Close modal on backdrop click
   taskModal.addEventListener('click', (e) => {
     if (e.target === taskModal) hideTaskForm();
@@ -561,7 +684,6 @@ function setupEventListeners() {
     const type = document.getElementById('taskType').value;
     const priority = parseInt(document.getElementById('taskPriority').value, 10);
     const state = document.getElementById('taskState').value;
-    const origin = document.getElementById('taskOrigin').value;
 
     if (!title) {
       document.getElementById('taskTitle').focus();
@@ -572,13 +694,12 @@ function setupEventListeners() {
       // Update existing task
       await updateTask(id, { title, description, type, priority, state });
     } else {
-      // Create new task — server expects boardIds as array
+      // Create new task — origin defaults to 'user' on server
       await createTask({
         title,
         description,
         type,
         priority,
-        origin,
         boardIds: currentBoardId ? [Number(currentBoardId)] : []
       });
     }
@@ -606,6 +727,7 @@ function init() {
   startReconciliation();
   setupSessions();
   setupAgents();
+  setupErrors();
 }
 
 document.addEventListener('DOMContentLoaded', init);
@@ -644,6 +766,7 @@ function setupSessions() {
   newSessionBtn.addEventListener('click', async () => {
     sessionModal.hidden = false;
     await populateAgentDropdown();
+    populateSessionBoardsSelect();
     document.getElementById('sessionName').focus();
   });
 
@@ -685,6 +808,19 @@ function setupSessions() {
       sendFollowUpPrompt();
     }
   });
+
+  // Allow Ctrl+A inside the output viewer to select only log content
+  const sessionOutputEl = document.getElementById('sessionOutput');
+  sessionOutputEl.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
+      e.preventDefault();
+      const range = document.createRange();
+      range.selectNodeContents(outputPre);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+  });
 }
 
 function hideSessionForm() {
@@ -718,6 +854,21 @@ async function populateAgentDropdown() {
   }
 }
 
+function populateSessionBoardsSelect() {
+  const select = document.getElementById('sessionBoards');
+  select.innerHTML = '';
+  boards.forEach(board => {
+    const opt = document.createElement('option');
+    opt.value = board.id;
+    opt.textContent = board.name;
+    // Pre-select the currently viewed board
+    if (currentBoardId && Number(currentBoardId) === board.id) {
+      opt.selected = true;
+    }
+    select.appendChild(opt);
+  });
+}
+
 // ===== Sessions REST API =====
 async function fetchSessions() {
   try {
@@ -737,18 +888,34 @@ async function createAndStartSession() {
   const cwd = document.getElementById('sessionCwd').value.trim() || undefined;
   const model = document.getElementById('sessionModel').value.trim() || undefined;
   const interactive = document.getElementById('sessionInteractive').checked;
+  const runs = parseInt(document.getElementById('sessionRuns').value, 10) || 0;
+  const intervalSeconds = parseInt(document.getElementById('sessionInterval').value, 10) || 10;
+
+  // Collect selected board IDs from the multi-select
+  const boardsSelect = document.getElementById('sessionBoards');
+  const boardIds = Array.from(boardsSelect.selectedOptions).map(opt => Number(opt.value));
 
   if (!name || !agent) return;
+
+  // If runs > 0 or runs === 0 (endless), enable loop mode
+  const loop = true; // always loop — runs controls how many iterations
 
   try {
     const res = await fetch('/api/sessions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, agent, prompt, cwd, model, interactive })
+      body: JSON.stringify({ name, agent, prompt, cwd, model, interactive, loop, runs, intervalSeconds, boardIds: boardIds.length > 0 ? boardIds : undefined })
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const session = await res.json();
-    sessions.push(session);
+    // Guard against duplicate: WebSocket broadcast may have already added this session
+    const exists = sessions.find(x => x.id === session.id);
+    if (!exists) {
+      sessions.push(session);
+    } else {
+      const idx = sessions.findIndex(x => x.id === session.id);
+      sessions[idx] = session;
+    }
     renderSessionList();
     selectSession(session.id);
     hideSessionForm();
@@ -863,13 +1030,17 @@ function updateSessionStatusUI(status) {
   const session = sessions.find(s => s.id === activeSessionId);
   const isRunning = status === 'running';
   const isInteractive = session?.interactive !== false;
+  const isLoop = session?.loop === true;
 
   sessionStartBtn.disabled = isRunning;
   sessionStopBtn.disabled = !isRunning;
-  sessionPromptInput.disabled = !(isRunning && isInteractive);
-  sessionPromptSendBtn.disabled = !(isRunning && isInteractive);
+  sessionPromptInput.disabled = !(isRunning && isInteractive && !isLoop);
+  sessionPromptSendBtn.disabled = !(isRunning && isInteractive && !isLoop);
 
-  if (!isInteractive) {
+  if (isLoop) {
+    const runsLabel = session.runs === 0 ? 'endless' : `${session.runs} run(s)`;
+    sessionPromptInput.placeholder = `Autonomous — ${runsLabel}, ${session.intervalSeconds}s interval`;
+  } else if (!isInteractive) {
     sessionPromptInput.placeholder = 'Non-interactive session';
   } else {
     sessionPromptInput.placeholder = 'Send a follow-up prompt...';
@@ -926,6 +1097,14 @@ function handleSessionWsMessage(message) {
         sessions.push(s);
         renderSessionList();
       }
+      // Add to board members if this session belongs to the current board
+      if (s && currentBoardId && s.boardIds && s.boardIds.includes(Number(currentBoardId))) {
+        const exists = boardSessions.find(bs => bs.id === s.id);
+        if (!exists) {
+          boardSessions.push({ id: s.id, name: s.name, agent: s.agent, status: s.status });
+          renderBoardMembers();
+        }
+      }
       break;
     }
 
@@ -942,6 +1121,15 @@ function handleSessionWsMessage(message) {
           sessionDetailAgent.textContent = s.agent;
           updateSessionStatusUI(s.status);
         }
+
+        // Refresh board members if this session belongs to the current board
+        if (currentBoardId && s.boardIds && s.boardIds.includes(Number(currentBoardId))) {
+          const bsIdx = boardSessions.findIndex(bs => bs.id === s.id);
+          const entry = { id: s.id, name: s.name, agent: s.agent, status: s.status };
+          if (bsIdx !== -1) boardSessions[bsIdx] = entry;
+          else boardSessions.push(entry);
+          renderBoardMembers();
+        }
       }
       break;
     }
@@ -953,6 +1141,12 @@ function handleSessionWsMessage(message) {
       if (activeSessionId === sid) {
         activeSessionId = null;
         showSessionEmpty();
+      }
+      // Remove from board members
+      const bsBefore = boardSessions.length;
+      boardSessions = boardSessions.filter(bs => bs.id !== sid);
+      if (boardSessions.length !== bsBefore) {
+        renderBoardMembers();
       }
       break;
     }
@@ -1348,4 +1542,205 @@ function renderAgentTags(container, items) {
     tag.textContent = item;
     container.appendChild(tag);
   });
+}
+
+
+// =============================================================================
+// ===== ERRORS MODULE =========================================================
+// =============================================================================
+
+let agentErrors = [];
+
+// Errors DOM refs
+const errorsList = document.getElementById('errorsList');
+const errorsEmpty = document.getElementById('errorsEmpty');
+const clearErrorsBtn = document.getElementById('clearErrorsBtn');
+const errorBadge = document.getElementById('errorBadge');
+
+function setupErrors() {
+  clearErrorsBtn.addEventListener('click', async () => {
+    if (!confirm('Clear all agent errors? This cannot be undone.')) return;
+    try {
+      const res = await fetch('/api/errors', { method: 'DELETE' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      agentErrors = [];
+      renderErrors();
+      updateErrorBadge();
+    } catch (e) {
+      console.error('Failed to clear errors:', e);
+    }
+  });
+
+  // Fetch initial error count for badge
+  fetchErrorCount();
+}
+
+async function fetchErrorCount() {
+  try {
+    const res = await fetch('/api/errors');
+    if (!res.ok) return;
+    const errors = await res.json();
+    agentErrors = errors;
+    updateErrorBadge();
+  } catch {
+    // Silently ignore — not critical for initial load
+  }
+}
+
+async function fetchErrors() {
+  try {
+    const res = await fetch('/api/errors');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    agentErrors = await res.json();
+    renderErrors();
+    updateErrorBadge();
+  } catch (e) {
+    console.error('Failed to fetch errors:', e);
+  }
+}
+
+function handleErrorWsMessage(message) {
+  const { error } = message;
+  if (!error) return;
+
+  // Add to local state (newest first)
+  const exists = agentErrors.find(e => e.id === error.id);
+  if (!exists) {
+    agentErrors.unshift(error);
+  }
+
+  updateErrorBadge();
+
+  // If the errors panel is visible, re-render
+  if (!panelErrors.hidden) {
+    renderErrors();
+  }
+}
+
+function updateErrorBadge() {
+  const count = agentErrors.filter(e => !e.taskCreated).length;
+  if (count > 0) {
+    errorBadge.textContent = count > 99 ? '99+' : String(count);
+    errorBadge.hidden = false;
+  } else {
+    errorBadge.hidden = true;
+  }
+}
+
+function renderErrors() {
+  if (agentErrors.length === 0) {
+    errorsEmpty.hidden = false;
+    // Remove all error cards but keep empty message
+    const cards = errorsList.querySelectorAll('.error-card');
+    cards.forEach(c => c.remove());
+    return;
+  }
+
+  errorsEmpty.hidden = true;
+
+  // Rebuild the list
+  const fragment = document.createDocumentFragment();
+  for (const error of agentErrors) {
+    fragment.appendChild(createErrorCard(error));
+  }
+
+  // Clear old cards and append new
+  errorsList.innerHTML = '';
+  errorsList.appendChild(fragment);
+}
+
+function createErrorCard(error) {
+  const card = document.createElement('div');
+  card.className = 'error-card';
+  card.dataset.errorId = error.id;
+
+  const timeStr = formatErrorTime(error.timestamp);
+
+  let actionsHtml;
+  if (error.taskCreated) {
+    actionsHtml = `<span class="error-task-created">✓ Bug task #${error.createdTaskId || '?'} created</span>`;
+  } else {
+    actionsHtml = `<button class="btn btn-primary btn-sm error-create-task-btn" data-error-id="${error.id}">🐛 Create Bug Task</button>`;
+  }
+
+  let taskMeta = '';
+  if (error.taskTitle) {
+    taskMeta = `<span class="error-meta-item">📋 Task #${error.taskId}: ${escapeHtml(error.taskTitle)}</span>`;
+  }
+
+  card.innerHTML = `
+    <div class="error-card-header">
+      <span class="error-card-message">${escapeHtml(error.message)}</span>
+      <span class="error-card-time">${timeStr}</span>
+    </div>
+    <div class="error-card-meta">
+      <span class="error-meta-item">🤖 ${escapeHtml(error.agent)}</span>
+      <span class="error-meta-item">📡 ${escapeHtml(error.sessionName)}</span>
+      ${taskMeta}
+    </div>
+    <div class="error-card-context">${escapeHtml(error.context)}</div>
+    <div class="error-card-actions">${actionsHtml}</div>
+  `;
+
+  // Attach event listener for "Create Bug Task" button
+  const btn = card.querySelector('.error-create-task-btn');
+  if (btn) {
+    btn.addEventListener('click', () => createBugTaskFromError(error.id));
+  }
+
+  return card;
+}
+
+async function createBugTaskFromError(errorId) {
+  try {
+    const res = await fetch(`/api/errors/${errorId}/create-task`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+
+    if (res.status === 409) {
+      // Already created
+      const data = await res.json();
+      alert(data.error || 'Bug task already created for this error.');
+      return;
+    }
+
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+    const { task, errorId: eid } = await res.json();
+
+    // Update local state
+    const err = agentErrors.find(e => e.id === eid);
+    if (err) {
+      err.taskCreated = true;
+      err.createdTaskId = task.id;
+    }
+
+    renderErrors();
+    updateErrorBadge();
+  } catch (e) {
+    console.error('Failed to create bug task:', e);
+    alert('Failed to create bug task. See console for details.');
+  }
+}
+
+function formatErrorTime(isoStr) {
+  try {
+    const d = new Date(isoStr);
+    const now = new Date();
+    const diffMs = now - d;
+    const diffMin = Math.floor(diffMs / 60000);
+
+    if (diffMin < 1) return 'just now';
+    if (diffMin < 60) return `${diffMin}m ago`;
+    const diffHr = Math.floor(diffMin / 60);
+    if (diffHr < 24) return `${diffHr}h ago`;
+    const diffDays = Math.floor(diffHr / 24);
+    if (diffDays < 7) return `${diffDays}d ago`;
+
+    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  } catch {
+    return isoStr;
+  }
 }
