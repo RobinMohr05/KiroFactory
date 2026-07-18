@@ -32,9 +32,10 @@ export interface ClaimedTask {
  * (user > user-assisted > ai), then by creation date (oldest first).
  *
  * @param taskId Optional specific task ID to claim (skips priority ordering)
+ * @param boardIds Optional board IDs to filter by — only tasks belonging to at least one of these boards are eligible. If empty/undefined, all todo tasks are eligible.
  * @returns The claimed task, or null if no claimable tasks exist
  */
-export async function claimTask(taskId?: number): Promise<ClaimedTask | null> {
+export async function claimTask(taskId?: number, boardIds?: number[]): Promise<ClaimedTask | null> {
   const pool = await getPool();
 
   // Use a transaction with row locking for atomicity
@@ -62,8 +63,44 @@ export async function claimTask(taskId?: number): Promise<ClaimedTask | null> {
           INSERTED.origin
         WHERE id = @taskId AND state = 'todo'
       `;
+    } else if (boardIds && boardIds.length > 0) {
+      // Claim the highest-priority task that belongs to at least one of the given boards
+      // Build a parameterized IN clause
+      const boardIdParams = boardIds.map((id, i) => `@boardId${i}`);
+      boardIds.forEach((id, i) => {
+        request.input(`boardId${i}`, sql.Int, id);
+      });
+
+      query = `
+        UPDATE tasks
+        SET state = 'in-progress', updated_at = GETUTCDATE()
+        OUTPUT
+          INSERTED.id,
+          INSERTED.title,
+          INSERTED.priority,
+          INSERTED.type,
+          INSERTED.description,
+          INSERTED.files,
+          INSERTED.origin
+        WHERE id = (
+          SELECT TOP 1 t.id
+          FROM tasks t WITH (UPDLOCK, READPAST)
+          INNER JOIN task_boards tb ON tb.task_id = t.id
+          WHERE t.state = 'todo'
+            AND tb.board_id IN (${boardIdParams.join(", ")})
+          ORDER BY
+            t.priority ASC,
+            CASE t.origin
+              WHEN 'user' THEN 0
+              WHEN 'user-assisted' THEN 1
+              WHEN 'ai' THEN 2
+              ELSE 3
+            END ASC,
+            t.created_at ASC
+        )
+      `;
     } else {
-      // Claim the highest-priority available task
+      // Claim the highest-priority available task (no board filter)
       // UPDLOCK + READPAST ensures concurrency safety
       query = `
         UPDATE tasks
@@ -147,10 +184,49 @@ export async function resetTaskToTodo(taskId: number): Promise<void> {
 }
 
 /**
- * Get the count of available (todo) tasks.
+ * Reset all in-progress tasks back to "todo".
+ * Used on server restart to recover tasks that were being worked on
+ * when the kiro-cli process was killed (e.g., by tsx watch restarting the server).
+ *
+ * @returns The number of tasks that were reset.
  */
-export async function getAvailableTaskCount(): Promise<number> {
+export async function resetOrphanedTasks(): Promise<number> {
   const pool = await getPool();
+  const result = await pool
+    .request()
+    .query(`
+      UPDATE tasks
+      SET state = 'todo', updated_at = GETUTCDATE()
+      WHERE state = 'in-progress'
+    `);
+  return result.rowsAffected[0] ?? 0;
+}
+
+/**
+ * Get the count of available (todo) tasks.
+ *
+ * @param boardIds Optional board IDs to filter by — only tasks belonging to at least one of these boards are counted. If empty/undefined, all todo tasks are counted.
+ */
+export async function getAvailableTaskCount(boardIds?: number[]): Promise<number> {
+  const pool = await getPool();
+
+  if (boardIds && boardIds.length > 0) {
+    const request = pool.request();
+    const boardIdParams = boardIds.map((id, i) => `@boardId${i}`);
+    boardIds.forEach((id, i) => {
+      request.input(`boardId${i}`, sql.Int, id);
+    });
+
+    const result = await request.query(`
+      SELECT COUNT(DISTINCT t.id) as count
+      FROM tasks t
+      INNER JOIN task_boards tb ON tb.task_id = t.id
+      WHERE t.state = 'todo'
+        AND tb.board_id IN (${boardIdParams.join(", ")})
+    `);
+    return result.recordset[0].count;
+  }
+
   const result = await pool
     .request()
     .query("SELECT COUNT(*) as count FROM tasks WHERE state = 'todo'");
