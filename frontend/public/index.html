@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>KiroFactory</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@500;600;700&family=Barlow+Condensed:wght@600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
@@ -24,6 +25,7 @@
     <button class="tab active" id="tab-boards" role="tab" aria-selected="true" aria-controls="panel-boards">Boards</button>
     <button class="tab" id="tab-sessions" role="tab" aria-selected="false" aria-controls="panel-sessions">Sessions</button>
     <button class="tab" id="tab-agents" role="tab" aria-selected="false" aria-controls="panel-agents">Agents</button>
+    <button class="tab" id="tab-errors" role="tab" aria-selected="false" aria-controls="panel-errors">Errors <span class="error-badge" id="errorBadge" hidden>0</span></button>
   </nav>
 
   <!-- Panel: Boards -->
@@ -59,6 +61,28 @@
           <span class="column-count" id="count-developed">0</span>
         </div>
         <div class="column-cards" id="cards-developed"></div>
+      </div>
+    </div>
+
+    <!-- Board Members: Sessions & Agents -->
+    <div class="board-members">
+      <div class="board-members-section">
+        <div class="board-members-header">
+          <h3>Sessions</h3>
+          <span class="column-count" id="count-board-sessions">0</span>
+        </div>
+        <div class="board-members-list" id="board-sessions-list">
+          <p class="board-members-empty">No sessions assigned to this board.</p>
+        </div>
+      </div>
+      <div class="board-members-section">
+        <div class="board-members-header">
+          <h3>Agents</h3>
+          <span class="column-count" id="count-board-agents">0</span>
+        </div>
+        <div class="board-members-list" id="board-agents-list">
+          <p class="board-members-empty">No agents assigned to this board.</p>
+        </div>
       </div>
     </div>
   </section>
@@ -99,7 +123,7 @@
             <span id="activityText">Idle</span>
           </div>
 
-          <div class="session-output" id="sessionOutput" role="log" aria-live="polite" aria-label="Agent output">
+          <div class="session-output" id="sessionOutput" role="log" aria-live="polite" aria-label="Agent output" tabindex="0">
             <pre class="output-pre" id="outputPre"></pre>
           </div>
 
@@ -163,6 +187,21 @@
               <pre class="agent-json-pre" id="agentDetailSettings"></pre>
             </div>
           </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Panel: Errors -->
+  <section id="panel-errors" role="tabpanel" aria-labelledby="tab-errors" hidden>
+    <div class="errors-layout">
+      <div class="errors-toolbar">
+        <h2 class="errors-heading">Agent Errors</h2>
+        <button class="btn btn-danger btn-sm" id="clearErrorsBtn">Clear All</button>
+      </div>
+      <div class="errors-list" id="errorsList">
+        <div class="errors-empty" id="errorsEmpty">
+          <p>No agent errors recorded. Errors will appear here when an AI agent encounters a problem during task execution.</p>
         </div>
       </div>
     </div>
@@ -267,8 +306,8 @@
             <label for="taskType">Type</label>
             <select id="taskType">
               <option value="improvement">Improvement</option>
-              <option value="problem">Problem</option>
-              <option value="idea">Idea</option>
+              <option value="bug">Bug</option>
+              <option value="feature">Feature</option>
             </select>
           </div>
           <div class="form-group">
@@ -283,7 +322,7 @@
         </div>
 
         <div class="form-row">
-          <div class="form-group">
+          <div class="form-group" id="taskStateGroup">
             <label for="taskState">State</label>
             <select id="taskState">
               <option value="todo">To Do</option>
@@ -302,8 +341,11 @@
         </div>
 
         <div class="form-actions">
-          <button type="button" class="btn btn-secondary" id="cancelTaskBtn">Cancel</button>
-          <button type="submit" class="btn btn-primary" id="submitTaskBtn">Create Task</button>
+          <button type="button" class="btn btn-danger" id="deleteTaskBtn" hidden>Delete</button>
+          <div class="form-actions-right">
+            <button type="button" class="btn btn-secondary" id="cancelTaskBtn">Cancel</button>
+            <button type="submit" class="btn btn-primary" id="submitTaskBtn">Create Task</button>
+          </div>
         </div>
       </form>
     </div>
@@ -340,6 +382,17 @@
 
         <div class="form-row">
           <div class="form-group">
+            <label for="sessionRuns">Runs <small>(0 = endless)</small></label>
+            <input type="number" id="sessionRuns" min="0" value="0" placeholder="0 = endless" />
+          </div>
+          <div class="form-group">
+            <label for="sessionInterval">Interval (seconds)</label>
+            <input type="number" id="sessionInterval" min="0" value="10" placeholder="Pause between runs" />
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
             <label for="sessionCwd">Working Directory (optional)</label>
             <input type="text" id="sessionCwd" placeholder="Defaults to project root" />
           </div>
@@ -347,6 +400,13 @@
             <label for="sessionModel">Model (optional)</label>
             <input type="text" id="sessionModel" placeholder="e.g. claude-sonnet-4" />
           </div>
+        </div>
+
+        <div class="form-group">
+          <label for="sessionBoards">Assign to Boards <small>(select one or more)</small></label>
+          <select id="sessionBoards" multiple size="3">
+          </select>
+          <small class="form-hint">Hold Ctrl/Cmd to select multiple boards. In loop mode, the session claims tasks from these boards.</small>
         </div>
 
         <div class="form-actions">
