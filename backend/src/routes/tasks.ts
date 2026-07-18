@@ -9,6 +9,7 @@ import {
   removeTaskFromBoard,
 } from "../db/tasks.js";
 import { broadcast } from "../websocket-handler.js";
+import { markTaskBroadcast } from "../broadcast-tracker.js";
 import type { CreateTaskInput, UpdateTaskInput } from "../types.js";
 
 const router = Router();
@@ -39,6 +40,7 @@ router.post("/", async (req: Request, res: Response) => {
     }
     const task = await createTask(input);
     broadcast({ type: "task-created", task });
+    markTaskBroadcast(task.id);
     res.status(201).json(task);
   } catch (err) {
     console.error("POST /api/tasks error:", err);
@@ -81,6 +83,7 @@ router.put("/:id", async (req: Request, res: Response) => {
       return;
     }
     broadcast({ type: "task-updated", task });
+    markTaskBroadcast(task.id);
     res.json(task);
   } catch (err) {
     console.error("PUT /api/tasks/:id error:", err);
@@ -128,6 +131,7 @@ router.post("/:id/boards", async (req: Request, res: Response) => {
       return;
     }
     broadcast({ type: "task-updated", task });
+    markTaskBroadcast(task.id);
     res.json(task);
   } catch (err) {
     console.error("POST /api/tasks/:id/boards error:", err);
@@ -150,6 +154,7 @@ router.delete("/:id/boards/:boardId", async (req: Request, res: Response) => {
       return;
     }
     broadcast({ type: "task-updated", task });
+    markTaskBroadcast(task.id);
     res.json(task);
   } catch (err) {
     console.error("DELETE /api/tasks/:id/boards/:boardId error:", err);

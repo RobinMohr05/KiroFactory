@@ -13,9 +13,10 @@ import boardsRouter from "./routes/boards.js";
 import sessionsRouter from "./routes/sessions.js";
 import agentsRouter from "./routes/agents.js";
 import { runMigration } from "./db/migrate.js";
-import { tryConnect, isDbAvailable, getPool, closePool } from "./db/connection.js";
+import { tryConnect, isDbAvailable, closePool } from "./db/connection.js";
 import { shutdownAllSessions } from "./session-manager.js";
-import type { Task } from "./types.js";
+import { getChangedTasksSince } from "./db/tasks.js";
+import { wasRecentlyBroadcast } from "./broadcast-tracker.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -57,6 +58,7 @@ const server = createServer(app);
 setupWebSocket(server);
 
 // ─── DB Change Detector (poll loop) ─────────────────────────────────────────
+
 let lastPollTime = new Date().toISOString();
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -66,22 +68,17 @@ async function pollForChanges(): Promise<void> {
   }
 
   try {
-    const pool = await getPool();
-    const result = await pool
-      .request()
-      .input("lastPoll", lastPollTime)
-      .query<Task>(
-        "SELECT * FROM tasks WHERE updated_at > @lastPoll ORDER BY updated_at ASC"
-      );
-
+    const changedTasks = await getChangedTasksSince(lastPollTime);
     const now = new Date().toISOString();
-
-    if (result.recordset.length > 0) {
-      for (const task of result.recordset) {
+    if (changedTasks.length > 0) {
+      for (const task of changedTasks) {
+        // Skip tasks that were recently broadcast by REST routes (avoid duplicates)
+        if (wasRecentlyBroadcast(task.id)) {
+          continue;
+        }
         broadcast({ type: "task-updated", task });
       }
     }
-
     lastPollTime = now;
   } catch (err) {
     // Connection may have dropped mid-session — log once and keep going
@@ -90,6 +87,7 @@ async function pollForChanges(): Promise<void> {
 }
 
 // ─── Startup ─────────────────────────────────────────────────────────────────
+
 const PORT = Number(process.env.PORT) || 3500;
 
 async function start(): Promise<void> {
@@ -117,11 +115,13 @@ async function start(): Promise<void> {
 }
 
 // ─── Graceful Shutdown ───────────────────────────────────────────────────────
+
 async function shutdown(): Promise<void> {
   console.log("\nShutting down...");
   if (pollInterval) {
     clearInterval(pollInterval);
   }
+
   await shutdownAllSessions();
   server.close();
   try {
@@ -134,5 +134,4 @@ async function shutdown(): Promise<void> {
 
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
-
 start();
