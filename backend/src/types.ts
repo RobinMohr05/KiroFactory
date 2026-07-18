@@ -117,7 +117,24 @@ export type WsServerMessage =
   | { type: "session-deleted"; sessionId: string }
   | { type: "session-output"; sessionId: string; entry: OutputEntry }
   | { type: "session-activity"; sessionId: string; activity: Activity }
+  | { type: "error-created"; error: AgentError }
   | { type: "connected"; message: string };
+
+// ─── Agent Errors ────────────────────────────────────────────────────────────
+
+export interface AgentError {
+  id: string;
+  sessionId: string;
+  sessionName: string;
+  agent: string;
+  timestamp: string;
+  message: string;
+  context: string;
+  taskId?: number;
+  taskTitle?: string;
+  taskCreated: boolean;
+  createdTaskId?: number;
+}
 
 export type WsClientMessage =
   | { action: "subscribe"; boardId?: number }
