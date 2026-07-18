@@ -82,14 +82,21 @@ export interface Session {
   status: "stopped" | "running" | "error" | "completed";
   prompt: string;
   interactive: boolean;
+  loop: boolean;
+  runs: number;
+  intervalSeconds: number;
   cwd: string;
   timeoutSeconds: number;
   model?: string;
   mcpServers?: McpServerConfig[];
+  /** Board memberships — session appears on these boards; loop mode claims tasks from them */
+  boardIds?: number[];
   createdAt: string;
   startedAt?: string;
   output: OutputEntry[];
   currentActivity?: Activity;
+  /** Currently claimed task ID (while in loop mode) */
+  currentTaskId?: number;
 }
 
 export interface CreateSessionInput {
@@ -100,7 +107,12 @@ export interface CreateSessionInput {
   timeoutSeconds?: number;
   model?: string;
   interactive?: boolean;
+  loop?: boolean;
+  runs?: number;
+  intervalSeconds?: number;
   mcpServers?: McpServerConfig[];
+  /** Board memberships — session appears on these boards; loop mode claims tasks from them */
+  boardIds?: number[];
 }
 
 // ─── WebSocket Messages ──────────────────────────────────────────────────────
