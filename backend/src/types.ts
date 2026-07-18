@@ -4,7 +4,7 @@ export interface Task {
   id: number;
   title: string;
   priority: 1 | 2 | 3 | 4;
-  type: "improvement" | "problem" | "idea";
+  type: "improvement" | "bug" | "feature";
   state: "todo" | "in-progress" | "developed";
   description: string;
   files: string[];
@@ -31,7 +31,7 @@ export interface TaskBoard {
 export interface CreateTaskInput {
   title: string;
   priority: 1 | 2 | 3 | 4;
-  type: "improvement" | "problem" | "idea";
+  type: "improvement" | "bug" | "feature";
   description?: string;
   files?: string[];
   origin?: "user" | "ai" | "user-assisted";
@@ -41,7 +41,7 @@ export interface CreateTaskInput {
 export interface UpdateTaskInput {
   title?: string;
   priority?: 1 | 2 | 3 | 4;
-  type?: "improvement" | "problem" | "idea";
+  type?: "improvement" | "bug" | "feature";
   state?: "todo" | "in-progress" | "developed";
   description?: string;
   files?: string[];

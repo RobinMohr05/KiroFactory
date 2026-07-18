@@ -12,7 +12,7 @@ export interface ClaimedTask {
   id: number;
   title: string;
   priority: 1 | 2 | 3 | 4;
-  type: "improvement" | "problem" | "idea";
+  type: "improvement" | "bug" | "feature";
   description: string;
   files: string[];
   origin: "user" | "ai" | "user-assisted";
