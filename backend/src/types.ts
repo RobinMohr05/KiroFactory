@@ -19,6 +19,10 @@ export interface Board {
   name: string;
   createdAt: string;
   tasks?: Task[];
+  /** Sessions assigned to this board (populated on demand) */
+  sessions?: Pick<Session, "id" | "name" | "agent" | "status">[];
+  /** Agent names assigned to this board (populated on demand) */
+  agents?: string[];
 }
 
 export interface TaskBoard {
