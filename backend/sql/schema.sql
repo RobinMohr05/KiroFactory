@@ -17,7 +17,7 @@ CREATE TABLE tasks (
     id              INT             IDENTITY(1,1) PRIMARY KEY,
     title           NVARCHAR(200)   NOT NULL,
     priority        TINYINT         NOT NULL CHECK (priority BETWEEN 1 AND 4),
-    type            VARCHAR(20)     NOT NULL CHECK (type IN ('improvement', 'problem', 'idea')),
+    type            VARCHAR(20)     NOT NULL CHECK (type IN ('improvement', 'bug', 'feature')),
     state           VARCHAR(20)     NOT NULL CHECK (state IN ('todo', 'in-progress', 'developed')),
     description     NVARCHAR(MAX)   NOT NULL DEFAULT '',
     files           NVARCHAR(MAX)   NOT NULL DEFAULT '[]',
