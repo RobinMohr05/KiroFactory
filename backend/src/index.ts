@@ -3,32 +3,51 @@ dotenv.config();
 
 import express from "express";
 import cors from "cors";
+import cookieParser from "cookie-parser";
 import { createServer } from "http";
 import path from "path";
 import { fileURLToPath } from "url";
 
 import { setupWebSocket, broadcast } from "./websocket-handler.js";
+import { setupWorkerWebSocket } from "./worker-ws-handler.js";
+import { isAcaModeEnabled } from "./aca-worker-spawner.js";
+import { requireAuth, isPublicPath } from "./middleware/auth.js";
+import authRouter from "./routes/auth.js";
 import tasksRouter from "./routes/tasks.js";
-import boardsRouter from "./routes/boards.js";
+import tabsRouter from "./routes/tabs.js";
 import sessionsRouter from "./routes/sessions.js";
 import agentsRouter from "./routes/agents.js";
 import errorsRouter from "./routes/errors.js";
+import credentialsRouter from "./routes/credentials.js";
+import adminRouter from "./routes/admin.js";
 import { runMigration } from "./db/migrate.js";
-import { tryConnect, isDbAvailable, closePool } from "./db/connection.js";
+import { tryConnect, isDbAvailable, closePool, getPoolStats } from "./db/connection.js";
 import { shutdownAllSessions, initSessions } from "./session-manager.js";
 import { getChangedTasksSince } from "./db/tasks.js";
 import { wasRecentlyBroadcast } from "./broadcast-tracker.js";
+import { apiErrorLogger, uncaughtErrorLogger } from "./middleware/error-logger.js";
+import { logPoolMetrics } from "./logger.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app = express();
-app.use(cors());
+
+// CORS: In production (ACA), frontend and API share the same origin (*.azurecontainerapps.io)
+// so CORS is effectively same-origin. In development, allow localhost origins.
+const corsOrigin = process.env.NODE_ENV === "production"
+  ? false // Same-origin only — no cross-origin requests needed
+  : true; // Development: allow all origins for convenience
+app.use(cors({ origin: corsOrigin }));
 app.use(express.json());
+app.use(cookieParser());
 
 // Serve static files from frontend/public directory
 app.use(express.static(path.join(__dirname, "../../frontend/public")));
 
-// Mount API routes (with DB availability guard)
+// API error logger — attaches a `finish` listener to detect 5xx responses for Azure Monitor
+app.use(apiErrorLogger);
+
+// Mount API routes (with DB availability guard and auth)
 import type { Request, Response, NextFunction } from "express";
 
 function requireDb(req: Request, res: Response, next: NextFunction): void {
@@ -41,13 +60,18 @@ function requireDb(req: Request, res: Response, next: NextFunction): void {
   next();
 }
 
-app.use("/api/tasks", requireDb, tasksRouter);
-app.use("/api/boards", requireDb, boardsRouter);
-app.use("/api/sessions", sessionsRouter);
-app.use("/api/agents", agentsRouter);
-app.use("/api/errors", errorsRouter);
+// Global auth guard for /api/* routes — skips public paths
+app.use("/api", (req: Request, res: Response, next: NextFunction) => {
+  // Strip the /api prefix to get the relative path for public path checking
+  const relativePath = req.path; // Already relative since we mounted on /api
+  if (isPublicPath(relativePath)) {
+    next();
+    return;
+  }
+  requireAuth(req, res, next);
+});
 
-// Health endpoint
+// Health endpoint (public — listed in PUBLIC_PATHS)
 app.get("/api/health", (_req, res) => {
   res.json({
     status: "running",
@@ -55,14 +79,34 @@ app.get("/api/health", (_req, res) => {
   });
 });
 
+app.use("/api/auth", requireDb, authRouter);
+app.use("/api/tasks", requireDb, tasksRouter);
+app.use("/api/tabs", requireDb, tabsRouter);
+app.use("/api/sessions", sessionsRouter);
+app.use("/api/agents", agentsRouter);
+app.use("/api/errors", errorsRouter);
+app.use("/api/users/me/credentials", requireDb, credentialsRouter);
+app.use("/api/admin", requireDb, adminRouter);
+
+// Error-handling middleware — catches unhandled errors from route handlers and logs them
+// as structured JSON for Azure Monitor (must be registered AFTER all route handlers).
+app.use(uncaughtErrorLogger);
+
 // Create HTTP server and attach WebSocket
 const server = createServer(app);
 setupWebSocket(server);
+
+// Attach internal worker WebSocket endpoint (/internal/worker) when ACA mode is available
+if (isAcaModeEnabled()) {
+  setupWorkerWebSocket(server);
+  console.log("[startup] Worker WebSocket endpoint enabled at /internal/worker");
+}
 
 // ─── DB Change Detector (poll loop) ─────────────────────────────────────────
 
 let lastPollTime = new Date().toISOString();
 let pollInterval: ReturnType<typeof setInterval> | null = null;
+let poolMetricsInterval: ReturnType<typeof setInterval> | null = null;
 
 async function pollForChanges(): Promise<void> {
   if (!isDbAvailable()) {
@@ -93,21 +137,21 @@ async function pollForChanges(): Promise<void> {
 const PORT = Number(process.env.PORT) || 3500;
 
 async function start(): Promise<void> {
-  // Restore sessions from disk (before DB — sessions don't require DB)
-  initSessions();
-
   // Attempt database connection — non-fatal if it fails
   await tryConnect();
 
   if (isDbAvailable()) {
     await runMigration();
     console.log("[startup] Database ready.");
+
+    // Restore sessions from DB (requires DB connection)
+    await initSessions();
   } else {
     console.warn(
       "[startup] ⚠ Server starting WITHOUT database connectivity."
     );
     console.warn(
-      "[startup] ⚠ The UI will load but task/board features will be unavailable until the DB is reachable."
+      "[startup] ⚠ The UI will load but task/tab features will be unavailable until the DB is reachable."
     );
   }
 
@@ -117,6 +161,15 @@ async function start(): Promise<void> {
 
   // Start the change detector poll loop
   pollInterval = setInterval(pollForChanges, 1500);
+
+  // Start periodic pool metrics emission (every 60s) for Azure Monitor dashboard
+  poolMetricsInterval = setInterval(() => {
+    if (!isDbAvailable()) return;
+    const stats = getPoolStats();
+    if (stats) {
+      logPoolMetrics(stats);
+    }
+  }, 60_000);
 }
 
 // ─── Graceful Shutdown ───────────────────────────────────────────────────────

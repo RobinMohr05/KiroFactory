@@ -32,10 +32,10 @@ export interface ClaimedTask {
  * (user > user-assisted > ai), then by creation date (oldest first).
  *
  * @param taskId Optional specific task ID to claim (skips priority ordering)
- * @param boardIds Optional board IDs to filter by — only tasks belonging to at least one of these boards are eligible. If empty/undefined, all todo tasks are eligible.
+ * @param tabIds Optional tab IDs to filter by — only tasks belonging to at least one of these tabs are eligible. If empty/undefined, all todo tasks are eligible.
  * @returns The claimed task, or null if no claimable tasks exist
  */
-export async function claimTask(taskId?: number, boardIds?: number[]): Promise<ClaimedTask | null> {
+export async function claimTask(taskId?: number, tabIds?: number[]): Promise<ClaimedTask | null> {
   const pool = await getPool();
 
   // Use a transaction with row locking for atomicity
@@ -63,12 +63,12 @@ export async function claimTask(taskId?: number, boardIds?: number[]): Promise<C
           INSERTED.origin
         WHERE id = @taskId AND state = 'todo'
       `;
-    } else if (boardIds && boardIds.length > 0) {
-      // Claim the highest-priority task that belongs to at least one of the given boards
+    } else if (tabIds && tabIds.length > 0) {
+      // Claim the highest-priority task that belongs to at least one of the given tabs
       // Build a parameterized IN clause
-      const boardIdParams = boardIds.map((id, i) => `@boardId${i}`);
-      boardIds.forEach((id, i) => {
-        request.input(`boardId${i}`, sql.Int, id);
+      const tabIdParams = tabIds.map((id, i) => `@tabId${i}`);
+      tabIds.forEach((id, i) => {
+        request.input(`tabId${i}`, sql.Int, id);
       });
 
       query = `
@@ -85,9 +85,9 @@ export async function claimTask(taskId?: number, boardIds?: number[]): Promise<C
         WHERE id = (
           SELECT TOP 1 t.id
           FROM tasks t WITH (UPDLOCK, READPAST)
-          INNER JOIN task_boards tb ON tb.task_id = t.id
+          INNER JOIN task_tabs tt ON tt.task_id = t.id
           WHERE t.state = 'todo'
-            AND tb.board_id IN (${boardIdParams.join(", ")})
+            AND tt.tab_id IN (${tabIdParams.join(", ")})
           ORDER BY
             t.priority ASC,
             CASE t.origin
@@ -205,24 +205,24 @@ export async function resetOrphanedTasks(): Promise<number> {
 /**
  * Get the count of available (todo) tasks.
  *
- * @param boardIds Optional board IDs to filter by — only tasks belonging to at least one of these boards are counted. If empty/undefined, all todo tasks are counted.
+ * @param tabIds Optional tab IDs to filter by — only tasks belonging to at least one of these tabs are counted. If empty/undefined, all todo tasks are counted.
  */
-export async function getAvailableTaskCount(boardIds?: number[]): Promise<number> {
+export async function getAvailableTaskCount(tabIds?: number[]): Promise<number> {
   const pool = await getPool();
 
-  if (boardIds && boardIds.length > 0) {
+  if (tabIds && tabIds.length > 0) {
     const request = pool.request();
-    const boardIdParams = boardIds.map((id, i) => `@boardId${i}`);
-    boardIds.forEach((id, i) => {
-      request.input(`boardId${i}`, sql.Int, id);
+    const tabIdParams = tabIds.map((id, i) => `@tabId${i}`);
+    tabIds.forEach((id, i) => {
+      request.input(`tabId${i}`, sql.Int, id);
     });
 
     const result = await request.query(`
       SELECT COUNT(DISTINCT t.id) as count
       FROM tasks t
-      INNER JOIN task_boards tb ON tb.task_id = t.id
+      INNER JOIN task_tabs tt ON tt.task_id = t.id
       WHERE t.state = 'todo'
-        AND tb.board_id IN (${boardIdParams.join(", ")})
+        AND tt.tab_id IN (${tabIdParams.join(", ")})
     `);
     return result.recordset[0].count;
   }

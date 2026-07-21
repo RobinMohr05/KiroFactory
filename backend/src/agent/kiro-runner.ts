@@ -39,6 +39,8 @@ export interface KiroRunnerOptions {
   model?: string | null;
   /** Optional MCP servers to inject at session creation */
   mcpServers?: McpServerEntry[];
+  /** Optional per-user Kiro API key (takes precedence over process.env.KIRO_API_KEY) */
+  kiroApiKey?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -101,11 +103,18 @@ export class KiroRunner {
     env.NO_COLOR = "1";
     env.FORCE_COLOR = "0";
 
-    // Forward AWS and Kiro auth
+    // Forward AWS auth
     for (const key of Object.keys(process.env)) {
       if (key.startsWith("AWS_")) env[key] = process.env[key]!;
     }
-    if (process.env.KIRO_API_KEY) env.KIRO_API_KEY = process.env.KIRO_API_KEY;
+
+    // Kiro API key: per-user key takes precedence over global env var.
+    // The decrypted key is only held in the env object for the duration of spawn().
+    if (opts.kiroApiKey) {
+      env.KIRO_API_KEY = opts.kiroApiKey;
+    } else if (process.env.KIRO_API_KEY) {
+      env.KIRO_API_KEY = process.env.KIRO_API_KEY;
+    }
 
     const args = ["acp", "--agent", opts.agent];
     if (opts.model) args.push("--model", opts.model);
