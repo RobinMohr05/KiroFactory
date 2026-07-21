@@ -1,3 +1,63 @@
+// ===== Auth Gate =====
+// Check authentication before rendering the app. Redirect to login if not authenticated.
+let currentUser = null;
+
+/**
+ * Wrapper around fetch for all /api/* calls.
+ * Automatically detects 401 responses (session expired or invalid) and redirects to login.
+ * This ensures that no matter which API call triggers a session expiry, the user is redirected.
+ */
+async function apiFetch(url, options) {
+  const res = await fetch(url, options);
+  if (res.status === 401) {
+    window.location.href = '/login.html';
+    // Return a never-resolving promise to halt the calling code
+    return new Promise(() => {});
+  }
+  return res;
+}
+
+async function checkAuth() {
+  try {
+    const res = await fetch('/api/auth/me', { credentials: 'same-origin' }); // raw fetch: we handle 401 manually here
+    if (res.status === 401) {
+      window.location.href = '/login.html';
+      return false;
+    }
+    if (res.ok) {
+      const data = await res.json();
+      currentUser = data.user;
+      return true;
+    }
+    // Other errors (e.g., 503 DB down) — allow through, app will show errors naturally
+    return true;
+  } catch {
+    // Network error — allow through, app will show disconnected status
+    return true;
+  }
+}
+
+/**
+ * Call this on any fetch response to detect session expiry and redirect to login.
+ */
+function handleAuthError(res) {
+  if (res.status === 401) {
+    window.location.href = '/login.html';
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Logout: clear session and redirect to login.
+ */
+async function logout() {
+  try {
+    await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' });
+  } catch { /* ignore */ }
+  window.location.href = '/login.html';
+}
+
 // ===== State =====
 let boards = [];
 let tasks = [];
@@ -14,7 +74,7 @@ let lastTasksJson = '';
 // ===== DOM References =====
 const statusDot = document.getElementById('statusDot');
 const statusText = document.getElementById('statusText');
-const boardSelector = document.getElementById('boardSelector');
+const boardList = document.getElementById('boardList');
 const newBoardBtn = document.getElementById('newBoardBtn');
 const newTaskBtn = document.getElementById('newTaskBtn');
 const taskModal = document.getElementById('taskModal');
@@ -23,6 +83,22 @@ const cancelTaskBtn = document.getElementById('cancelTaskBtn');
 const deleteTaskBtn = document.getElementById('deleteTaskBtn');
 const modalTitle = document.getElementById('modalTitle');
 const submitTaskBtn = document.getElementById('submitTaskBtn');
+
+// Tab Modal
+const tabModal = document.getElementById('tabModal');
+const tabForm = document.getElementById('tabForm');
+const tabModalTitle = document.getElementById('tabModalTitle');
+const tabFormId = document.getElementById('tabFormId');
+const tabFormName = document.getElementById('tabFormName');
+const tabFormRepo = document.getElementById('tabFormRepo');
+const cancelTabBtn = document.getElementById('cancelTabBtn');
+const submitTabBtn = document.getElementById('submitTabBtn');
+
+// MCP Config toggles (in tab modal)
+const mcpAtlassian = document.getElementById('mcpAtlassian');
+const mcpAzureDevops = document.getElementById('mcpAzureDevops');
+const mcpAwsApi = document.getElementById('mcpAwsApi');
+const mcpAwsDocs = document.getElementById('mcpAwsDocs');
 
 // Tabs
 const tabBoards = document.getElementById('tab-boards');
@@ -33,6 +109,35 @@ const panelBoards = document.getElementById('panel-boards');
 const panelSessions = document.getElementById('panel-sessions');
 const panelAgents = document.getElementById('panel-agents');
 const panelErrors = document.getElementById('panel-errors');
+
+// ===== Dark Mode Toggle =====
+const themeToggle = document.getElementById('themeToggle');
+
+function getPreferredTheme() {
+  const stored = localStorage.getItem('kirofactory-theme');
+  if (stored) return stored;
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  localStorage.setItem('kirofactory-theme', theme);
+}
+
+// Apply theme immediately on load
+applyTheme(getPreferredTheme());
+
+themeToggle.addEventListener('click', () => {
+  const current = document.documentElement.getAttribute('data-theme');
+  applyTheme(current === 'dark' ? 'light' : 'dark');
+});
+
+// Respond to OS theme changes (if user hasn't manually set a preference)
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
+  if (!localStorage.getItem('kirofactory-theme')) {
+    applyTheme(e.matches ? 'dark' : 'light');
+  }
+});
 
 // ===== Priority & Origin & Type Maps =====
 const PRIORITY_COLORS = {
@@ -64,8 +169,13 @@ function connectWebSocket() {
     stopPolling();
   });
 
-  ws.addEventListener('close', () => {
+  ws.addEventListener('close', (event) => {
     setConnectionStatus(false);
+    // If server rejected with auth error (4001), redirect to login immediately
+    if (event.code === 4001) {
+      window.location.href = '/login.html';
+      return;
+    }
     scheduleReconnect();
     startPolling();
   });
@@ -108,9 +218,9 @@ function handleWsMessage(message) {
   // Server sends: { type, task?, taskId?, board?, boardId? }
   // Extract the relevant data based on message type
   const task = message.task;
-  const board = message.board;
+  const board = message.tab;
   const taskId = message.taskId;
-  const boardId = message.boardId;
+  const boardId = message.tabId;
 
   // Deduplication: if we triggered this op, skip re-render
   const dedupId = task?.id || taskId || board?.id || boardId;
@@ -123,7 +233,7 @@ function handleWsMessage(message) {
     case 'task-created':
       if (task) {
         // Check if this task belongs to the current board
-        const belongsToBoard = task.boards?.some(b => b.id == currentBoardId);
+        const belongsToBoard = task.tabs?.some(b => b.id == currentBoardId);
         if (belongsToBoard) {
           const exists = tasks.find(t => t.id === task.id);
           if (!exists) {
@@ -142,7 +252,7 @@ function handleWsMessage(message) {
           renderBoard();
         } else {
           // Task might have been added to this board
-          const belongsToBoard = task.boards?.some(b => b.id == currentBoardId);
+          const belongsToBoard = task.tabs?.some(b => b.id == currentBoardId);
           if (belongsToBoard) {
             // Final guard: only push if not already present (prevents duplicates)
             const alreadyExists = tasks.find(t => t.id === task.id);
@@ -163,7 +273,7 @@ function handleWsMessage(message) {
       }
       break;
 
-    case 'board-created':
+    case 'tab-created':
       if (board) {
         const boardExists = boards.find(b => b.id === board.id);
         if (!boardExists) {
@@ -173,7 +283,7 @@ function handleWsMessage(message) {
       }
       break;
 
-    case 'board-updated':
+    case 'tab-updated':
       if (board) {
         const bIdx = boards.findIndex(b => b.id === board.id);
         if (bIdx !== -1) boards[bIdx] = board;
@@ -181,12 +291,13 @@ function handleWsMessage(message) {
       }
       break;
 
-    case 'board-deleted':
+    case 'tab-deleted':
       if (boardId) {
         boards = boards.filter(b => b.id !== boardId);
         renderBoardSelector();
         if (currentBoardId == boardId) {
           currentBoardId = boards.length > 0 ? boards[0].id : null;
+          renderSessionList();
           if (currentBoardId) fetchBoardTasks(currentBoardId);
           else {
             tasks = [];
@@ -196,6 +307,16 @@ function handleWsMessage(message) {
             renderBoardMembers();
           }
         }
+      }
+      break;
+
+    case 'tabs-reordered':
+      // Skip if we triggered this reorder (optimistic update already applied)
+      if (pendingOps.has('tabs-reordered')) {
+        pendingOps.delete('tabs-reordered');
+      } else if (message.tabs && Array.isArray(message.tabs)) {
+        boards = message.tabs;
+        renderBoardSelector();
       }
       break;
 
@@ -234,13 +355,14 @@ function stopPolling() {
 // ===== REST API =====
 async function fetchBoards() {
   try {
-    const res = await fetch('/api/boards');
+    const res = await apiFetch('/api/tabs');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     boards = await res.json();
     renderBoardSelector();
     if (boards.length > 0 && !currentBoardId) {
       currentBoardId = boards[0].id;
-      boardSelector.value = currentBoardId;
+      renderBoardSelector();
+      renderSessionList();
       await fetchBoardTasks(currentBoardId);
     }
   } catch (e) {
@@ -250,7 +372,7 @@ async function fetchBoards() {
 
 async function fetchBoardTasks(boardId) {
   try {
-    const res = await fetch(`/api/boards/${boardId}`);
+    const res = await fetch(`/api/tabs/${boardId}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     const newTasks = data.tasks || [];
@@ -264,6 +386,7 @@ async function fetchBoardTasks(boardId) {
     boardSessions = data.sessions || [];
     boardAgents = data.agents || [];
     renderBoardMembers();
+    renderBoardRepoIndicator();
   } catch (e) {
     console.error('Failed to fetch board tasks:', e);
   }
@@ -329,12 +452,14 @@ async function deleteTask(id) {
   }
 }
 
-async function createBoard(name) {
+async function createBoard(name, repositoryUrl = null) {
   try {
-    const res = await fetch('/api/boards', {
+    const body = { name };
+    if (repositoryUrl) body.repositoryUrl = repositoryUrl;
+    const res = await fetch('/api/tabs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name })
+      body: JSON.stringify(body)
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const board = await res.json();
@@ -346,13 +471,15 @@ async function createBoard(name) {
     }
     renderBoardSelector();
     currentBoardId = board.id;
-    boardSelector.value = board.id;
+    renderBoardSelector();
+    renderSessionList();
     tasks = [];
     boardSessions = [];
     boardAgents = [];
     lastTasksJson = '[]';
     renderBoard();
     renderBoardMembers();
+    renderBoardRepoIndicator();
     return board;
   } catch (e) {
     console.error('Failed to create board:', e);
@@ -361,15 +488,16 @@ async function createBoard(name) {
 
 async function deleteBoard(id) {
   try {
-    const res = await fetch(`/api/boards/${id}`, { method: 'DELETE' });
+    const res = await fetch(`/api/tabs/${id}`, { method: 'DELETE' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     pendingOps.add(`board-deleted-${id}`);
     boards = boards.filter(b => b.id !== id);
     renderBoardSelector();
-    if (currentBoardId === id) {
+    if (currentBoardId === id || currentBoardId == id) {
       currentBoardId = boards.length > 0 ? boards[0].id : null;
+      renderBoardSelector();
+      renderSessionList();
       if (currentBoardId) {
-        boardSelector.value = currentBoardId;
         await fetchBoardTasks(currentBoardId);
       } else {
         tasks = [];
@@ -386,15 +514,405 @@ async function deleteBoard(id) {
 
 // ===== Rendering =====
 function renderBoardSelector() {
-  boardSelector.innerHTML = '';
+  boardList.innerHTML = '';
   boards.forEach(board => {
-    const opt = document.createElement('option');
-    opt.value = board.id;
-    opt.textContent = board.name;
-    boardSelector.appendChild(opt);
+    const li = document.createElement('li');
+    li.className = 'board-list-item' + (currentBoardId == board.id ? ' active' : '');
+    li.dataset.boardId = board.id;
+    li.draggable = true;
+    li.setAttribute('role', 'tab');
+    if (board.repositoryUrl) {
+      li.title = board.repositoryUrl;
+    }
+    li.setAttribute('aria-selected', currentBoardId == board.id ? 'true' : 'false');
+    li.innerHTML = `<span class="board-item-name">${escapeHtml(board.name)}</span><span class="board-item-actions"><button class="board-item-action board-item-edit" title="Rename tab" aria-label="Rename tab ${escapeHtml(board.name)}"><svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M8.5 1.5l2 2-7 7H1.5V8.5l7-7z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button class="board-item-action board-item-delete" title="Delete tab" aria-label="Delete tab ${escapeHtml(board.name)}"><svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button></span>`;
+
+    // Edit button — opens tab settings modal
+    li.querySelector('.board-item-edit').addEventListener('click', (e) => {
+      e.stopPropagation();
+      showTabModal(board);
+    });
+
+    // Delete button — confirm and delete
+    li.querySelector('.board-item-delete').addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (confirm(`Delete tab "${board.name}"? Tasks will be unassigned from this tab.`)) {
+        deleteBoard(board.id);
+      }
+    });
+
+    // Drag-and-drop for reordering tabs
+    li.addEventListener('dragstart', (e) => {
+      li.classList.add('tab-dragging');
+      e.dataTransfer.setData('application/x-tab-id', String(board.id));
+      e.dataTransfer.effectAllowed = 'move';
+    });
+
+    li.addEventListener('dragend', () => {
+      li.classList.remove('tab-dragging');
+      // Remove any drop indicators
+      boardList.querySelectorAll('.tab-drop-before, .tab-drop-after').forEach(el => {
+        el.classList.remove('tab-drop-before', 'tab-drop-after');
+      });
+    });
+
+    li.addEventListener('dragover', (e) => {
+      // Only handle tab reorder drags (not task card drags)
+      if (!e.dataTransfer.types.includes('application/x-tab-id')) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      // Show drop indicator based on cursor position
+      const rect = li.getBoundingClientRect();
+      const midX = rect.left + rect.width / 2;
+      li.classList.remove('tab-drop-before', 'tab-drop-after');
+      if (e.clientX < midX) {
+        li.classList.add('tab-drop-before');
+      } else {
+        li.classList.add('tab-drop-after');
+      }
+    });
+
+    li.addEventListener('dragleave', () => {
+      li.classList.remove('tab-drop-before', 'tab-drop-after');
+    });
+
+    li.addEventListener('drop', (e) => {
+      e.preventDefault();
+      li.classList.remove('tab-drop-before', 'tab-drop-after');
+      const draggedId = Number(e.dataTransfer.getData('application/x-tab-id'));
+      if (!draggedId || draggedId === board.id) return;
+
+      // Determine drop position
+      const rect = li.getBoundingClientRect();
+      const midX = rect.left + rect.width / 2;
+      const insertBefore = e.clientX < midX;
+
+      // Reorder the boards array
+      const draggedIdx = boards.findIndex(b => b.id === draggedId);
+      if (draggedIdx === -1) return;
+      const [dragged] = boards.splice(draggedIdx, 1);
+      let targetIdx = boards.findIndex(b => b.id === board.id);
+      if (!insertBefore) targetIdx++;
+      boards.splice(targetIdx, 0, dragged);
+
+      // Re-render immediately (optimistic)
+      renderBoardSelector();
+
+      // Persist new order to server
+      const tabIds = boards.map(b => b.id);
+      reorderTabsOnServer(tabIds);
+    });
+
+    // Click to select
+    li.addEventListener('click', (e) => {
+      if (li.querySelector('.board-edit-input')) return; // editing, don't switch
+      if (e.target.closest('.board-item-action')) return; // action button clicked
+      currentBoardId = board.id;
+      renderBoardSelector();
+      renderSessionList();
+      fetchBoardTasks(currentBoardId);
+    });
+
+    // Double-click to rename
+    li.addEventListener('dblclick', (e) => {
+      e.preventDefault();
+      startBoardEdit(li, board);
+    });
+
+    // Right-click context menu
+    li.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      showBoardContextMenu(e, board);
+    });
+
+    boardList.appendChild(li);
   });
-  if (currentBoardId) {
-    boardSelector.value = currentBoardId;
+}
+
+/** Persist tab order to server */
+async function reorderTabsOnServer(tabIds) {
+  try {
+    pendingOps.add('tabs-reordered');
+    const res = await fetch('/api/tabs/reorder', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tabIds }),
+    });
+    if (!res.ok) {
+      console.error('Failed to reorder tabs:', res.status);
+      // Refetch to restore server order
+      await fetchBoards();
+    }
+  } catch (e) {
+    console.error('Failed to reorder tabs:', e);
+    await fetchBoards();
+  }
+}
+
+/** Show a context menu for board rename/delete */
+function showBoardContextMenu(event, board) {
+  // Remove any existing context menu
+  const existing = document.querySelector('.board-context-menu');
+  if (existing) existing.remove();
+
+  const menu = document.createElement('div');
+  menu.className = 'board-context-menu';
+  menu.innerHTML = `
+    <button class="board-context-item" data-action="edit">⚙️ Edit Tab</button>
+    <button class="board-context-item" data-action="rename">✏️ Rename</button>
+    <button class="board-context-item board-context-danger" data-action="delete">🗑️ Delete</button>
+  `;
+  menu.style.left = event.clientX + 'px';
+  menu.style.top = event.clientY + 'px';
+  document.body.appendChild(menu);
+
+  menu.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-action]');
+    if (!btn) return;
+    const action = btn.dataset.action;
+    menu.remove();
+    if (action === 'edit') {
+      showTabModal(board);
+    } else if (action === 'rename') {
+      const li = boardList.querySelector(`[data-board-id="${board.id}"]`);
+      if (li) startBoardEdit(li, board);
+    } else if (action === 'delete') {
+      if (confirm(`Delete tab "${board.name}"? Tasks will be unassigned from this tab.`)) {
+        deleteBoard(board.id);
+      }
+    }
+  });
+
+  // Close on click outside
+  const closeMenu = (e) => {
+    if (!menu.contains(e.target)) {
+      menu.remove();
+      document.removeEventListener('click', closeMenu);
+    }
+  };
+  setTimeout(() => document.addEventListener('click', closeMenu), 0);
+}
+
+/** Start inline editing of a board name */
+function startBoardEdit(li, board) {
+  const nameSpan = li.querySelector('.board-item-name');
+  if (!nameSpan) return;
+
+  // Hide action buttons during editing
+  const actions = li.querySelector('.board-item-actions');
+  if (actions) actions.style.display = 'none';
+
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'board-edit-input';
+  input.value = board.name;
+  input.setAttribute('aria-label', 'Rename tab');
+
+  nameSpan.replaceWith(input);
+  input.focus();
+  input.select();
+
+  const finishEdit = async () => {
+    const newName = input.value.trim();
+    if (newName && newName !== board.name) {
+      await renameBoard(board.id, newName);
+    }
+    renderBoardSelector();
+  };
+
+  input.addEventListener('blur', finishEdit);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      input.blur();
+    } else if (e.key === 'Escape') {
+      input.value = board.name; // revert
+      input.blur();
+    }
+  });
+}
+
+/** Rename a board via REST API */
+async function renameBoard(id, newName) {
+  try {
+    // Preserve existing repositoryUrl when just renaming
+    const board = boards.find(b => b.id === id);
+    const repositoryUrl = board ? board.repositoryUrl : null;
+    const res = await fetch(`/api/tabs/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: newName, repositoryUrl })
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const updated = await res.json();
+    const idx = boards.findIndex(b => b.id === id);
+    if (idx !== -1) boards[idx] = updated;
+    renderBoardSelector();
+  } catch (e) {
+    console.error('Failed to rename board:', e);
+  }
+}
+
+/** Show an inline input in the board list bar for creating a new tab */
+function startInlineBoardCreate() {
+  // Check if already creating
+  if (boardList.querySelector('.board-edit-input')) return;
+
+  const li = document.createElement('li');
+  li.className = 'board-list-item active';
+
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'board-edit-input';
+  input.placeholder = 'Tab name…';
+  input.setAttribute('aria-label', 'New tab name');
+  li.appendChild(input);
+  boardList.appendChild(li);
+  input.focus();
+
+  const finishCreate = async () => {
+    const name = input.value.trim();
+    if (name) {
+      await createBoard(name);
+    } else {
+      li.remove();
+    }
+  };
+
+  input.addEventListener('blur', finishCreate);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      input.blur();
+    } else if (e.key === 'Escape') {
+      input.removeEventListener('blur', finishCreate);
+      li.remove();
+    }
+  });
+}
+
+// ===== Tab Modal (Create/Edit with Repository) =====
+
+/**
+ * Show the tab modal for creating a new tab or editing an existing one.
+ * @param {object|null} board - existing board object to edit, or null for create
+ */
+function showTabModal(board = null) {
+  tabModal.hidden = false;
+  tabForm.reset();
+
+  // Default MCP config
+  const defaultMcp = { atlassian: true, azureDevops: true, awsApi: false, awsDocs: true };
+
+  if (board) {
+    tabModalTitle.textContent = 'Edit Tab';
+    submitTabBtn.textContent = 'Save Changes';
+    tabFormId.value = board.id;
+    tabFormName.value = board.name || '';
+    tabFormRepo.value = board.repositoryUrl || '';
+    // Populate MCP config from board
+    const mcp = board.mcpConfig || defaultMcp;
+    mcpAtlassian.checked = mcp.atlassian !== false;
+    mcpAzureDevops.checked = mcp.azureDevops !== false;
+    mcpAwsApi.checked = mcp.awsApi === true;
+    mcpAwsDocs.checked = mcp.awsDocs !== false;
+  } else {
+    tabModalTitle.textContent = 'New Tab';
+    submitTabBtn.textContent = 'Create Tab';
+    tabFormId.value = '';
+    tabFormName.value = '';
+    tabFormRepo.value = '';
+    // Set defaults for new tab
+    mcpAtlassian.checked = defaultMcp.atlassian;
+    mcpAzureDevops.checked = defaultMcp.azureDevops;
+    mcpAwsApi.checked = defaultMcp.awsApi;
+    mcpAwsDocs.checked = defaultMcp.awsDocs;
+  }
+
+  tabFormName.focus();
+}
+
+function hideTabModal() {
+  tabModal.hidden = true;
+  tabForm.reset();
+}
+
+async function handleTabFormSubmit() {
+  const id = tabFormId.value;
+  const name = tabFormName.value.trim();
+  const repositoryUrl = tabFormRepo.value.trim() || null;
+  const mcpConfig = {
+    atlassian: mcpAtlassian.checked,
+    azureDevops: mcpAzureDevops.checked,
+    awsApi: mcpAwsApi.checked,
+    awsDocs: mcpAwsDocs.checked,
+  };
+
+  if (!name) return;
+
+  if (id) {
+    // Update existing tab
+    await updateBoard(Number(id), name, repositoryUrl, mcpConfig);
+  } else {
+    // Create new tab
+    await createBoard(name, repositoryUrl);
+  }
+
+  hideTabModal();
+}
+
+/**
+ * Update a board's name and repository URL.
+ */
+async function updateBoard(id, name, repositoryUrl, mcpConfig) {
+  try {
+    const body = { name, repositoryUrl };
+    if (mcpConfig) body.mcpConfig = mcpConfig;
+    const res = await apiFetch(`/api/tabs/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const updated = await res.json();
+    const idx = boards.findIndex(b => b.id === id);
+    if (idx !== -1) boards[idx] = updated;
+    renderBoardSelector();
+    renderBoardRepoIndicator();
+  } catch (e) {
+    console.error('Failed to update board:', e);
+  }
+}
+
+/**
+ * Render the repository URL indicator in the toolbar area when viewing a tab with a repo.
+ */
+function renderBoardRepoIndicator() {
+  // Remove existing indicator
+  const existing = document.querySelector('.board-repo-indicator');
+  if (existing) existing.remove();
+
+  const board = boards.find(b => b.id === currentBoardId);
+  if (!board || !board.repositoryUrl) return;
+
+  const toolbar = document.querySelector('#panel-boards .toolbar');
+  if (!toolbar) return;
+
+  const indicator = document.createElement('div');
+  indicator.className = 'board-repo-indicator';
+  indicator.innerHTML = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2 2.5A2.5 2.5 0 014.5 0h8.75a.75.75 0 01.75.75v12.5a.75.75 0 01-.75.75h-2.5a.75.75 0 110-1.5h1.75v-2h-8a1 1 0 00-.714 1.7.75.75 0 01-1.072 1.05A2.495 2.495 0 012 11.5v-9z" fill="currentColor"/><path d="M6.25 1a.75.75 0 00-.75.75v5.5a.75.75 0 001.28.53L8 6.56l1.22 1.22a.75.75 0 001.28-.53v-5.5A.75.75 0 009.75 1h-3.5z" fill="currentColor"/></svg><a href="${escapeHtml(board.repositoryUrl)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(board.repositoryUrl)}">${escapeHtml(truncateUrl(board.repositoryUrl))}</a>`;
+  toolbar.appendChild(indicator);
+}
+
+function truncateUrl(url) {
+  // Show just the path part for GitHub-like URLs, or truncate to 50 chars
+  try {
+    const u = new URL(url);
+    const path = u.pathname.replace(/^\//, '').replace(/\.git$/, '');
+    if (path) return path;
+    return url.length > 50 ? url.substring(0, 50) + '…' : url;
+  } catch {
+    return url.length > 50 ? url.substring(0, 50) + '…' : url;
   }
 }
 
@@ -631,18 +1149,27 @@ function setupTabs() {
 
 // ===== Event Listeners =====
 function setupEventListeners() {
-  // Board selector
-  boardSelector.addEventListener('change', (e) => {
-    currentBoardId = e.target.value;
-    fetchBoardTasks(currentBoardId);
+  // Logout button
+  const logoutBtn = document.getElementById('logoutBtn');
+  if (logoutBtn) {
+    logoutBtn.addEventListener('click', logout);
+  }
+
+  // Board selection is handled by click events in renderBoardSelector
+
+  // New Board — inline input for easy creation
+  newBoardBtn.addEventListener('click', () => {
+    showTabModal();
   });
 
-  // New Board
-  newBoardBtn.addEventListener('click', () => {
-    const name = prompt('Enter board name:');
-    if (name && name.trim()) {
-      createBoard(name.trim());
-    }
+  // Tab modal events
+  cancelTabBtn.addEventListener('click', hideTabModal);
+  tabModal.addEventListener('click', (e) => {
+    if (e.target === tabModal) hideTabModal();
+  });
+  tabForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    handleTabFormSubmit();
   });
 
   // New Task
@@ -672,6 +1199,9 @@ function setupEventListeners() {
     if (e.key === 'Escape' && !taskModal.hidden) {
       hideTaskForm();
     }
+    if (e.key === 'Escape' && !tabModal.hidden) {
+      hideTabModal();
+    }
   });
 
   // Task form submit
@@ -700,7 +1230,7 @@ function setupEventListeners() {
         description,
         type,
         priority,
-        boardIds: currentBoardId ? [Number(currentBoardId)] : []
+        tabIds: currentBoardId ? [Number(currentBoardId)] : []
       });
     }
 
@@ -718,7 +1248,11 @@ function startReconciliation() {
 }
 
 // ===== Init =====
-function init() {
+async function init() {
+  // Auth gate: redirect to login if not authenticated
+  const authenticated = await checkAuth();
+  if (!authenticated) return;
+
   setupTabs();
   setupEventListeners();
   setupDragAndDrop();
@@ -728,6 +1262,7 @@ function init() {
   setupSessions();
   setupAgents();
   setupErrors();
+  setupSettings();
 }
 
 document.addEventListener('DOMContentLoaded', init);
@@ -760,6 +1295,15 @@ const outputPre = document.getElementById('outputPre');
 const sessionPromptInput = document.getElementById('sessionPromptInput');
 const sessionPromptSendBtn = document.getElementById('sessionPromptSendBtn');
 
+// MCP override elements in session modal
+const sessionMcpToggle = document.getElementById('sessionMcpToggle');
+const sessionMcpSection = document.getElementById('sessionMcpSection');
+const sessionMcpAtlassian = document.getElementById('sessionMcpAtlassian');
+const sessionMcpAzureDevops = document.getElementById('sessionMcpAzureDevops');
+const sessionMcpAwsApi = document.getElementById('sessionMcpAwsApi');
+const sessionMcpAwsDocs = document.getElementById('sessionMcpAwsDocs');
+let sessionMcpOverrideEnabled = false; // Track if user toggled any MCP checkbox
+
 function setupSessions() {
   fetchSessions();
 
@@ -767,10 +1311,31 @@ function setupSessions() {
     sessionModal.hidden = false;
     await populateAgentDropdown();
     populateSessionBoardsSelect();
+    prefillSessionMcpFromBoards();
+    sessionMcpOverrideEnabled = false;
     document.getElementById('sessionName').focus();
   });
 
   cancelSessionBtn.addEventListener('click', hideSessionForm);
+
+  // MCP Servers collapsible toggle
+  sessionMcpToggle.addEventListener('click', () => {
+    const expanded = sessionMcpToggle.getAttribute('aria-expanded') === 'true';
+    sessionMcpToggle.setAttribute('aria-expanded', String(!expanded));
+    sessionMcpSection.classList.toggle('expanded', !expanded);
+  });
+
+  // Re-fill MCP defaults when board selection changes
+  document.getElementById('sessionBoards').addEventListener('change', () => {
+    if (!sessionMcpOverrideEnabled) {
+      prefillSessionMcpFromBoards();
+    }
+  });
+
+  // Track if user manually changed any MCP toggle
+  [sessionMcpAtlassian, sessionMcpAzureDevops, sessionMcpAwsApi, sessionMcpAwsDocs].forEach(el => {
+    el.addEventListener('change', () => { sessionMcpOverrideEnabled = true; });
+  });
 
   sessionModal.addEventListener('click', (e) => {
     if (e.target === sessionModal) hideSessionForm();
@@ -826,6 +1391,10 @@ function setupSessions() {
 function hideSessionForm() {
   sessionModal.hidden = true;
   sessionForm.reset();
+  // Reset MCP override section
+  sessionMcpToggle.setAttribute('aria-expanded', 'false');
+  sessionMcpSection.classList.remove('expanded');
+  sessionMcpOverrideEnabled = false;
 }
 
 async function populateAgentDropdown() {
@@ -852,6 +1421,29 @@ async function populateAgentDropdown() {
     console.error('Failed to fetch agents:', e);
     select.innerHTML = '<option value="" disabled>Failed to load agents</option>';
   }
+}
+
+/**
+ * Pre-fill session MCP toggles from the first selected board's mcpConfig.
+ * Falls back to defaults if no board is selected.
+ */
+function prefillSessionMcpFromBoards() {
+  const defaultMcp = { atlassian: true, azureDevops: true, awsApi: false, awsDocs: true };
+  const boardsSelect = document.getElementById('sessionBoards');
+  const selectedBoardIds = Array.from(boardsSelect.selectedOptions).map(opt => Number(opt.value));
+
+  let mcp = { ...defaultMcp };
+  if (selectedBoardIds.length > 0) {
+    const board = boards.find(b => b.id === selectedBoardIds[0]);
+    if (board && board.mcpConfig) {
+      mcp = { ...defaultMcp, ...board.mcpConfig };
+    }
+  }
+
+  sessionMcpAtlassian.checked = mcp.atlassian !== false;
+  sessionMcpAzureDevops.checked = mcp.azureDevops !== false;
+  sessionMcpAwsApi.checked = mcp.awsApi === true;
+  sessionMcpAwsDocs.checked = mcp.awsDocs !== false;
 }
 
 function populateSessionBoardsSelect() {
@@ -900,11 +1492,22 @@ async function createAndStartSession() {
   // If runs > 0 or runs === 0 (endless), enable loop mode
   const loop = true; // always loop — runs controls how many iterations
 
+  // Collect MCP override if user expanded the section and toggled anything
+  let mcpConfigOverride = undefined;
+  if (sessionMcpOverrideEnabled) {
+    mcpConfigOverride = {
+      atlassian: sessionMcpAtlassian.checked,
+      azureDevops: sessionMcpAzureDevops.checked,
+      awsApi: sessionMcpAwsApi.checked,
+      awsDocs: sessionMcpAwsDocs.checked,
+    };
+  }
+
   try {
     const res = await fetch('/api/sessions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, agent, prompt, cwd, model, interactive, loop, runs, intervalSeconds, boardIds: boardIds.length > 0 ? boardIds : undefined })
+      body: JSON.stringify({ name, agent, prompt, cwd, model, interactive, loop, runs, intervalSeconds, tabIds: boardIds.length > 0 ? boardIds : undefined, mcpConfigOverride })
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const session = await res.json();
@@ -1049,6 +1652,14 @@ function updateSessionStatusUI(status) {
 
 function renderSessionList() {
   sessionList.innerHTML = '';
+
+  // Show all sessions in the Sessions tab (board-specific filtering is handled
+  // by the board members panel in the Tasks view).
+  if (sessions.length === 0) {
+    sessionList.innerHTML = '<li class="session-empty-hint">No sessions yet. Create one with + New Agent.</li>';
+    return;
+  }
+
   sessions.forEach(session => {
     const li = document.createElement('li');
     li.className = 'session-item' + (session.id === activeSessionId ? ' active' : '');
@@ -1098,7 +1709,7 @@ function handleSessionWsMessage(message) {
         renderSessionList();
       }
       // Add to board members if this session belongs to the current board
-      if (s && currentBoardId && s.boardIds && s.boardIds.includes(Number(currentBoardId))) {
+      if (s && currentBoardId && s.tabIds && s.tabIds.includes(Number(currentBoardId))) {
         const exists = boardSessions.find(bs => bs.id === s.id);
         if (!exists) {
           boardSessions.push({ id: s.id, name: s.name, agent: s.agent, status: s.status });
@@ -1742,5 +2353,298 @@ function formatErrorTime(isoStr) {
     return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
   } catch {
     return isoStr;
+  }
+}
+
+
+// =============================================================================
+// ===== SETTINGS MODULE =======================================================
+// =============================================================================
+
+const settingsModal = document.getElementById('settingsModal');
+const settingsBtn = document.getElementById('settingsBtn');
+const closeSettingsBtn = document.getElementById('closeSettingsBtn');
+const settingsProfileInfo = document.getElementById('settingsProfileInfo');
+const changePasswordForm = document.getElementById('changePasswordForm');
+const changeApiKeyForm = document.getElementById('changeApiKeyForm');
+const passwordMsg = document.getElementById('passwordMsg');
+const apiKeyMsg = document.getElementById('apiKeyMsg');
+
+function setupSettings() {
+  // Open settings modal
+  settingsBtn.addEventListener('click', () => {
+    openSettingsModal();
+  });
+
+  // Close settings modal
+  closeSettingsBtn.addEventListener('click', () => {
+    closeSettingsModal();
+  });
+
+  // Close on backdrop click
+  settingsModal.addEventListener('click', (e) => {
+    if (e.target === settingsModal) closeSettingsModal();
+  });
+
+  // Change password form
+  changePasswordForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    await handleChangePassword();
+  });
+
+  // Change API key form
+  changeApiKeyForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    await handleChangeApiKey();
+  });
+
+  // Credential management
+  setupCredentialHandlers();
+}
+
+function openSettingsModal() {
+  // Populate profile info
+  if (currentUser) {
+    const createdDate = new Date(currentUser.createdAt).toLocaleDateString(undefined, {
+      year: 'numeric', month: 'long', day: 'numeric'
+    });
+    settingsProfileInfo.innerHTML = `
+      <p><strong>Email:</strong> ${escapeHtml(currentUser.email)}</p>
+      <p><strong>Member since:</strong> ${createdDate}</p>
+    `;
+  } else {
+    settingsProfileInfo.innerHTML = '<p>Not logged in</p>';
+  }
+
+  // Reset forms and messages
+  changePasswordForm.reset();
+  changeApiKeyForm.reset();
+  hideMessage(passwordMsg);
+  hideMessage(apiKeyMsg);
+
+  // Load credential status
+  loadCredentialStatus();
+
+  settingsModal.hidden = false;
+}
+
+function closeSettingsModal() {
+  settingsModal.hidden = true;
+}
+
+async function handleChangePassword() {
+  const currentPw = document.getElementById('settingsCurrentPw').value;
+  const newPw = document.getElementById('settingsNewPw').value;
+
+  if (!currentPw || !newPw) {
+    showMessage(passwordMsg, 'Both fields are required.', 'error');
+    return;
+  }
+
+  if (newPw.length < 8) {
+    showMessage(passwordMsg, 'New password must be at least 8 characters.', 'error');
+    return;
+  }
+
+  try {
+    const res = await apiFetch('/api/auth/me/password', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ currentPassword: currentPw, newPassword: newPw })
+    });
+
+    if (res.status === 401) {
+      showMessage(passwordMsg, 'Current password is incorrect.', 'error');
+      return;
+    }
+
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      showMessage(passwordMsg, data.error || 'Failed to update password.', 'error');
+      return;
+    }
+
+    showMessage(passwordMsg, 'Password updated successfully.', 'success');
+    changePasswordForm.reset();
+  } catch (err) {
+    console.error('Change password error:', err);
+    showMessage(passwordMsg, 'Network error. Please try again.', 'error');
+  }
+}
+
+async function handleChangeApiKey() {
+  const currentPw = document.getElementById('settingsApiKeyPw').value;
+  const newApiKey = document.getElementById('settingsNewApiKey').value;
+
+  if (!currentPw || !newApiKey) {
+    showMessage(apiKeyMsg, 'Both fields are required.', 'error');
+    return;
+  }
+
+  try {
+    const res = await apiFetch('/api/auth/me/api-key', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ currentPassword: currentPw, kiroApiKey: newApiKey })
+    });
+
+    if (res.status === 401) {
+      showMessage(apiKeyMsg, 'Current password is incorrect.', 'error');
+      return;
+    }
+
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      showMessage(apiKeyMsg, data.error || 'Failed to update API key.', 'error');
+      return;
+    }
+
+    showMessage(apiKeyMsg, 'Kiro API key updated successfully.', 'success');
+    changeApiKeyForm.reset();
+  } catch (err) {
+    console.error('Change API key error:', err);
+    showMessage(apiKeyMsg, 'Network error. Please try again.', 'error');
+  }
+}
+
+function showMessage(el, text, type) {
+  el.textContent = text;
+  el.className = 'form-message ' + type;
+  el.hidden = false;
+}
+
+function hideMessage(el) {
+  el.hidden = true;
+  el.textContent = '';
+  el.className = 'form-message';
+}
+
+// ─── Credential Management ───────────────────────────────────────────────────
+
+/**
+ * Loads credential status from the API and updates the UI indicators.
+ */
+async function loadCredentialStatus() {
+  try {
+    const res = await apiFetch('/api/users/me/credentials');
+    if (!res.ok) return;
+    const status = await res.json();
+
+    const rows = document.querySelectorAll('.credential-row');
+    rows.forEach(row => {
+      const key = row.dataset.key;
+      const statusEl = row.querySelector('.credential-status');
+      const input = row.querySelector('input');
+      const isSet = status[key] === true;
+
+      statusEl.textContent = isSet ? '●' : '○';
+      statusEl.className = 'credential-status ' + (isSet ? 'is-set' : 'not-set');
+      statusEl.title = isSet ? 'Set' : 'Not set';
+      input.value = '';
+      input.placeholder = isSet ? '••••••••' : input.getAttribute('placeholder') || 'Enter value...';
+
+      // Hide credential message
+      const msg = row.querySelector('.credential-msg');
+      if (msg) hideMessage(msg);
+    });
+  } catch (err) {
+    console.error('Failed to load credential status:', err);
+  }
+}
+
+/**
+ * Sets up event listeners for credential Update and Clear buttons.
+ */
+function setupCredentialHandlers() {
+  const credSection = document.getElementById('credentialsSection');
+  if (!credSection) return;
+
+  credSection.addEventListener('click', async (e) => {
+    const btn = e.target.closest('button');
+    if (!btn) return;
+
+    const row = btn.closest('.credential-row');
+    if (!row) return;
+
+    const key = row.dataset.key;
+    const input = row.querySelector('input');
+    const msg = row.querySelector('.credential-msg');
+
+    if (btn.classList.contains('credential-clear-btn')) {
+      // Clear credential
+      await saveCredential(key, null, row, msg);
+    } else if (btn.classList.contains('btn-primary')) {
+      // Update credential
+      const value = input.value.trim();
+      if (!value) {
+        showMessage(msg, 'Please enter a value.', 'error');
+        return;
+      }
+      await saveCredential(key, value, row, msg);
+    }
+  });
+}
+
+/**
+ * Saves a single credential (or clears it if value is null).
+ */
+async function saveCredential(key, value, row, msgEl) {
+  const input = row.querySelector('input');
+  const updateBtn = row.querySelector('.btn-primary');
+  const clearBtn = row.querySelector('.credential-clear-btn');
+
+  // Disable buttons during save
+  updateBtn.disabled = true;
+  clearBtn.disabled = true;
+
+  hideMessage(msgEl);
+
+  try {
+    const body = {};
+    body[key] = value;
+
+    const res = await apiFetch('/api/users/me/credentials', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+
+      // Handle validation errors (422)
+      if (res.status === 422 && data.validationErrors) {
+        const errorMsg = data.validationErrors[key] || 'Validation failed';
+        showMessage(msgEl, errorMsg, 'error');
+        return;
+      }
+
+      showMessage(msgEl, data.error || 'Failed to save credential.', 'error');
+      return;
+    }
+
+    // Success
+    const statusEl = row.querySelector('.credential-status');
+    if (value === null) {
+      showMessage(msgEl, 'Cleared.', 'success');
+      statusEl.textContent = '○';
+      statusEl.className = 'credential-status not-set';
+      statusEl.title = 'Not set';
+    } else {
+      showMessage(msgEl, 'Saved & validated.', 'success');
+      statusEl.textContent = '●';
+      statusEl.className = 'credential-status is-set';
+      statusEl.title = 'Set';
+      input.value = '';
+      input.placeholder = '••••••••';
+    }
+  } catch (err) {
+    console.error(`Save credential ${key} error:`, err);
+    showMessage(msgEl, 'Network error. Please try again.', 'error');
+  } finally {
+    updateBtn.disabled = false;
+    clearBtn.disabled = false;
   }
 }

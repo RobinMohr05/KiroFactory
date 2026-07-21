@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>KiroFactory — Login</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+  <script>
+    (function() {
+      var theme = localStorage.getItem('kirofactory-theme') ||
+        (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+      document.documentElement.setAttribute('data-theme', theme);
+    })();
+  </script>
+</head>
+<body class="auth-body">
+  <div class="auth-container">
+    <div class="auth-card">
+      <div class="auth-logo">
+        <span class="logo">Kiro<span class="logo-accent">Factory</span></span>
+      </div>
+
+      <!-- Login Form -->
+      <form id="loginForm" class="auth-form">
+        <h2 class="auth-title">Sign In</h2>
+        <div class="form-group">
+          <label for="loginEmail">Email</label>
+          <input type="email" id="loginEmail" required placeholder="you@example.com" autocomplete="email" />
+        </div>
+        <div class="form-group">
+          <label for="loginPassword">Password</label>
+          <input type="password" id="loginPassword" required placeholder="••••••••" autocomplete="current-password" />
+        </div>
+        <div id="loginError" class="auth-error" hidden></div>
+        <button type="submit" class="btn btn-primary auth-submit">Sign In</button>
+        <p class="auth-switch" id="showRegisterLink" hidden>
+          Don't have an account? <a href="#" id="switchToRegister">Register</a>
+        </p>
+      </form>
+
+      <!-- Register Form -->
+      <form id="registerForm" class="auth-form" hidden>
+        <h2 class="auth-title">Create Account</h2>
+        <div class="form-group">
+          <label for="registerEmail">Email</label>
+          <input type="email" id="registerEmail" required placeholder="you@example.com" autocomplete="email" />
+        </div>
+        <div class="form-group">
+          <label for="registerPassword">Password</label>
+          <input type="password" id="registerPassword" required placeholder="At least 8 characters" minlength="8" autocomplete="new-password" />
+        </div>
+        <div class="form-group">
+          <label for="registerKiroApiKey">Kiro API Key</label>
+          <input type="password" id="registerKiroApiKey" required placeholder="Your Kiro API key" autocomplete="off" />
+          <small class="form-hint">Required for running AI agent sessions.</small>
+        </div>
+        <div id="registerError" class="auth-error" hidden></div>
+        <button type="submit" class="btn btn-primary auth-submit">Create Account</button>
+        <p class="auth-switch">
+          Already have an account? <a href="#" id="switchToLogin">Sign In</a>
+        </p>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    (function() {
+      const loginForm = document.getElementById('loginForm');
+      const registerForm = document.getElementById('registerForm');
+      const loginError = document.getElementById('loginError');
+      const registerError = document.getElementById('registerError');
+      const showRegisterLink = document.getElementById('showRegisterLink');
+      const switchToRegister = document.getElementById('switchToRegister');
+      const switchToLogin = document.getElementById('switchToLogin');
+
+      // Check if already authenticated — redirect to dashboard
+      fetch('/api/auth/me', { credentials: 'same-origin' })
+        .then(res => { if (res.ok) window.location.href = '/'; })
+        .catch(() => {});
+
+      // Check if registration is enabled
+      fetch('/api/auth/settings')
+        .then(res => res.json())
+        .then(data => {
+          if (data.registrationEnabled) {
+            showRegisterLink.hidden = false;
+          }
+        })
+        .catch(() => {});
+
+      // Toggle between login and register
+      switchToRegister.addEventListener('click', (e) => {
+        e.preventDefault();
+        loginForm.hidden = true;
+        registerForm.hidden = false;
+        loginError.hidden = true;
+      });
+
+      switchToLogin.addEventListener('click', (e) => {
+        e.preventDefault();
+        registerForm.hidden = true;
+        loginForm.hidden = false;
+        registerError.hidden = true;
+      });
+
+      // Login
+      loginForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        loginError.hidden = true;
+
+        const email = document.getElementById('loginEmail').value.trim();
+        const password = document.getElementById('loginPassword').value;
+
+        try {
+          const res = await fetch('/api/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ email, password }),
+          });
+
+          if (!res.ok) {
+            const data = await res.json();
+            loginError.textContent = data.error || 'Login failed';
+            loginError.hidden = false;
+            return;
+          }
+
+          // Success — redirect to dashboard
+          window.location.href = '/';
+        } catch (err) {
+          loginError.textContent = 'Network error. Please try again.';
+          loginError.hidden = false;
+        }
+      });
+
+      // Register
+      registerForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        registerError.hidden = true;
+
+        const email = document.getElementById('registerEmail').value.trim();
+        const password = document.getElementById('registerPassword').value;
+        const kiroApiKey = document.getElementById('registerKiroApiKey').value.trim();
+
+        try {
+          const res = await fetch('/api/auth/register', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ email, password, kiroApiKey }),
+          });
+
+          if (!res.ok) {
+            const data = await res.json();
+            registerError.textContent = data.error || 'Registration failed';
+            registerError.hidden = false;
+            return;
+          }
+
+          // Success — redirect to dashboard
+          window.location.href = '/';
+        } catch (err) {
+          registerError.textContent = 'Network error. Please try again.';
+          registerError.hidden = false;
+        }
+      });
+    })();
+  </script>
+</body>
+</html>

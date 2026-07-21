@@ -9,31 +9,59 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@500;600;700&family=Barlow+Condensed:wght@600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="style.css" />
+  <script>
+    // Apply theme immediately to prevent flash of wrong colors
+    (function() {
+      var theme = localStorage.getItem('kirofactory-theme') ||
+        (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+      document.documentElement.setAttribute('data-theme', theme);
+    })();
+  </script>
 </head>
 <body>
   <!-- Header -->
   <header class="header">
     <span class="logo">Kiro<span class="logo-accent">Factory</span></span>
-    <div class="connection-status">
-      <span class="status-dot" id="statusDot"></span>
-      <span id="statusText">Connecting…</span>
+    <div class="header-actions">
+      <button class="theme-toggle" id="themeToggle" title="Toggle dark mode" aria-label="Toggle dark mode">
+        <svg class="theme-icon-light" width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <svg class="theme-icon-dark" width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <div class="connection-status">
+        <span class="status-dot" id="statusDot"></span>
+        <span id="statusText">Connecting…</span>
+      </div>
+      <button class="btn-header-icon" id="settingsBtn" title="Profile & Settings" aria-label="Profile & Settings">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 15a3 3 0 100-6 3 3 0 000 6z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09a1.65 1.65 0 00-1.08-1.51 1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09a1.65 1.65 0 001.51-1.08 1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06a1.65 1.65 0 001.82.33h.08a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82v.08a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button class="btn-header-icon" id="logoutBtn" title="Sign out" aria-label="Sign out">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><polyline points="16,17 21,12 16,7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><line x1="21" y1="12" x2="9" y2="12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
     </div>
   </header>
 
-  <!-- Tabs -->
-  <nav class="tabs" role="tablist" aria-label="Main navigation">
-    <button class="tab active" id="tab-boards" role="tab" aria-selected="true" aria-controls="panel-boards">Boards</button>
+  <!-- Tab Bar (project tabs — top-level) -->
+  <nav class="tab-bar" id="tabBar" role="navigation" aria-label="Project tabs">
+    <ul class="board-list" id="boardList" role="tablist"></ul>
+    <button class="board-list-add-btn" id="newBoardBtn" title="Create new tab" aria-label="Create new tab">
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M7 1v12M1 7h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+      <span>New Tab</span>
+    </button>
+    <select id="boardSelector" aria-label="Select tab" hidden></select>
+  </nav>
+
+  <!-- Sub-view Tabs -->
+  <nav class="tabs" role="tablist" aria-label="Views">
+    <button class="tab active" id="tab-boards" role="tab" aria-selected="true" aria-controls="panel-boards">Tasks</button>
     <button class="tab" id="tab-sessions" role="tab" aria-selected="false" aria-controls="panel-sessions">Sessions</button>
     <button class="tab" id="tab-agents" role="tab" aria-selected="false" aria-controls="panel-agents">Agents</button>
     <button class="tab" id="tab-errors" role="tab" aria-selected="false" aria-controls="panel-errors">Errors <span class="error-badge" id="errorBadge" hidden>0</span></button>
   </nav>
 
-  <!-- Panel: Boards -->
+  <!-- Panel: Tasks (Boards view) -->
   <section id="panel-boards" role="tabpanel" aria-labelledby="tab-boards">
     <!-- Toolbar -->
     <div class="toolbar">
-      <select id="boardSelector" aria-label="Select board"></select>
-      <button class="btn btn-secondary" id="newBoardBtn">+ Board</button>
       <button class="btn btn-primary" id="newTaskBtn">+ Task</button>
     </div>
 
@@ -63,47 +91,21 @@
         <div class="column-cards" id="cards-developed"></div>
       </div>
     </div>
-
-    <!-- Board Members: Sessions & Agents -->
-    <div class="board-members">
-      <div class="board-members-section">
-        <div class="board-members-header">
-          <h3>Sessions</h3>
-          <span class="column-count" id="count-board-sessions">0</span>
-        </div>
-        <div class="board-members-list" id="board-sessions-list">
-          <p class="board-members-empty">No sessions assigned to this board.</p>
-        </div>
-      </div>
-      <div class="board-members-section">
-        <div class="board-members-header">
-          <h3>Agents</h3>
-          <span class="column-count" id="count-board-agents">0</span>
-        </div>
-        <div class="board-members-list" id="board-agents-list">
-          <p class="board-members-empty">No agents assigned to this board.</p>
-        </div>
-      </div>
-    </div>
   </section>
 
   <!-- Panel: Sessions -->
   <section id="panel-sessions" role="tabpanel" aria-labelledby="tab-sessions" hidden>
     <div class="sessions-layout">
-      <!-- Left: Session List -->
       <aside class="session-list-panel">
         <div class="toolbar" role="toolbar" aria-label="Session actions">
           <button id="newSessionBtn" class="btn btn-primary">+ New Agent</button>
         </div>
         <ul class="session-list" id="sessionList" aria-label="Agent sessions"></ul>
       </aside>
-
-      <!-- Right: Session Detail / Output -->
       <div class="session-detail-panel" id="sessionDetailPanel">
         <div class="session-empty-state" id="sessionEmptyState">
           <p>Select a session or create a new agent to get started.</p>
         </div>
-
         <div class="session-detail" id="sessionDetail" hidden>
           <div class="session-detail-header">
             <div class="session-info">
@@ -117,16 +119,13 @@
               <button class="btn btn-secondary btn-sm" id="sessionDeleteBtn" title="Delete session">Delete</button>
             </div>
           </div>
-
           <div class="session-activity" id="sessionActivityBar">
             <span class="activity-dot" id="activityDot"></span>
             <span id="activityText">Idle</span>
           </div>
-
           <div class="session-output" id="sessionOutput" role="log" aria-live="polite" aria-label="Agent output" tabindex="0">
             <pre class="output-pre" id="outputPre"></pre>
           </div>
-
           <div class="session-prompt-bar">
             <input type="text" id="sessionPromptInput" placeholder="Send a follow-up prompt..." aria-label="Follow-up prompt" disabled />
             <button class="btn btn-primary btn-sm" id="sessionPromptSendBtn" disabled>Send</button>
@@ -139,20 +138,16 @@
   <!-- Panel: Agents -->
   <section id="panel-agents" role="tabpanel" aria-labelledby="tab-agents" hidden>
     <div class="agents-layout">
-      <!-- Left: Agent List -->
       <aside class="agent-list-panel">
         <div class="toolbar" role="toolbar" aria-label="Agent actions">
           <button id="newAgentBtn" class="btn btn-primary">+ New Agent</button>
         </div>
         <ul class="agent-list" id="agentList" aria-label="Configured agents"></ul>
       </aside>
-
-      <!-- Right: Agent Detail / Create -->
       <div class="agent-detail-panel" id="agentDetailPanel">
         <div class="agent-empty-state" id="agentEmptyState">
           <p>Select an agent to view details, or create a new one.</p>
         </div>
-
         <div class="agent-detail" id="agentDetail" hidden>
           <div class="agent-detail-header">
             <div class="agent-info">
@@ -164,7 +159,6 @@
               <button class="btn btn-danger btn-sm" id="agentDeleteBtn" title="Delete agent">Delete</button>
             </div>
           </div>
-
           <div class="agent-detail-body">
             <div class="agent-section">
               <h4>Prompt</h4>
@@ -211,75 +205,25 @@
   <div class="modal-backdrop" id="agentModal" hidden>
     <div class="modal modal-wide" role="dialog" aria-labelledby="agentModalTitle">
       <h2 id="agentModalTitle">New Agent</h2>
-
-      <!-- Mode toggle: Guided vs JSON Upload -->
       <div class="agent-mode-toggle">
         <button type="button" class="btn btn-sm agent-mode-btn active" id="agentModeGuided">Guided</button>
         <button type="button" class="btn btn-sm agent-mode-btn" id="agentModeJson">Upload JSON</button>
       </div>
-
-      <!-- Guided Form -->
       <form id="agentForm" class="agent-form-section">
         <input type="hidden" id="agentFormOriginalName" />
-
-        <div class="form-group">
-          <label for="agentFormName">Name <span class="required">*</span></label>
-          <input type="text" id="agentFormName" required placeholder="e.g. code-reviewer" pattern="[a-zA-Z0-9_-]+" title="Only letters, numbers, dashes, and underscores" />
-          <small class="form-hint">Used as the file name. Only letters, numbers, dashes, underscores.</small>
-        </div>
-
-        <div class="form-group">
-          <label for="agentFormDescription">Description</label>
-          <textarea id="agentFormDescription" rows="2" placeholder="What does this agent do?"></textarea>
-        </div>
-
-        <div class="form-group">
-          <label for="agentFormPrompt">System Prompt <span class="required">*</span></label>
-          <textarea id="agentFormPrompt" rows="8" required placeholder="Instructions for the agent..."></textarea>
-        </div>
-
-        <div class="form-row">
-          <div class="form-group">
-            <label for="agentFormTools">Tools <small>(comma-separated)</small></label>
-            <input type="text" id="agentFormTools" placeholder="read, write, shell, grep, glob, code" />
-          </div>
-          <div class="form-group">
-            <label for="agentFormAllowed">Allowed Tools <small>(comma-separated)</small></label>
-            <input type="text" id="agentFormAllowed" placeholder="read, grep, glob, code" />
-          </div>
-        </div>
-
-        <div class="form-group">
-          <label for="agentFormResources">Resources <small>(one per line)</small></label>
-          <textarea id="agentFormResources" rows="3" placeholder="file://src/**/*.ts&#10;file://README.md"></textarea>
-        </div>
-
-        <div class="form-group">
-          <label for="agentFormSettings">Tools Settings <small>(JSON)</small></label>
-          <textarea id="agentFormSettings" rows="4" placeholder='{"shell": {"allowedCommands": ["npm run build"]}}'></textarea>
-        </div>
-
-        <div class="form-actions">
-          <button type="button" class="btn btn-secondary" id="cancelAgentBtn">Cancel</button>
-          <button type="submit" class="btn btn-primary" id="submitAgentBtn">Create Agent</button>
-        </div>
+        <div class="form-group"><label for="agentFormName">Name <span class="required">*</span></label><input type="text" id="agentFormName" required placeholder="e.g. code-reviewer" pattern="[a-zA-Z0-9_-]+" title="Only letters, numbers, dashes, and underscores" /><small class="form-hint">Used as the file name. Only letters, numbers, dashes, underscores.</small></div>
+        <div class="form-group"><label for="agentFormDescription">Description</label><textarea id="agentFormDescription" rows="2" placeholder="What does this agent do?"></textarea></div>
+        <div class="form-group"><label for="agentFormPrompt">System Prompt <span class="required">*</span></label><textarea id="agentFormPrompt" rows="8" required placeholder="Instructions for the agent..."></textarea></div>
+        <div class="form-row"><div class="form-group"><label for="agentFormTools">Tools <small>(comma-separated)</small></label><input type="text" id="agentFormTools" placeholder="read, write, shell, grep, glob, code" /></div><div class="form-group"><label for="agentFormAllowed">Allowed Tools <small>(comma-separated)</small></label><input type="text" id="agentFormAllowed" placeholder="read, grep, glob, code" /></div></div>
+        <div class="form-group"><label for="agentFormResources">Resources <small>(one per line)</small></label><textarea id="agentFormResources" rows="3" placeholder="file://src/**/*.ts&#10;file://README.md"></textarea></div>
+        <div class="form-group"><label for="agentFormSettings">Tools Settings <small>(JSON)</small></label><textarea id="agentFormSettings" rows="4" placeholder='{"shell": {"allowedCommands": ["npm run build"]}}'></textarea></div>
+        <div class="form-actions"><button type="button" class="btn btn-secondary" id="cancelAgentBtn">Cancel</button><button type="submit" class="btn btn-primary" id="submitAgentBtn">Create Agent</button></div>
       </form>
-
-      <!-- JSON Upload Section -->
       <div id="agentJsonSection" class="agent-form-section" hidden>
-        <div class="form-group">
-          <label for="agentJsonFile">Upload Agent JSON File</label>
-          <input type="file" id="agentJsonFile" accept=".json,application/json" />
-        </div>
-        <div class="form-group">
-          <label for="agentJsonRaw">Or paste JSON directly</label>
-          <textarea id="agentJsonRaw" rows="14" placeholder='{"name": "my-agent", "description": "...", "prompt": "...", "tools": [], ...}'></textarea>
-        </div>
+        <div class="form-group"><label for="agentJsonFile">Upload Agent JSON File</label><input type="file" id="agentJsonFile" accept=".json,application/json" /></div>
+        <div class="form-group"><label for="agentJsonRaw">Or paste JSON directly</label><textarea id="agentJsonRaw" rows="14" placeholder='{"name": "my-agent", ...}'></textarea></div>
         <div id="agentJsonError" class="form-error" hidden></div>
-        <div class="form-actions">
-          <button type="button" class="btn btn-secondary" id="cancelAgentJsonBtn">Cancel</button>
-          <button type="button" class="btn btn-primary" id="submitAgentJsonBtn">Import Agent</button>
-        </div>
+        <div class="form-actions"><button type="button" class="btn btn-secondary" id="cancelAgentJsonBtn">Cancel</button><button type="button" class="btn btn-primary" id="submitAgentJsonBtn">Import Agent</button></div>
       </div>
     </div>
   </div>
@@ -290,63 +234,11 @@
       <h2 id="modalTitle">New Task</h2>
       <form id="taskForm">
         <input type="hidden" id="taskId" />
-
-        <div class="form-group">
-          <label for="taskTitle">Title</label>
-          <input type="text" id="taskTitle" required placeholder="Task title" />
-        </div>
-
-        <div class="form-group">
-          <label for="taskDescription">Description</label>
-          <textarea id="taskDescription" rows="3" placeholder="Optional description"></textarea>
-        </div>
-
-        <div class="form-row">
-          <div class="form-group">
-            <label for="taskType">Type</label>
-            <select id="taskType">
-              <option value="improvement">Improvement</option>
-              <option value="bug">Bug</option>
-              <option value="feature">Feature</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label for="taskPriority">Priority</label>
-            <select id="taskPriority">
-              <option value="1">P1 — Critical</option>
-              <option value="2">P2 — High</option>
-              <option value="3">P3 — Medium</option>
-              <option value="4" selected>P4 — Low</option>
-            </select>
-          </div>
-        </div>
-
-        <div class="form-row">
-          <div class="form-group" id="taskStateGroup">
-            <label for="taskState">State</label>
-            <select id="taskState">
-              <option value="todo">To Do</option>
-              <option value="in-progress">In Progress</option>
-              <option value="developed">Developed</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label for="taskOrigin">Origin</label>
-            <select id="taskOrigin">
-              <option value="user">User</option>
-              <option value="ai">AI</option>
-              <option value="user-assisted">User-Assisted</option>
-            </select>
-          </div>
-        </div>
-
-        <div class="form-actions">
-          <button type="button" class="btn btn-danger" id="deleteTaskBtn" hidden>Delete</button>
-          <div class="form-actions-right">
-            <button type="button" class="btn btn-secondary" id="cancelTaskBtn">Cancel</button>
-            <button type="submit" class="btn btn-primary" id="submitTaskBtn">Create Task</button>
-          </div>
-        </div>
+        <div class="form-group"><label for="taskTitle">Title</label><input type="text" id="taskTitle" required placeholder="Task title" /></div>
+        <div class="form-group"><label for="taskDescription">Description</label><textarea id="taskDescription" rows="3" placeholder="Optional description"></textarea></div>
+        <div class="form-row"><div class="form-group"><label for="taskType">Type</label><select id="taskType"><option value="improvement">Improvement</option><option value="bug">Bug</option><option value="feature">Feature</option></select></div><div class="form-group"><label for="taskPriority">Priority</label><select id="taskPriority"><option value="1">P1 — Critical</option><option value="2">P2 — High</option><option value="3">P3 — Medium</option><option value="4" selected>P4 — Low</option></select></div></div>
+        <div class="form-row"><div class="form-group" id="taskStateGroup"><label for="taskState">State</label><select id="taskState"><option value="todo">To Do</option><option value="in-progress">In Progress</option><option value="developed">Developed</option></select></div><div class="form-group"><label for="taskOrigin">Origin</label><select id="taskOrigin"><option value="user">User</option><option value="ai">AI</option><option value="user-assisted">User-Assisted</option></select></div></div>
+        <div class="form-actions"><button type="button" class="btn btn-danger" id="deleteTaskBtn" hidden>Delete</button><div class="form-actions-right"><button type="button" class="btn btn-secondary" id="cancelTaskBtn">Cancel</button><button type="submit" class="btn btn-primary" id="submitTaskBtn">Create Task</button></div></div>
       </form>
     </div>
   </div>
@@ -356,64 +248,190 @@
     <div class="modal" role="dialog" aria-labelledby="sessionModalTitle">
       <h2 id="sessionModalTitle">New Agent Session</h2>
       <form id="sessionForm">
-        <div class="form-group">
-          <label for="sessionName">Session Name</label>
-          <input type="text" id="sessionName" required placeholder="e.g. Feature Builder" />
-        </div>
-
-        <div class="form-group">
-          <label for="sessionAgent">Agent</label>
-          <select id="sessionAgent" required>
-            <option value="" disabled selected>Loading agents…</option>
-          </select>
-        </div>
-
-        <div class="form-group">
-          <label for="sessionPrompt">Task <small>(optional — what should the agent work on?)</small></label>
-          <textarea id="sessionPrompt" rows="4" placeholder="Leave empty to let the agent use its default prompt, or describe a specific task..."></textarea>
-        </div>
-
-        <div class="form-group">
-          <label class="checkbox-label">
-            <input type="checkbox" id="sessionInteractive" checked />
-            <span>Interactive — allow sending follow-up prompts</span>
+        <div class="form-group"><label for="sessionName">Session Name</label><input type="text" id="sessionName" required placeholder="e.g. Feature Builder" /></div>
+        <div class="form-group"><label for="sessionAgent">Agent</label><select id="sessionAgent" required><option value="" disabled selected>Loading agents…</option></select></div>
+        <div class="form-group"><label for="sessionPrompt">Task <small>(optional)</small></label><textarea id="sessionPrompt" rows="4" placeholder="Leave empty for default prompt, or describe a task..."></textarea></div>
+        <div class="form-group"><label class="checkbox-label"><input type="checkbox" id="sessionInteractive" checked /><span>Interactive — allow follow-up prompts</span></label></div>
+        <div class="form-row"><div class="form-group"><label for="sessionRuns">Runs <small>(0 = endless)</small></label><input type="number" id="sessionRuns" min="0" value="0" /></div><div class="form-group"><label for="sessionInterval">Interval (seconds)</label><input type="number" id="sessionInterval" min="0" value="10" /></div></div>
+        <div class="form-row"><div class="form-group"><label for="sessionCwd">Working Directory</label><input type="text" id="sessionCwd" placeholder="Defaults to project root" /></div><div class="form-group"><label for="sessionModel">Model</label><input type="text" id="sessionModel" placeholder="e.g. claude-sonnet-4" /></div></div>
+        <div class="form-group"><label for="sessionBoards">Assign to Tabs <small>(select one or more)</small></label><select id="sessionBoards" multiple size="3"></select><small class="form-hint">Hold Ctrl/Cmd to select multiple. In loop mode, claims tasks from these tabs.</small></div>
+        <div class="form-group mcp-config-group">
+          <label class="agent-section-toggle" id="sessionMcpToggle" aria-expanded="false">
+            <span class="toggle-icon">▶</span> MCP Servers <small>(override tab defaults)</small>
           </label>
+          <div class="agent-collapsible" id="sessionMcpSection">
+            <small class="form-hint">Toggle MCP servers for this session. Pre-filled from selected tab defaults.</small>
+            <div class="mcp-toggles">
+              <label class="mcp-toggle-item">
+                <input type="checkbox" id="sessionMcpAtlassian" />
+                <span class="mcp-toggle-label">Atlassian</span>
+              </label>
+              <label class="mcp-toggle-item">
+                <input type="checkbox" id="sessionMcpAzureDevops" />
+                <span class="mcp-toggle-label">Azure DevOps</span>
+              </label>
+              <label class="mcp-toggle-item">
+                <input type="checkbox" id="sessionMcpAwsApi" />
+                <span class="mcp-toggle-label">AWS API</span>
+              </label>
+              <label class="mcp-toggle-item">
+                <input type="checkbox" id="sessionMcpAwsDocs" />
+                <span class="mcp-toggle-label">AWS Docs</span>
+              </label>
+            </div>
+          </div>
         </div>
+        <div class="form-actions"><button type="button" class="btn btn-secondary" id="cancelSessionBtn">Cancel</button><button type="submit" class="btn btn-primary" id="submitSessionBtn">Create & Start</button></div>
+      </form>
+    </div>
+  </div>
 
-        <div class="form-row">
-          <div class="form-group">
-            <label for="sessionRuns">Runs <small>(0 = endless)</small></label>
-            <input type="number" id="sessionRuns" min="0" value="0" placeholder="0 = endless" />
-          </div>
-          <div class="form-group">
-            <label for="sessionInterval">Interval (seconds)</label>
-            <input type="number" id="sessionInterval" min="0" value="10" placeholder="Pause between runs" />
-          </div>
-        </div>
-
-        <div class="form-row">
-          <div class="form-group">
-            <label for="sessionCwd">Working Directory (optional)</label>
-            <input type="text" id="sessionCwd" placeholder="Defaults to project root" />
-          </div>
-          <div class="form-group">
-            <label for="sessionModel">Model (optional)</label>
-            <input type="text" id="sessionModel" placeholder="e.g. claude-sonnet-4" />
-          </div>
-        </div>
-
+  <!-- Tab Modal (Create/Edit) -->
+  <div class="modal-backdrop" id="tabModal" hidden>
+    <div class="modal" role="dialog" aria-labelledby="tabModalTitle">
+      <h2 id="tabModalTitle">New Tab</h2>
+      <form id="tabForm">
+        <input type="hidden" id="tabFormId" />
         <div class="form-group">
-          <label for="sessionBoards">Assign to Boards <small>(select one or more)</small></label>
-          <select id="sessionBoards" multiple size="3">
-          </select>
-          <small class="form-hint">Hold Ctrl/Cmd to select multiple boards. In loop mode, the session claims tasks from these boards.</small>
+          <label for="tabFormName">Name <span class="required">*</span></label>
+          <input type="text" id="tabFormName" required placeholder="e.g. sprint-3" />
         </div>
-
+        <div class="form-group">
+          <label for="tabFormRepo">Repository URL</label>
+          <input type="text" id="tabFormRepo" placeholder="e.g. https://github.com/org/repo" />
+          <small class="form-hint">Optional. Links this tab to a specific repository.</small>
+        </div>
+        <div class="form-group mcp-config-group" id="mcpConfigGroup">
+          <label>MCP Servers</label>
+          <small class="form-hint">Enable or disable MCP servers for agents working on this board.</small>
+          <div class="mcp-toggles">
+            <label class="mcp-toggle-item">
+              <input type="checkbox" id="mcpAtlassian" checked />
+              <span class="mcp-toggle-label">Atlassian</span>
+            </label>
+            <label class="mcp-toggle-item">
+              <input type="checkbox" id="mcpAzureDevops" checked />
+              <span class="mcp-toggle-label">Azure DevOps</span>
+            </label>
+            <label class="mcp-toggle-item">
+              <input type="checkbox" id="mcpAwsApi" />
+              <span class="mcp-toggle-label">AWS API</span>
+            </label>
+            <label class="mcp-toggle-item">
+              <input type="checkbox" id="mcpAwsDocs" checked />
+              <span class="mcp-toggle-label">AWS Docs</span>
+            </label>
+          </div>
+        </div>
         <div class="form-actions">
-          <button type="button" class="btn btn-secondary" id="cancelSessionBtn">Cancel</button>
-          <button type="submit" class="btn btn-primary" id="submitSessionBtn">Create & Start</button>
+          <button type="button" class="btn btn-secondary" id="cancelTabBtn">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="submitTabBtn">Create Tab</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- Settings/Profile Modal -->
+  <div class="modal-backdrop" id="settingsModal" hidden>
+    <div class="modal" role="dialog" aria-labelledby="settingsModalTitle">
+      <h2 id="settingsModalTitle">Profile & Settings</h2>
+      <div class="settings-profile-info" id="settingsProfileInfo"></div>
+
+      <form id="changePasswordForm" class="settings-section">
+        <h3 class="settings-section-title">Change Password</h3>
+        <div class="form-group">
+          <label for="settingsCurrentPw">Current Password</label>
+          <input type="password" id="settingsCurrentPw" required placeholder="••••••••" autocomplete="current-password" />
+        </div>
+        <div class="form-group">
+          <label for="settingsNewPw">New Password</label>
+          <input type="password" id="settingsNewPw" required placeholder="At least 8 characters" minlength="8" autocomplete="new-password" />
+        </div>
+        <div class="form-message" id="passwordMsg" hidden></div>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary btn-sm">Update Password</button>
+        </div>
+      </form>
+
+      <form id="changeApiKeyForm" class="settings-section">
+        <h3 class="settings-section-title">Update Kiro API Key</h3>
+        <div class="form-group">
+          <label for="settingsApiKeyPw">Current Password</label>
+          <input type="password" id="settingsApiKeyPw" required placeholder="••••••••" autocomplete="current-password" />
+        </div>
+        <div class="form-group">
+          <label for="settingsNewApiKey">New Kiro API Key</label>
+          <input type="password" id="settingsNewApiKey" required placeholder="Your new Kiro API key" autocomplete="off" />
+        </div>
+        <div class="form-message" id="apiKeyMsg" hidden></div>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary btn-sm">Update API Key</button>
+        </div>
+      </form>
+
+      <div class="settings-section" id="credentialsSection">
+        <h3 class="settings-section-title">Service Credentials</h3>
+        <p class="credentials-description">Credentials are encrypted at rest and only decrypted when spawning a worker. Values are never sent back to the browser.</p>
+
+        <div class="credential-row" data-key="azureDevOpsPat">
+          <label>Azure DevOps PAT</label>
+          <div class="credential-input-row">
+            <input type="password" placeholder="Enter PAT..." autocomplete="off" />
+            <span class="credential-status" title="Not set">○</span>
+            <button type="button" class="btn btn-primary btn-sm">Update</button>
+            <button type="button" class="btn btn-danger btn-sm credential-clear-btn" title="Clear">✕</button>
+          </div>
+          <div class="form-message credential-msg" hidden></div>
+        </div>
+
+        <div class="credential-row" data-key="atlassianUsername">
+          <label>Atlassian Username (email)</label>
+          <div class="credential-input-row">
+            <input type="text" placeholder="you@example.com" autocomplete="off" />
+            <span class="credential-status" title="Not set">○</span>
+            <button type="button" class="btn btn-primary btn-sm">Update</button>
+            <button type="button" class="btn btn-danger btn-sm credential-clear-btn" title="Clear">✕</button>
+          </div>
+          <div class="form-message credential-msg" hidden></div>
+        </div>
+
+        <div class="credential-row" data-key="atlassianApiToken">
+          <label>Atlassian API Token</label>
+          <div class="credential-input-row">
+            <input type="password" placeholder="Enter token..." autocomplete="off" />
+            <span class="credential-status" title="Not set">○</span>
+            <button type="button" class="btn btn-primary btn-sm">Update</button>
+            <button type="button" class="btn btn-danger btn-sm credential-clear-btn" title="Clear">✕</button>
+          </div>
+          <div class="form-message credential-msg" hidden></div>
+        </div>
+
+        <div class="credential-row" data-key="awsAccessKeyId">
+          <label>AWS Access Key ID</label>
+          <div class="credential-input-row">
+            <input type="password" placeholder="AKIA..." autocomplete="off" />
+            <span class="credential-status" title="Not set">○</span>
+            <button type="button" class="btn btn-primary btn-sm">Update</button>
+            <button type="button" class="btn btn-danger btn-sm credential-clear-btn" title="Clear">✕</button>
+          </div>
+          <div class="form-message credential-msg" hidden></div>
+        </div>
+
+        <div class="credential-row" data-key="awsSecretAccessKey">
+          <label>AWS Secret Access Key</label>
+          <div class="credential-input-row">
+            <input type="password" placeholder="Enter secret key..." autocomplete="off" />
+            <span class="credential-status" title="Not set">○</span>
+            <button type="button" class="btn btn-primary btn-sm">Update</button>
+            <button type="button" class="btn btn-danger btn-sm credential-clear-btn" title="Clear">✕</button>
+          </div>
+          <div class="form-message credential-msg" hidden></div>
+        </div>
+      </div>
+
+      <div class="form-actions" style="margin-top: 1.5rem; border-top: 1px solid var(--border-color); padding-top: 1rem;">
+        <button type="button" class="btn btn-secondary btn-sm" id="closeSettingsBtn">Close</button>
+      </div>
     </div>
   </div>
 
