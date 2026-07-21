@@ -32,6 +32,8 @@ export interface AgentError {
   taskCreated: boolean;
   /** The ID of the bug task created from this error (if any) */
   createdTaskId?: number;
+  /** Tab IDs this error is associated with (inherited from session at time of error) */
+  tabIds?: number[];
 }
 
 export interface RecordErrorInput {
@@ -42,6 +44,8 @@ export interface RecordErrorInput {
   context: string;
   taskId?: number;
   taskTitle?: string;
+  /** Tab IDs this error is associated with (inherited from session) */
+  tabIds?: number[];
 }
 
 // ---------------------------------------------------------------------------
@@ -70,6 +74,7 @@ export function recordError(input: RecordErrorInput): AgentError {
     taskId: input.taskId,
     taskTitle: input.taskTitle,
     taskCreated: false,
+    tabIds: input.tabIds,
   };
 
   errors.unshift(error); // newest first
