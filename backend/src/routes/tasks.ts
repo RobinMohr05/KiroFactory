@@ -5,23 +5,42 @@ import {
   createTask,
   updateTask,
   deleteTask,
-  assignTaskToBoards,
-  removeTaskFromBoard,
+  assignTaskToTabs,
+  removeTaskFromTab,
+  isTaskOwnedByUser,
 } from "../db/tasks.js";
+import { getAllTabs } from "../db/tabs.js";
 import { broadcast } from "../websocket-handler.js";
 import { markTaskBroadcast } from "../broadcast-tracker.js";
+import { requireAuth, getUserId } from "../middleware/auth.js";
 import type { CreateTaskInput, UpdateTaskInput } from "../types.js";
 
 const router = Router();
 
-// GET /api/tasks — list tasks with optional filters
+// All task routes require authentication
+router.use(requireAuth);
+
+// GET /api/tasks — list tasks with optional filters (scoped to user's tabs)
 router.get("/", async (req: Request, res: Response) => {
   try {
-    const { state, priority, boardId } = req.query;
+    const userId = getUserId(req);
+    const { state, priority, tabId } = req.query;
+
+    // If filtering by tabId, verify the tab belongs to the user
+    if (tabId) {
+      const userTabs = await getAllTabs(userId);
+      const tabIdNum = Number(tabId);
+      if (!userTabs.some((t) => t.id === tabIdNum)) {
+        res.json([]); // Tab doesn't belong to user — return empty
+        return;
+      }
+    }
+
     const tasks = await getAllTasks({
       state: state as string | undefined,
       priority: priority ? Number(priority) : undefined,
-      boardId: boardId ? Number(boardId) : undefined,
+      tabId: tabId ? Number(tabId) : undefined,
+      userId,
     });
     res.json(tasks);
   } catch (err) {
@@ -30,14 +49,33 @@ router.get("/", async (req: Request, res: Response) => {
   }
 });
 
-// POST /api/tasks — create a new task
+// POST /api/tasks — create a new task (verify tabIds belong to user)
 router.post("/", async (req: Request, res: Response) => {
   try {
+    const userId = getUserId(req);
     const input: CreateTaskInput = req.body;
     if (!input.title || !input.priority || !input.type) {
       res.status(400).json({ error: "title, priority, and type are required" });
       return;
     }
+
+    // Verify all provided tabIds belong to the authenticated user
+    if (input.tabIds && input.tabIds.length > 0) {
+      const userTabs = await getAllTabs(userId);
+      const userTabIds = new Set(userTabs.map((t) => t.id));
+      const unauthorized = input.tabIds.filter((id) => !userTabIds.has(id));
+      if (unauthorized.length > 0) {
+        res.status(403).json({ error: "Cannot assign task to tabs you do not own" });
+        return;
+      }
+    } else {
+      // No tabIds provided — assign to the user's first tab so the task is owned
+      const userTabs = await getAllTabs(userId);
+      if (userTabs.length > 0) {
+        input.tabIds = [userTabs[0].id];
+      }
+    }
+
     const task = await createTask(input);
     broadcast({ type: "task-created", task });
     markTaskBroadcast(task.id);
@@ -48,14 +86,23 @@ router.post("/", async (req: Request, res: Response) => {
   }
 });
 
-// GET /api/tasks/:id — get a single task with boards
+// GET /api/tasks/:id — get a single task with tabs (verify ownership)
 router.get("/:id", async (req: Request, res: Response) => {
   try {
+    const userId = getUserId(req);
     const id = Number(req.params.id);
     if (isNaN(id)) {
       res.status(400).json({ error: "Invalid task id" });
       return;
     }
+
+    // Verify task belongs to a tab owned by the user
+    const owned = await isTaskOwnedByUser(id, userId);
+    if (!owned) {
+      res.status(404).json({ error: "Task not found" });
+      return;
+    }
+
     const task = await getTaskById(id);
     if (!task) {
       res.status(404).json({ error: "Task not found" });
@@ -68,14 +115,23 @@ router.get("/:id", async (req: Request, res: Response) => {
   }
 });
 
-// PUT /api/tasks/:id — update a task
+// PUT /api/tasks/:id — update a task (verify ownership)
 router.put("/:id", async (req: Request, res: Response) => {
   try {
+    const userId = getUserId(req);
     const id = Number(req.params.id);
     if (isNaN(id)) {
       res.status(400).json({ error: "Invalid task id" });
       return;
     }
+
+    // Verify task belongs to a tab owned by the user
+    const owned = await isTaskOwnedByUser(id, userId);
+    if (!owned) {
+      res.status(404).json({ error: "Task not found" });
+      return;
+    }
+
     const input: UpdateTaskInput = req.body;
     const task = await updateTask(id, input);
     if (!task) {
@@ -91,14 +147,23 @@ router.put("/:id", async (req: Request, res: Response) => {
   }
 });
 
-// DELETE /api/tasks/:id — delete a task
+// DELETE /api/tasks/:id — delete a task (verify ownership)
 router.delete("/:id", async (req: Request, res: Response) => {
   try {
+    const userId = getUserId(req);
     const id = Number(req.params.id);
     if (isNaN(id)) {
       res.status(400).json({ error: "Invalid task id" });
       return;
     }
+
+    // Verify task belongs to a tab owned by the user
+    const owned = await isTaskOwnedByUser(id, userId);
+    if (!owned) {
+      res.status(404).json({ error: "Task not found" });
+      return;
+    }
+
     const deleted = await deleteTask(id);
     if (!deleted) {
       res.status(404).json({ error: "Task not found" });
@@ -112,20 +177,38 @@ router.delete("/:id", async (req: Request, res: Response) => {
   }
 });
 
-// POST /api/tasks/:id/boards — assign task to boards
-router.post("/:id/boards", async (req: Request, res: Response) => {
+// POST /api/tasks/:id/tabs — assign task to tabs (verify ownership of both task and target tabs)
+router.post("/:id/tabs", async (req: Request, res: Response) => {
   try {
+    const userId = getUserId(req);
     const id = Number(req.params.id);
     if (isNaN(id)) {
       res.status(400).json({ error: "Invalid task id" });
       return;
     }
-    const { boardIds } = req.body as { boardIds: number[] };
-    if (!Array.isArray(boardIds) || boardIds.length === 0) {
-      res.status(400).json({ error: "boardIds must be a non-empty array" });
+    const { tabIds } = req.body as { tabIds: number[] };
+    if (!Array.isArray(tabIds) || tabIds.length === 0) {
+      res.status(400).json({ error: "tabIds must be a non-empty array" });
       return;
     }
-    const task = await assignTaskToBoards(id, boardIds);
+
+    // Verify task belongs to a tab owned by the user
+    const owned = await isTaskOwnedByUser(id, userId);
+    if (!owned) {
+      res.status(404).json({ error: "Task not found" });
+      return;
+    }
+
+    // Verify all target tabs belong to the user
+    const userTabs = await getAllTabs(userId);
+    const userTabIds = new Set(userTabs.map((t) => t.id));
+    const unauthorized = tabIds.filter((tid) => !userTabIds.has(tid));
+    if (unauthorized.length > 0) {
+      res.status(403).json({ error: "Cannot assign task to tabs you do not own" });
+      return;
+    }
+
+    const task = await assignTaskToTabs(id, tabIds);
     if (!task) {
       res.status(404).json({ error: "Task not found" });
       return;
@@ -134,31 +217,47 @@ router.post("/:id/boards", async (req: Request, res: Response) => {
     markTaskBroadcast(task.id);
     res.json(task);
   } catch (err) {
-    console.error("POST /api/tasks/:id/boards error:", err);
-    res.status(500).json({ error: "Failed to assign boards" });
+    console.error("POST /api/tasks/:id/tabs error:", err);
+    res.status(500).json({ error: "Failed to assign tabs" });
   }
 });
 
-// DELETE /api/tasks/:id/boards/:boardId — remove task from board
-router.delete("/:id/boards/:boardId", async (req: Request, res: Response) => {
+// DELETE /api/tasks/:id/tabs/:tabId — remove task from tab (verify ownership)
+router.delete("/:id/tabs/:tabId", async (req: Request, res: Response) => {
   try {
+    const userId = getUserId(req);
     const id = Number(req.params.id);
-    const boardId = Number(req.params.boardId);
-    if (isNaN(id) || isNaN(boardId)) {
-      res.status(400).json({ error: "Invalid task or board id" });
+    const tabId = Number(req.params.tabId);
+    if (isNaN(id) || isNaN(tabId)) {
+      res.status(400).json({ error: "Invalid task or tab id" });
       return;
     }
-    const task = await removeTaskFromBoard(id, boardId);
+
+    // Verify task belongs to a tab owned by the user
+    const owned = await isTaskOwnedByUser(id, userId);
+    if (!owned) {
+      res.status(404).json({ error: "Task not found" });
+      return;
+    }
+
+    // Verify the target tab belongs to the user
+    const userTabs = await getAllTabs(userId);
+    if (!userTabs.some((t) => t.id === tabId)) {
+      res.status(403).json({ error: "Cannot modify tabs you do not own" });
+      return;
+    }
+
+    const task = await removeTaskFromTab(id, tabId);
     if (!task) {
-      res.status(404).json({ error: "Task or board assignment not found" });
+      res.status(404).json({ error: "Task or tab assignment not found" });
       return;
     }
     broadcast({ type: "task-updated", task });
     markTaskBroadcast(task.id);
     res.json(task);
   } catch (err) {
-    console.error("DELETE /api/tasks/:id/boards/:boardId error:", err);
-    res.status(500).json({ error: "Failed to remove from board" });
+    console.error("DELETE /api/tasks/:id/tabs/:tabId error:", err);
+    res.status(500).json({ error: "Failed to remove from tab" });
   }
 });
 

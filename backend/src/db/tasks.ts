@@ -1,5 +1,6 @@
 import { getPool, sql } from "./connection.js";
 import type { Task, CreateTaskInput, UpdateTaskInput } from "../types.js";
+import { DEFAULT_MCP_CONFIG } from "../types.js";
 
 /**
  * Map a raw DB row to a Task object.
@@ -11,7 +12,7 @@ function mapRowToTask(row: Record<string, unknown>): Task {
     title: row.title as string,
     priority: row.priority as 1 | 2 | 3 | 4,
     type: row.type as Task["type"],
-    state: row.state as Task["state"],
+    state: row.state as string,
     description: row.description as string,
     files: JSON.parse((row.files as string) || "[]"),
     origin: row.origin as Task["origin"],
@@ -21,34 +22,39 @@ function mapRowToTask(row: Record<string, unknown>): Task {
 }
 
 /**
- * Attach board memberships to a list of tasks (batch lookup).
+ * Attach tab memberships to a list of tasks (batch lookup).
  */
-async function attachBoards(tasks: Task[]): Promise<Task[]> {
+async function attachTabs(tasks: Task[]): Promise<Task[]> {
   if (tasks.length === 0) return tasks;
 
   const pool = await getPool();
   const taskIds = tasks.map((t) => t.id);
 
   const result = await pool.request().query(`
-    SELECT tb.task_id, b.id, b.name, b.created_at
-    FROM task_boards tb
-    INNER JOIN boards b ON b.id = tb.board_id
-    WHERE tb.task_id IN (${taskIds.join(",")})
+    SELECT tt.task_id, t.id, t.name, t.repository_url, t.sort_order, t.user_id, t.created_at
+    FROM task_tabs tt
+    INNER JOIN tabs t ON t.id = tt.tab_id
+    WHERE tt.task_id IN (${taskIds.join(",")})
   `);
 
-  const boardsByTask = new Map<number, Task["boards"]>();
+  const tabsByTask = new Map<number, Task["tabs"]>();
   for (const row of result.recordset) {
     const taskId = row.task_id as number;
-    if (!boardsByTask.has(taskId)) boardsByTask.set(taskId, []);
-    boardsByTask.get(taskId)!.push({
+    if (!tabsByTask.has(taskId)) tabsByTask.set(taskId, []);
+    tabsByTask.get(taskId)!.push({
       id: row.id as number,
       name: row.name as string,
+      repositoryUrl: (row.repository_url as string) || null,
+      mcpConfig: { ...DEFAULT_MCP_CONFIG },
+      columns: [],
+      sortOrder: (row.sort_order as number) ?? 0,
+      userId: row.user_id as number,
       createdAt: (row.created_at as Date).toISOString(),
     });
   }
 
   for (const task of tasks) {
-    task.boards = boardsByTask.get(task.id) ?? [];
+    task.tabs = tabsByTask.get(task.id) ?? [];
   }
 
   return tasks;
@@ -58,8 +64,25 @@ async function attachBoards(tasks: Task[]): Promise<Task[]> {
 // Public API
 // ---------------------------------------------------------------------------
 
+export async function isTaskOwnedByUser(
+  taskId: number,
+  userId: number
+): Promise<boolean> {
+  const pool = await getPool();
+  const result = await pool
+    .request()
+    .input("taskId", sql.Int, taskId)
+    .input("userId", sql.Int, userId)
+    .query(`
+      SELECT 1 FROM task_tabs tt
+      INNER JOIN tabs t ON t.id = tt.tab_id
+      WHERE tt.task_id = @taskId AND t.user_id = @userId
+    `);
+  return result.recordset.length > 0;
+}
+
 export async function getAllTasks(
-  filters?: { state?: string; priority?: number; boardId?: number }
+  filters?: { state?: string; priority?: number; tabId?: number; userId?: number }
 ): Promise<Task[]> {
   const pool = await getPool();
   const request = pool.request();
@@ -67,17 +90,23 @@ export async function getAllTasks(
   const conditions: string[] = [];
 
   if (filters?.state) {
-    request.input("state", sql.VarChar(20), filters.state);
+    request.input("state", sql.VarChar(50), filters.state);
     conditions.push("t.state = @state");
   }
   if (filters?.priority) {
     request.input("priority", sql.TinyInt, filters.priority);
     conditions.push("t.priority = @priority");
   }
-  if (filters?.boardId) {
-    request.input("boardId", sql.Int, filters.boardId);
+  if (filters?.tabId) {
+    request.input("tabId", sql.Int, filters.tabId);
     conditions.push(
-      "EXISTS (SELECT 1 FROM task_boards tb WHERE tb.task_id = t.id AND tb.board_id = @boardId)"
+      "EXISTS (SELECT 1 FROM task_tabs tt WHERE tt.task_id = t.id AND tt.tab_id = @tabId)"
+    );
+  }
+  if (filters?.userId) {
+    request.input("userId", sql.Int, filters.userId);
+    conditions.push(
+      "EXISTS (SELECT 1 FROM task_tabs tt INNER JOIN tabs tab ON tab.id = tt.tab_id WHERE tt.task_id = t.id AND tab.user_id = @userId)"
     );
   }
 
@@ -88,7 +117,7 @@ export async function getAllTasks(
   `);
 
   const tasks = result.recordset.map(mapRowToTask);
-  return attachBoards(tasks);
+  return attachTabs(tasks);
 }
 
 export async function getTaskById(id: number): Promise<Task | null> {
@@ -101,7 +130,7 @@ export async function getTaskById(id: number): Promise<Task | null> {
   if (result.recordset.length === 0) return null;
 
   const task = mapRowToTask(result.recordset[0]);
-  await attachBoards([task]);
+  await attachTabs([task]);
   return task;
 }
 
@@ -127,11 +156,11 @@ export async function createTask(input: CreateTaskInput): Promise<Task> {
 
   const task = mapRowToTask(result.recordset[0]);
 
-  if (input.boardIds && input.boardIds.length > 0) {
-    await assignTaskToBoards(task.id, input.boardIds);
+  if (input.tabIds && input.tabIds.length > 0) {
+    await assignTaskToTabs(task.id, input.tabIds);
   }
 
-  await attachBoards([task]);
+  await attachTabs([task]);
   return task;
 }
 
@@ -157,7 +186,7 @@ export async function updateTask(
     setClauses.push("type = @type");
   }
   if (input.state !== undefined) {
-    request.input("state", sql.VarChar(20), input.state);
+    request.input("state", sql.VarChar(50), input.state);
     setClauses.push("state = @state");
   }
   if (input.description !== undefined) {
@@ -179,7 +208,7 @@ export async function updateTask(
   if (result.recordset.length === 0) return null;
 
   const task = mapRowToTask(result.recordset[0]);
-  await attachBoards([task]);
+  await attachTabs([task]);
   return task;
 }
 
@@ -193,9 +222,9 @@ export async function deleteTask(id: number): Promise<boolean> {
   return (result.rowsAffected[0] ?? 0) > 0;
 }
 
-export async function assignTaskToBoards(
+export async function assignTaskToTabs(
   taskId: number,
-  boardIds: number[]
+  tabIds: number[]
 ): Promise<Task | null> {
   const pool = await getPool();
   const transaction = new sql.Transaction(pool);
@@ -204,13 +233,13 @@ export async function assignTaskToBoards(
   try {
     await new sql.Request(transaction)
       .input("taskId", sql.Int, taskId)
-      .query("DELETE FROM task_boards WHERE task_id = @taskId");
+      .query("DELETE FROM task_tabs WHERE task_id = @taskId");
 
-    for (const boardId of boardIds) {
+    for (const tabId of tabIds) {
       await new sql.Request(transaction)
         .input("taskId", sql.Int, taskId)
-        .input("boardId", sql.Int, boardId)
-        .query("INSERT INTO task_boards (task_id, board_id) VALUES (@taskId, @boardId)");
+        .input("tabId", sql.Int, tabId)
+        .query("INSERT INTO task_tabs (task_id, tab_id) VALUES (@taskId, @tabId)");
     }
 
     await transaction.commit();
@@ -222,16 +251,16 @@ export async function assignTaskToBoards(
   return getTaskById(taskId);
 }
 
-export async function removeTaskFromBoard(
+export async function removeTaskFromTab(
   taskId: number,
-  boardId: number
+  tabId: number
 ): Promise<Task | null> {
   const pool = await getPool();
   const result = await pool
     .request()
     .input("taskId", sql.Int, taskId)
-    .input("boardId", sql.Int, boardId)
-    .query("DELETE FROM task_boards WHERE task_id = @taskId AND board_id = @boardId");
+    .input("tabId", sql.Int, tabId)
+    .query("DELETE FROM task_tabs WHERE task_id = @taskId AND tab_id = @tabId");
 
   if ((result.rowsAffected[0] ?? 0) === 0) return null;
   return getTaskById(taskId);
@@ -245,5 +274,5 @@ export async function getChangedTasksSince(since: string): Promise<Task[]> {
     .query("SELECT * FROM tasks WHERE updated_at > @since ORDER BY updated_at ASC");
 
   const tasks = result.recordset.map(mapRowToTask);
-  return attachBoards(tasks);
+  return attachTabs(tasks);
 }
