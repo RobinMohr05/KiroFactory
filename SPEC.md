@@ -837,6 +837,7 @@ Key protocol details:
 | 4 | kiro-cli | Available and authenticated on the machine |
 | 5 | Task persistence | **SQL Server** (not file-based like TecFactory) |
 | 6 | Real-time sync | **Optimistic UI + WebSocket broadcast + DB change polling** (fully specified in 3.6) |
+| 7 | Auth identity for Azure DevOps | **Service account** — single PAT, all actions as bot user. Per-user PAT injection planned for later. See [ADR-001](./docs/adr/001-service-account-identity-for-azure-devops.md) |
 
 ### Still Open
 
