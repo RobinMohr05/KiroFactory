@@ -1,0 +1,12 @@
+{
+  "name": "kirofactory-mcp-proxy",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Per-session MCP proxy sidecar — spawns and multiplexes MCP servers with session-isolated credentials",
+  "main": "proxy.js",
+  "scripts": {
+    "start": "node proxy.js"
+  },
+  "dependencies": {}
+}
