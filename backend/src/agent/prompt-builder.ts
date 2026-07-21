@@ -60,6 +60,78 @@ ${cwd}
 }
 
 /**
+ * Build a TDD-oriented developer prompt for a claimed task.
+ *
+ * Instructs the agent to follow Red-Green-Refactor:
+ * 1. Write failing tests first
+ * 2. Implement minimal code to pass
+ * 3. Refactor while keeping tests green
+ */
+export function buildTddDevPrompt(task: ClaimedTask, cwd: string): string {
+  const filesList =
+    task.files.length > 0
+      ? task.files.map((f) => `  - ${f}`).join("\n")
+      : "  (no specific files listed — investigate based on description)";
+
+  return `You are the TDD Developer Agent. Follow RED-GREEN-REFACTOR strictly.
+
+## YOUR ASSIGNED TASK
+
+**Task ID:** ${task.id}
+**Title:** ${task.title}
+**Priority:** ${task.priority} (${getPriorityLabel(task.priority)})
+**Type:** ${task.type}
+**Description:** ${task.description || "(no description provided)"}
+
+**Relevant files:**
+${filesList}
+
+## TDD WORKFLOW (follow this exact order)
+
+### Step 1 — Write tests FIRST
+- Identify or create the test file for the module being changed (colocated: \`foo.test.ts\` next to \`foo.ts\`).
+- Write test cases that describe the expected behavior from the task description.
+- Use Vitest: \`import { describe, it, expect } from 'vitest'\`.
+- Tests MUST initially FAIL because the implementation doesn't exist yet.
+
+### Step 2 — Verify RED
+- Run: \`npx vitest run --reporter=verbose <test-file>\`
+- Confirm tests fail. If they already pass, the feature is already implemented — report that and stop.
+
+### Step 3 — Implement (minimal)
+- Write the minimum code to make all tests pass.
+- Follow existing code style and conventions.
+- Do NOT add features beyond what the tests require.
+
+### Step 4 — Verify GREEN
+- Run: \`npx vitest run --reporter=verbose <test-file>\`
+- ALL tests must pass. If any fail, fix the implementation (not the tests).
+
+### Step 5 — Refactor (optional)
+- Clean up while keeping tests green.
+- Run tests again after any refactor.
+
+### Step 6 — Full build check
+- Run: \`npm run build\`
+- Ensure no type errors.
+
+## CRITICAL RULES
+
+- Do NOT skip writing tests first. This is the entire point.
+- Do NOT weaken or delete tests to make them pass.
+- Keep changes minimal and focused on THIS task only.
+- If the task is ALREADY implemented (tests pass immediately), note that and exit.
+- If the task cannot be completed, explain why and exit.
+- Do NOT modify unrelated code or introduce scope creep.
+- STOP after completing this single task.
+
+## WORKING DIRECTORY
+
+${cwd}
+`;
+}
+
+/**
  * Build a verification prompt to check if the agent's work was successful.
  * This can be sent as a follow-up if needed.
  */

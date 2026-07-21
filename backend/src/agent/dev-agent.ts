@@ -23,7 +23,7 @@ import { execFileSync, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { KiroRunner } from "./kiro-runner.js";
 import { claimTask, markTaskDeveloped, resetTaskToTodo, getAvailableTaskCount } from "./task-claimer.js";
-import { buildDevPrompt } from "./prompt-builder.js";
+import { buildDevPrompt, buildTddDevPrompt } from "./prompt-builder.js";
 import { closePool } from "../db/connection.js";
 import type { ClaimedTask } from "./task-claimer.js";
 
@@ -48,6 +48,8 @@ interface AgentConfig {
   taskId?: number;
   /** Optional model override */
   model?: string;
+  /** Use TDD prompt (Red-Green-Refactor workflow) */
+  tdd: boolean;
 }
 
 function parseArgs(): AgentConfig {
@@ -58,6 +60,7 @@ function parseArgs(): AgentConfig {
     timeoutSeconds: 900, // 15 minutes default
     loop: false,
     intervalSeconds: 10,
+    tdd: false,
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -82,6 +85,9 @@ function parseArgs(): AgentConfig {
         break;
       case "--model":
         config.model = args[++i];
+        break;
+      case "--tdd":
+        config.tdd = true;
         break;
     }
   }
@@ -262,7 +268,9 @@ async function executeTask(
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
   let timedOut = false;
 
-  const prompt = buildDevPrompt(task, config.cwd);
+  const prompt = config.tdd
+    ? buildTddDevPrompt(task, config.cwd)
+    : buildDevPrompt(task, config.cwd);
 
   try {
     log(`Starting kiro-cli acp --agent ${config.agent}...`, "gray");
@@ -383,7 +391,7 @@ async function main(): Promise<void> {
   log("  KiroFactory — Developer Agent", "cyan");
   log(`  Agent: ${config.agent}`, "cyan");
   log(`  CWD: ${config.cwd}`, "cyan");
-  log(`  Timeout: ${config.timeoutSeconds}s | Loop: ${config.loop}`, "cyan");
+  log(`  Timeout: ${config.timeoutSeconds}s | Loop: ${config.loop} | TDD: ${config.tdd}`, "cyan");
   if (config.taskId) {
     log(`  Target task: #${config.taskId}`, "cyan");
   }
