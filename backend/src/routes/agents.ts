@@ -1,46 +1,25 @@
 import { Router, type Request, type Response } from "express";
-import fs from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+import {
+  getAllAgents,
+  getAgentByName,
+  createAgent,
+  updateAgent,
+  deleteAgent,
+} from "../db/agents.js";
+import { broadcast } from "../websocket-handler.js";
+import type { CreateAgentInput, UpdateAgentInput } from "../types.js";
+import { requireAuth, getUserId } from "../middleware/auth.js";
 
 const router = Router();
 
-// Resolve the .kiro/agents directory relative to project root
-function getAgentsDir(): string {
-  // backend/src/routes/agents.ts → project root is 3 levels up
-  return path.resolve(__dirname, "../../../.kiro/agents");
-}
+// All agent routes require authentication
+router.use(requireAuth);
 
-function ensureAgentsDir(): void {
-  const dir = getAgentsDir();
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-}
-
-function agentFilePath(name: string): string {
-  // Sanitize: only allow alphanumeric, dashes, underscores
-  const safeName = name.replace(/[^a-zA-Z0-9_-]/g, "");
-  return path.join(getAgentsDir(), `${safeName}.json`);
-}
-
-// GET /api/agents — list all agents
-router.get("/", (_req: Request, res: Response) => {
+// GET /api/agents — list all agents (filtered by authenticated user)
+router.get("/", async (req: Request, res: Response) => {
   try {
-    ensureAgentsDir();
-    const dir = getAgentsDir();
-    const files = fs.readdirSync(dir).filter((f) => f.endsWith(".json"));
-    const agents = files.map((file) => {
-      try {
-        const content = fs.readFileSync(path.join(dir, file), "utf-8");
-        const parsed = JSON.parse(content);
-        return { fileName: file, ...parsed };
-      } catch {
-        return { fileName: file, name: file.replace(".json", ""), error: "Failed to parse" };
-      }
-    });
+    const userId = getUserId(req);
+    const agents = await getAllAgents(userId);
     res.json(agents);
   } catch (err) {
     console.error("GET /api/agents error:", err);
@@ -48,112 +27,133 @@ router.get("/", (_req: Request, res: Response) => {
   }
 });
 
-// GET /api/agents/:name — get a single agent by file name (without .json)
-router.get("/:name", (req: Request, res: Response) => {
+// GET /api/agents/:name — get a single agent by name (verify ownership)
+router.get("/:name", async (req: Request, res: Response) => {
   try {
-    const filePath = agentFilePath(req.params.name as string);
-    if (!fs.existsSync(filePath)) {
+    const userId = getUserId(req);
+    const name = req.params.name as string;
+    const agent = await getAgentByName(name);
+    if (!agent || agent.userId !== userId) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    const content = fs.readFileSync(filePath, "utf-8");
-    const parsed = JSON.parse(content);
-    res.json({ fileName: `${req.params.name}.json`, ...parsed });
+    res.json(agent);
   } catch (err) {
     console.error("GET /api/agents/:name error:", err);
     res.status(500).json({ error: "Failed to read agent" });
   }
 });
 
-// POST /api/agents — create a new agent
-router.post("/", (req: Request, res: Response) => {
+// POST /api/agents — create a new agent (owned by authenticated user)
+router.post("/", async (req: Request, res: Response) => {
   try {
-    ensureAgentsDir();
-    const body = req.body;
+    const userId = getUserId(req);
+    const input: CreateAgentInput = req.body;
 
-    if (!body.name) {
+    if (!input.name || typeof input.name !== "string" || input.name.trim().length === 0) {
       res.status(400).json({ error: "Agent name is required" });
       return;
     }
 
-    const filePath = agentFilePath(body.name);
-    if (fs.existsSync(filePath)) {
+    // Check if agent already exists
+    const existing = await getAgentByName(input.name.trim());
+    if (existing) {
       res.status(409).json({ error: "An agent with this name already exists" });
       return;
     }
 
-    // Write the agent JSON file
-    const agentData = {
-      name: body.name,
-      description: body.description || "",
-      prompt: body.prompt || "",
-      tools: body.tools || [],
-      allowedTools: body.allowedTools || [],
-      toolsSettings: body.toolsSettings || {},
-      resources: body.resources || [],
-    };
-
-    fs.writeFileSync(filePath, JSON.stringify(agentData, null, 2), "utf-8");
-    res.status(201).json({ fileName: `${body.name}.json`, ...agentData });
+    const agent = await createAgent({ ...input, name: input.name.trim(), userId });
+    broadcast({ type: "agent-created", agent });
+    res.status(201).json(agent);
   } catch (err) {
     console.error("POST /api/agents error:", err);
     res.status(500).json({ error: "Failed to create agent" });
   }
 });
 
-// PUT /api/agents/:name — update an existing agent
-router.put("/:name", (req: Request, res: Response) => {
+// PUT /api/agents/:name — update an existing agent (verify ownership)
+router.put("/:name", async (req: Request, res: Response) => {
   try {
-    const filePath = agentFilePath(req.params.name as string);
-    if (!fs.existsSync(filePath)) {
+    const userId = getUserId(req);
+    const currentName = req.params.name as string;
+    const input: UpdateAgentInput = req.body;
+
+    // Verify ownership before allowing update
+    const existing = await getAgentByName(currentName);
+    if (!existing || existing.userId !== userId) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
 
-    const body = req.body;
-    const agentData = {
-      name: body.name || req.params.name,
-      description: body.description || "",
-      prompt: body.prompt || "",
-      tools: body.tools || [],
-      allowedTools: body.allowedTools || [],
-      toolsSettings: body.toolsSettings || {},
-      resources: body.resources || [],
-    };
-
-    // If name changed, we need to rename the file
-    if (body.name && body.name !== req.params.name) {
-      const newFilePath = agentFilePath(body.name);
-      if (fs.existsSync(newFilePath)) {
-        res.status(409).json({ error: "An agent with this new name already exists" });
-        return;
-      }
-      fs.unlinkSync(filePath);
-      fs.writeFileSync(newFilePath, JSON.stringify(agentData, null, 2), "utf-8");
-      res.json({ fileName: `${body.name}.json`, ...agentData });
-    } else {
-      fs.writeFileSync(filePath, JSON.stringify(agentData, null, 2), "utf-8");
-      res.json({ fileName: `${req.params.name}.json`, ...agentData });
+    const agent = await updateAgent(currentName, input);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
     }
-  } catch (err) {
+
+    broadcast({ type: "agent-updated", agent });
+    res.json(agent);
+  } catch (err: any) {
+    if (err.message === "An agent with this name already exists") {
+      res.status(409).json({ error: err.message });
+      return;
+    }
     console.error("PUT /api/agents/:name error:", err);
     res.status(500).json({ error: "Failed to update agent" });
   }
 });
 
-// DELETE /api/agents/:name — delete an agent
-router.delete("/:name", (req: Request, res: Response) => {
+// DELETE /api/agents/:name — delete an agent (verify ownership)
+router.delete("/:name", async (req: Request, res: Response) => {
   try {
-    const filePath = agentFilePath(req.params.name as string);
-    if (!fs.existsSync(filePath)) {
+    const userId = getUserId(req);
+    const name = req.params.name as string;
+
+    // Verify ownership before allowing delete
+    const existing = await getAgentByName(name);
+    if (!existing || existing.userId !== userId) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    fs.unlinkSync(filePath);
+
+    const deleted = await deleteAgent(name);
+    if (!deleted) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    broadcast({ type: "agent-deleted", agentName: name });
     res.json({ success: true });
   } catch (err) {
     console.error("DELETE /api/agents/:name error:", err);
     res.status(500).json({ error: "Failed to delete agent" });
+  }
+});
+
+// POST /api/agents/:name/tabs — assign agent to tabs (verify ownership)
+router.post("/:name/tabs", async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const name = req.params.name as string;
+    const { tabIds } = req.body as { tabIds: number[] };
+
+    if (!Array.isArray(tabIds)) {
+      res.status(400).json({ error: "tabIds array is required" });
+      return;
+    }
+
+    // Verify ownership before allowing tab assignment
+    const agent = await getAgentByName(name);
+    if (!agent || agent.userId !== userId) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+
+    const updated = await updateAgent(name, { tabIds });
+    broadcast({ type: "agent-updated", agent: updated! });
+    res.json(updated);
+  } catch (err) {
+    console.error("POST /api/agents/:name/tabs error:", err);
+    res.status(500).json({ error: "Failed to assign agent to tabs" });
   }
 });
 
