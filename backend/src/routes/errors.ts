@@ -1,11 +1,16 @@
 import { Router, type Request, type Response } from "express";
 import { getAllErrors, getErrorById, markErrorTaskCreated, clearErrors } from "../error-store.js";
 import { createTask } from "../db/tasks.js";
+import { getAllTabs } from "../db/tabs.js";
 import { broadcast } from "../websocket-handler.js";
 import { markTaskBroadcast } from "../broadcast-tracker.js";
 import { isDbAvailable } from "../db/connection.js";
+import { requireAuth, getUserId } from "../middleware/auth.js";
 
 const router = Router();
+
+// All error routes require authentication
+router.use(requireAuth);
 
 // GET /api/errors — list all agent errors (newest first)
 router.get("/", (_req: Request, res: Response) => {
@@ -21,6 +26,7 @@ router.get("/", (_req: Request, res: Response) => {
 // POST /api/errors/:id/create-task — create a bug task from an error
 router.post("/:id/create-task", async (req: Request, res: Response) => {
   try {
+    const userId = getUserId(req);
     const errorId = req.params.id as string;
     const agentError = getErrorById(errorId);
 
@@ -62,8 +68,24 @@ router.post("/:id/create-task", async (req: Request, res: Response) => {
       .filter(Boolean)
       .join("\n");
 
-    // Allow caller to override boardIds
-    const { boardIds } = req.body as { boardIds?: number[] };
+    // Allow caller to override tabIds, but verify ownership
+    let { tabIds } = req.body as { tabIds?: number[] };
+
+    if (tabIds && tabIds.length > 0) {
+      const userTabs = await getAllTabs(userId);
+      const userTabIds = new Set(userTabs.map((t) => t.id));
+      const unauthorized = tabIds.filter((id) => !userTabIds.has(id));
+      if (unauthorized.length > 0) {
+        res.status(403).json({ error: "Cannot assign task to tabs you do not own" });
+        return;
+      }
+    } else {
+      // Default: assign to all user's tabs if none specified
+      const userTabs = await getAllTabs(userId);
+      if (userTabs.length > 0) {
+        tabIds = [userTabs[0].id];
+      }
+    }
 
     const task = await createTask({
       title: title.substring(0, 200),
@@ -71,7 +93,7 @@ router.post("/:id/create-task", async (req: Request, res: Response) => {
       type: "bug",
       description,
       origin: "ai",
-      boardIds: boardIds,
+      tabIds,
     });
 
     // Mark the error as having a task created
