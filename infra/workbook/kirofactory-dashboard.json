@@ -1,0 +1,328 @@
+{
+  "version": "Notebook/1.0",
+  "items": [
+    {
+      "type": 1,
+      "content": {
+        "json": "# KiroFactory Dashboard\n\nReal-time observability for the KiroFactory orchestrator and worker sessions.\n\n---"
+      },
+      "name": "header"
+    },
+    {
+      "type": 9,
+      "content": {
+        "version": "KqlParameterItem/1.0",
+        "parameters": [
+          {
+            "id": "time-range",
+            "version": "KqlParameterItem/1.0",
+            "name": "TimeRange",
+            "type": 4,
+            "typeSettings": {
+              "selectableValues": [
+                { "durationMs": 900000 },
+                { "durationMs": 1800000 },
+                { "durationMs": 3600000 },
+                { "durationMs": 14400000 },
+                { "durationMs": 43200000 },
+                { "durationMs": 86400000 },
+                { "durationMs": 259200000 },
+                { "durationMs": 604800000 }
+              ],
+              "allowCustom": true
+            },
+            "value": {
+              "durationMs": 3600000
+            },
+            "label": "Time Range"
+          }
+        ],
+        "style": "pills"
+      },
+      "name": "parameters"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## Active Sessions"
+      },
+      "name": "section-sessions"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "ContainerAppConsoleLogs_CL\n| where TimeGenerated {TimeRange}\n| where ContainerAppName_s == \"kirofactory-orchestrator\"\n| where Log_s has \"session-started\" or Log_s has \"session-stopped\" or Log_s has \"session-created\"\n| extend parsed = parse_json(Log_s)\n| extend eventType = tostring(parsed.event)\n| summarize\n    Started = countif(eventType == \"session-started\"),\n    Stopped = countif(eventType == \"session-stopped\")\n    by bin(TimeGenerated, 5m)\n| extend ActiveDelta = Started - Stopped\n| order by TimeGenerated asc\n| extend RunningEstimate = row_cumsum(ActiveDelta)",
+        "size": 1,
+        "title": "Active Sessions Over Time",
+        "timeContext": {
+          "durationMs": 0
+        },
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "timechart",
+        "chartSettings": {
+          "seriesLabelSettings": [
+            { "series": "RunningEstimate", "label": "Active Sessions" }
+          ]
+        }
+      },
+      "name": "active-sessions-chart"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "ContainerAppConsoleLogs_CL\n| where TimeGenerated {TimeRange}\n| where ContainerAppName_s == \"kirofactory-orchestrator\"\n| where Log_s has \"session-started\" or Log_s has \"session-stopped\" or Log_s has \"session-error\"\n| extend parsed = parse_json(Log_s)\n| extend eventType = tostring(parsed.event), sessionId = tostring(parsed.sessionId)\n| summarize\n    Running = dcountif(sessionId, eventType == \"session-started\"),\n    Stopped = dcountif(sessionId, eventType == \"session-stopped\"),\n    Errored = dcountif(sessionId, eventType == \"session-error\")\n| project\n    ['🟢 Running'] = Running,\n    ['⏹️ Stopped'] = Stopped,\n    ['🔴 Errored'] = Errored",
+        "size": 4,
+        "title": "Session Status (Current Period)",
+        "timeContext": {
+          "durationMs": 0
+        },
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "tiles",
+        "tileSettings": {
+          "titleContent": { "columnMatch": "Column1" },
+          "showBorder": true
+        }
+      },
+      "name": "session-status-tiles"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## Worker Spawn Rate"
+      },
+      "name": "section-workers"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "ContainerAppConsoleLogs_CL\n| where TimeGenerated {TimeRange}\n| where ContainerAppName_s == \"kirofactory-orchestrator\" or ContainerGroupName_s contains \"worker\"\n| where Log_s has \"worker-spawned\" or Log_s has \"worker-started\" or Log_s has \"startWorkerJob\"\n| summarize SpawnCount = count() by bin(TimeGenerated, 5m)\n| order by TimeGenerated asc",
+        "size": 1,
+        "title": "Worker Spawns (per 5 min)",
+        "timeContext": {
+          "durationMs": 0
+        },
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "barchart",
+        "chartSettings": {
+          "seriesLabelSettings": [
+            { "series": "SpawnCount", "label": "Workers Spawned" }
+          ]
+        }
+      },
+      "name": "worker-spawn-rate"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## Average Session Duration"
+      },
+      "name": "section-duration"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "ContainerAppConsoleLogs_CL\n| where TimeGenerated {TimeRange}\n| where ContainerAppName_s == \"kirofactory-orchestrator\"\n| where Log_s has \"session-started\" or Log_s has \"session-stopped\" or Log_s has \"session-error\"\n| extend parsed = parse_json(Log_s)\n| extend eventType = tostring(parsed.event), sessionId = tostring(parsed.sessionId)\n| summarize StartTime = minif(TimeGenerated, eventType == \"session-started\"), EndTime = maxif(TimeGenerated, eventType in (\"session-stopped\", \"session-error\")) by sessionId\n| where isnotempty(StartTime) and isnotempty(EndTime)\n| extend DurationMinutes = datetime_diff('minute', EndTime, StartTime)\n| summarize AvgDuration = avg(DurationMinutes), MaxDuration = max(DurationMinutes), MinDuration = min(DurationMinutes), SessionCount = count() by bin(StartTime, 1h)\n| project TimeGenerated = StartTime, ['Avg (min)'] = round(AvgDuration, 1), ['Max (min)'] = MaxDuration, ['Min (min)'] = MinDuration, Sessions = SessionCount\n| order by TimeGenerated asc",
+        "size": 1,
+        "title": "Session Duration Statistics",
+        "timeContext": {
+          "durationMs": 0
+        },
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "table"
+      },
+      "name": "session-duration-table"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "ContainerAppConsoleLogs_CL\n| where TimeGenerated {TimeRange}\n| where ContainerAppName_s == \"kirofactory-orchestrator\"\n| where Log_s has \"session-started\" or Log_s has \"session-stopped\" or Log_s has \"session-error\"\n| extend parsed = parse_json(Log_s)\n| extend eventType = tostring(parsed.event), sessionId = tostring(parsed.sessionId)\n| summarize StartTime = minif(TimeGenerated, eventType == \"session-started\"), EndTime = maxif(TimeGenerated, eventType in (\"session-stopped\", \"session-error\")) by sessionId\n| where isnotempty(StartTime) and isnotempty(EndTime)\n| extend DurationMinutes = datetime_diff('minute', EndTime, StartTime)\n| summarize AvgDuration = avg(DurationMinutes) by bin(StartTime, 1h)\n| project TimeGenerated = StartTime, AvgDurationMinutes = round(AvgDuration, 1)\n| order by TimeGenerated asc",
+        "size": 1,
+        "title": "Average Session Duration Over Time",
+        "timeContext": {
+          "durationMs": 0
+        },
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "linechart",
+        "chartSettings": {
+          "seriesLabelSettings": [
+            { "series": "AvgDurationMinutes", "label": "Avg Duration (min)" }
+          ]
+        }
+      },
+      "name": "session-duration-chart"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## Error & Crash Rate"
+      },
+      "name": "section-errors"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "ContainerAppConsoleLogs_CL\n| where TimeGenerated {TimeRange}\n| where ContainerAppName_s == \"kirofactory-orchestrator\" or ContainerGroupName_s contains \"worker\"\n| where Log_s has_any (\"worker-exited\", \"worker crashed\", \"SIGKILL\", \"OOMKilled\", \"exit code\")\n    or (Log_s has \"exitCode\" and Log_s !has \"exitCode\\\":0\" and Log_s !has \"exitCode: 0\")\n| summarize CrashCount = count() by bin(TimeGenerated, 5m)\n| order by TimeGenerated asc",
+        "size": 1,
+        "title": "Worker Crashes (per 5 min)",
+        "timeContext": {
+          "durationMs": 0
+        },
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "barchart",
+        "chartSettings": {
+          "yAxis": ["CrashCount"],
+          "seriesLabelSettings": [
+            { "series": "CrashCount", "label": "Crashes", "color": "red" }
+          ]
+        }
+      },
+      "name": "worker-crash-chart"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "ContainerAppConsoleLogs_CL\n| where TimeGenerated {TimeRange}\n| where ContainerAppName_s == \"kirofactory-orchestrator\"\n| where Log_s has_any (\"500\", \"502\", \"503\", \"\\\"status\\\":5\", \"Internal Server Error\", \"Service Unavailable\")\n    and Log_s has_any (\"/api/\", \"HTTP\")\n| summarize ErrorCount = count() by bin(TimeGenerated, 5m)\n| order by TimeGenerated asc",
+        "size": 1,
+        "title": "API Errors (5xx per 5 min)",
+        "timeContext": {
+          "durationMs": 0
+        },
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "barchart",
+        "chartSettings": {
+          "yAxis": ["ErrorCount"],
+          "seriesLabelSettings": [
+            { "series": "ErrorCount", "label": "5xx Errors", "color": "orange" }
+          ]
+        }
+      },
+      "name": "api-error-rate-chart"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## Database Connection Pool"
+      },
+      "name": "section-db"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "ContainerAppConsoleLogs_CL\n| where TimeGenerated {TimeRange}\n| where ContainerAppName_s == \"kirofactory-orchestrator\"\n| where Log_s has \"pool\" or Log_s has \"connection\" or Log_s has \"mssql\"\n| where Log_s has_any (\"pool-size\", \"pool-available\", \"pool-pending\", \"connection-count\", \"db-pool\")\n| extend parsed = parse_json(Log_s)\n| extend poolSize = toint(parsed.poolSize), poolAvailable = toint(parsed.poolAvailable), poolPending = toint(parsed.poolPending)\n| where isnotnull(poolSize)\n| summarize AvgSize = avg(poolSize), AvgAvailable = avg(poolAvailable), AvgPending = avg(poolPending) by bin(TimeGenerated, 5m)\n| order by TimeGenerated asc",
+        "size": 1,
+        "title": "SQL Server Connection Pool Usage",
+        "timeContext": {
+          "durationMs": 0
+        },
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "linechart",
+        "chartSettings": {
+          "seriesLabelSettings": [
+            { "series": "AvgSize", "label": "Pool Size" },
+            { "series": "AvgAvailable", "label": "Available" },
+            { "series": "AvgPending", "label": "Pending" }
+          ]
+        }
+      },
+      "name": "db-pool-chart"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "ContainerAppConsoleLogs_CL\n| where TimeGenerated {TimeRange}\n| where ContainerAppName_s == \"kirofactory-orchestrator\"\n| where Log_s has \"Database\" and Log_s has_any (\"unavailable\", \"reconnect\", \"failed\", \"timeout\", \"ECONNREFUSED\")\n| project TimeGenerated, Message = Log_s\n| order by TimeGenerated desc\n| take 20",
+        "size": 1,
+        "title": "Recent Database Connection Issues",
+        "timeContext": {
+          "durationMs": 0
+        },
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "table"
+      },
+      "name": "db-connection-issues"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## Health Check Status"
+      },
+      "name": "section-health"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "ContainerAppSystemLogs_CL\n| where TimeGenerated {TimeRange}\n| where ContainerAppName_s == \"kirofactory-orchestrator\"\n| where Reason_s has_any (\"FailedHealthProbe\", \"Unhealthy\", \"BackOff\", \"ContainerCrashLoopBackOff\")\n    or (Log_s has \"probe\" and Log_s has \"failed\")\n| summarize FailureCount = count() by bin(TimeGenerated, 5m), Reason = Reason_s\n| order by TimeGenerated asc",
+        "size": 1,
+        "title": "Health Probe Failures",
+        "timeContext": {
+          "durationMs": 0
+        },
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "barchart",
+        "chartSettings": {
+          "yAxis": ["FailureCount"],
+          "seriesLabelSettings": [
+            { "series": "FailureCount", "label": "Probe Failures", "color": "redBright" }
+          ]
+        }
+      },
+      "name": "health-probe-failures"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## Recent Logs"
+      },
+      "name": "section-recent"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "ContainerAppConsoleLogs_CL\n| where TimeGenerated {TimeRange}\n| where ContainerAppName_s == \"kirofactory-orchestrator\" or ContainerGroupName_s contains \"worker\"\n| where Log_s has_any (\"error\", \"ERROR\", \"warn\", \"WARN\", \"crash\", \"failed\", \"timeout\")\n| project TimeGenerated, Source = coalesce(ContainerAppName_s, ContainerGroupName_s), Log = Log_s\n| order by TimeGenerated desc\n| take 50",
+        "size": 1,
+        "title": "Recent Errors & Warnings (last 50)",
+        "timeContext": {
+          "durationMs": 0
+        },
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "table"
+      },
+      "name": "recent-errors-table"
+    }
+  ],
+  "fallbackResourceIds": [],
+  "fromTemplateId": "sentinel-UserWorkbook",
+  "$schema": "https://github.com/Microsoft/Application-Insights-Workbooks/blob/master/schema/workbook.json"
+}

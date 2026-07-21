@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+
+# Build output (rebuilt in container)
+backend/dist/
+
+# Environment files (injected at runtime)
+.env
+*.env
+backend/.env
+backend/.env.*
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# Kiro config (not needed in container)
+.kiro/
+
+# Docs
+*.md
+SPEC.md
+TASKS.md
+TecAlliance_Brand_Guidelines_AI_Agent.md
+
+# Session file (runtime state, not baked into image)
+sessions.json
+
+# Lock files not needed (package-lock.json IS needed for reproducible installs)
