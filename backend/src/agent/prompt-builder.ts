@@ -51,6 +51,7 @@ ${filesList}
 - If the task cannot be completed (missing dependencies, unclear requirements), explain why and exit.
 - Do NOT introduce unrelated refactoring or improvements beyond what the task requires.
 - Do NOT modify test files unless the task specifically asks for test changes.
+- Do NOT run git commit, git push, or create pull requests. The orchestrator handles git operations automatically after your work is complete.
 
 ## WORKING DIRECTORY
 
