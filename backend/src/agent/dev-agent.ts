@@ -19,12 +19,15 @@ import dotenv from "dotenv";
 dotenv.config();
 
 import { resolve } from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFileSync, execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { KiroRunner } from "./kiro-runner.js";
 import { claimTask, markTaskDeveloped, resetTaskToTodo, getAvailableTaskCount } from "./task-claimer.js";
 import { buildDevPrompt } from "./prompt-builder.js";
 import { closePool } from "../db/connection.js";
 import type { ClaimedTask } from "./task-claimer.js";
+
+const execFileAsync = promisify(execFile);
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -160,6 +163,94 @@ async function cleanupOrphanedProcesses(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Git commit + push after successful task execution
+// ---------------------------------------------------------------------------
+
+interface GitResult {
+  committed: boolean;
+  pushed: boolean;
+  error: string | null;
+}
+
+/**
+ * Run a git command in the project working directory.
+ */
+async function gitCmd(args: string[], cwd: string): Promise<{ stdout: string; stderr: string }> {
+  return execFileAsync("git", args, { cwd, encoding: "utf-8" });
+}
+
+/**
+ * After a task is executed successfully:
+ * 1. Check for uncommitted changes (staged + unstaged + untracked)
+ * 2. Stage all changes (git add -A)
+ * 3. Commit with a descriptive message referencing the task
+ * 4. Push the current branch to origin
+ *
+ * If there are no changes, this is a no-op.
+ * Failures are logged but do NOT prevent the task from being marked as developed.
+ */
+async function commitAndPush(task: ClaimedTask, cwd: string): Promise<GitResult> {
+  const result: GitResult = { committed: false, pushed: false, error: null };
+
+  try {
+    // 1. Check for any changes (staged, unstaged, untracked)
+    const { stdout: status } = await gitCmd(["status", "--porcelain"], cwd);
+    if (!status || status.trim().length === 0) {
+      log("No changes to commit — skipping git operations.", "gray");
+      return result;
+    }
+
+    const changedFiles = status.trim().split("\n").length;
+    log(`${changedFiles} file(s) changed — committing...`, "cyan");
+
+    // 2. Stage all changes
+    await gitCmd(["add", "-A"], cwd);
+
+    // 3. Commit with task reference
+    const commitTitle = `${task.title} [KiroFactory #${task.id}]`;
+    const commitBody = task.description
+      ? `\nTask: ${task.title}\nID: ${task.id}\nType: ${task.type}\nPriority: ${task.priority}\n\n${task.description}`
+      : "";
+    const commitMessage = commitTitle + commitBody;
+
+    await gitCmd(["commit", "-m", commitMessage], cwd);
+    result.committed = true;
+    log(`Committed: "${commitTitle}"`, "green");
+
+    // 4. Push to origin
+    const { stdout: branchOutput } = await gitCmd(["rev-parse", "--abbrev-ref", "HEAD"], cwd);
+    const branchName = branchOutput.trim();
+
+    let pushAttempts = 0;
+    const maxAttempts = 2;
+    while (pushAttempts < maxAttempts) {
+      try {
+        pushAttempts++;
+        await gitCmd(["push", "-u", "origin", branchName], cwd);
+        result.pushed = true;
+        log(`Pushed branch "${branchName}" to origin ✓`, "green");
+        break;
+      } catch (pushErr: any) {
+        const pushErrMsg = pushErr.stderr || pushErr.message || String(pushErr);
+        if (pushAttempts < maxAttempts) {
+          log(`Push failed (attempt ${pushAttempts}/${maxAttempts}), retrying...`, "yellow");
+          await sleep(2000);
+        } else {
+          log(`Push failed after ${maxAttempts} attempts: ${pushErrMsg}`, "red");
+          result.error = `Push failed: ${pushErrMsg}`;
+        }
+      }
+    }
+  } catch (err: any) {
+    const errMsg = err.stderr || err.message || String(err);
+    log(`Git commit/push failed: ${errMsg}`, "red");
+    result.error = errMsg;
+  }
+
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // Single task execution
 // ---------------------------------------------------------------------------
 
@@ -268,8 +359,13 @@ async function runOnce(config: AgentConfig): Promise<boolean> {
   // 2. Execute the task
   const success = await executeTask(task, config);
 
-  // 3. Update task state based on result
+  // 3. On success: commit + push changes, then mark as developed
   if (success) {
+    const gitResult = await commitAndPush(task, config.cwd);
+    if (gitResult.committed && !gitResult.pushed) {
+      log(`Warning: committed but push failed — task still marked developed`, "yellow");
+    }
+
     await markTaskDeveloped(task.id);
     log(`Task ${task.id} marked as "developed" ✓`, "green");
   } else {
