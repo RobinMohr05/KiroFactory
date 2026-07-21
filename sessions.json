@@ -3,7 +3,7 @@
     "id": "8ae98869",
     "name": "Developer",
     "agent": "developer-agent",
-    "status": "error",
+    "status": "running",
     "prompt": "",
     "interactive": false,
     "loop": true,
@@ -12,6 +12,26 @@
     "cwd": "C:\\Projects\\1_Work\\19_Misc\\KiroFactory",
     "timeoutSeconds": 0,
     "createdAt": "2026-07-17T20:54:06.193Z",
-    "startedAt": "2026-07-18T07:56:27.664Z"
+    "startedAt": "2026-07-20T15:56:57.888Z",
+    "currentTaskId": 47
+  },
+  {
+    "id": "bb5550c7",
+    "name": "Developer for KiroFactory",
+    "agent": "developer-agent",
+    "status": "running",
+    "prompt": "",
+    "interactive": false,
+    "loop": true,
+    "runs": 0,
+    "intervalSeconds": 10,
+    "cwd": "C:\\Projects\\1_Work\\19_Misc\\KiroFactory",
+    "timeoutSeconds": 0,
+    "tabIds": [
+      2
+    ],
+    "createdAt": "2026-07-20T15:07:37.259Z",
+    "startedAt": "2026-07-20T15:56:58.058Z",
+    "currentTaskId": 43
   }
 ]
