@@ -97,4 +97,29 @@ export async function closePool(): Promise<void> {
   }
 }
 
+/**
+ * Returns current connection pool statistics.
+ * Used by the periodic pool metrics emitter for Azure Monitor observability.
+ * Returns null if the pool is not connected.
+ */
+export function getPoolStats(): {
+  poolSize: number;
+  poolAvailable: number;
+  poolPending: number;
+  poolBorrowed: number;
+} | null {
+  if (!pool || !pool.connected) return null;
+
+  // mssql uses tarn.js internally — pool.pool exposes the tarn Pool instance
+  const tarnPool = (pool as any).pool;
+  if (!tarnPool) return null;
+
+  return {
+    poolSize: tarnPool.numFree() + tarnPool.numUsed(),
+    poolAvailable: tarnPool.numFree(),
+    poolPending: tarnPool.numPendingAcquires(),
+    poolBorrowed: tarnPool.numUsed(),
+  };
+}
+
 export { sql };
