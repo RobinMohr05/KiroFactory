@@ -1,0 +1,58 @@
+#!/bin/sh
+# ─────────────────────────────────────────────────────────────────────────────
+# ta-mcp-connect — MCP Proxy Sidecar Bridge
+#
+# This script bridges local MCP tool calls to the session MCP proxy sidecar
+# running alongside the worker container. It forwards stdin/stdout over a
+# TCP connection to the proxy, enabling kiro-cli to use MCP servers that
+# are managed externally (by the orchestrator or sidecar container).
+#
+# Usage (as an MCP server command in kiro agent config):
+#   command: "/app/ta-mcp-connect"
+#   args: ["<server-name>"]
+#
+# The proxy sidecar runs at MCP_PROXY_HOST:MCP_PROXY_PORT (default: localhost:9090)
+# and multiplexes multiple MCP server connections over a single TCP endpoint.
+#
+# Protocol:
+#   1. Connect TCP to proxy sidecar
+#   2. Send handshake: { "type": "connect", "server": "<server-name>" }\n
+#   3. Relay stdin → TCP and TCP → stdout (bidirectional NDJSON pipe)
+# ─────────────────────────────────────────────────────────────────────────────
+
+set -e
+
+MCP_PROXY_HOST="${MCP_PROXY_HOST:-localhost}"
+MCP_PROXY_PORT="${MCP_PROXY_PORT:-9090}"
+SERVER_NAME="${1:-default}"
+
+# Validate arguments
+if [ -z "$SERVER_NAME" ]; then
+  echo '{"error":"ta-mcp-connect: server name argument required"}' >&2
+  exit 1
+fi
+
+# Check if nc (netcat) is available — it's included in the slim image
+if ! command -v nc >/dev/null 2>&1; then
+  echo '{"error":"ta-mcp-connect: nc (netcat) not found"}' >&2
+  exit 1
+fi
+
+# Create a named pipe for bidirectional communication
+FIFO="/tmp/mcp-bridge-$$"
+mkfifo "$FIFO"
+trap 'rm -f "$FIFO"' EXIT
+
+# Send handshake then relay stdin to the TCP connection
+# The proxy sidecar expects the first line to identify which MCP server to connect to
+{
+  printf '{"type":"connect","server":"%s"}\n' "$SERVER_NAME"
+  cat
+} | nc -q 0 "$MCP_PROXY_HOST" "$MCP_PROXY_PORT" > "$FIFO" &
+NC_PID=$!
+
+# Relay proxy responses to stdout
+cat "$FIFO"
+
+# Wait for nc to finish
+wait $NC_PID 2>/dev/null || true
