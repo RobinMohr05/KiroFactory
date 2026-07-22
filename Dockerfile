@@ -1,65 +1,54 @@
-# ─── Stage 1: Build TypeScript ────────────────────────────────────────────────
-FROM node:20-alpine AS builder
+# KiroFactory — Backend + Frontend container
+# Monorepo (npm workspaces) multi-stage build
 
+# Stage 1: Build
+FROM node:20-slim AS build
 WORKDIR /app
 
-# Copy workspace root package files for install
+# Copy root workspace files
 COPY package.json package-lock.json ./
-COPY backend/package.json backend/
-COPY frontend/package.json frontend/
 
-# Install all dependencies (including devDependencies for tsc)
+# Copy workspace package.json files
+COPY backend/package.json ./backend/
+COPY frontend/package.json ./frontend/
+
+# Install all dependencies (workspace-aware)
 RUN npm ci
 
 # Copy backend source and compile
-COPY backend/tsconfig.json backend/
-COPY backend/src/ backend/src/
-
+COPY backend/tsconfig.json ./backend/
+COPY backend/src ./backend/src
 RUN npm run build -w backend
 
-# ─── Stage 2: Production Runtime ─────────────────────────────────────────────
-FROM node:20-alpine AS runtime
-
-# Add labels for container registry
-LABEL org.opencontainers.image.title="KiroFactory Backend"
-LABEL org.opencontainers.image.description="KiroFactory orchestrator — Express + WebSocket server"
-LABEL org.opencontainers.image.source="https://github.com/RobinMohr/KiroFactory"
-
-# Create non-root user for security
-RUN addgroup -S kirofactory && adduser -S kirofactory -G kirofactory
-
+# Stage 2: Production
+FROM node:20-slim AS production
 WORKDIR /app
 
-# Copy workspace root package files
+# Copy root workspace files
 COPY package.json package-lock.json ./
-COPY backend/package.json backend/
-COPY frontend/package.json frontend/
+
+# Copy workspace package.json files
+COPY backend/package.json ./backend/
+COPY frontend/package.json ./frontend/
 
 # Install production dependencies only
-RUN npm ci --omit=dev && npm cache clean --force
+RUN npm ci --omit=dev
 
-# Copy compiled backend from builder
-COPY --from=builder /app/backend/dist/ backend/dist/
+# Copy compiled backend from build stage
+COPY --from=build /app/backend/dist ./backend/dist
 
-# Copy SQL schema (used by migrate on startup)
-COPY backend/sql/ backend/sql/
+# Copy frontend static files
+COPY frontend/public ./frontend/public
 
-# Copy static frontend assets (served by Express)
-COPY frontend/public/ frontend/public/
+# Copy SQL migrations
+COPY backend/sql ./backend/sql
 
-# Switch to non-root user
-USER kirofactory
-
-# Expose the default server port
-EXPOSE 3500
-
-# Environment variables (defaults — override at deploy time)
 ENV NODE_ENV=production
 ENV PORT=3500
+EXPOSE 3500
 
-# Health check — calls the public /api/health endpoint
+# Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:3500/api/health || exit 1
+  CMD node -e "fetch('http://localhost:3500/api/health').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))"
 
-# Start the compiled server
 CMD ["node", "backend/dist/index.js"]
