@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import jwt from "jsonwebtoken";
-import { createUser, verifyPassword, verifyPasswordById, getUserById, getUserByEmail, updateUserPassword, updateUserKiroApiKey } from "../db/users.js";
+import { createUser, verifyPassword, verifyPasswordById, getUserById, getUserByEmail, updateUserPassword, updateUserKiroApiKey, deleteUser } from "../db/users.js";
 import { isRegistrationEnabled } from "../db/settings.js";
 import { getUserId } from "../middleware/auth.js";
 import type { CreateUserInput, AuthenticatedRequest } from "../types.js";
@@ -261,6 +261,46 @@ router.put("/me/api-key", async (req: Request, res: Response) => {
   } catch (err) {
     console.error("PUT /api/auth/me/api-key error:", err);
     res.status(500).json({ error: "Failed to update API key" });
+  }
+});
+
+// DELETE /api/auth/me — delete own account (requires password confirmation)
+router.delete("/me", async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const { password } = req.body as { password?: string };
+
+    if (!password) {
+      res.status(400).json({ error: "password is required to confirm account deletion" });
+      return;
+    }
+
+    // Verify password
+    const valid = await verifyPasswordById(userId, password);
+    if (!valid) {
+      res.status(401).json({ error: "Password is incorrect" });
+      return;
+    }
+
+    // Delete the user (cascading deletes will clean up related data)
+    const deleted = await deleteUser(userId);
+    if (!deleted) {
+      res.status(404).json({ error: "User not found" });
+      return;
+    }
+
+    // Clear session cookie
+    res.clearCookie(COOKIE_NAME, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      path: "/",
+    });
+
+    res.json({ message: "Account deleted successfully" });
+  } catch (err) {
+    console.error("DELETE /api/auth/me error:", err);
+    res.status(500).json({ error: "Failed to delete account" });
   }
 });
 
