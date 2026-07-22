@@ -70,7 +70,11 @@ router.put("/", async (req: Request, res: Response) => {
       return;
     }
 
-    // Validate credentials before saving (unless explicitly skipped)
+    // Validate credentials before saving (unless explicitly skipped).
+    // Blocking failures (e.g. malformed values) reject the save with a 422.
+    // Non-blocking failures (couldn't verify a remote credential) are returned as advisory
+    // warnings — the credential is still saved. See credential-validator.ts for the rationale.
+    const warnings: Record<string, string> = {};
     if (shouldValidate) {
       const validationErrors: Record<string, string> = {};
 
@@ -85,11 +89,16 @@ router.put("/", async (req: Request, res: Response) => {
           credentials as Partial<Record<CredentialKey, string>>
         );
 
-        if (!result.valid) {
+        if (result.valid) continue;
+
+        if (result.blocking) {
           validationErrors[key] = result.error ?? "Validation failed";
+        } else {
+          warnings[key] = result.error ?? "Could not verify — saved without validation";
         }
       }
 
+      // Only hard failures block the save.
       if (Object.keys(validationErrors).length > 0) {
         res.status(422).json({
           error: "Credential validation failed",
@@ -102,9 +111,13 @@ router.put("/", async (req: Request, res: Response) => {
     // Store encrypted
     await updateCredentials(userId, credentials);
 
-    // Return updated status
+    // Return updated status (plus any advisory warnings from best-effort validation)
     const status = await getCredentialStatus(userId);
-    res.json({ message: "Credentials updated successfully", status });
+    res.json({
+      message: "Credentials updated successfully",
+      status,
+      ...(Object.keys(warnings).length > 0 ? { warnings } : {}),
+    });
   } catch (err) {
     console.error("PUT /api/users/me/credentials error:", err);
     res.status(500).json({ error: "Failed to update credentials" });
