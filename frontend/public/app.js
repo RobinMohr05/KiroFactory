@@ -2819,7 +2819,11 @@ async function saveCredential(key, value, row, msgEl) {
       return;
     }
 
-    // Success
+    // Success — the credential was saved. Validation may still return a non-blocking
+    // warning (e.g. the token couldn't be verified remotely); surface it without treating
+    // the save as a failure.
+    const data = await res.json().catch(() => ({}));
+    const warning = data && data.warnings ? data.warnings[key] : null;
     const statusEl = row.querySelector('.credential-status');
     if (value === null) {
       showMessage(msgEl, 'Cleared.', 'success');
@@ -2827,7 +2831,11 @@ async function saveCredential(key, value, row, msgEl) {
       statusEl.className = 'credential-status not-set';
       statusEl.title = 'Not set';
     } else {
-      showMessage(msgEl, 'Saved & validated.', 'success');
+      if (warning) {
+        showMessage(msgEl, warning, 'warning');
+      } else {
+        showMessage(msgEl, 'Saved & validated.', 'success');
+      }
       statusEl.textContent = '●';
       statusEl.className = 'credential-status is-set';
       statusEl.title = 'Set';

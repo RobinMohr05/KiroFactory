@@ -2222,6 +2222,12 @@ textarea:focus {
   border: 1px solid var(--ta-rapid-red);
 }
 
+.form-message.warning {
+  background: rgba(255, 135, 0, 0.1);
+  color: var(--ta-ignition-mango, #ff8700);
+  border: 1px solid var(--ta-ignition-mango, #ff8700);
+}
+
 /* ===== Credentials Section ===== */
 .credentials-description {
   font-size: 0.8rem;
