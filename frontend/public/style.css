@@ -2230,6 +2230,17 @@ textarea:focus {
   line-height: 1.4;
 }
 
+.credential-db-banner {
+  font-size: 0.8rem;
+  padding: 0.6rem 0.75rem;
+  border-radius: var(--radius-sm);
+  margin-bottom: 1rem;
+  background: rgba(255, 135, 0, 0.1);
+  color: var(--text-primary);
+  border: 1px solid var(--ta-mango);
+  line-height: 1.4;
+}
+
 .credential-row {
   margin-bottom: 0.75rem;
 }

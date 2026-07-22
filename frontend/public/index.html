@@ -379,6 +379,10 @@
         <h3 class="settings-section-title">Service Credentials</h3>
         <p class="credentials-description">Credentials are encrypted at rest and only decrypted when spawning a worker. Values are never sent back to the browser.</p>
 
+        <div class="credential-db-banner" id="credentialDbBanner" hidden>
+          Database unavailable — credentials can't be saved right now. Your changes won't persist until the connection is restored.
+        </div>
+
         <div class="credential-row" data-key="azureDevOpsPat">
           <label>Azure DevOps PAT</label>
           <div class="credential-input-row">
