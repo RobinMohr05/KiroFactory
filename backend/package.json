@@ -8,6 +8,7 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "migrate": "tsx src/db/migrate.ts",
+    "seed:agents": "tsx scripts/seed-agents.ts",
     "agent": "tsx src/agent/dev-agent.ts",
     "agent:loop": "tsx src/agent/dev-agent.ts --loop",
     "agent:tdd": "tsx src/agent/dev-agent.ts --tdd",
