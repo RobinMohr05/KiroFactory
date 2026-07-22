@@ -2670,12 +2670,14 @@ async function handleDeleteAccount() {
 }
 
 function showMessage(el, text, type) {
+  if (!el) return;
   el.textContent = text;
   el.className = 'form-message ' + type;
   el.hidden = false;
 }
 
 function hideMessage(el) {
+  if (!el) return;
   el.hidden = true;
   el.textContent = '';
   el.className = 'form-message';
@@ -2684,12 +2686,37 @@ function hideMessage(el) {
 // ─── Credential Management ───────────────────────────────────────────────────
 
 /**
+ * Shows/hides the "database unavailable" banner in the credentials panel and
+ * locks or unlocks the credential inputs and buttons to match.
+ */
+function setCredentialDbUnavailable(unavailable) {
+  const banner = document.getElementById('credentialDbBanner');
+  if (banner) banner.hidden = !unavailable;
+
+  document.querySelectorAll('.credential-row').forEach(row => {
+    const input = row.querySelector('input');
+    const updateBtn = row.querySelector('.btn-primary');
+    const clearBtn = row.querySelector('.credential-clear-btn');
+    if (input) input.disabled = unavailable;
+    if (updateBtn) updateBtn.disabled = unavailable;
+    if (clearBtn) clearBtn.disabled = unavailable;
+  });
+}
+
+/**
  * Loads credential status from the API and updates the UI indicators.
  */
 async function loadCredentialStatus() {
   try {
     const res = await apiFetch('/api/users/me/credentials');
+    if (res.status === 503) {
+      // Database is down — surface the banner and lock the controls.
+      setCredentialDbUnavailable(true);
+      return;
+    }
     if (!res.ok) return;
+    // DB reachable — clear any previous "unavailable" state.
+    setCredentialDbUnavailable(false);
     const status = await res.json();
 
     const rows = document.querySelectorAll('.credential-row');
@@ -2781,6 +2808,13 @@ async function saveCredential(key, value, row, msgEl) {
         return;
       }
 
+      // Database unavailable (503) — show the banner and a clear per-field message.
+      if (res.status === 503) {
+        setCredentialDbUnavailable(true);
+        showMessage(msgEl, data.error || 'Database unavailable — your change was not saved.', 'error');
+        return;
+      }
+
       showMessage(msgEl, data.error || 'Failed to save credential.', 'error');
       return;
     }
@@ -2804,7 +2838,10 @@ async function saveCredential(key, value, row, msgEl) {
     console.error(`Save credential ${key} error:`, err);
     showMessage(msgEl, 'Network error. Please try again.', 'error');
   } finally {
-    updateBtn.disabled = false;
-    clearBtn.disabled = false;
+    // Keep the row locked while the DB is unavailable; otherwise re-enable.
+    const dbBanner = document.getElementById('credentialDbBanner');
+    const dbDown = dbBanner ? !dbBanner.hidden : false;
+    updateBtn.disabled = dbDown;
+    clearBtn.disabled = dbDown;
   }
 }
