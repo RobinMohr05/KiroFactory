@@ -66,6 +66,9 @@ param cpu string = '0.5'
 @description('Memory allocated per replica (in Gi)')
 param memory string = '1Gi'
 
+@description('Name of the ACA worker Job the orchestrator starts/stops (used for the RBAC role assignment). Must match ACA_JOB_NAME.')
+param workerJobName string = 'kirofactory-worker'
+
 @description('Tags applied to resources')
 param tags object = {
   project: 'KiroFactory'
@@ -77,6 +80,11 @@ param tags object = {
 
 var appName = 'kirofactory-orchestrator'
 var imageName = '${acrLoginServer}/kirofactory:${imageTag}'
+
+// Built-in role "Container Apps Jobs Operator" — grants read/start/stop on ACA jobs
+// (Microsoft.App/jobs/*/read + Microsoft.App/jobs/*/action, which covers start/action and stop/action).
+// https://learn.microsoft.com/azure/role-based-access-control/built-in-roles/containers
+var jobsOperatorRoleId = 'b9a307c4-5aa3-4b52-ba60-2b17c136cd7b'
 
 // ─── ACR Credential Reference ────────────────────────────────────────────────
 
@@ -90,6 +98,11 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
   name: appName
   location: location
   tags: tags
+  // System-assigned managed identity — this is the identity DefaultAzureCredential
+  // uses at runtime to call the Azure management API and start/stop the worker Job.
+  identity: {
+    type: 'SystemAssigned'
+  }
   properties: {
     managedEnvironmentId: environmentId
     configuration: {
@@ -223,10 +236,33 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
   }
 }
 
+// ─── RBAC: orchestrator → worker Job ─────────────────────────────────────────
+// The orchestrator calls Microsoft.App/jobs/{job}/start (and stop/read) via the
+// REST API using its managed identity. Without this assignment the call fails
+// with 403 AuthorizationFailed on 'Microsoft.App/jobs/start/action'.
+// The Job is expected to already exist (created outside this module).
+
+resource workerJob 'Microsoft.App/jobs@2024-03-01' existing = {
+  name: workerJobName
+}
+
+resource jobsOperatorAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(workerJob.id, containerApp.id, jobsOperatorRoleId)
+  scope: workerJob
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', jobsOperatorRoleId)
+    principalId: containerApp.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
 // ─── Outputs ─────────────────────────────────────────────────────────────────
 
 @description('Container App FQDN (URL)')
 output fqdn string = containerApp.properties.configuration.ingress.fqdn
+
+@description('Orchestrator system-assigned managed identity principal (object) ID')
+output principalId string = containerApp.identity.principalId
 
 @description('Container App name')
 output appName string = containerApp.name

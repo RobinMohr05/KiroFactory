@@ -55,7 +55,7 @@ function verifyWsToken(token: string): number | null {
 }
 
 export function setupWebSocket(server: Server): WebSocketServer {
-  const wss = new WebSocketServer({ server });
+  const wss = new WebSocketServer({ server, path: "/ws" });
 
   wss.on("connection", (ws, req: IncomingMessage) => {
     // Authenticate the WebSocket connection
