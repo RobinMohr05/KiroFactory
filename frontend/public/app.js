@@ -64,6 +64,7 @@ let tasks = [];
 let boardSessions = [];
 let boardAgents = [];
 let currentBoardId = null;
+let currentSort = 'priority'; // 'priority' | 'updated' | 'created'
 let pendingOps = new Set();
 let ws = null;
 let reconnectTimer = null;
@@ -203,12 +204,15 @@ function scheduleReconnect() {
 }
 
 function setConnectionStatus(connected) {
+  const connectionStatus = document.getElementById('connectionStatus');
   if (connected) {
     statusDot.classList.add('connected');
     statusText.textContent = 'Connected';
+    if (connectionStatus) connectionStatus.title = 'Connected';
   } else {
     statusDot.classList.remove('connected');
     statusText.textContent = 'Disconnected';
+    if (connectionStatus) connectionStatus.title = 'Disconnected';
   }
 }
 
@@ -609,6 +613,14 @@ function renderBoardSelector() {
       if (e.target.closest('.board-item-action')) return; // action button clicked
       currentBoardId = board.id;
       renderBoardSelector();
+      // Deselect active session if it doesn't belong to the new board
+      if (activeSessionId) {
+        const activeSession = sessions.find(s => s.id === activeSessionId);
+        if (!activeSession || !activeSession.tabIds || !activeSession.tabIds.includes(Number(currentBoardId))) {
+          activeSessionId = null;
+          showSessionEmpty();
+        }
+      }
       renderSessionList();
       fetchBoardTasks(currentBoardId);
     });
@@ -925,6 +937,20 @@ function renderBoard() {
     container.innerHTML = '';
 
     const columnTasks = tasks.filter(t => t.state === state);
+
+    // Sort based on current selection
+    columnTasks.sort((a, b) => {
+      switch (currentSort) {
+        case 'updated':
+          return new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0);
+        case 'created':
+          return new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
+        case 'priority':
+        default:
+          return (a.priority || 4) - (b.priority || 4);
+      }
+    });
+
     countEl.textContent = columnTasks.length;
 
     columnTasks.forEach(task => {
@@ -1177,6 +1203,12 @@ function setupEventListeners() {
     showTaskForm();
   });
 
+  // Sort tasks
+  document.getElementById('taskSortSelect').addEventListener('change', (e) => {
+    currentSort = e.target.value;
+    renderBoard();
+  });
+
   // Cancel task form
   cancelTaskBtn.addEventListener('click', hideTaskForm);
 
@@ -1332,6 +1364,14 @@ function setupSessions() {
     }
   });
 
+  // Show agent description when selection changes
+  document.getElementById('sessionAgent').addEventListener('change', (e) => {
+    const descEl = document.getElementById('sessionAgentDescription');
+    const selected = e.target.selectedOptions[0];
+    const desc = selected ? selected.dataset.description : '';
+    descEl.textContent = desc || '';
+  });
+
   // Track if user manually changed any MCP toggle
   [sessionMcpAtlassian, sessionMcpAzureDevops, sessionMcpAwsApi, sessionMcpAwsDocs].forEach(el => {
     el.addEventListener('change', () => { sessionMcpOverrideEnabled = true; });
@@ -1395,6 +1435,8 @@ function hideSessionForm() {
   sessionMcpToggle.setAttribute('aria-expanded', 'false');
   sessionMcpSection.classList.remove('expanded');
   sessionMcpOverrideEnabled = false;
+  // Clear agent description hint
+  document.getElementById('sessionAgentDescription').textContent = '';
 }
 
 async function populateAgentDropdown() {
@@ -1412,11 +1454,15 @@ async function populateAgentDropdown() {
     agents.forEach(agent => {
       const opt = document.createElement('option');
       opt.value = agent.name;
-      opt.textContent = agent.description ? `${agent.name} — ${agent.description}` : agent.name;
+      opt.textContent = agent.name;
+      opt.dataset.description = agent.description || '';
       select.appendChild(opt);
     });
-    // Auto-select first agent
+    // Auto-select first agent and show its description
     select.selectedIndex = 0;
+    const descEl = document.getElementById('sessionAgentDescription');
+    const firstOpt = select.options[0];
+    descEl.textContent = firstOpt ? (firstOpt.dataset.description || '') : '';
   } catch (e) {
     console.error('Failed to fetch agents:', e);
     select.innerHTML = '<option value="" disabled>Failed to load agents</option>';
@@ -1486,6 +1532,11 @@ async function createAndStartSession() {
   // Collect selected board IDs from the multi-select
   const boardsSelect = document.getElementById('sessionBoards');
   const boardIds = Array.from(boardsSelect.selectedOptions).map(opt => Number(opt.value));
+
+  // If no boards explicitly selected, default to the current board
+  if (boardIds.length === 0 && currentBoardId) {
+    boardIds.push(Number(currentBoardId));
+  }
 
   if (!name || !agent) return;
 
@@ -1653,25 +1704,39 @@ function updateSessionStatusUI(status) {
 function renderSessionList() {
   sessionList.innerHTML = '';
 
-  // Show all sessions in the Sessions tab (board-specific filtering is handled
-  // by the board members panel in the Tasks view).
-  if (sessions.length === 0) {
-    sessionList.innerHTML = '<li class="session-empty-hint">No sessions yet. Create one with + New Agent.</li>';
+  // Filter sessions to only show those assigned to the current board/tab
+  const visibleSessions = currentBoardId
+    ? sessions.filter(s => s.tabIds && s.tabIds.includes(Number(currentBoardId)))
+    : sessions;
+
+  if (visibleSessions.length === 0) {
+    sessionList.innerHTML = '<li class="session-empty-hint">No sessions for this tab. Create one with + New Session.</li>';
     return;
   }
 
-  sessions.forEach(session => {
+  visibleSessions.forEach(session => {
     const li = document.createElement('li');
     li.className = 'session-item' + (session.id === activeSessionId ? ' active' : '');
     li.dataset.sessionId = session.id;
 
     const statusClass = 'status-dot-sm status-' + session.status;
+    const activity = session.currentActivity;
+    const activityDetail = activity && activity.detail ? activity.detail : '';
+    const activityType = activity ? activity.type : '';
+    // Build a short status line: show what the agent is working on
+    let activityHtml = '';
+    if (session.status === 'running' && activityDetail) {
+      activityHtml = `<span class="session-item-activity">${escapeHtml(activityDetail)}</span>`;
+    } else if (session.status === 'running' && activityType) {
+      activityHtml = `<span class="session-item-activity">${escapeHtml(activityType)}</span>`;
+    }
 
     li.innerHTML = `
       <span class="${statusClass}" aria-hidden="true"></span>
       <div class="session-item-info">
         <span class="session-item-name">${escapeHtml(session.name)}</span>
         <span class="session-item-agent">${escapeHtml(session.agent)}</span>
+        ${activityHtml}
       </div>
     `;
 
@@ -1773,6 +1838,12 @@ function handleSessionWsMessage(message) {
 
     case 'session-activity': {
       const { sessionId, activity } = message;
+      // Update the session object with current activity
+      const sIdx = sessions.findIndex(x => x.id === sessionId);
+      if (sIdx !== -1) {
+        sessions[sIdx].currentActivity = activity;
+        renderSessionList();
+      }
       if (sessionId === activeSessionId && activity) {
         updateActivityUI(activity);
       }
@@ -1812,6 +1883,7 @@ const agentDetailResources = document.getElementById('agentDetailResources');
 const agentDetailSettings = document.getElementById('agentDetailSettings');
 const agentEditBtn = document.getElementById('agentEditBtn');
 const agentDeleteBtn = document.getElementById('agentDeleteBtn');
+const agentExportBtn = document.getElementById('agentExportBtn');
 const agentModeGuided = document.getElementById('agentModeGuided');
 const agentModeJson = document.getElementById('agentModeJson');
 const agentJsonSection = document.getElementById('agentJsonSection');
@@ -1887,6 +1959,11 @@ function setupAgents() {
     if (!confirm(`Delete agent "${activeAgentName}"? This cannot be undone.`)) return;
     await deleteAgent(activeAgentName);
   });
+
+  agentExportBtn.addEventListener('click', () => {
+    const agent = agents.find(a => a.name === activeAgentName);
+    if (agent) exportAgentAsJson(agent);
+  });
 }
 
 // ===== Agents REST API =====
@@ -1961,6 +2038,31 @@ async function deleteAgent(name) {
     console.error('Failed to delete agent:', e);
     alert('Failed to delete agent: ' + e.message);
   }
+}
+
+function exportAgentAsJson(agent) {
+  // Build a clean export object (exclude internal metadata)
+  const exportData = {
+    name: agent.name,
+    description: agent.description || '',
+    prompt: agent.prompt || '',
+    tools: agent.tools || [],
+    allowedTools: agent.allowedTools || [],
+    toolsSettings: agent.toolsSettings || {},
+    resources: agent.resources || [],
+  };
+
+  const json = JSON.stringify(exportData, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${agent.name}.agent.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 // ===== Agent Modal =====
@@ -2398,6 +2500,13 @@ function setupSettings() {
     await handleChangeApiKey();
   });
 
+  // Delete account form
+  const deleteAccountForm = document.getElementById('deleteAccountForm');
+  deleteAccountForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    await handleDeleteAccount();
+  });
+
   // Credential management
   setupCredentialHandlers();
 }
@@ -2421,6 +2530,12 @@ function openSettingsModal() {
   changeApiKeyForm.reset();
   hideMessage(passwordMsg);
   hideMessage(apiKeyMsg);
+
+  // Reset delete account form
+  const deleteAccountForm = document.getElementById('deleteAccountForm');
+  const deleteAccountMsg = document.getElementById('deleteAccountMsg');
+  deleteAccountForm.reset();
+  hideMessage(deleteAccountMsg);
 
   // Load credential status
   loadCredentialStatus();
@@ -2506,6 +2621,48 @@ async function handleChangeApiKey() {
   } catch (err) {
     console.error('Change API key error:', err);
     showMessage(apiKeyMsg, 'Network error. Please try again.', 'error');
+  }
+}
+
+async function handleDeleteAccount() {
+  const deleteAccountPw = document.getElementById('deleteAccountPw').value;
+  const deleteAccountMsg = document.getElementById('deleteAccountMsg');
+
+  if (!deleteAccountPw) {
+    showMessage(deleteAccountMsg, 'Password is required to confirm deletion.', 'error');
+    return;
+  }
+
+  // Double-confirm with user
+  const confirmed = window.confirm(
+    'Are you sure you want to permanently delete your account? This action cannot be undone.'
+  );
+  if (!confirmed) return;
+
+  try {
+    const res = await apiFetch('/api/auth/me', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ password: deleteAccountPw })
+    });
+
+    if (res.status === 401) {
+      showMessage(deleteAccountMsg, 'Password is incorrect.', 'error');
+      return;
+    }
+
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      showMessage(deleteAccountMsg, data.error || 'Failed to delete account.', 'error');
+      return;
+    }
+
+    // Account deleted — redirect to login
+    window.location.href = '/login.html';
+  } catch (err) {
+    console.error('Delete account error:', err);
+    showMessage(deleteAccountMsg, 'Network error. Please try again.', 'error');
   }
 }
 
