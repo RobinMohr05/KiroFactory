@@ -3,12 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Slim Kiro ACP session worker — spawns kiro-cli, streams NDJSON to orchestrator",
-  "scripts": {
-    "start": "node worker.js"
-  },
   "dependencies": {
-    "@agentclientprotocol/sdk": "^0.19.0",
     "ws": "^8.18.0"
   }
 }

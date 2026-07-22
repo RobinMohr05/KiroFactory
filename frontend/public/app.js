@@ -163,7 +163,7 @@ const TYPE_CLASSES = {
 // ===== WebSocket =====
 function connectWebSocket() {
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  ws = new WebSocket(`${protocol}//${location.host}`);
+  ws = new WebSocket(`${protocol}//${location.host}/ws`);
 
   ws.addEventListener('open', () => {
     setConnectionStatus(true);
@@ -964,6 +964,9 @@ function renderBoardMembers() {
   const agentsList = document.getElementById('board-agents-list');
   const sessionsCount = document.getElementById('count-board-sessions');
   const agentsCount = document.getElementById('count-board-agents');
+
+  // Guard: elements may not exist if the board-members panel isn't in the DOM
+  if (!sessionsCount || !agentsCount || !sessionsList || !agentsList) return;
 
   // Render sessions
   sessionsCount.textContent = boardSessions.length;
