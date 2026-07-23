@@ -139,10 +139,41 @@ https://kirofactory-api.orangeriver-26cd2328.germanywestcentral.azurecontainerap
 ### Managed Identity & permissions
 
 The `kirofactory-api` Container App uses a **system-assigned managed identity** to call the
-Azure Container Apps management API and start worker Job executions. That identity must hold a
-role (e.g. **Contributor** or Container Apps Contributor) on the `kirofactory-worker` job.
-If you see `ChainedTokenCredential authentication failed` in session logs, the managed identity
-is missing or lacks permission.
+Azure Container Apps management API and start/stop worker Job executions (via
+`DefaultAzureCredential` in `aca-worker-spawner.ts`).
+
+That identity must hold the built-in **Container Apps Jobs Operator** role
+(`b9a307c4-5aa3-4b52-ba60-2b17c136cd7b`), **scoped to the `kirofactory-worker` job**. This is the
+least-privilege role that covers exactly `Microsoft.App/jobs/read` + `Microsoft.App/jobs/*/action`
+(start and stop). Do **not** grant Contributor — it is far broader than needed.
+
+> This is NOT a user-credential concern. The Azure DevOps PAT, Atlassian, and AWS credentials are
+> injected into the worker container *after* it starts, so they can never cause a start failure.
+> A start failure is always about the orchestrator identity's own RBAC.
+
+**Symptoms of a missing role:**
+- `AuthorizationFailed` / HTTP 403 when starting a session (`Microsoft.App/jobs/start/action` denied).
+- `ChainedTokenCredential authentication failed` — the system-assigned identity is disabled entirely.
+- On boot the log shows `[startup] ⚠ ACA preflight FAILED — …` (see the preflight in `index.ts`).
+
+**Fix (portal):** Container App Job `kirofactory-worker` → **Access control (IAM)** → **Add role
+assignment** → role **Container Apps Jobs Operator** → assign to **Managed identity →
+`kirofactory-api`** → Review + assign. Propagation takes a few minutes.
+
+**Fix (CLI):**
+```bash
+PRINCIPAL_ID=$(az containerapp show -g SandboxForRM -n kirofactory-api --query identity.principalId -o tsv)
+JOB_ID=$(az containerapp job show -g SandboxForRM -n kirofactory-worker --query id -o tsv)
+az role assignment create \
+  --assignee-object-id "$PRINCIPAL_ID" \
+  --assignee-principal-type ServicePrincipal \
+  --role b9a307c4-5aa3-4b52-ba60-2b17c136cd7b \
+  --scope "$JOB_ID"
+```
+
+> Note: deploying with `az containerapp update --image ...` only swaps the image; it does **not**
+> apply the Bicep role assignment. If the app is ever recreated, its system-assigned identity gets
+> a new object id and this role must be re-granted (re-running `infra/deploy-app.sh` does this).
 
 ---
 
@@ -197,6 +228,34 @@ production reliability).
 - The worker image installs `kiro-cli` from `https://cli.kiro.dev/install` and needs `unzip`,
   `git`, `curl`, `ca-certificates`.
 
+### Infrastructure as code (source of truth for config + RBAC)
+
+`az containerapp update --image ...` is fine for a quick **image-only** swap, but it does NOT
+apply env config, secrets, the worker Job, or the RBAC that lets the orchestrator start the job.
+For anything beyond an image bump, use the Bicep deploy so config can't drift:
+
+```bash
+export DB_SERVER=REDACTED_DB_SERVER DB_USER=<user> DB_PASSWORD=<pw>
+export JWT_SECRET=$(openssl rand -hex 32)
+export ENCRYPTION_KEY=<existing 64-char hex — must not change or stored secrets break>
+export ACA_WORKER_SECRET=$(openssl rand -hex 32)
+# optional org-level git-clone fallback for workers:
+# export AZURE_DEVOPS_EXT_PAT=<pat>
+cd infra && ./deploy-app.sh --what-if   # preview
+cd infra && ./deploy-app.sh             # apply
+```
+
+`infra/modules/container-app.bicep` deploys the orchestrator (`kirofactory-api`), and via
+`infra/modules/worker-job.bicep` it also provisions the worker Job (`kirofactory-worker`) **and**
+the least-privilege `Container Apps Jobs Operator` role assignment scoped to that job. That means
+a fresh deploy always yields a consistent app + job + RBAC — the class of failure where the job
+was hand-created and the role was missing can no longer happen.
+
+> The Bicep app layer is reconciled to the live `SandboxForRM` environment (real names:
+> app `kirofactory-api`, ACR `kiroFactory`, env `managedEnvironment-SandboxForRM-8f71`, resolved by
+> `deploy-app.sh` via `CONTAINERAPP_ENV`). `main.bicep` remains a greenfield definition of the
+> environment itself — see the drift note at the top of that file.
+
 ---
 
 ## 7. Where to find logs
@@ -241,7 +300,9 @@ The backend keeps a lightweight error log surfaced in the UI under the **Errors*
 | `/api/health` shows `database: unavailable` | Azure SQL firewall blocking ACA outbound IPs | Enable "Allow Azure services" on `rm-sandbox`, or add IPs. |
 | Container crashes on boot with `spawn kiro-cli ENOENT` | Orchestrator tried to run kiro-cli locally (local mode) but it's not in the image | Set `WORKER_MODE=remote`. |
 | `Fatal: ACA mode enabled but configuration is missing` | An `ACA_*` env var is missing (often `ACA_WORKER_IMAGE`) | Add all required ACA vars, restart. |
-| `ChainedTokenCredential authentication failed` | Managed identity missing or no role on the job | Enable system-assigned identity on `kirofactory-api`, grant Contributor on the job. |
+| `ACA job start was denied by Azure (HTTP 403 … AuthorizationFailed)` | Orchestrator managed identity lacks the role on the worker job (often after an `az containerapp update`-only deploy or an app recreation) | Grant **Container Apps Jobs Operator** scoped to `kirofactory-worker` — see §4 "Managed Identity & permissions". NOT a credential issue. |
+| `ChainedTokenCredential authentication failed` | System-assigned identity disabled/missing on `kirofactory-api` | Enable system-assigned identity on `kirofactory-api`, then grant Container Apps Jobs Operator on the job. |
+| `ACA job start failed … 404 Not Found` | Worker job missing, or `ACA_JOB_NAME`/`ACA_RESOURCE_GROUP`/`ACA_SUBSCRIPTION_ID` wrong | Verify the job exists (`az containerapp job show -g SandboxForRM -n kirofactory-worker`) and the env vars match. |
 | WebSocket `Invalid frame header` | ACA ingress transport wrong | Ingress transport must be `http` (HTTP/1.1). `http2` breaks WebSockets. |
 | Old sessions error on startup | Sessions left `running` in DB from a previous host | Mark them `stopped` in the DB; they auto-restart on boot. |
 | Deploy didn't take effect | Restart reuses cached image | Use `az containerapp update --image ...` to force a new revision. |

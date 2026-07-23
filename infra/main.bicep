@@ -1,5 +1,13 @@
 // KiroFactory — Azure Container Apps Infrastructure
 // This Bicep template creates the foundational ACA environment.
+//
+// ⚠ DRIFT NOTE: The live environment in resource group "SandboxForRM" was partly created ad hoc
+// (portal / az CLI), so some live resource names differ from this template's defaults — notably
+// the Container Apps Environment is "managedEnvironment-SandboxForRM-8f71" and the Log Analytics
+// workspace is "workspacesandboxforrm86f0". This template is the greenfield definition; for the
+// existing environment, deploy-app.sh resolves resources by name (see CONTAINERAPP_ENV) rather
+// than recreating them. The app + worker layer (modules/container-app.bicep, modules/worker-job.bicep)
+// IS reconciled to the live environment and is safe to deploy against it.
 
 targetScope = 'resourceGroup'
 
@@ -14,8 +22,8 @@ param location string = resourceGroup().location
 @description('Container Apps Environment name')
 param environmentName string = '${baseName}-env'
 
-@description('Azure Container Registry name (must be globally unique, alphanumeric only)')
-param acrName string = '${replace(baseName, '-', '')}acr'
+@description('Azure Container Registry name (must be globally unique, alphanumeric only). Defaults to the live registry "kiroFactory" (login server kirofactory.azurecr.io).')
+param acrName string = 'kiroFactory'
 
 @description('ACR SKU tier')
 @allowed(['Basic', 'Standard', 'Premium'])

@@ -105,6 +105,59 @@ async function getAzureAccessToken(): Promise<string> {
 }
 
 // ---------------------------------------------------------------------------
+// Error diagnostics
+// ---------------------------------------------------------------------------
+
+/** Trim a raw Azure error body so it stays readable in logs and the Errors tab. */
+function truncate(text: string, max = 400): string {
+  const clean = text.replace(/\s+/g, " ").trim();
+  return clean.length > max ? `${clean.slice(0, max)}…` : clean;
+}
+
+/**
+ * Turn a failed Azure management API response into an actionable error message.
+ *
+ * The most common failure by far is an RBAC problem: the orchestrator's managed
+ * identity is missing the "Container Apps Jobs Operator" role on the worker job.
+ * That surfaces as HTTP 403 with code "AuthorizationFailed" and is NOT a user
+ * credential problem — the Azure DevOps / Atlassian / AWS credentials are injected
+ * into the worker only AFTER it starts, so they cannot cause this. This helper makes
+ * the distinction explicit so the failure is self-explanatory in the UI.
+ */
+function explainAcaHttpError(
+  operation: string,
+  status: number,
+  errorText: string,
+  config: AcaWorkerConfig
+): string {
+  const jobRef =
+    `job "${config.jobName}" (resource group "${config.resourceGroup}", ` +
+    `subscription ${config.subscriptionId})`;
+
+  // 401/403/AuthorizationFailed: the identity reached Azure but isn't permitted.
+  if (status === 401 || status === 403 || /AuthorizationFailed/i.test(errorText)) {
+    return (
+      `ACA ${operation} was denied by Azure (HTTP ${status}) for ${jobRef}. ` +
+      `This is an Azure RBAC problem, not a user credential problem: the orchestrator's ` +
+      `managed identity lacks permission to act on the job. Grant it the built-in ` +
+      `"Container Apps Jobs Operator" role scoped to the job (least privilege — avoid Contributor). ` +
+      `See ARCHITECTURE.md → "Managed Identity & permissions". Azure detail: ${truncate(errorText)}`
+    );
+  }
+
+  // 404: the job (or execution) does not exist / config points at the wrong place.
+  if (status === 404) {
+    return (
+      `ACA ${operation} failed: Azure returned 404 Not Found for ${jobRef}. ` +
+      `The Container Apps Job may not exist, or ACA_JOB_NAME / ACA_RESOURCE_GROUP / ` +
+      `ACA_SUBSCRIPTION_ID may be misconfigured. Azure detail: ${truncate(errorText)}`
+    );
+  }
+
+  return `ACA ${operation} failed (HTTP ${status}) for ${jobRef}: ${truncate(errorText)}`;
+}
+
+// ---------------------------------------------------------------------------
 // ACA Job Execution API
 // ---------------------------------------------------------------------------
 
@@ -249,9 +302,7 @@ export async function startWorkerJob(
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(
-      `ACA Job start failed (${response.status}): ${errorText}`
-    );
+    throw new Error(explainAcaHttpError("job start", response.status, errorText, config));
   }
 
   const result = await response.json() as {
@@ -294,7 +345,7 @@ export async function stopWorkerJob(
   if (!response.ok && response.status !== 404) {
     const errorText = await response.text();
     console.warn(
-      `[aca-spawner] Failed to stop job execution ${executionName}: ${response.status} ${errorText}`
+      `[aca-spawner] ${explainAcaHttpError(`stop of execution ${executionName}`, response.status, errorText, config)}`
     );
   }
 }
@@ -325,7 +376,8 @@ export async function getWorkerJobStatus(
   });
 
   if (!response.ok) {
-    throw new Error(`Failed to get job status: ${response.status}`);
+    const errorText = await response.text();
+    throw new Error(explainAcaHttpError("job status check", response.status, errorText, config));
   }
 
   const result = await response.json() as {
@@ -348,4 +400,61 @@ export async function getWorkerJobStatus(
  */
 export function isAcaModeEnabled(): boolean {
   return loadAcaConfig() !== null;
+}
+
+/** Result of the startup access preflight. Never represents an exception — see verifyAcaAccess. */
+export interface AcaAccessCheck {
+  ok: boolean;
+  status?: number;
+  message: string;
+}
+
+/**
+ * Preflight check: verify the orchestrator's managed identity can operate the worker job.
+ *
+ * Performs a GET on the job resource, which requires the same `Microsoft.App/jobs/read`
+ * permission that "Container Apps Jobs Operator" grants alongside start/stop. A success
+ * therefore strongly implies that starting a session will work, letting us surface an RBAC
+ * or identity misconfiguration at boot instead of at the first "start session" click.
+ *
+ * This never throws — it returns a structured result intended for logging at startup.
+ */
+export async function verifyAcaAccess(config: AcaWorkerConfig): Promise<AcaAccessCheck> {
+  try {
+    const token = await getAzureAccessToken();
+    const apiVersion = "2024-03-01";
+    const url =
+      `https://management.azure.com/subscriptions/${config.subscriptionId}` +
+      `/resourceGroups/${config.resourceGroup}` +
+      `/providers/Microsoft.App/jobs/${config.jobName}` +
+      `?api-version=${apiVersion}`;
+
+    const response = await fetch(url, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    if (response.ok) {
+      return {
+        ok: true,
+        status: response.status,
+        message: `managed identity can access ACA job "${config.jobName}" in "${config.resourceGroup}".`,
+      };
+    }
+
+    const errorText = await response.text();
+    return {
+      ok: false,
+      status: response.status,
+      message: explainAcaHttpError("job access preflight", response.status, errorText, config),
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      message:
+        `Could not verify ACA job access (token acquisition or network error): ${msg}. ` +
+        `The orchestrator's system-assigned managed identity may be disabled or unreachable.`,
+    };
+  }
 }

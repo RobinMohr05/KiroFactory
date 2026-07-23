@@ -18,10 +18,10 @@ set -euo pipefail
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
-ACR_NAME="${ACR_NAME:-kirofactoryacr}"
-IMAGE_NAME="kirofactory"
+ACR_NAME="${ACR_NAME:-kiroFactory}"
+IMAGE_NAME="kirofactory-api"
 IMAGE_TAG="latest"
-RESOURCE_GROUP="${RESOURCE_GROUP:-kirofactory-rg}"
+RESOURCE_GROUP="${RESOURCE_GROUP:-SandboxForRM}"
 BUILD_ONLY=false
 
 # Project root (one level up from infra/)
