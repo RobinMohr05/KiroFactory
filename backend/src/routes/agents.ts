@@ -9,6 +9,7 @@ import {
 import { broadcast } from "../websocket-handler.js";
 import type { CreateAgentInput, UpdateAgentInput } from "../types.js";
 import { requireAuth, getUserId } from "../middleware/auth.js";
+import { log, toErrorFields } from "../logger.js";
 
 const router = Router();
 
@@ -22,7 +23,13 @@ router.get("/", async (req: Request, res: Response) => {
     const agents = await getAllAgents(userId);
     res.json(agents);
   } catch (err) {
-    console.error("GET /api/agents error:", err);
+    log.error("route-error", {
+      component: "agents",
+      method: "GET",
+      path: "/api/agents",
+      ...toErrorFields(err),
+      msg: "Failed to list agents",
+    });
     res.status(500).json({ error: "Failed to list agents" });
   }
 });
@@ -39,7 +46,13 @@ router.get("/:name", async (req: Request, res: Response) => {
     }
     res.json(agent);
   } catch (err) {
-    console.error("GET /api/agents/:name error:", err);
+    log.error("route-error", {
+      component: "agents",
+      method: "GET",
+      path: "/api/agents/:name",
+      ...toErrorFields(err),
+      msg: "Failed to read agent",
+    });
     res.status(500).json({ error: "Failed to read agent" });
   }
 });
@@ -66,7 +79,13 @@ router.post("/", async (req: Request, res: Response) => {
     broadcast({ type: "agent-created", agent });
     res.status(201).json(agent);
   } catch (err) {
-    console.error("POST /api/agents error:", err);
+    log.error("route-error", {
+      component: "agents",
+      method: "POST",
+      path: "/api/agents",
+      ...toErrorFields(err),
+      msg: "Failed to create agent",
+    });
     res.status(500).json({ error: "Failed to create agent" });
   }
 });
@@ -98,7 +117,13 @@ router.put("/:name", async (req: Request, res: Response) => {
       res.status(409).json({ error: err.message });
       return;
     }
-    console.error("PUT /api/agents/:name error:", err);
+    log.error("route-error", {
+      component: "agents",
+      method: "PUT",
+      path: "/api/agents/:name",
+      ...toErrorFields(err),
+      msg: "Failed to update agent",
+    });
     res.status(500).json({ error: "Failed to update agent" });
   }
 });
@@ -124,7 +149,13 @@ router.delete("/:name", async (req: Request, res: Response) => {
     broadcast({ type: "agent-deleted", agentName: name });
     res.json({ success: true });
   } catch (err) {
-    console.error("DELETE /api/agents/:name error:", err);
+    log.error("route-error", {
+      component: "agents",
+      method: "DELETE",
+      path: "/api/agents/:name",
+      ...toErrorFields(err),
+      msg: "Failed to delete agent",
+    });
     res.status(500).json({ error: "Failed to delete agent" });
   }
 });
@@ -152,7 +183,13 @@ router.post("/:name/tabs", async (req: Request, res: Response) => {
     broadcast({ type: "agent-updated", agent: updated! });
     res.json(updated);
   } catch (err) {
-    console.error("POST /api/agents/:name/tabs error:", err);
+    log.error("route-error", {
+      component: "agents",
+      method: "POST",
+      path: "/api/agents/:name/tabs",
+      ...toErrorFields(err),
+      msg: "Failed to assign agent to tabs",
+    });
     res.status(500).json({ error: "Failed to assign agent to tabs" });
   }
 });

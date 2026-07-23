@@ -14,6 +14,7 @@ import { broadcast } from "../websocket-handler.js";
 import { markTaskBroadcast } from "../broadcast-tracker.js";
 import { requireAuth, getUserId } from "../middleware/auth.js";
 import type { CreateTaskInput, UpdateTaskInput } from "../types.js";
+import { log, toErrorFields } from "../logger.js";
 
 const router = Router();
 
@@ -44,7 +45,13 @@ router.get("/", async (req: Request, res: Response) => {
     });
     res.json(tasks);
   } catch (err) {
-    console.error("GET /api/tasks error:", err);
+    log.error("route-error", {
+      component: "tasks",
+      method: "GET",
+      path: "/api/tasks",
+      ...toErrorFields(err),
+      msg: "Failed to fetch tasks",
+    });
     res.status(500).json({ error: "Failed to fetch tasks" });
   }
 });
@@ -81,7 +88,13 @@ router.post("/", async (req: Request, res: Response) => {
     markTaskBroadcast(task.id);
     res.status(201).json(task);
   } catch (err) {
-    console.error("POST /api/tasks error:", err);
+    log.error("route-error", {
+      component: "tasks",
+      method: "POST",
+      path: "/api/tasks",
+      ...toErrorFields(err),
+      msg: "Failed to create task",
+    });
     res.status(500).json({ error: "Failed to create task" });
   }
 });
@@ -110,7 +123,13 @@ router.get("/:id", async (req: Request, res: Response) => {
     }
     res.json(task);
   } catch (err) {
-    console.error("GET /api/tasks/:id error:", err);
+    log.error("route-error", {
+      component: "tasks",
+      method: "GET",
+      path: "/api/tasks/:id",
+      ...toErrorFields(err),
+      msg: "Failed to fetch task",
+    });
     res.status(500).json({ error: "Failed to fetch task" });
   }
 });
@@ -142,7 +161,13 @@ router.put("/:id", async (req: Request, res: Response) => {
     markTaskBroadcast(task.id);
     res.json(task);
   } catch (err) {
-    console.error("PUT /api/tasks/:id error:", err);
+    log.error("route-error", {
+      component: "tasks",
+      method: "PUT",
+      path: "/api/tasks/:id",
+      ...toErrorFields(err),
+      msg: "Failed to update task",
+    });
     res.status(500).json({ error: "Failed to update task" });
   }
 });
@@ -172,7 +197,13 @@ router.delete("/:id", async (req: Request, res: Response) => {
     broadcast({ type: "task-deleted", taskId: id });
     res.status(204).send();
   } catch (err) {
-    console.error("DELETE /api/tasks/:id error:", err);
+    log.error("route-error", {
+      component: "tasks",
+      method: "DELETE",
+      path: "/api/tasks/:id",
+      ...toErrorFields(err),
+      msg: "Failed to delete task",
+    });
     res.status(500).json({ error: "Failed to delete task" });
   }
 });
@@ -217,7 +248,13 @@ router.post("/:id/tabs", async (req: Request, res: Response) => {
     markTaskBroadcast(task.id);
     res.json(task);
   } catch (err) {
-    console.error("POST /api/tasks/:id/tabs error:", err);
+    log.error("route-error", {
+      component: "tasks",
+      method: "POST",
+      path: "/api/tasks/:id/tabs",
+      ...toErrorFields(err),
+      msg: "Failed to assign tabs",
+    });
     res.status(500).json({ error: "Failed to assign tabs" });
   }
 });
@@ -256,7 +293,13 @@ router.delete("/:id/tabs/:tabId", async (req: Request, res: Response) => {
     markTaskBroadcast(task.id);
     res.json(task);
   } catch (err) {
-    console.error("DELETE /api/tasks/:id/tabs/:tabId error:", err);
+    log.error("route-error", {
+      component: "tasks",
+      method: "DELETE",
+      path: "/api/tasks/:id/tabs/:tabId",
+      ...toErrorFields(err),
+      msg: "Failed to remove from tab",
+    });
     res.status(500).json({ error: "Failed to remove from tab" });
   }
 });

@@ -4,6 +4,7 @@ import type { IncomingMessage } from "http";
 import jwt from "jsonwebtoken";
 import type { WsServerMessage, WsClientMessage } from "./types.js";
 import { startSession, stopSession, sendPrompt, getSessionOutput } from "./session-manager.js";
+import { log } from "./logger.js";
 
 const JWT_SECRET = process.env.JWT_SECRET || "kirofactory-dev-secret-change-in-production";
 const COOKIE_NAME = "kf_session";
@@ -61,12 +62,22 @@ export function setupWebSocket(server: Server): WebSocketServer {
     // Authenticate the WebSocket connection
     const token = extractWsToken(req);
     if (!token) {
+      log.warn("ws-auth-rejected", {
+        component: "ws",
+        reason: "missing token",
+        remoteAddress: req.socket.remoteAddress,
+      });
       ws.close(4001, "Authentication required");
       return;
     }
 
     const userId = verifyWsToken(token);
     if (!userId) {
+      log.warn("ws-auth-rejected", {
+        component: "ws",
+        reason: "invalid or expired token",
+        remoteAddress: req.socket.remoteAddress,
+      });
       ws.close(4001, "Invalid or expired token");
       return;
     }

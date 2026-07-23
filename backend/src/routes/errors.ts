@@ -6,6 +6,7 @@ import { broadcast } from "../websocket-handler.js";
 import { markTaskBroadcast } from "../broadcast-tracker.js";
 import { isDbAvailable } from "../db/connection.js";
 import { requireAuth, getUserId } from "../middleware/auth.js";
+import { log, toErrorFields } from "../logger.js";
 
 const router = Router();
 
@@ -18,7 +19,13 @@ router.get("/", (_req: Request, res: Response) => {
     const errors = getAllErrors();
     res.json(errors);
   } catch (err) {
-    console.error("GET /api/errors error:", err);
+    log.error("route-error", {
+      component: "errors",
+      method: "GET",
+      path: "/api/errors",
+      ...toErrorFields(err),
+      msg: "Failed to fetch errors",
+    });
     res.status(500).json({ error: "Failed to fetch errors" });
   }
 });
@@ -105,7 +112,13 @@ router.post("/:id/create-task", async (req: Request, res: Response) => {
 
     res.status(201).json({ task, errorId });
   } catch (err) {
-    console.error("POST /api/errors/:id/create-task error:", err);
+    log.error("route-error", {
+      component: "errors",
+      method: "POST",
+      path: "/api/errors/:id/create-task",
+      ...toErrorFields(err),
+      msg: "Failed to create bug task",
+    });
     res.status(500).json({ error: "Failed to create bug task" });
   }
 });
@@ -116,7 +129,13 @@ router.delete("/", (_req: Request, res: Response) => {
     clearErrors();
     res.json({ success: true });
   } catch (err) {
-    console.error("DELETE /api/errors error:", err);
+    log.error("route-error", {
+      component: "errors",
+      method: "DELETE",
+      path: "/api/errors",
+      ...toErrorFields(err),
+      msg: "Failed to clear errors",
+    });
     res.status(500).json({ error: "Failed to clear errors" });
   }
 });

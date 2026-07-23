@@ -1,5 +1,6 @@
 import sql from "mssql";
 import dotenv from "dotenv";
+import { log } from "../logger.js";
 
 dotenv.config();
 
@@ -47,23 +48,34 @@ export async function tryConnect(
       }
       pool = await new sql.ConnectionPool(config).connect();
       dbAvailable = true;
-      console.log(`[db] Connected to ${config.server}/${config.database}`);
+      log.info("db-connected", {
+        component: "db",
+        server: config.server,
+        database: config.database,
+        msg: `Connected to ${config.server}/${config.database}`,
+      });
       return pool;
     } catch (err: any) {
       const isLast = attempt === retries + 1;
       if (isLast) {
         dbAvailable = false;
-        console.warn(
-          `[db] ⚠ Could not connect to database (${config.server}/${config.database}) after ${attempt} attempt(s): ${err.message || err}`
-        );
-        console.warn(
-          "[db] ⚠ The server will continue running but database-dependent features will be unavailable."
-        );
+        log.error("db-connect-failed", {
+          component: "db",
+          server: config.server,
+          database: config.database,
+          attempts: attempt,
+          error: err?.message || String(err),
+          msg: "Could not connect to database — DB-dependent features will be unavailable until it is reachable",
+        });
         return null;
       }
-      console.log(
-        `[db] Connection attempt ${attempt} failed, retrying in ${delayMs / 1000}s... (${err.message || err})`
-      );
+      log.warn("db-connect-retry", {
+        component: "db",
+        attempt,
+        retryInSeconds: delayMs / 1000,
+        error: err?.message || String(err),
+        msg: `Connection attempt ${attempt} failed, retrying in ${delayMs / 1000}s`,
+      });
       await new Promise((r) => setTimeout(r, delayMs));
     }
   }
@@ -93,7 +105,7 @@ export async function closePool(): Promise<void> {
     await pool.close();
     pool = null;
     dbAvailable = false;
-    console.log("[db] Connection pool closed");
+    log.info("db-pool-closed", { component: "db", msg: "Connection pool closed" });
   }
 }
 

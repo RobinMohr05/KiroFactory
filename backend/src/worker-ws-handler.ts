@@ -11,6 +11,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import type { Server } from "http";
 import type { IncomingMessage } from "http";
 import type { OutputEntry, Activity } from "./types.js";
+import { log } from "./logger.js";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -104,6 +105,11 @@ export function setupWorkerWebSocket(server: Server): WebSocketServer {
     // Auth timeout — close if not authenticated within 10s
     const authTimer = setTimeout(() => {
       if (!authenticated) {
+        log.warn("worker-auth-timeout", {
+          component: "worker-ws",
+          timeoutMs: AUTH_TIMEOUT_MS,
+          msg: "Worker did not authenticate within the timeout window; closing connection",
+        });
         ws.close(4001, "Authentication timeout");
       }
     }, AUTH_TIMEOUT_MS);
@@ -128,12 +134,28 @@ export function setupWorkerWebSocket(server: Server): WebSocketServer {
             // Register this worker connection
             workerConnections.set(sessionId, ws);
 
+            log.info("worker-authenticated", {
+              component: "worker-ws",
+              sessionId,
+              msg: "Worker authenticated and connected",
+            });
             ws.send(JSON.stringify({ action: "auth-ok" }));
           } else {
+            log.warn("worker-auth-failed", {
+              component: "worker-ws",
+              sessionId: msg.sessionId ?? null,
+              reason: !msg.sessionId ? "missing sessionId" : "invalid secret",
+              msg: "Worker authentication rejected",
+            });
             ws.send(JSON.stringify({ action: "auth-failed", reason: "Invalid credentials" }));
             ws.close(4003, "Authentication failed");
           }
         } else {
+          log.warn("worker-auth-missing", {
+            component: "worker-ws",
+            action: msg.action,
+            msg: "Worker sent a non-auth message before authenticating; closing connection",
+          });
           ws.close(4001, "Must authenticate first");
         }
         return;
@@ -179,13 +201,23 @@ export function setupWorkerWebSocket(server: Server): WebSocketServer {
         workerConnections.delete(sessionId);
         // Notify handler that worker disconnected (treat as exited)
         if (authenticated && eventHandler) {
+          log.info("worker-disconnected", {
+            component: "worker-ws",
+            sessionId,
+            msg: "Worker socket closed",
+          });
           eventHandler.onWorkerExited(sessionId, null, "disconnected");
         }
       }
     });
 
-    ws.on("error", () => {
+    ws.on("error", (err) => {
       clearTimeout(authTimer);
+      log.warn("worker-ws-error", {
+        component: "worker-ws",
+        sessionId,
+        error: err instanceof Error ? err.message : String(err),
+      });
       if (sessionId) {
         workerConnections.delete(sessionId);
       }

@@ -3,6 +3,7 @@ import { getUserId } from "../middleware/auth.js";
 import { getCredentialStatus, updateCredentials } from "../db/credentials.js";
 import { validateCredential } from "../credential-validator.js";
 import type { CredentialKey } from "../types.js";
+import { log, toErrorFields } from "../logger.js";
 
 const router = Router();
 
@@ -25,7 +26,13 @@ router.get("/", async (req: Request, res: Response) => {
     const status = await getCredentialStatus(userId);
     res.json(status);
   } catch (err) {
-    console.error("GET /api/users/me/credentials error:", err);
+    log.error("route-error", {
+      component: "credentials",
+      method: "GET",
+      path: "/api/users/me/credentials",
+      ...toErrorFields(err),
+      msg: "Failed to fetch credential status",
+    });
     res.status(500).json({ error: "Failed to fetch credential status" });
   }
 });
@@ -119,7 +126,13 @@ router.put("/", async (req: Request, res: Response) => {
       ...(Object.keys(warnings).length > 0 ? { warnings } : {}),
     });
   } catch (err) {
-    console.error("PUT /api/users/me/credentials error:", err);
+    log.error("route-error", {
+      component: "credentials",
+      method: "PUT",
+      path: "/api/users/me/credentials",
+      ...toErrorFields(err),
+      msg: "Failed to update credentials",
+    });
     res.status(500).json({ error: "Failed to update credentials" });
   }
 });
