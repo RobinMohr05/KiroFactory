@@ -215,7 +215,7 @@ export async function startWorkerJob(
   // Build environment variables for the worker container
   const envVars: Array<{ name: string; value: string }> = [
     { name: "SESSION_ID", value: sessionId },
-    { name: "ORCHESTRATOR_WS_URL", value: config.orchestratorUrl },
+    { name: "ORCHESTRATOR_URL", value: config.orchestratorUrl },
     { name: "WORKER_SECRET", value: config.workerSecret },
     { name: "KIRO_API_KEY", value: kiroApiKey },
     { name: "AGENT_NAME", value: agentName },
@@ -235,11 +235,11 @@ export async function startWorkerJob(
   // Git workspace configuration (clone + branch in worker)
   if (gitOptions) {
     envVars.push(
-      { name: "REPOSITORY_URL", value: gitOptions.repositoryUrl },
+      { name: "REPO_URL", value: gitOptions.repositoryUrl },
       { name: "DEV_BRANCH", value: gitOptions.devBranch || "develop" }
     );
     if (config.azureDevOpsPat) {
-      envVars.push({ name: "AZURE_DEVOPS_EXT_PAT", value: config.azureDevOpsPat });
+      envVars.push({ name: "AZURE_DEVOPS_PAT", value: config.azureDevOpsPat });
     }
   }
 
