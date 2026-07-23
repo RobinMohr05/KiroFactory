@@ -216,13 +216,13 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
         external: true
         targetPort: 3500
         transport: 'http'
-        allowInsecure: false // Redirect HTTP → HTTPS
+        allowInsecure: false // Redirect HTTP -> HTTPS
         clientCertificateMode: 'ignore'
-        // Sticky sessions ensure WebSocket connections stay on the same replica
-        // (required for real-time task updates via ws://)
-        stickySessions: {
-          affinity: 'sticky'
-        }
+        // NOTE: Sticky sessions (affinity) require 'Multiple' revision mode and are omitted
+        // here — the orchestrator runs in Single revision mode. WebSocket clients reconnect,
+        // and at minReplicas=1 all connections land on the same replica anyway. If you later
+        // scale out and need WS affinity, switch activeRevisionsMode to 'Multiple' and re-add
+        // stickySessions.
       }
       // ACR registry credentials (admin user)
       registries: [
