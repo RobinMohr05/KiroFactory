@@ -284,11 +284,10 @@ export async function startWorkerJob(
     });
   }
 
-  // The request body overrides the container template for this execution
+  // The request body is a JobExecutionTemplate — containers directly at the top level.
+  // See: https://learn.microsoft.com/en-us/rest/api/resource-manager/containerapps/jobs/start
   const body = {
-    template: {
-      containers,
-    },
+    containers,
   };
 
   const response = await fetch(url, {
