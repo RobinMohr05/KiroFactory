@@ -30,7 +30,7 @@ import { getUserKiroApiKey, getUserById } from "./db/users.js";
 import { getAllDecryptedCredentials } from "./db/credentials.js";
 import { isDbAvailable } from "./db/connection.js";
 import { recordError } from "./error-store.js";
-import { logSessionEvent, logWorkerEvent } from "./logger.js";
+import { log, logSessionEvent, logWorkerEvent, toErrorFields } from "./logger.js";
 import { includesGenericTab, getAgentTabs, getTabById } from "./db/tabs.js";
 import { buildProxyServersConfig, type SessionCredentials } from "./mcp-proxy-config.js";
 import {
@@ -88,11 +88,13 @@ const WORKER_MODE: "local" | "remote" = (() => {
 
 const ACA_MODE = WORKER_MODE === "remote";
 
-if (ACA_MODE) {
-  console.log("[session-manager] Remote worker mode (WORKER_MODE=remote) — sessions will spawn as Azure Container Apps Jobs.");
-} else {
-  console.log("[session-manager] Local worker mode (WORKER_MODE=local) — sessions will spawn kiro-cli as child processes.");
-}
+log.info("worker-mode", {
+  component: "session-manager",
+  mode: ACA_MODE ? "remote" : "local",
+  msg: ACA_MODE
+    ? "Remote worker mode — sessions spawn as Azure Container Apps Jobs"
+    : "Local worker mode — sessions spawn kiro-cli as child processes",
+});
 
 // ---------------------------------------------------------------------------
 // In-memory session store
@@ -164,7 +166,11 @@ export async function initSessions(): Promise<void> {
         } as Session & { __wasRunning?: boolean };
       });
     } catch (err) {
-      console.warn("[session-manager] Failed to load sessions from DB:", err);
+      log.warn("session-restore-failed", {
+        component: "session-manager",
+        msg: "Failed to load persisted sessions from DB",
+        ...toErrorFields(err),
+      });
     }
   }
 
@@ -198,28 +204,48 @@ export async function initSessions(): Promise<void> {
   }
 
   if (persisted.length > 0) {
-    console.log(`[session-manager] Restored ${persisted.length} session(s) from database.`);
+    log.info("sessions-restored", {
+      component: "session-manager",
+      count: persisted.length,
+      msg: `Restored ${persisted.length} session(s) from database`,
+    });
   }
 
   // Auto-restart sessions that were running before the server restarted.
   // Use a short delay to allow the rest of the server to finish initializing.
   if (toRestart.length > 0) {
-    console.log(`[session-manager] Auto-restarting ${toRestart.length} session(s) that were active before restart...`);
+    log.info("sessions-auto-restarting", {
+      component: "session-manager",
+      count: toRestart.length,
+      msg: `Auto-restarting ${toRestart.length} session(s) that were active before restart`,
+    });
     setTimeout(async () => {
       // Reset any orphaned in-progress tasks (their kiro-cli process is dead)
       try {
         const { resetOrphanedTasks } = await import("./agent/task-claimer.js");
         const resetCount = await resetOrphanedTasks();
         if (resetCount > 0) {
-          console.log(`[session-manager] Reset ${resetCount} orphaned in-progress task(s) back to "todo".`);
+          log.info("orphaned-tasks-reset", {
+            component: "session-manager",
+            count: resetCount,
+            msg: `Reset ${resetCount} orphaned in-progress task(s) back to "todo"`,
+          });
         }
       } catch (err) {
-        console.warn("[session-manager] Could not reset orphaned tasks:", err);
+        log.warn("orphaned-tasks-reset-failed", {
+          component: "session-manager",
+          msg: "Could not reset orphaned in-progress tasks",
+          ...toErrorFields(err),
+        });
       }
 
       for (const id of toRestart) {
         startSession(id).catch((err) => {
-          console.error(`[session-manager] Failed to auto-restart session ${id}:`, err);
+          log.error("session-auto-restart-failed", {
+            component: "session-manager",
+            sessionId: id,
+            ...toErrorFields(err),
+          });
         });
       }
     }, 2000);
@@ -366,7 +392,11 @@ export function createSession(input: CreateSessionInput): Session {
   // Also insert into DB if available
   if (isDbAvailable()) {
     insertSession(session.meta).catch((err) => {
-      console.warn("[session-manager] Failed to insert session to DB:", err);
+      log.warn("session-db-insert-failed", {
+        component: "session-manager",
+        sessionId: id,
+        ...toErrorFields(err),
+      });
     });
   }
 
@@ -409,7 +439,11 @@ export function deleteSession(id: string): boolean {
   // Also delete from DB if available
   if (isDbAvailable()) {
     deleteSessionFromDb(id).catch((err) => {
-      console.warn("[session-manager] Failed to delete session from DB:", err);
+      log.warn("session-db-delete-failed", {
+        component: "session-manager",
+        sessionId: id,
+        ...toErrorFields(err),
+      });
     });
   }
 
@@ -442,6 +476,14 @@ export async function startSession(id: string): Promise<boolean> {
     appendOutput(session, { timestamp: now(), stream: "stderr", text: `Fatal: ${msg}` });
     setStatus(session, "error");
     setActivity(session, { type: "idle" });
+
+    logSessionEvent("session-error", session.meta.id, {
+      agent: session.meta.agent,
+      name: session.meta.name,
+      mode: ACA_MODE ? "remote" : "local",
+      taskId: session.meta.currentTaskId,
+      ...toErrorFields(err),
+    });
 
     // Record the error for the UI
     recordError({
@@ -1062,6 +1104,13 @@ async function runSessionAca(managed: ManagedSession): Promise<void> {
 
     managed.acaExecutionName = execution.executionName;
 
+    logWorkerEvent("worker-spawned", meta.id, {
+      agent: meta.agent,
+      executionName: execution.executionName,
+      status: execution.status,
+      msg: `ACA worker job started: ${execution.executionName}`,
+    });
+
     appendOutput(managed, {
       timestamp: now(),
       stream: "system",
@@ -1327,6 +1376,11 @@ function initWorkerEventHandler(): void {
     onWorkerReady(sessionId: string, acpSessionId: string) {
       const session = sessions.get(sessionId);
       if (!session) return;
+      logWorkerEvent("worker-connected", sessionId, {
+        agent: session.meta.agent,
+        acpSessionId,
+        msg: "Worker connected and ready",
+      });
       appendOutput(session, {
         timestamp: now(),
         stream: "system",
@@ -1369,6 +1423,17 @@ function initWorkerEventHandler(): void {
       const reason = signal === "disconnected"
         ? "Worker disconnected"
         : `Worker exited (code: ${exitCode}, signal: ${signal})`;
+
+      // A nonzero exit code (or an unexpected disconnect) is a crash; a clean
+      // exit is a normal lifecycle end.
+      const crashed = signal === "disconnected" || (exitCode !== null && exitCode !== 0);
+      logWorkerEvent(crashed ? "worker-crashed" : "worker-exited", sessionId, {
+        agent: session.meta.agent,
+        exitCode,
+        signal,
+        msg: reason,
+      });
+
       appendOutput(session, { timestamp: now(), stream: "system", text: reason });
       // Reject any pending prompt awaiter
       if (session.acaPromptRejecter) {
@@ -1381,6 +1446,11 @@ function initWorkerEventHandler(): void {
     onWorkerShutdown(sessionId: string, exitCode: number) {
       const session = sessions.get(sessionId);
       if (!session) return;
+      logWorkerEvent(exitCode === 0 ? "worker-exited" : "worker-crashed", sessionId, {
+        agent: session.meta.agent,
+        exitCode,
+        msg: `Worker shutdown (exit code: ${exitCode})`,
+      });
       appendOutput(session, {
         timestamp: now(),
         stream: "system",

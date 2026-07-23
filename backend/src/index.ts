@@ -10,7 +10,7 @@ import { fileURLToPath } from "url";
 
 import { setupWebSocket, broadcast } from "./websocket-handler.js";
 import { setupWorkerWebSocket } from "./worker-ws-handler.js";
-import { isAcaModeEnabled } from "./aca-worker-spawner.js";
+import { isAcaModeEnabled, loadAcaConfig, verifyAcaAccess } from "./aca-worker-spawner.js";
 import { requireAuth, isPublicPath } from "./middleware/auth.js";
 import authRouter from "./routes/auth.js";
 import tasksRouter from "./routes/tasks.js";
@@ -26,7 +26,7 @@ import { shutdownAllSessions, initSessions } from "./session-manager.js";
 import { getChangedTasksSince } from "./db/tasks.js";
 import { wasRecentlyBroadcast } from "./broadcast-tracker.js";
 import { apiErrorLogger, uncaughtErrorLogger } from "./middleware/error-logger.js";
-import { logPoolMetrics } from "./logger.js";
+import { log, logPoolMetrics } from "./logger.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -99,7 +99,11 @@ setupWebSocket(server);
 // Attach internal worker WebSocket endpoint (/internal/worker) when ACA mode is available
 if (isAcaModeEnabled()) {
   setupWorkerWebSocket(server);
-  console.log("[startup] Worker WebSocket endpoint enabled at /internal/worker");
+  log.info("worker-ws-enabled", {
+    component: "startup",
+    path: "/internal/worker",
+    msg: "Worker WebSocket endpoint enabled",
+  });
 }
 
 // ─── DB Change Detector (poll loop) ─────────────────────────────────────────
@@ -127,8 +131,12 @@ async function pollForChanges(): Promise<void> {
     }
     lastPollTime = now;
   } catch (err) {
-    // Connection may have dropped mid-session — log once and keep going
-    console.warn("[poll] ⚠ Poll cycle failed — will retry on next interval.");
+    // Connection may have dropped mid-session — will retry on next interval.
+    log.warn("poll-failed", {
+      component: "poll",
+      msg: "Task change poll cycle failed; will retry on next interval",
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 }
 
@@ -142,42 +150,107 @@ async function start(): Promise<void> {
 
   if (isDbAvailable()) {
     await runMigration();
-    console.log("[startup] Database ready.");
+    log.info("db-ready", { component: "startup", msg: "Database migrated and ready" });
 
     // Restore sessions from DB (requires DB connection)
     await initSessions();
   } else {
-    console.warn(
-      "[startup] ⚠ Server starting WITHOUT database connectivity."
-    );
-    console.warn(
-      "[startup] ⚠ The UI will load but task/tab features will be unavailable until the DB is reachable."
-    );
+    log.warn("db-unavailable-at-startup", {
+      component: "startup",
+      msg: "Server starting WITHOUT database connectivity — task/tab features unavailable until the DB is reachable",
+    });
   }
 
   server.listen(PORT, () => {
-    console.log(`KiroFactory server running on http://localhost:${PORT}`);
+    log.info("server-listening", {
+      component: "startup",
+      port: PORT,
+      msg: `KiroFactory server running on http://localhost:${PORT}`,
+    });
   });
+
+  // ACA preflight: verify the managed identity can operate the worker job.
+  // Non-blocking and non-fatal — it just surfaces RBAC/identity problems at boot
+  // (a missing "Container Apps Jobs Operator" role) instead of at the first session start.
+  if (isAcaModeEnabled()) {
+    const acaConfig = loadAcaConfig();
+    if (acaConfig) {
+      verifyAcaAccess(acaConfig)
+        .then((check) => {
+          if (check.ok) {
+            log.info("aca-preflight-ok", { component: "startup", msg: check.message });
+          } else {
+            log.error("aca-preflight-failed", {
+              component: "startup",
+              msg: `ACA preflight failed — ${check.message}`,
+            });
+          }
+        })
+        .catch(() => {
+          /* verifyAcaAccess never throws; this is a safety net only */
+        });
+    }
+  }
 
   // Start the change detector poll loop
   pollInterval = setInterval(pollForChanges, 1500);
 
-  // Start periodic pool metrics emission (every 60s) for Azure Monitor dashboard
-  poolMetricsInterval = setInterval(() => {
-    if (!isDbAvailable()) return;
-    const stats = getPoolStats();
-    if (stats) {
-      logPoolMetrics(stats);
-    }
-  }, 60_000);
+  // Start pool metrics sampling. Rather than emit an identical "all is well"
+  // snapshot every minute (pure noise), we only log when the numbers carry
+  // signal: the pool is under back-pressure, it's actively in use, the values
+  // changed since the last emission, or a rare idle heartbeat is due.
+  poolMetricsInterval = setInterval(samplePoolMetrics, POOL_SAMPLE_INTERVAL_MS);
+}
+
+// ─── Pool metrics sampling ───────────────────────────────────────────────────
+
+const POOL_SAMPLE_INTERVAL_MS = 60_000;
+// Emit at most one "idle/unchanged" heartbeat every 30 minutes so the dashboard
+// can confirm the pool is alive without flooding the logs.
+const POOL_HEARTBEAT_MS = 30 * 60_000;
+
+let lastPoolSignature: string | null = null;
+let lastPoolEmitAt = 0;
+
+function samplePoolMetrics(): void {
+  if (!isDbAvailable()) return;
+  const stats = getPoolStats();
+  if (!stats) return;
+
+  // Back-pressure: callers are queued waiting for a connection, or every
+  // connection is checked out. This is the actionable signal worth a warning.
+  const pressure = stats.poolPending > 0 || stats.poolBorrowed >= stats.poolSize;
+  const active = stats.poolBorrowed > 0 || stats.poolPending > 0;
+
+  const signature = `${stats.poolSize}/${stats.poolAvailable}/${stats.poolPending}/${stats.poolBorrowed}`;
+  const changed = signature !== lastPoolSignature;
+  const heartbeatDue = Date.now() - lastPoolEmitAt >= POOL_HEARTBEAT_MS;
+
+  if (pressure || active || changed || heartbeatDue) {
+    logPoolMetrics(stats, {
+      pressure,
+      reason: pressure
+        ? "connection pool saturated"
+        : active
+          ? "pool in use"
+          : changed
+            ? "pool state changed"
+            : "heartbeat",
+    });
+    lastPoolSignature = signature;
+    lastPoolEmitAt = Date.now();
+  }
 }
 
 // ─── Graceful Shutdown ───────────────────────────────────────────────────────
 
 async function shutdown(): Promise<void> {
-  console.log("\nShutting down...");
+  log.info("shutdown", { component: "startup", msg: "Shutting down..." });
   if (pollInterval) {
     clearInterval(pollInterval);
+  }
+  if (poolMetricsInterval) {
+    clearInterval(poolMetricsInterval);
   }
 
   await shutdownAllSessions();

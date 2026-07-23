@@ -11,6 +11,7 @@ import {
 } from "../session-manager.js";
 import { requireAuth, getUserId } from "../middleware/auth.js";
 import type { CreateSessionInput } from "../types.js";
+import { log, toErrorFields } from "../logger.js";
 
 const router = Router();
 
@@ -29,7 +30,13 @@ router.get("/", (req: Request, res: Response) => {
     const sessions = getAllSessions(userId);
     res.json(sessions);
   } catch (err) {
-    console.error("GET /api/sessions error:", err);
+    log.error("route-error", {
+      component: "sessions",
+      method: "GET",
+      path: "/api/sessions",
+      ...toErrorFields(err),
+      msg: "Failed to fetch sessions",
+    });
     res.status(500).json({ error: "Failed to fetch sessions" });
   }
 });
@@ -48,7 +55,13 @@ router.post("/", (req: Request, res: Response) => {
     const session = createSession(input);
     res.status(201).json(session);
   } catch (err) {
-    console.error("POST /api/sessions error:", err);
+    log.error("route-error", {
+      component: "sessions",
+      method: "POST",
+      path: "/api/sessions",
+      ...toErrorFields(err),
+      msg: "Failed to create session",
+    });
     res.status(500).json({ error: "Failed to create session" });
   }
 });
@@ -64,7 +77,13 @@ router.get("/:id", (req: Request, res: Response) => {
     }
     res.json(session);
   } catch (err) {
-    console.error("GET /api/sessions/:id error:", err);
+    log.error("route-error", {
+      component: "sessions",
+      method: "GET",
+      path: "/api/sessions/:id",
+      ...toErrorFields(err),
+      msg: "Failed to fetch session",
+    });
     res.status(500).json({ error: "Failed to fetch session" });
   }
 });
@@ -81,7 +100,13 @@ router.get("/:id/output", (req: Request, res: Response) => {
     const output = getSessionOutput(paramId(req));
     res.json(output);
   } catch (err) {
-    console.error("GET /api/sessions/:id/output error:", err);
+    log.error("route-error", {
+      component: "sessions",
+      method: "GET",
+      path: "/api/sessions/:id/output",
+      ...toErrorFields(err),
+      msg: "Failed to fetch output",
+    });
     res.status(500).json({ error: "Failed to fetch output" });
   }
 });
@@ -102,7 +127,13 @@ router.post("/:id/start", async (req: Request, res: Response) => {
     }
     res.json({ success: true });
   } catch (err) {
-    console.error("POST /api/sessions/:id/start error:", err);
+    log.error("route-error", {
+      component: "sessions",
+      method: "POST",
+      path: "/api/sessions/:id/start",
+      ...toErrorFields(err),
+      msg: "Failed to start session",
+    });
     res.status(500).json({ error: "Failed to start session" });
   }
 });
@@ -123,7 +154,13 @@ router.post("/:id/stop", async (req: Request, res: Response) => {
     }
     res.json({ success: true });
   } catch (err) {
-    console.error("POST /api/sessions/:id/stop error:", err);
+    log.error("route-error", {
+      component: "sessions",
+      method: "POST",
+      path: "/api/sessions/:id/stop",
+      ...toErrorFields(err),
+      msg: "Failed to stop session",
+    });
     res.status(500).json({ error: "Failed to stop session" });
   }
 });
@@ -149,7 +186,13 @@ router.post("/:id/prompt", async (req: Request, res: Response) => {
     }
     res.json({ success: true });
   } catch (err) {
-    console.error("POST /api/sessions/:id/prompt error:", err);
+    log.error("route-error", {
+      component: "sessions",
+      method: "POST",
+      path: "/api/sessions/:id/prompt",
+      ...toErrorFields(err),
+      msg: "Failed to send prompt",
+    });
     res.status(500).json({ error: "Failed to send prompt" });
   }
 });
@@ -170,7 +213,13 @@ router.delete("/:id", async (req: Request, res: Response) => {
     }
     res.json({ success: true });
   } catch (err) {
-    console.error("DELETE /api/sessions/:id error:", err);
+    log.error("route-error", {
+      component: "sessions",
+      method: "DELETE",
+      path: "/api/sessions/:id",
+      ...toErrorFields(err),
+      msg: "Failed to delete session",
+    });
     res.status(500).json({ error: "Failed to delete session" });
   }
 });

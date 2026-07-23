@@ -10,6 +10,7 @@ import {
 } from "../db/tabs.js";
 import { broadcast } from "../websocket-handler.js";
 import { requireAuth, getUserId } from "../middleware/auth.js";
+import { log, toErrorFields } from "../logger.js";
 
 const router = Router();
 
@@ -23,7 +24,13 @@ router.get("/", async (req: Request, res: Response) => {
     const tabs = await getAllTabs(userId);
     res.json(tabs);
   } catch (err) {
-    console.error("GET /api/tabs error:", err);
+    log.error("route-error", {
+      component: "tabs",
+      method: "GET",
+      path: "/api/tabs",
+      ...toErrorFields(err),
+      msg: "Failed to fetch tabs",
+    });
     res.status(500).json({ error: "Failed to fetch tabs" });
   }
 });
@@ -45,7 +52,13 @@ router.post("/", async (req: Request, res: Response) => {
     broadcast({ type: "tab-created", tab });
     res.status(201).json(tab);
   } catch (err) {
-    console.error("POST /api/tabs error:", err);
+    log.error("route-error", {
+      component: "tabs",
+      method: "POST",
+      path: "/api/tabs",
+      ...toErrorFields(err),
+      msg: "Failed to create tab",
+    });
     res.status(500).json({ error: "Failed to create tab" });
   }
 });
@@ -72,7 +85,13 @@ router.put("/reorder", async (req: Request, res: Response) => {
     broadcast({ type: "tabs-reordered", tabs });
     res.json(tabs);
   } catch (err) {
-    console.error("PUT /api/tabs/reorder error:", err);
+    log.error("route-error", {
+      component: "tabs",
+      method: "PUT",
+      path: "/api/tabs/reorder",
+      ...toErrorFields(err),
+      msg: "Failed to reorder tabs",
+    });
     res.status(500).json({ error: "Failed to reorder tabs" });
   }
 });
@@ -99,7 +118,13 @@ router.get("/:id", async (req: Request, res: Response) => {
     const fullTab = await getTabWithTasks(id);
     res.json(fullTab);
   } catch (err) {
-    console.error("GET /api/tabs/:id error:", err);
+    log.error("route-error", {
+      component: "tabs",
+      method: "GET",
+      path: "/api/tabs/:id",
+      ...toErrorFields(err),
+      msg: "Failed to fetch tab",
+    });
     res.status(500).json({ error: "Failed to fetch tab" });
   }
 });
@@ -146,7 +171,13 @@ router.put("/:id", async (req: Request, res: Response) => {
     broadcast({ type: "tab-updated", tab });
     res.json(tab);
   } catch (err) {
-    console.error("PUT /api/tabs/:id error:", err);
+    log.error("route-error", {
+      component: "tabs",
+      method: "PUT",
+      path: "/api/tabs/:id",
+      ...toErrorFields(err),
+      msg: "Failed to update tab",
+    });
     res.status(500).json({ error: "Failed to update tab" });
   }
 });
@@ -174,7 +205,13 @@ router.delete("/:id", async (req: Request, res: Response) => {
     broadcast({ type: "tab-deleted", tabId: id });
     res.status(204).send();
   } catch (err) {
-    console.error("DELETE /api/tabs/:id error:", err);
+    log.error("route-error", {
+      component: "tabs",
+      method: "DELETE",
+      path: "/api/tabs/:id",
+      ...toErrorFields(err),
+      msg: "Failed to delete tab",
+    });
     res.status(500).json({ error: "Failed to delete tab" });
   }
 });

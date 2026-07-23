@@ -4,6 +4,7 @@ import { createUser, verifyPassword, verifyPasswordById, getUserById, getUserByE
 import { isRegistrationEnabled } from "../db/settings.js";
 import { getUserId } from "../middleware/auth.js";
 import type { CreateUserInput, AuthenticatedRequest } from "../types.js";
+import { log, toErrorFields } from "../logger.js";
 
 const router = Router();
 
@@ -55,7 +56,13 @@ router.get("/settings", async (_req: Request, res: Response) => {
     const regEnabled = await isRegistrationEnabled();
     res.json({ registrationEnabled: regEnabled });
   } catch (err) {
-    console.error("GET /api/auth/settings error:", err);
+    log.warn("route-degraded", {
+      component: "auth",
+      method: "GET",
+      path: "/api/auth/settings",
+      ...toErrorFields(err),
+      msg: "Failed to read registration settings; defaulting to disabled",
+    });
     res.json({ registrationEnabled: false });
   }
 });
@@ -112,7 +119,13 @@ router.post("/register", async (req: Request, res: Response) => {
 
     res.status(201).json({ user, token });
   } catch (err) {
-    console.error("POST /api/auth/register error:", err);
+    log.error("route-error", {
+      component: "auth",
+      method: "POST",
+      path: "/api/auth/register",
+      ...toErrorFields(err),
+      msg: "Failed to register user",
+    });
     res.status(500).json({ error: "Failed to register user" });
   }
 });
@@ -143,7 +156,13 @@ router.post("/login", async (req: Request, res: Response) => {
 
     res.json({ user, token });
   } catch (err) {
-    console.error("POST /api/auth/login error:", err);
+    log.error("route-error", {
+      component: "auth",
+      method: "POST",
+      path: "/api/auth/login",
+      ...toErrorFields(err),
+      msg: "Failed to login",
+    });
     res.status(500).json({ error: "Failed to login" });
   }
 });
@@ -184,7 +203,13 @@ router.get("/me", async (req: Request, res: Response) => {
 
     res.json({ user });
   } catch (err) {
-    console.error("GET /api/auth/me error:", err);
+    log.error("route-error", {
+      component: "auth",
+      method: "GET",
+      path: "/api/auth/me",
+      ...toErrorFields(err),
+      msg: "Failed to fetch user profile",
+    });
     res.status(500).json({ error: "Failed to fetch user profile" });
   }
 });
@@ -224,7 +249,13 @@ router.put("/me/password", async (req: Request, res: Response) => {
 
     res.json({ message: "Password updated successfully", user });
   } catch (err) {
-    console.error("PUT /api/auth/me/password error:", err);
+    log.error("route-error", {
+      component: "auth",
+      method: "PUT",
+      path: "/api/auth/me/password",
+      ...toErrorFields(err),
+      msg: "Failed to update password",
+    });
     res.status(500).json({ error: "Failed to update password" });
   }
 });
@@ -259,7 +290,13 @@ router.put("/me/api-key", async (req: Request, res: Response) => {
 
     res.json({ message: "Kiro API key updated successfully", user });
   } catch (err) {
-    console.error("PUT /api/auth/me/api-key error:", err);
+    log.error("route-error", {
+      component: "auth",
+      method: "PUT",
+      path: "/api/auth/me/api-key",
+      ...toErrorFields(err),
+      msg: "Failed to update API key",
+    });
     res.status(500).json({ error: "Failed to update API key" });
   }
 });
@@ -299,7 +336,13 @@ router.delete("/me", async (req: Request, res: Response) => {
 
     res.json({ message: "Account deleted successfully" });
   } catch (err) {
-    console.error("DELETE /api/auth/me error:", err);
+    log.error("route-error", {
+      component: "auth",
+      method: "DELETE",
+      path: "/api/auth/me",
+      ...toErrorFields(err),
+      msg: "Failed to delete account",
+    });
     res.status(500).json({ error: "Failed to delete account" });
   }
 });

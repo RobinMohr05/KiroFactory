@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from "express";
 import { getUserId } from "../middleware/auth.js";
 import { isFirstUser } from "../db/users.js";
 import { getAppSettings, setRegistrationEnabled } from "../db/settings.js";
+import { log, toErrorFields } from "../logger.js";
 
 const router = Router();
 
@@ -19,7 +20,11 @@ async function requireAdmin(req: Request, res: Response, next: () => void): Prom
     }
     next();
   } catch (err) {
-    console.error("Admin check failed:", err);
+    log.error("route-error", {
+      component: "admin",
+      ...toErrorFields(err),
+      msg: "Failed to verify admin status",
+    });
     res.status(500).json({ error: "Failed to verify admin status" });
   }
 }
@@ -36,7 +41,13 @@ router.get("/settings", async (_req: Request, res: Response) => {
     const settings = await getAppSettings();
     res.json(settings);
   } catch (err) {
-    console.error("GET /api/admin/settings error:", err);
+    log.error("route-error", {
+      component: "admin",
+      method: "GET",
+      path: "/api/admin/settings",
+      ...toErrorFields(err),
+      msg: "Failed to fetch settings",
+    });
     res.status(500).json({ error: "Failed to fetch settings" });
   }
 });
@@ -59,7 +70,13 @@ router.put("/settings", async (req: Request, res: Response) => {
     const settings = await getAppSettings();
     res.json(settings);
   } catch (err) {
-    console.error("PUT /api/admin/settings error:", err);
+    log.error("route-error", {
+      component: "admin",
+      method: "PUT",
+      path: "/api/admin/settings",
+      ...toErrorFields(err),
+      msg: "Failed to update settings",
+    });
     res.status(500).json({ error: "Failed to update settings" });
   }
 });
