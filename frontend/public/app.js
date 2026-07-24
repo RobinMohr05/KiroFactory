@@ -161,7 +161,21 @@ const TYPE_CLASSES = {
 };
 
 // ===== WebSocket =====
+const isLocalhost = ['localhost', '127.0.0.1', '::1'].includes(location.hostname);
+
+// Hide connection status indicator on deployed (non-localhost) environments
+if (!isLocalhost) {
+  const connectionStatusEl = document.getElementById('connectionStatus');
+  if (connectionStatusEl) connectionStatusEl.hidden = true;
+}
+
 function connectWebSocket() {
+  // Skip WebSocket on non-localhost — use polling only
+  if (!isLocalhost) {
+    startPolling();
+    return;
+  }
+
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   ws = new WebSocket(`${protocol}//${location.host}/ws`);
 
