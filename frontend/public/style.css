@@ -140,7 +140,7 @@
 }
 
 [data-theme="dark"] .connection-status {
-  /* dark mode handled by the dot color */
+  color: rgba(255, 255, 255, 0.7);
 }
 
 [data-theme="dark"] .session-list-item:hover {
@@ -248,16 +248,9 @@ h1, h2, h3, h4, h5, h6 {
 .connection-status {
   display: flex;
   align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.1);
-  position: relative;
-}
-
-.connection-status .status-text {
-  display: none;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.7);
 }
 
 .status-dot {
