@@ -26,7 +26,8 @@ export type CredentialKey =
   | "atlassianApiToken"
   | "atlassianUsername"
   | "awsAccessKeyId"
-  | "awsSecretAccessKey";
+  | "awsSecretAccessKey"
+  | "githubPat";
 
 /** Status response: which credentials are set (true) vs. unset (false). Never returns values. */
 export type CredentialStatus = Record<CredentialKey, boolean>;

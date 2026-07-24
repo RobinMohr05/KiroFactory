@@ -744,7 +744,22 @@ async function runUpgrades(pool: sql.ConnectionPool): Promise<void> {
     console.log("[migrate] Upgrade complete: credential columns added to users table.");
   }
 
-  // Upgrade 15: Add mcp_config_override JSON column to sessions table
+  // Upgrade 15: Add cred_github_pat column to users table
+  const githubPatColExists = await pool.request().query(`
+    SELECT COUNT(*) AS cnt
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_NAME = 'users' AND COLUMN_NAME = 'cred_github_pat'
+  `);
+
+  if (githubPatColExists.recordset[0].cnt === 0) {
+    console.log("[migrate] Upgrading: adding cred_github_pat column to users table...");
+    await pool.request().query(`
+      ALTER TABLE users ADD cred_github_pat NVARCHAR(MAX) NULL
+    `);
+    console.log("[migrate] Upgrade complete: cred_github_pat added to users table.");
+  }
+
+  // Upgrade 16: Add mcp_config_override JSON column to sessions table
   const mcpOverrideColExists = await pool.request().query(`
     SELECT COUNT(*) AS cnt
     FROM INFORMATION_SCHEMA.COLUMNS

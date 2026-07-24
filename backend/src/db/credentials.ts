@@ -12,6 +12,7 @@ const CREDENTIAL_COLUMNS: Record<CredentialKey, string> = {
   atlassianUsername: "cred_atlassian_username",
   awsAccessKeyId: "cred_aws_access_key_id",
   awsSecretAccessKey: "cred_aws_secret_access_key",
+  githubPat: "cred_github_pat",
 };
 
 /**
@@ -34,6 +35,7 @@ export async function getCredentialStatus(userId: number): Promise<CredentialSta
       atlassianUsername: false,
       awsAccessKeyId: false,
       awsSecretAccessKey: false,
+      githubPat: false,
     };
   }
 
