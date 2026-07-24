@@ -1,5 +1,4 @@
 import { WebSocketServer, WebSocket } from "ws";
-import type { Server } from "http";
 import type { IncomingMessage } from "http";
 import jwt from "jsonwebtoken";
 import type { WsServerMessage, WsClientMessage } from "./types.js";
@@ -55,8 +54,19 @@ function verifyWsToken(token: string): number | null {
   }
 }
 
-export function setupWebSocket(server: Server): WebSocketServer {
-  const wss = new WebSocketServer({ server, path: "/ws" });
+/**
+ * Create the client-facing WebSocket server (path "/ws").
+ *
+ * Uses `noServer: true` so the HTTP `upgrade` event can be routed by a single
+ * handler in index.ts. Attaching multiple `WebSocketServer` instances directly
+ * to the same HTTP server via the `{ server, path }` option does NOT work: each
+ * instance registers its own `upgrade` listener and calls `handleUpgrade`, which
+ * calls `abortHandshake` (destroying the socket) on any path mismatch. Whichever
+ * server is registered first therefore destroys upgrade requests destined for the
+ * others. Routing upgrades explicitly avoids that conflict.
+ */
+export function setupWebSocket(): WebSocketServer {
+  const wss = new WebSocketServer({ noServer: true });
 
   wss.on("connection", (ws, req: IncomingMessage) => {
     // Authenticate the WebSocket connection

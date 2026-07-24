@@ -8,7 +8,6 @@
  */
 
 import { WebSocketServer, WebSocket } from "ws";
-import type { Server } from "http";
 import type { IncomingMessage } from "http";
 import type { OutputEntry, Activity } from "./types.js";
 import { log } from "./logger.js";
@@ -92,11 +91,16 @@ export function setWorkerEventHandler(handler: WorkerEventHandler): void {
 }
 
 /**
- * Set up the worker WebSocket server on a separate path (/ws/worker).
- * This uses a separate WebSocketServer with path filtering on the same HTTP server.
+ * Set up the worker WebSocket server for the "/internal/worker" path.
+ *
+ * Uses `noServer: true`; the HTTP `upgrade` event is routed to this server by a
+ * single handler in index.ts. See the note in websocket-handler.ts for why
+ * attaching multiple `WebSocketServer` instances to one HTTP server via the
+ * `{ server, path }` option does not work (the first-registered server destroys
+ * upgrade requests for the others).
  */
-export function setupWorkerWebSocket(server: Server): WebSocketServer {
-  const wss = new WebSocketServer({ server, path: "/internal/worker" });
+export function setupWorkerWebSocket(): WebSocketServer {
+  const wss = new WebSocketServer({ noServer: true });
 
   wss.on("connection", (ws: WebSocket, _req: IncomingMessage) => {
     let authenticated = false;
