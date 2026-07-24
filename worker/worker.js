@@ -61,9 +61,9 @@ function connectToOrchestrator() {
 
     // Authenticate
     ws.send(JSON.stringify({
-      type: "worker-auth",
+      action: "worker-auth",
       sessionId: SESSION_ID,
-      workerSecret: WORKER_SECRET,
+      secret: WORKER_SECRET,
     }));
 
     // Start the work
