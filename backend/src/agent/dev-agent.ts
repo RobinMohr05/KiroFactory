@@ -3,9 +3,13 @@
  *
  * A standalone agent that:
  * 1. Claims the highest-priority todo task from the database
- * 2. Spawns a kiro-cli ACP session to work on it
- * 3. Streams output and tracks progress
- * 4. Marks the task as "developed" on success, or resets to "todo" on failure
+ * 2. Resolves the repository URL from the task's tab
+ * 3. Prepares the workspace (clone or pull develop)
+ * 4. Creates a feature branch from develop
+ * 5. Spawns a kiro-cli ACP session to work on the task
+ * 6. Commits & pushes changes to the feature branch
+ * 7. Creates a Pull Request on GitHub via REST API
+ * 8. Marks the task as "developed"
  *
  * Usage:
  *   npx tsx src/agent/dev-agent.ts
@@ -19,15 +23,16 @@ import dotenv from "dotenv";
 dotenv.config();
 
 import { resolve } from "node:path";
-import { execFileSync, execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { execFileSync } from "node:child_process";
 import { KiroRunner } from "./kiro-runner.js";
 import { claimTask, markTaskDeveloped, resetTaskToTodo, getAvailableTaskCount } from "./task-claimer.js";
 import { buildDevPrompt, buildTddDevPrompt } from "./prompt-builder.js";
+import { parseGitHubRepoUrl } from "./repo-url-parser.js";
+import { prepareWorkspace, createFeatureBranch, commitChanges, pushBranch } from "./git-workspace.js";
+import { createPullRequest, buildPrBody } from "./github-pr.js";
+import { getDecryptedCredential } from "../db/credentials.js";
 import { closePool } from "../db/connection.js";
 import type { ClaimedTask } from "./task-claimer.js";
-
-const execFileAsync = promisify(execFile);
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -36,8 +41,6 @@ const execFileAsync = promisify(execFile);
 interface AgentConfig {
   /** Kiro agent name (from .kiro/agents/) */
   agent: string;
-  /** Working directory for kiro-cli */
-  cwd: string;
   /** Timeout per task in seconds */
   timeoutSeconds: number;
   /** Run continuously (claim next task after completing one) */
@@ -56,7 +59,6 @@ function parseArgs(): AgentConfig {
   const args = process.argv.slice(2);
   const config: AgentConfig = {
     agent: "developer-agent",
-    cwd: resolve(import.meta.dirname, "../../.."), // project root
     timeoutSeconds: 900, // 15 minutes default
     loop: false,
     intervalSeconds: 10,
@@ -67,9 +69,6 @@ function parseArgs(): AgentConfig {
     switch (args[i]) {
       case "--agent":
         config.agent = args[++i];
-        break;
-      case "--cwd":
-        config.cwd = resolve(args[++i]);
         break;
       case "--timeout":
         config.timeoutSeconds = parseInt(args[++i], 10);
@@ -169,115 +168,24 @@ async function cleanupOrphanedProcesses(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Git commit + push after successful task execution
+// Agent execution
 // ---------------------------------------------------------------------------
 
-interface GitResult {
-  committed: boolean;
-  pushed: boolean;
-  error: string | null;
-}
-
-/**
- * Run a git command in the project working directory.
- */
-async function gitCmd(args: string[], cwd: string): Promise<{ stdout: string; stderr: string }> {
-  return execFileAsync("git", args, { cwd, encoding: "utf-8" });
-}
-
-/**
- * After a task is executed successfully:
- * 1. Check for uncommitted changes (staged + unstaged + untracked)
- * 2. Stage all changes (git add -A)
- * 3. Commit with a descriptive message referencing the task
- * 4. Push the current branch to origin
- *
- * If there are no changes, this is a no-op.
- * Failures are logged but do NOT prevent the task from being marked as developed.
- */
-async function commitAndPush(task: ClaimedTask, cwd: string): Promise<GitResult> {
-  const result: GitResult = { committed: false, pushed: false, error: null };
-
-  try {
-    // 1. Check for any changes (staged, unstaged, untracked)
-    const { stdout: status } = await gitCmd(["status", "--porcelain"], cwd);
-    if (!status || status.trim().length === 0) {
-      log("No changes to commit — skipping git operations.", "gray");
-      return result;
-    }
-
-    const changedFiles = status.trim().split("\n").length;
-    log(`${changedFiles} file(s) changed — committing...`, "cyan");
-
-    // 2. Stage all changes
-    await gitCmd(["add", "-A"], cwd);
-
-    // 3. Commit with task reference
-    const commitTitle = `${task.title} [KiroFactory #${task.id}]`;
-    const commitBody = task.description
-      ? `\nTask: ${task.title}\nID: ${task.id}\nType: ${task.type}\nPriority: ${task.priority}\n\n${task.description}`
-      : "";
-    const commitMessage = commitTitle + commitBody;
-
-    await gitCmd(["commit", "-m", commitMessage], cwd);
-    result.committed = true;
-    log(`Committed: "${commitTitle}"`, "green");
-
-    // 4. Push to origin
-    const { stdout: branchOutput } = await gitCmd(["rev-parse", "--abbrev-ref", "HEAD"], cwd);
-    const branchName = branchOutput.trim();
-
-    let pushAttempts = 0;
-    const maxAttempts = 2;
-    while (pushAttempts < maxAttempts) {
-      try {
-        pushAttempts++;
-        await gitCmd(["push", "-u", "origin", branchName], cwd);
-        result.pushed = true;
-        log(`Pushed branch "${branchName}" to origin ✓`, "green");
-        break;
-      } catch (pushErr: any) {
-        const pushErrMsg = pushErr.stderr || pushErr.message || String(pushErr);
-        if (pushAttempts < maxAttempts) {
-          log(`Push failed (attempt ${pushAttempts}/${maxAttempts}), retrying...`, "yellow");
-          await sleep(2000);
-        } else {
-          log(`Push failed after ${maxAttempts} attempts: ${pushErrMsg}`, "red");
-          result.error = `Push failed: ${pushErrMsg}`;
-        }
-      }
-    }
-  } catch (err: any) {
-    const errMsg = err.stderr || err.message || String(err);
-    log(`Git commit/push failed: ${errMsg}`, "red");
-    result.error = errMsg;
-  }
-
-  return result;
-}
-
-// ---------------------------------------------------------------------------
-// Single task execution
-// ---------------------------------------------------------------------------
-
-async function executeTask(
-  task: ClaimedTask,
+async function executeAgent(
+  prompt: string,
+  cwd: string,
   config: AgentConfig
 ): Promise<boolean> {
   let runner: KiroRunner | null = null;
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
   let timedOut = false;
 
-  const prompt = config.tdd
-    ? buildTddDevPrompt(task, config.cwd)
-    : buildDevPrompt(task, config.cwd);
-
   try {
     log(`Starting kiro-cli acp --agent ${config.agent}...`, "gray");
 
     runner = await KiroRunner.create({
       agent: config.agent,
-      cwd: config.cwd,
+      cwd,
       model: config.model,
     });
 
@@ -345,7 +253,7 @@ async function executeTask(
 }
 
 // ---------------------------------------------------------------------------
-// Main
+// Single task execution — full workflow
 // ---------------------------------------------------------------------------
 
 async function runOnce(config: AgentConfig): Promise<boolean> {
@@ -364,25 +272,156 @@ async function runOnce(config: AgentConfig): Promise<boolean> {
     "green"
   );
 
-  // 2. Execute the task
-  const success = await executeTask(task, config);
-
-  // 3. On success: commit + push changes, then mark as developed
-  if (success) {
-    const gitResult = await commitAndPush(task, config.cwd);
-    if (gitResult.committed && !gitResult.pushed) {
-      log(`Warning: committed but push failed — task still marked developed`, "yellow");
-    }
-
-    await markTaskDeveloped(task.id);
-    log(`Task ${task.id} marked as "developed" ✓`, "green");
-  } else {
+  // 2. Resolve repository URL
+  if (!task.repositoryUrl) {
+    log(`ERROR: Task #${task.id} has no repository URL (tab has no repository configured).`, "red");
     await resetTaskToTodo(task.id);
-    log(`Task ${task.id} reset to "todo" (agent failed or timed out)`, "red");
+    log(`Task ${task.id} reset to "todo".`, "red");
+    return false;
   }
 
-  return success;
+  log(`Repository: ${task.repositoryUrl}`, "gray");
+
+  let repoInfo;
+  try {
+    repoInfo = parseGitHubRepoUrl(task.repositoryUrl);
+  } catch (err: any) {
+    log(`ERROR: ${err.message}`, "red");
+    await resetTaskToTodo(task.id);
+    log(`Task ${task.id} reset to "todo".`, "red");
+    return false;
+  }
+
+  // 3. Get GitHub PAT for authentication
+  if (!task.userId) {
+    log(`ERROR: Task #${task.id} has no associated user (cannot retrieve credentials).`, "red");
+    await resetTaskToTodo(task.id);
+    log(`Task ${task.id} reset to "todo".`, "red");
+    return false;
+  }
+
+  const githubPat = await getDecryptedCredential(task.userId, "githubPat");
+  if (!githubPat) {
+    log(`ERROR: No GitHub PAT configured for user ${task.userId}. Set it via credentials API.`, "red");
+    await resetTaskToTodo(task.id);
+    log(`Task ${task.id} reset to "todo".`, "red");
+    return false;
+  }
+
+  // 4. Prepare workspace (clone or pull develop)
+  let workspacePath: string;
+  try {
+    log(`Preparing workspace for ${repoInfo.owner}/${repoInfo.repo}...`, "cyan");
+    workspacePath = await prepareWorkspace(repoInfo, githubPat);
+    log(`Workspace ready: ${workspacePath}`, "green");
+  } catch (err: any) {
+    log(`ERROR preparing workspace: ${err.message}`, "red");
+    await resetTaskToTodo(task.id);
+    log(`Task ${task.id} reset to "todo".`, "red");
+    return false;
+  }
+
+  // 5. Create feature branch
+  let branchName: string;
+  try {
+    branchName = await createFeatureBranch(workspacePath, task.type, task.id, task.title);
+    log(`Created branch: ${branchName}`, "green");
+  } catch (err: any) {
+    log(`ERROR creating branch: ${err.message}`, "red");
+    await resetTaskToTodo(task.id);
+    log(`Task ${task.id} reset to "todo".`, "red");
+    return false;
+  }
+
+  // 6. Execute agent on the feature branch
+  const prompt = config.tdd
+    ? buildTddDevPrompt(task, workspacePath)
+    : buildDevPrompt(task, workspacePath);
+
+  const agentSuccess = await executeAgent(prompt, workspacePath, config);
+
+  if (!agentSuccess) {
+    log(`Agent failed or timed out for task ${task.id}.`, "red");
+    await resetTaskToTodo(task.id);
+    log(`Task ${task.id} reset to "todo".`, "red");
+    return false;
+  }
+
+  // 7. Commit changes
+  let hasChanges: boolean;
+  try {
+    hasChanges = await commitChanges(
+      workspacePath,
+      task.id,
+      task.title,
+      task.type,
+      task.priority,
+      task.description
+    );
+
+    if (!hasChanges) {
+      log(`No changes after agent execution — task may already be implemented.`, "yellow");
+      // Still mark as developed (the agent determined nothing needed doing)
+      await markTaskDeveloped(task.id);
+      log(`Task ${task.id} marked as "developed" (no changes needed).`, "green");
+      return true;
+    }
+
+    log(`Changes committed successfully.`, "green");
+  } catch (err: any) {
+    log(`ERROR committing: ${err.message}`, "red");
+    await resetTaskToTodo(task.id);
+    log(`Task ${task.id} reset to "todo".`, "red");
+    return false;
+  }
+
+  // 8. Push branch
+  try {
+    log(`Pushing branch "${branchName}" to origin...`, "cyan");
+    await pushBranch(workspacePath, branchName);
+    log(`Branch pushed successfully.`, "green");
+  } catch (err: any) {
+    log(`ERROR pushing: ${err.message}`, "red");
+    await resetTaskToTodo(task.id);
+    log(`Task ${task.id} reset to "todo".`, "red");
+    return false;
+  }
+
+  // 9. Create Pull Request
+  log(`Creating Pull Request...`, "cyan");
+  const prTitle = `${task.title} [KiroFactory #${task.id}]`;
+  const prBody = buildPrBody(task.id, task.title, task.type, task.priority, task.description);
+
+  const prResult = await createPullRequest({
+    owner: repoInfo.owner,
+    repo: repoInfo.repo,
+    pat: githubPat,
+    head: branchName,
+    base: "develop",
+    title: prTitle,
+    body: prBody,
+  });
+
+  if (!prResult.success) {
+    // PR creation failed but code is pushed — leave task in-progress for manual intervention
+    log(`ERROR creating PR: ${prResult.error} (HTTP ${prResult.statusCode || "N/A"})`, "red");
+    log(`Code is pushed to branch "${branchName}" — manual PR creation required.`, "yellow");
+    log(`Task ${task.id} left as "in-progress" (needs manual intervention).`, "yellow");
+    return false;
+  }
+
+  log(`Pull Request created: ${prResult.prUrl}`, "green");
+
+  // 10. Mark task as developed
+  await markTaskDeveloped(task.id);
+  log(`Task ${task.id} marked as "developed" ✓`, "green");
+
+  return true;
 }
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
 
 async function main(): Promise<void> {
   const config = parseArgs();
@@ -390,7 +429,6 @@ async function main(): Promise<void> {
   log("════════════════════════════════════════════════════════", "cyan");
   log("  KiroFactory — Developer Agent", "cyan");
   log(`  Agent: ${config.agent}`, "cyan");
-  log(`  CWD: ${config.cwd}`, "cyan");
   log(`  Timeout: ${config.timeoutSeconds}s | Loop: ${config.loop} | TDD: ${config.tdd}`, "cyan");
   if (config.taskId) {
     log(`  Target task: #${config.taskId}`, "cyan");
