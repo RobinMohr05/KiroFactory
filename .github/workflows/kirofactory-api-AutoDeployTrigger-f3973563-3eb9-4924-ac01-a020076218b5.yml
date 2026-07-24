@@ -1,28 +1,20 @@
 name: Trigger auto deployment for kirofactory-api
 
-# When this action will be executed
 on:
-  # Automatically trigger it when detected changes in repo
   push:
-    branches: 
-      [ main ]
-    paths:
-    - '**'
-    - '.github/workflows/kirofactory-api-AutoDeployTrigger-f3973563-3eb9-4924-ac01-a020076218b5.yml'
-
-  # Allow manual trigger 
-  workflow_dispatch:      
+    branches: [main]
+  workflow_dispatch:
 
 jobs:
-  build-and-deploy:
+  build-and-deploy-api:
     runs-on: ubuntu-latest
-    permissions: 
-      id-token: write #This is required for requesting the OIDC JWT Token
-      contents: read #Required when GH token is used to authenticate with private repo
+    permissions:
+      id-token: write # Required for OIDC JWT Token
+      contents: read
 
     steps:
       - name: Checkout to the branch
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
       - name: Azure Login
         uses: azure/login@v2
@@ -31,19 +23,53 @@ jobs:
           tenant-id: ${{ secrets.KIROFACTORYAPI_AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.KIROFACTORYAPI_AZURE_SUBSCRIPTION_ID }}
 
-      - name: Build and push container image to registry
+      - name: Build and deploy kirofactory-api
         uses: azure/container-apps-deploy-action@v2
         with:
           appSourcePath: ${{ github.workspace }}
-          _dockerfilePathKey_: _dockerfilePath_
-          _targetLabelKey_: _targetLabel_
+          dockerfilePath: ./Dockerfile
           registryUrl: kirofactory.azurecr.io
           registryUsername: ${{ secrets.KIROFACTORYAPI_REGISTRY_USERNAME }}
           registryPassword: ${{ secrets.KIROFACTORYAPI_REGISTRY_PASSWORD }}
           containerAppName: kirofactory-api
           resourceGroup: SandboxForRM
           imageToBuild: kirofactory.azurecr.io/kirofactory-api:${{ github.sha }}
-          _buildArgumentsKey_: |
-            _buildArgumentsValues_
 
+  build-and-push-worker:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
 
+    steps:
+      - name: Checkout to the branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Check if worker files changed
+        id: worker-changes
+        run: |
+          if git diff --name-only HEAD~1 HEAD | grep -q '^worker/'; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Azure Login
+        if: steps.worker-changes.outputs.changed == 'true'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.KIROFACTORYAPI_AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.KIROFACTORYAPI_AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.KIROFACTORYAPI_AZURE_SUBSCRIPTION_ID }}
+
+      - name: Build and push kirofactory-worker
+        if: steps.worker-changes.outputs.changed == 'true'
+        run: |
+          az acr build \
+            --registry kiroFactory \
+            --image kirofactory-worker:${{ github.sha }} \
+            --image kirofactory-worker:latest \
+            --file worker/Dockerfile \
+            worker/
