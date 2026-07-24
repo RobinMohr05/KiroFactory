@@ -37,6 +37,7 @@ import {
   loadAcaConfig,
   startWorkerJob,
   stopWorkerJob,
+  getWorkerJobStatus,
   isAcaModeEnabled,
   type AcaWorkerConfig,
   type AcaJobExecution,
@@ -1124,7 +1125,10 @@ async function runSessionAca(managed: ManagedSession): Promise<void> {
 
     // If we reach here without abort and the worker isn't connected, it failed
     if (!signal.aborted && !isWorkerConnected(meta.id)) {
-      throw new Error("Worker failed to connect within timeout");
+      throw new Error(
+        `Worker failed to connect (execution: ${managed.acaExecutionName}). ` +
+        `Check Azure Portal container logs for startup errors.`
+      );
     }
 
     if (signal.aborted) return;
@@ -1167,22 +1171,139 @@ async function runSessionAca(managed: ManagedSession): Promise<void> {
 
 /**
  * Wait for the ACA worker to connect via WebSocket, with a timeout.
+ *
+ * Periodically polls the ACA job execution status to detect early failures
+ * (e.g. container crash, image pull error) and reports progress so the UI
+ * shows what's happening during the wait.
  */
 async function waitForWorkerOrAbort(
   managed: ManagedSession,
   signal: AbortSignal
 ): Promise<void> {
-  const WORKER_CONNECT_TIMEOUT_MS = 120_000; // 2 minutes for container pull + start
+  const WORKER_CONNECT_TIMEOUT_MS = 180_000; // 3 minutes for container pull + start
+  const STATUS_POLL_INTERVAL_MS = 10_000; // Check ACA job status every 10s
   const startTime = Date.now();
+  let lastStatusCheck = 0;
+  let lastLoggedStatus = "";
+
+  log.info("worker-wait-started", {
+    component: "session-manager",
+    sessionId: managed.meta.id,
+    executionName: managed.acaExecutionName,
+    timeoutMs: WORKER_CONNECT_TIMEOUT_MS,
+    msg: `Waiting up to ${WORKER_CONNECT_TIMEOUT_MS / 1000}s for worker WebSocket connection...`,
+  });
 
   while (!signal.aborted && !isWorkerConnected(managed.meta.id)) {
-    if (Date.now() - startTime > WORKER_CONNECT_TIMEOUT_MS) {
-      throw new Error(
+    const elapsed = Date.now() - startTime;
+
+    if (elapsed > WORKER_CONNECT_TIMEOUT_MS) {
+      // Before throwing, try one final status check for diagnostic context
+      let finalStatus = "unknown";
+      if (acaConfig && managed.acaExecutionName) {
+        try {
+          const jobStatus = await getWorkerJobStatus(acaConfig, managed.acaExecutionName);
+          finalStatus = jobStatus.status;
+        } catch { /* best effort */ }
+      }
+
+      const errorMsg =
         `Worker did not connect within ${WORKER_CONNECT_TIMEOUT_MS / 1000}s. ` +
-        `The container may have failed to start.`
-      );
+        `ACA job status at timeout: "${finalStatus}". ` +
+        `The container may have failed to start, crashed during init, or cannot reach the orchestrator URL. ` +
+        `Check the worker container logs in Azure Portal for more details.`;
+
+      log.error("worker-connect-timeout", {
+        component: "session-manager",
+        sessionId: managed.meta.id,
+        agent: managed.meta.agent,
+        executionName: managed.acaExecutionName,
+        elapsedMs: elapsed,
+        lastAcaStatus: finalStatus,
+        msg: errorMsg,
+      });
+
+      throw new Error(errorMsg);
     }
+
+    // Periodically poll ACA job execution status to detect early failures
+    if (acaConfig && managed.acaExecutionName && elapsed - lastStatusCheck >= STATUS_POLL_INTERVAL_MS) {
+      lastStatusCheck = elapsed;
+      try {
+        const jobStatus = await getWorkerJobStatus(acaConfig, managed.acaExecutionName);
+        const statusStr = jobStatus.status;
+
+        // Log status changes
+        if (statusStr !== lastLoggedStatus) {
+          lastLoggedStatus = statusStr;
+          const elapsedSec = Math.round(elapsed / 1000);
+
+          log.info("worker-status-poll", {
+            component: "session-manager",
+            sessionId: managed.meta.id,
+            executionName: managed.acaExecutionName,
+            acaStatus: statusStr,
+            elapsedSec,
+            msg: `Worker job status: "${statusStr}" (${elapsedSec}s elapsed)`,
+          });
+
+          appendOutput(managed, {
+            timestamp: now(),
+            stream: "system",
+            text: `Worker status: ${statusStr} (${elapsedSec}s elapsed, waiting for WebSocket connection...)`,
+          });
+        }
+
+        // Detect terminal failure states — bail out early instead of waiting the full timeout
+        const failedStates = ["failed", "terminated", "degraded", "unknown"];
+        if (failedStates.includes(statusStr.toLowerCase())) {
+          const errorMsg =
+            `ACA worker job entered terminal state "${statusStr}" before connecting. ` +
+            `Execution: ${managed.acaExecutionName}. ` +
+            `The container likely crashed during startup. ` +
+            `Check Azure Portal → Container Apps Jobs → ${managed.acaExecutionName} → Logs for details.`;
+
+          log.error("worker-early-failure", {
+            component: "session-manager",
+            sessionId: managed.meta.id,
+            agent: managed.meta.agent,
+            executionName: managed.acaExecutionName,
+            acaStatus: statusStr,
+            elapsedMs: elapsed,
+            msg: errorMsg,
+          });
+
+          throw new Error(errorMsg);
+        }
+      } catch (err) {
+        // If it's our own thrown Error from the terminal state check, re-throw
+        if (err instanceof Error && err.message.includes("terminal state")) {
+          throw err;
+        }
+        // Otherwise, status poll failed — log but continue waiting
+        log.debug("worker-status-poll-error", {
+          component: "session-manager",
+          sessionId: managed.meta.id,
+          executionName: managed.acaExecutionName,
+          ...toErrorFields(err),
+        });
+      }
+    }
+
     await interruptibleSleep(1000, signal);
+  }
+
+  // Log success if connected
+  if (isWorkerConnected(managed.meta.id)) {
+    const elapsedSec = Math.round((Date.now() - startTime) / 1000);
+    log.info("worker-connected-timing", {
+      component: "session-manager",
+      sessionId: managed.meta.id,
+      agent: managed.meta.agent,
+      executionName: managed.acaExecutionName,
+      elapsedSec,
+      msg: `Worker connected after ${elapsedSec}s`,
+    });
   }
 }
 
