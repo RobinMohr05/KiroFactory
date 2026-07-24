@@ -27,7 +27,7 @@ import {
   isSessionOwnedByUser,
 } from "./db/sessions.js";
 import { getUserKiroApiKey, getUserById } from "./db/users.js";
-import { getAllDecryptedCredentials } from "./db/credentials.js";
+import { getAllDecryptedCredentials, getDecryptedCredential } from "./db/credentials.js";
 import { isDbAvailable } from "./db/connection.js";
 import { recordError } from "./error-store.js";
 import { log, logSessionEvent, logWorkerEvent, toErrorFields } from "./logger.js";
@@ -1017,12 +1017,18 @@ async function runSessionAca(managed: ManagedSession): Promise<void> {
 
     // Resolve git workspace options from the session's tab configuration.
     // Use the first tab that has a repositoryUrl configured.
-    let gitOptions: { repositoryUrl: string; devBranch?: string } | null = null;
+    let gitOptions: { repositoryUrl: string; devBranch?: string; githubPat?: string } | null = null;
     if (meta.tabIds && meta.tabIds.length > 0) {
       for (const tabId of meta.tabIds) {
         const tab = await getTabById(tabId);
         if (tab?.repositoryUrl) {
-          gitOptions = { repositoryUrl: tab.repositoryUrl, devBranch: "develop" };
+          // Get GitHub PAT from user credentials if the repo is on GitHub
+          let githubPat: string | undefined;
+          if (tab.repositoryUrl.includes("github.com")) {
+            const pat = await getDecryptedCredential(meta.userId, "githubPat");
+            if (pat) githubPat = pat;
+          }
+          gitOptions = { repositoryUrl: tab.repositoryUrl, devBranch: "develop", githubPat };
           break;
         }
       }
@@ -1310,33 +1316,36 @@ async function waitForWorkerOrAbort(
 /**
  * Send a prompt to an ACA worker and wait for prompt-done response.
  */
-async function streamPromptAca(managed: ManagedSession, text: string): Promise<void> {
+async function streamPromptAca(managed: ManagedSession, text: string, taskMeta?: { id: number; title: string; type: string; description: string; files: string[] }): Promise<{ hasChanges?: boolean; prUrl?: string }> {
   if (!isWorkerConnected(managed.meta.id)) {
     throw new Error("Worker is not connected");
   }
 
-  // Send the prompt to the worker
-  const sent = sendWorkerPrompt(managed.meta.id, text);
+  // Send the prompt to the worker (with optional task metadata for branch/commit/PR)
+  const workerTaskMeta = taskMeta ? { id: taskMeta.id, title: taskMeta.title, type: taskMeta.type, description: taskMeta.description, files: taskMeta.files } : undefined;
+  const sent = sendWorkerPrompt(managed.meta.id, text, workerTaskMeta);
   if (!sent) {
     throw new Error("Failed to send prompt to worker");
   }
 
   // Wait for prompt-done callback from the worker event handler
-  await new Promise<void>((resolve, reject) => {
-    managed.acaPromptResolver = () => resolve();
+  const result = await new Promise<unknown>((resolve, reject) => {
+    managed.acaPromptResolver = (r: unknown) => resolve(r);
     managed.acaPromptRejecter = reject;
 
     // Also resolve on abort
     const onAbort = () => {
       managed.acaPromptResolver = null;
       managed.acaPromptRejecter = null;
-      resolve();
+      resolve({});
     };
     managed.abortController?.signal.addEventListener("abort", onAbort, { once: true });
   });
 
   managed.acaPromptResolver = null;
   managed.acaPromptRejecter = null;
+
+  return (result && typeof result === "object") ? result as { hasChanges?: boolean; prUrl?: string } : {};
 }
 
 /**
@@ -1424,9 +1433,10 @@ async function runLoopModeAca(
 
     const prompt = buildDevPrompt(task, meta.cwd);
     let success = true;
+    let promptResult: { hasChanges?: boolean; prUrl?: string } = {};
 
     try {
-      await streamPromptAca(managed, prompt);
+      promptResult = await streamPromptAca(managed, prompt, { id: task.id, title: task.title, type: task.type, description: task.description, files: task.files });
     } catch (err) {
       success = false;
       const msg = err instanceof Error ? err.message : String(err);
@@ -1454,6 +1464,24 @@ async function runLoopModeAca(
         text: `Task ${task.id} reset to "todo" (session stopped).`,
       });
       break;
+    }
+
+    // Check if the worker produced any file changes
+    if (success && !promptResult.hasChanges) {
+      success = false;
+      appendOutput(managed, {
+        timestamp: now(),
+        stream: "system",
+        text: `⚠ No file changes detected after agent execution — task reset to "todo".`,
+      });
+    }
+
+    if (success && promptResult.prUrl) {
+      appendOutput(managed, {
+        timestamp: now(),
+        stream: "system",
+        text: `Pull Request: ${promptResult.prUrl}`,
+      });
     }
 
     if (success) {
