@@ -52,10 +52,14 @@ ${filesList}
 - Do NOT introduce unrelated refactoring or improvements beyond what the task requires.
 - Do NOT modify test files unless the task specifically asks for test changes.
 - Do NOT run git commit, git push, or create pull requests. The orchestrator handles git operations automatically after your work is complete.
+- Do NOT run any git commands at all (no git add, commit, push, branch, checkout, pull request). The orchestrator manages ALL git operations.
+- Do NOT create or switch branches. You are already on the correct branch.
 
 ## WORKING DIRECTORY
 
 ${cwd}
+
+This is the checked-out repository where your task should be implemented. All file paths are relative to this directory.
 `;
 }
 
@@ -123,11 +127,15 @@ ${filesList}
 - If the task is ALREADY implemented (tests pass immediately), note that and exit.
 - If the task cannot be completed, explain why and exit.
 - Do NOT modify unrelated code or introduce scope creep.
+- Do NOT run any git commands (no git add, commit, push, branch, checkout, pull request). The orchestrator manages ALL git operations.
+- Do NOT create or switch branches. You are already on the correct branch.
 - STOP after completing this single task.
 
 ## WORKING DIRECTORY
 
 ${cwd}
+
+This is the checked-out repository where your task should be implemented. All file paths are relative to this directory.
 `;
 }
 
