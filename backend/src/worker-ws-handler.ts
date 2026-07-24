@@ -235,6 +235,7 @@ export function setupWorkerWebSocket(): WebSocketServer {
 export interface WorkerTaskMeta {
   id: number;
   title: string;
+  type?: string;
   description: string;
   files: string[];
 }

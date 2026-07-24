@@ -177,6 +177,8 @@ export interface WorkerGitOptions {
   devBranch?: string;
   /** Task title (used to generate the working branch name: kirofactory/<slug>-<short-id>) */
   taskTitle?: string;
+  /** GitHub Personal Access Token for push/PR operations */
+  githubPat?: string;
 }
 
 /**
@@ -240,6 +242,9 @@ export async function startWorkerJob(
     );
     if (config.azureDevOpsPat) {
       envVars.push({ name: "AZURE_DEVOPS_PAT", value: config.azureDevOpsPat });
+    }
+    if (gitOptions.githubPat) {
+      envVars.push({ name: "GITHUB_PAT", value: gitOptions.githubPat });
     }
   }
 
