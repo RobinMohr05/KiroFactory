@@ -1,5 +1,5 @@
 # KiroFactory Worker — Runs kiro-cli acp inside ACA Jobs
-FROM node:20-slim
+FROM node:22-slim
 
 # Install git, curl, unzip (needed for clone/push and kiro-cli installer)
 RUN apt-get update && apt-get install -y --no-install-recommends git curl ca-certificates unzip && \

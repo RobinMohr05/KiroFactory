@@ -15,7 +15,7 @@
 # Target: <150MB image, fast cold start
 # ─────────────────────────────────────────────────────────────────────────────
 
-FROM node:20-alpine AS base
+FROM node:22-alpine AS base
 
 LABEL org.opencontainers.image.title="KiroFactory MCP Proxy"
 LABEL org.opencontainers.image.description="Per-session MCP proxy sidecar — spawns and multiplexes MCP servers"
