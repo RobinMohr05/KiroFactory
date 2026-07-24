@@ -92,19 +92,46 @@ app.use("/api/admin", requireDb, adminRouter);
 // as structured JSON for Azure Monitor (must be registered AFTER all route handlers).
 app.use(uncaughtErrorLogger);
 
-// Create HTTP server and attach WebSocket
+// Create HTTP server and WebSocket servers.
+//
+// Both WebSocket servers run in `noServer` mode and a single `upgrade` handler
+// routes requests by path. This is required: attaching multiple WebSocketServer
+// instances to the same HTTP server via the `{ server, path }` option makes each
+// instance destroy (abortHandshake) upgrade requests that don't match its path,
+// so the first-registered server kills requests destined for the others. That
+// bug made "/internal/worker" permanently unreachable while "/ws" worked, which
+// is why ACA workers could never connect back to the orchestrator.
 const server = createServer(app);
-setupWebSocket(server);
+const clientWss = setupWebSocket();
 
-// Attach internal worker WebSocket endpoint (/internal/worker) when ACA mode is available
-if (isAcaModeEnabled()) {
-  setupWorkerWebSocket(server);
+// Enable the internal worker WebSocket endpoint (/internal/worker) when ACA mode is available.
+const workerWss = isAcaModeEnabled() ? setupWorkerWebSocket() : null;
+if (workerWss) {
   log.info("worker-ws-enabled", {
     component: "startup",
     path: "/internal/worker",
     msg: "Worker WebSocket endpoint enabled",
   });
 }
+
+server.on("upgrade", (req, socket, head) => {
+  let pathname: string;
+  try {
+    pathname = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`).pathname;
+  } catch {
+    socket.destroy();
+    return;
+  }
+
+  if (pathname === "/ws") {
+    clientWss.handleUpgrade(req, socket, head, (ws) => clientWss.emit("connection", ws, req));
+  } else if (workerWss && pathname === "/internal/worker") {
+    workerWss.handleUpgrade(req, socket, head, (ws) => workerWss.emit("connection", ws, req));
+  } else {
+    // Unknown WebSocket path — reject cleanly.
+    socket.destroy();
+  }
+});
 
 // ─── DB Change Detector (poll loop) ─────────────────────────────────────────
 
