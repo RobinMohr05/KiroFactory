@@ -19,7 +19,7 @@
 
 import { spawn, execSync } from "node:child_process";
 import { WebSocket } from "ws";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, existsSync } from "node:fs";
 
 // ---------------------------------------------------------------------------
 // Configuration (from environment variables injected by orchestrator)
@@ -86,6 +86,10 @@ const promptQueue = [];
 let kiroReady = false;
 let promptCounter = 0;
 let currentPromptId = null;
+/** Current task metadata (set when a prompt arrives with task info). */
+let currentTaskMeta = null;
+/** The branch name for the current task. */
+let currentBranchName = null;
 
 function connectWithRetry(attempt = 1) {
   logInfo("Connecting to orchestrator", { url: ORCHESTRATOR_URL, attempt, maxAttempts: CONNECT_MAX_ATTEMPTS });
@@ -232,7 +236,7 @@ function handleOrchestratorMessage(msg) {
       break;
 
     case "prompt":
-      handlePrompt(String(msg.text ?? ""));
+      handlePrompt(String(msg.text ?? ""), msg.taskMeta || null);
       break;
 
     case "stop":
@@ -255,6 +259,36 @@ function exec(cmd, opts = {}) {
   return execSync(cmd, { encoding: "utf-8", timeout: 120_000, ...opts }).trim();
 }
 
+/**
+ * Slugify a title for branch naming: lowercase, spaces→hyphens, strip invalid chars, truncate.
+ */
+function slugifyTitle(title) {
+  return title
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9-]/g, "")
+    .replace(/-{2,}/g, "-")
+    .slice(0, 60)
+    .replace(/-+$/, "");
+}
+
+/**
+ * Build a task-specific branch name: [type]/#[id]_[slug]
+ */
+function buildBranchName(taskType, taskId, taskTitle) {
+  return `${taskType}/#${taskId}_${slugifyTitle(taskTitle)}`;
+}
+
+/**
+ * Create a task-specific branch from the current develop state.
+ */
+function createTaskBranch(taskMeta) {
+  const branchName = buildBranchName(taskMeta.type || "task", taskMeta.id, taskMeta.title);
+  exec(`git checkout -b "${branchName}"`, { cwd: WORKSPACE });
+  sendOutput(`Created branch: ${branchName}`, "system");
+  return branchName;
+}
+
 function setupRepo() {
   if (!REPO_URL) {
     logInfo("No REPO_URL — working in empty workspace");
@@ -266,16 +300,32 @@ function setupRepo() {
   if (AZURE_DEVOPS_PAT && cloneUrl.includes("dev.azure.com")) {
     cloneUrl = cloneUrl.replace("https://", `https://pat:${AZURE_DEVOPS_PAT}@`);
   }
+  // GitHub PAT authentication
+  const githubPat = process.env.GITHUB_PAT;
+  if (githubPat && cloneUrl.includes("github.com")) {
+    cloneUrl = cloneUrl.replace("https://", `https://${githubPat}@`);
+  }
 
   sendOutput("Cloning repository...", "system");
-  exec(`git clone --depth 1 --branch ${DEV_BRANCH} "${cloneUrl}" ${WORKSPACE}`);
+  exec(`git clone --branch ${DEV_BRANCH} "${cloneUrl}" ${WORKSPACE}`);
 
   exec(`git config user.name "${GIT_USER_NAME}"`, { cwd: WORKSPACE });
   exec(`git config user.email "${GIT_USER_EMAIL}"`, { cwd: WORKSPACE });
 
-  const branchName = `kirofactory/${SESSION_ID}`;
-  exec(`git checkout -b ${branchName}`, { cwd: WORKSPACE });
-  sendOutput(`Workspace ready on branch ${branchName}`, "system");
+  // Install dependencies so the agent can run tests, builds, etc.
+  sendOutput("Installing dependencies...", "system");
+  try {
+    if (existsSync(`${WORKSPACE}/package-lock.json`)) {
+      exec("npm ci", { cwd: WORKSPACE, timeout: 300_000 });
+    } else if (existsSync(`${WORKSPACE}/package.json`)) {
+      exec("npm install", { cwd: WORKSPACE, timeout: 300_000 });
+    }
+  } catch (err) {
+    sendOutput(`Warning: npm install failed: ${err?.message || err}`, "stderr");
+    logError("npm install failed", { error: err?.message || String(err) });
+  }
+
+  sendOutput(`Workspace ready on branch ${DEV_BRANCH}`, "system");
 }
 
 function commitAndPush() {
@@ -283,20 +333,108 @@ function commitAndPush() {
   try {
     status = exec("git status --porcelain", { cwd: WORKSPACE });
   } catch {
-    return null; // not a git workspace (no REPO_URL)
+    return { pushed: false, hasChanges: false }; // not a git workspace
   }
   if (!status) {
     sendOutput("No changes to commit", "system");
-    return null;
+    return { pushed: false, hasChanges: false };
   }
 
   exec("git add -A", { cwd: WORKSPACE });
-  exec(`git commit -m "kirofactory: task ${TASK_ID || "unknown"}"`, { cwd: WORKSPACE });
 
-  const branchName = `kirofactory/${SESSION_ID}`;
-  exec(`git push origin ${branchName}`, { cwd: WORKSPACE });
+  // Build commit message with task info
+  const taskId = currentTaskMeta?.id || TASK_ID || "unknown";
+  const taskTitle = currentTaskMeta?.title || `task ${taskId}`;
+  const commitTitle = `${taskTitle} [KiroFactory #${taskId}]`;
+  const commitBody = currentTaskMeta
+    ? `\nType: ${currentTaskMeta.type || "unknown"}\nID: ${taskId}\n\n${currentTaskMeta.description || ""}`
+    : "";
+  exec(`git commit -m "${commitTitle}${commitBody.replace(/"/g, '\\"')}"`, { cwd: WORKSPACE });
+
+  const branchName = currentBranchName || `kirofactory/${SESSION_ID}`;
+  exec(`git push origin "${branchName}"`, { cwd: WORKSPACE });
   sendOutput(`Pushed branch ${branchName}`, "system");
-  return branchName;
+  return { pushed: true, hasChanges: true, branchName };
+}
+
+// ---------------------------------------------------------------------------
+// GitHub PR creation
+// ---------------------------------------------------------------------------
+
+const GITHUB_PAT = process.env.GITHUB_PAT;
+
+/**
+ * Create a Pull Request via GitHub REST API.
+ * Returns the PR URL on success, or null on failure.
+ */
+async function createPullRequest(branchName) {
+  if (!GITHUB_PAT || !REPO_URL || !REPO_URL.includes("github.com")) {
+    logInfo("Skipping PR creation — no GITHUB_PAT or non-GitHub repo");
+    return null;
+  }
+
+  // Parse owner/repo from URL
+  const match = REPO_URL.match(/github\.com[/:]([^/]+)\/([^/.]+)/);
+  if (!match) {
+    logError("Cannot parse owner/repo from REPO_URL", { url: REPO_URL });
+    return null;
+  }
+  const [, owner, repo] = match;
+
+  const taskId = currentTaskMeta?.id || TASK_ID || "unknown";
+  const taskTitle = currentTaskMeta?.title || `Task ${taskId}`;
+  const taskDescription = currentTaskMeta?.description || "";
+  const taskType = currentTaskMeta?.type || "task";
+
+  const prTitle = `${taskTitle} [KiroFactory #${taskId}]`;
+  const prBody = [
+    "## Task",
+    "",
+    `**Title:** ${taskTitle}`,
+    `**Type:** ${taskType}`,
+    `**ID:** ${taskId}`,
+    "",
+    "## Description",
+    "",
+    taskDescription || "_(no description provided)_",
+    "",
+    "---",
+    "*Created automatically by KiroFactory*",
+  ].join("\n");
+
+  try {
+    const response = await fetch(`https://api.github.com/repos/${owner}/${repo}/pulls`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${GITHUB_PAT}`,
+        "Accept": "application/vnd.github+json",
+        "Content-Type": "application/json",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+      body: JSON.stringify({
+        title: prTitle,
+        body: prBody,
+        head: branchName,
+        base: DEV_BRANCH,
+      }),
+    });
+
+    if (response.status === 201) {
+      const data = await response.json();
+      sendOutput(`Pull Request created: ${data.html_url}`, "system");
+      return data.html_url;
+    }
+
+    const errorData = await response.json().catch(() => ({}));
+    const errorMsg = errorData.message || `HTTP ${response.status}`;
+    sendOutput(`PR creation failed: ${errorMsg}`, "stderr");
+    logError("PR creation failed", { status: response.status, error: errorMsg });
+    return null;
+  } catch (err) {
+    logError("PR creation network error", { error: err?.message || String(err) });
+    sendOutput(`PR creation error: ${err?.message || err}`, "stderr");
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -350,7 +488,23 @@ function spawnKiro() {
         if (currentPromptId !== null && msg.id === currentPromptId && (msg.result !== undefined || msg.error !== undefined)) {
           const result = msg.error !== undefined ? { error: msg.error } : msg.result;
           currentPromptId = null;
-          sendPromptDone(result);
+
+          // After prompt completes: check for changes, commit, push, create PR
+          (async () => {
+            let hasChanges = false;
+            let prUrl = null;
+            try {
+              const gitResult = commitAndPush();
+              hasChanges = gitResult.hasChanges;
+              if (gitResult.pushed && gitResult.branchName) {
+                prUrl = await createPullRequest(gitResult.branchName);
+              }
+            } catch (err) {
+              logError("Post-prompt git/PR operations failed", { error: err?.message || String(err) });
+              sendOutput(`Post-prompt error: ${err?.message || err}`, "stderr");
+            }
+            sendPromptDone({ ...result, hasChanges, prUrl });
+          })();
           continue;
         }
         // Any other structured line — pass through as stdout text.
@@ -389,8 +543,25 @@ function spawnKiro() {
   }, 3_000);
 }
 
-function handlePrompt(text) {
+function handlePrompt(text, taskMeta) {
   if (!text) return;
+
+  // If task metadata is provided and we have a git repo, create a task-specific branch
+  if (taskMeta && REPO_URL) {
+    currentTaskMeta = taskMeta;
+    try {
+      // Ensure we're on develop before branching (reset from any previous task)
+      try { exec(`git checkout ${DEV_BRANCH}`, { cwd: WORKSPACE }); } catch { /* may already be on develop */ }
+      currentBranchName = createTaskBranch(taskMeta);
+    } catch (err) {
+      sendOutput(`Warning: could not create task branch: ${err?.message || err}`, "stderr");
+      logError("Failed to create task branch", { error: err?.message || String(err) });
+      // Fall back to session-based branch
+      currentBranchName = `kirofactory/${SESSION_ID}`;
+      try { exec(`git checkout -b "${currentBranchName}"`, { cwd: WORKSPACE }); } catch { /* may already exist */ }
+    }
+  }
+
   if (!kiroReady || !kiroProc) {
     promptQueue.push(text);
     return;
@@ -429,8 +600,8 @@ let shuttingDown = false;
 function commitOnExitAndShutdown(exitCode) {
   if (shuttingDown) return;
   try {
-    const branch = commitAndPush();
-    if (branch) sendOutput(`Changes pushed to ${branch}`, "system");
+    const result = commitAndPush();
+    if (result.pushed) sendOutput(`Changes pushed to ${result.branchName}`, "system");
   } catch (err) {
     logError("commit/push on exit failed", { error: err?.message || String(err) });
     sendOutput(`commit/push failed: ${err?.message || String(err)}`, "stderr");
