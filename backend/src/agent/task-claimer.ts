@@ -16,6 +16,10 @@ export interface ClaimedTask {
   description: string;
   files: string[];
   origin: "user" | "ai" | "user-assisted";
+  /** Repository URL from the task's associated tab (null if not set) */
+  repositoryUrl: string | null;
+  /** User ID of the tab owner (for credential lookup) */
+  userId: number | null;
 }
 
 /**
@@ -138,6 +142,20 @@ export async function claimTask(taskId?: number, tabIds?: number[]): Promise<Cla
     }
 
     const row = result.recordset[0];
+
+    // Fetch repository URL and user ID from the task's first associated tab
+    const tabResult = await pool
+      .request()
+      .input("claimedTaskId", sql.Int, row.id)
+      .query(`
+        SELECT TOP 1 t.repository_url, t.user_id
+        FROM task_tabs tt
+        INNER JOIN tabs t ON t.id = tt.tab_id
+        WHERE tt.task_id = @claimedTaskId
+      `);
+
+    const tabRow = tabResult.recordset.length > 0 ? tabResult.recordset[0] : null;
+
     return {
       id: row.id,
       title: row.title,
@@ -146,6 +164,8 @@ export async function claimTask(taskId?: number, tabIds?: number[]): Promise<Cla
       description: row.description,
       files: JSON.parse(row.files || "[]"),
       origin: row.origin,
+      repositoryUrl: tabRow?.repository_url || null,
+      userId: tabRow?.user_id || null,
     };
   } catch (err) {
     await transaction.rollback();
