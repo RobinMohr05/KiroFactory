@@ -150,6 +150,14 @@ async function handleClientMessage(ws: WebSocket, msg: WsClientMessage): Promise
   }
 }
 
+/**
+ * Returns the number of currently connected WebSocket clients.
+ * Used by the poll loop to skip DB queries when nobody is listening.
+ */
+export function getConnectedClientCount(): number {
+  return clients.size;
+}
+
 export function broadcast(msg: WsServerMessage): void {
   const data = JSON.stringify(msg);
   for (const client of clients) {

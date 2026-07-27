@@ -135,24 +135,26 @@ export async function claimTask(taskId?: number, tabIds?: number[]): Promise<Cla
     }
 
     const result = await request.query(query);
-    await transaction.commit();
 
     if (result.recordset.length === 0) {
+      await transaction.commit();
       return null;
     }
 
     const row = result.recordset[0];
 
-    // Fetch repository URL and user ID from the task's first associated tab
-    const tabResult = await pool
-      .request()
-      .input("claimedTaskId", sql.Int, row.id)
-      .query(`
-        SELECT TOP 1 t.repository_url, t.user_id
-        FROM task_tabs tt
-        INNER JOIN tabs t ON t.id = tt.tab_id
-        WHERE tt.task_id = @claimedTaskId
-      `);
+    // Fetch repository URL and user ID within the same transaction — avoids
+    // a separate pool.request() round-trip after commit.
+    const tabRequest = new sql.Request(transaction);
+    tabRequest.input("claimedTaskId", sql.Int, row.id);
+    const tabResult = await tabRequest.query(`
+      SELECT TOP 1 t.repository_url, t.user_id
+      FROM task_tabs tt
+      INNER JOIN tabs t ON t.id = tt.tab_id
+      WHERE tt.task_id = @claimedTaskId
+    `);
+
+    await transaction.commit();
 
     const tabRow = tabResult.recordset.length > 0 ? tabResult.recordset[0] : null;
 
@@ -225,10 +227,33 @@ export async function resetOrphanedTasks(): Promise<number> {
 /**
  * Get the count of available (todo) tasks.
  *
+ * Uses a short TTL cache (5s) to avoid redundant COUNT queries when multiple
+ * loop sessions poll simultaneously. The cache is keyed by the sorted tabIds.
+ *
  * @param tabIds Optional tab IDs to filter by — only tasks belonging to at least one of these tabs are counted. If empty/undefined, all todo tasks are counted.
  */
+
+interface CachedCount {
+  value: number;
+  expiresAt: number;
+}
+
+const countCache = new Map<string, CachedCount>();
+const COUNT_CACHE_TTL_MS = 5000;
+
 export async function getAvailableTaskCount(tabIds?: number[]): Promise<number> {
+  // Build a stable cache key from the sorted tab IDs
+  const cacheKey = tabIds && tabIds.length > 0
+    ? `tabs:${[...tabIds].sort((a, b) => a - b).join(",")}`
+    : "all";
+
+  const cached = countCache.get(cacheKey);
+  if (cached && Date.now() < cached.expiresAt) {
+    return cached.value;
+  }
+
   const pool = await getPool();
+  let count: number;
 
   if (tabIds && tabIds.length > 0) {
     const request = pool.request();
@@ -244,11 +269,14 @@ export async function getAvailableTaskCount(tabIds?: number[]): Promise<number> 
       WHERE t.state = 'todo'
         AND tt.tab_id IN (${tabIdParams.join(", ")})
     `);
-    return result.recordset[0].count;
+    count = result.recordset[0].count;
+  } else {
+    const result = await pool
+      .request()
+      .query("SELECT COUNT(*) as count FROM tasks WHERE state = 'todo'");
+    count = result.recordset[0].count;
   }
 
-  const result = await pool
-    .request()
-    .query("SELECT COUNT(*) as count FROM tasks WHERE state = 'todo'");
-  return result.recordset[0].count;
+  countCache.set(cacheKey, { value: count, expiresAt: Date.now() + COUNT_CACHE_TTL_MS });
+  return count;
 }
