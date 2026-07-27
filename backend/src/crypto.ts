@@ -16,9 +16,15 @@ function deriveKey(): Buffer {
       "ENCRYPTION_KEY environment variable is required for encryption operations"
     );
   }
-  // Use a fixed salt derived from the secret itself — deterministic but still
-  // strengthens short keys via scrypt's memory-hardness.
-  const salt = "vibecode-heaven-aes256-salt";
+  // Fixed, product-name-independent salt. Deterministic but still strengthens
+  // short keys via scrypt's memory-hardness.
+  //
+  // IMPORTANT: never change this value. It is a direct input to key derivation,
+  // not cosmetic — changing it (e.g. during a rebrand) silently invalidates every
+  // ciphertext already stored in the DB (kiro_api_key_encrypted, cred_* columns),
+  // since decrypt() will derive a different key and AES-GCM auth-tag verification
+  // will fail with "Unsupported state or unable to authenticate data".
+  const salt = "kirofactory-aes256-salt";
   return scryptSync(secret, salt, KEY_LENGTH);
 }
 
