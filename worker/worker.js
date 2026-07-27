@@ -254,9 +254,42 @@ function handleOrchestratorMessage(msg) {
 // Git operations
 // ---------------------------------------------------------------------------
 
+/**
+ * Strip credentials out of anything we are about to log or forward.
+ * Git commands and git's own error messages echo the remote URL, which carries
+ * the PAT — that must never reach the container log or the session output.
+ */
+function redactSecrets(text) {
+  if (typeof text !== "string" || !text) return text;
+  // https://user:token@host → https://***@host
+  let out = text.replace(/(https?:\/\/)[^@\s/"']+@/g, "$1***@");
+  for (const secret of [process.env.GITHUB_PAT, AZURE_DEVOPS_PAT, KIRO_API_KEY]) {
+    if (secret && secret.length >= 8) out = out.split(secret).join("***");
+  }
+  return out;
+}
+
+/**
+ * Run a shell command in the workspace.
+ *
+ * GIT_TERMINAL_PROMPT=0 makes git fail immediately when it would otherwise ask
+ * for a username — in a container that prompt surfaces as the confusing
+ * "could not read Username for 'https://github.com': No such device or address".
+ */
 function exec(cmd, opts = {}) {
-  logInfo("exec", { cmd });
-  return execSync(cmd, { encoding: "utf-8", timeout: 120_000, ...opts }).trim();
+  logInfo("exec", { cmd: redactSecrets(cmd) });
+  try {
+    return execSync(cmd, {
+      encoding: "utf-8",
+      timeout: 120_000,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+      ...opts,
+    }).trim();
+  } catch (err) {
+    // execSync embeds the full command (and therefore the PAT) in the message.
+    if (err && typeof err.message === "string") err.message = redactSecrets(err.message);
+    throw err;
+  }
 }
 
 /**
@@ -317,6 +350,76 @@ function createTaskBranch(taskMeta) {
   return branchName;
 }
 
+/**
+ * REPO_URL with the PAT embedded. Used for every network operation (clone,
+ * push) because the container has no credential helper and no tty: without
+ * inline credentials git tries to prompt for a username and dies with
+ * "could not read Username for 'https://github.com': No such device or address".
+ *
+ * Never logged — always pass through redactSecrets().
+ */
+let authRemoteUrl = null;
+
+/** True when we have a credential that can push to REPO_URL. */
+function hasPushCredential() {
+  if (!REPO_URL) return false;
+  if (REPO_URL.includes("github.com")) return !!process.env.GITHUB_PAT;
+  if (REPO_URL.includes("dev.azure.com")) return !!AZURE_DEVOPS_PAT;
+  return false;
+}
+
+function buildAuthRemoteUrl() {
+  if (!REPO_URL) return null;
+  if (AZURE_DEVOPS_PAT && REPO_URL.includes("dev.azure.com")) {
+    return REPO_URL.replace("https://", `https://pat:${AZURE_DEVOPS_PAT}@`);
+  }
+  if (process.env.GITHUB_PAT && REPO_URL.includes("github.com")) {
+    // x-access-token is the documented username for GitHub token auth and works
+    // for both classic and fine-grained PATs as well as GitHub App tokens.
+    return REPO_URL.replace("https://", `https://x-access-token:${process.env.GITHUB_PAT}@`);
+  }
+  return REPO_URL;
+}
+
+/**
+ * Confirm we can actually push before the agent spends minutes producing work
+ * that can't be delivered. `--dry-run` performs the full auth and permission
+ * check against the remote without creating anything.
+ */
+function verifyPushAccess() {
+  if (!hasPushCredential()) {
+    const host = REPO_URL.includes("github.com")
+      ? "GitHub"
+      : REPO_URL.includes("dev.azure.com")
+        ? "Azure DevOps"
+        : "the git remote";
+    const credName = REPO_URL.includes("github.com") ? "githubPat" : "azureDevOpsPat";
+    logError("No git push credential injected", { repoHost: host, requiredCredential: credName });
+    sendOutput(
+      `No ${host} credential was injected into this worker. The repository could be cloned ` +
+        `(public read access), but pushing WILL fail. Store a ${credName} credential for this ` +
+        `user so the orchestrator can pass it to the worker.`,
+      "stderr"
+    );
+    return false;
+  }
+
+  try {
+    exec(`git push --dry-run "${authRemoteUrl}" HEAD:refs/heads/__vch_push_preflight__`, { cwd: WORKSPACE });
+    logInfo("Push access verified");
+    sendOutput("Git push access verified", "system");
+    return true;
+  } catch (err) {
+    const msg = redactSecrets(err?.message || String(err));
+    logError("Push access check failed", { error: msg });
+    sendOutput(
+      `Git push access check failed — the agent's work will not be deliverable:\n${msg}`,
+      "stderr"
+    );
+    return false;
+  }
+}
+
 function setupRepo() {
   if (!REPO_URL) {
     logInfo("No REPO_URL — working in empty workspace");
@@ -324,21 +427,26 @@ function setupRepo() {
     return;
   }
 
-  let cloneUrl = REPO_URL;
-  if (AZURE_DEVOPS_PAT && cloneUrl.includes("dev.azure.com")) {
-    cloneUrl = cloneUrl.replace("https://", `https://pat:${AZURE_DEVOPS_PAT}@`);
-  }
-  // GitHub PAT authentication
-  const githubPat = process.env.GITHUB_PAT;
-  if (githubPat && cloneUrl.includes("github.com")) {
-    cloneUrl = cloneUrl.replace("https://", `https://${githubPat}@`);
-  }
+  authRemoteUrl = buildAuthRemoteUrl();
+
+  logInfo("Git configuration", {
+    repoUrl: redactSecrets(REPO_URL),
+    devBranch: DEV_BRANCH,
+    hasGithubPat: !!process.env.GITHUB_PAT,
+    hasAzureDevOpsPat: !!AZURE_DEVOPS_PAT,
+    hasPushCredential: hasPushCredential(),
+  });
 
   sendOutput("Cloning repository...", "system");
-  exec(`git clone --branch ${DEV_BRANCH} "${cloneUrl}" ${WORKSPACE}`);
+  exec(`git clone --branch ${DEV_BRANCH} "${authRemoteUrl}" ${WORKSPACE}`);
+
+  // Keep the PAT out of .git/config — pushes use authRemoteUrl explicitly.
+  exec(`git remote set-url origin "${REPO_URL}"`, { cwd: WORKSPACE });
 
   exec(`git config user.name "${GIT_USER_NAME}"`, { cwd: WORKSPACE });
   exec(`git config user.email "${GIT_USER_EMAIL}"`, { cwd: WORKSPACE });
+
+  verifyPushAccess();
 
   // Ensure the workspace has a .kiro/agents/ config for kiro-cli.
   // If the target repo already has one, we leave it alone. Otherwise, we inject
@@ -467,9 +575,25 @@ function commitAndPush() {
   exec(`git commit -m "${commitTitle}${commitBody.replace(/"/g, '\\"')}"`, { cwd: WORKSPACE });
 
   const branchName = currentBranchName || `vibecode-heaven/${SESSION_ID}`;
-  exec(`git push origin "${branchName}"`, { cwd: WORKSPACE });
+
+  // Push to the credential-carrying URL rather than the `origin` alias: the
+  // container has no credential helper and no tty, so an unauthenticated push
+  // fails with "could not read Username for 'https://github.com'".
+  //
+  // A push failure is reported, not thrown: the agent's work is real and
+  // committed, and the orchestrator needs to tell "the agent produced nothing"
+  // apart from "the agent produced work we could not deliver".
+  try {
+    exec(`git push "${authRemoteUrl || "origin"}" "HEAD:refs/heads/${branchName}"`, { cwd: WORKSPACE });
+  } catch (err) {
+    const pushError = redactSecrets(err?.message || String(err));
+    logError("git push failed", { branchName, error: pushError });
+    sendOutput(`Push to ${branchName} failed: ${pushError}`, "stderr");
+    return { pushed: false, hasChanges: true, committed: true, branchName, pushError };
+  }
+
   sendOutput(`Pushed branch ${branchName}`, "system");
-  return { pushed: true, hasChanges: true, branchName };
+  return { pushed: true, hasChanges: true, committed: true, branchName };
 }
 
 // ---------------------------------------------------------------------------
@@ -777,22 +901,28 @@ function finishPromptTurn(msg) {
 
   (async () => {
     let hasChanges = false;
+    let committed = false;
     let prUrl = null;
     let gitError = null;
     try {
       const gitResult = commitAndPush();
       hasChanges = gitResult.hasChanges;
+      committed = !!gitResult.committed;
+      if (gitResult.pushError) gitError = gitResult.pushError;
       if (gitResult.pushed && gitResult.branchName) {
         prUrl = await createPullRequest(gitResult.branchName);
       }
     } catch (err) {
-      gitError = err?.message || String(err);
+      gitError = redactSecrets(err?.message || String(err));
       logError("Post-prompt git/PR operations failed", { error: gitError });
       sendOutput(`Post-prompt error: ${gitError}`, "stderr");
     }
     sendPromptDone({
       stopReason,
       error: promptError || gitError || null,
+      // deliveryFailed = the agent did the work and it was committed, but it
+      // could not be pushed. Retrying the agent cannot fix that.
+      deliveryFailed: committed && !!gitError,
       toolCalls: turnStats.toolCalls,
       durationMs,
       hasChanges,

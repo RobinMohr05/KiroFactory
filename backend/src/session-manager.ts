@@ -1366,6 +1366,8 @@ interface WorkerPromptResult {
   stopReason?: string | null;
   toolCalls?: number;
   durationMs?: number;
+  /** The agent's work was committed but could not be pushed — retrying won't help. */
+  deliveryFailed?: boolean;
 }
 
 /**
@@ -1509,6 +1511,8 @@ async function runLoopModeAca(
     let success = true;
     let promptResult: WorkerPromptResult = {};
     let failureReason = "";
+    /** Set when the agent succeeded but the push failed — not worth retrying. */
+    let deliveryFailure = false;
 
     try {
       promptResult = await streamPromptAca(managed, prompt, { id: task.id, title: task.title, type: task.type, description: task.description, files: task.files });
@@ -1548,11 +1552,25 @@ async function runLoopModeAca(
     if (success && promptResult.error) {
       success = false;
       failureReason = promptResult.error;
-      appendOutput(managed, {
-        timestamp: now(),
-        stream: "stderr",
-        text: `✖ Agent turn failed: ${promptResult.error}`,
-      });
+      if (promptResult.deliveryFailed) {
+        // The agent finished the task; the commit just couldn't be pushed.
+        // Re-running the agent would only repeat the work and fail the same way,
+        // so skip the retry budget entirely and surface it as a config problem.
+        deliveryFailure = true;
+        appendOutput(managed, {
+          timestamp: now(),
+          stream: "stderr",
+          text:
+            `✖ The agent completed the task but the result could not be pushed. This is a git ` +
+            `credential/permission problem, not a task problem — retrying will not help.\n${promptResult.error}`,
+        });
+      } else {
+        appendOutput(managed, {
+          timestamp: now(),
+          stream: "stderr",
+          text: `✖ Agent turn failed: ${promptResult.error}`,
+        });
+      }
       recordError({
         sessionId: meta.id,
         sessionName: meta.name,
@@ -1611,6 +1629,22 @@ async function runLoopModeAca(
       taskFailures.delete(task.id);
     } else {
       await resetTaskToTodo(task.id);
+
+      // A delivery failure is an environment problem, not a task problem —
+      // block immediately instead of spending the whole retry budget
+      // re-implementing the same task and failing the same push.
+      if (deliveryFailure) {
+        blockedTasks.add(task.id);
+        appendOutput(managed, {
+          timestamp: now(),
+          stream: "system",
+          text: `Task ${task.id} reset to "todo" and blocked for this session — fix the git credentials, then re-run.`,
+        });
+        meta.currentTaskId = undefined;
+        broadcast({ type: "session-updated", session: meta });
+        persistSession(meta.id);
+        continue;
+      }
 
       // Track consecutive failures and apply backoff / blocking
       const failures = (taskFailures.get(task.id) || 0) + 1;
