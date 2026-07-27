@@ -19,7 +19,7 @@
 
 import { spawn, execSync } from "node:child_process";
 import { WebSocket } from "ws";
-import { mkdirSync, existsSync } from "node:fs";
+import { mkdirSync, existsSync, writeFileSync } from "node:fs";
 
 // ---------------------------------------------------------------------------
 // Configuration (from environment variables injected by orchestrator)
@@ -312,6 +312,11 @@ function setupRepo() {
   exec(`git config user.name "${GIT_USER_NAME}"`, { cwd: WORKSPACE });
   exec(`git config user.email "${GIT_USER_EMAIL}"`, { cwd: WORKSPACE });
 
+  // Ensure the workspace has a .kiro/agents/ config for kiro-cli.
+  // If the target repo already has one, we leave it alone. Otherwise, we inject
+  // the default developer-agent configuration so kiro-cli can function.
+  ensureAgentConfig();
+
   // Install dependencies so the agent can run tests, builds, etc.
   sendOutput("Installing dependencies...", "system");
   try {
@@ -326,6 +331,61 @@ function setupRepo() {
   }
 
   sendOutput(`Workspace ready on branch ${DEV_BRANCH}`, "system");
+}
+
+/**
+ * Ensure the workspace has a .kiro/agents/<AGENT_NAME>.json so kiro-cli
+ * can find the agent configuration. If the target repo already ships one,
+ * we respect it. Otherwise, we create a sensible default.
+ */
+function ensureAgentConfig() {
+  const kiroDir = `${WORKSPACE}/.kiro`;
+  const agentsDir = `${kiroDir}/agents`;
+  const agentFile = `${agentsDir}/${AGENT_NAME}.json`;
+
+  if (existsSync(agentFile)) {
+    logInfo("Agent config already exists in workspace", { path: agentFile });
+    return;
+  }
+
+  mkdirSync(agentsDir, { recursive: true });
+
+  // Default agent config: full tool access, no restrictive allowedTools list.
+  // The prompt itself constrains what the agent should do — the tools should be
+  // available for it to actually make changes.
+  const agentConfig = {
+    name: AGENT_NAME,
+    description: "Developer agent that implements assigned tasks. Reads code, makes changes, verifies the build.",
+    prompt: [
+      "You are the Developer Implementation Agent.",
+      "You will be given a specific task to implement. Do NOT pick tasks yourself — your task is provided in the prompt.",
+      "",
+      "## RULES",
+      "",
+      "1. Read relevant source files to understand the current state before making changes.",
+      "2. Implement the change described in your assigned task.",
+      "3. Follow the existing code style and conventions.",
+      "4. After implementing, verify your changes compile correctly (run the project's build command).",
+      "5. Keep changes minimal and focused on the assigned task only.",
+      "6. Do NOT introduce unrelated refactoring or improvements.",
+      "7. If the work is already implemented, note that and stop.",
+      "8. If the task cannot be completed, explain why and stop.",
+      "9. STOP after completing the single assigned task.",
+      "10. Do NOT run any git commands. The orchestrator handles all git operations.",
+    ].join("\n"),
+    tools: [
+      "read",
+      "write",
+      "shell",
+      "grep",
+      "glob",
+      "code"
+    ],
+  };
+
+  writeFileSync(agentFile, JSON.stringify(agentConfig, null, 2), "utf-8");
+  logInfo("Created agent config in workspace", { path: agentFile });
+  sendOutput(`Injected .kiro/agents/${AGENT_NAME}.json into workspace`, "system");
 }
 
 function commitAndPush() {
@@ -459,6 +519,13 @@ async function onAuthenticated() {
   }
 }
 
+/** ID used for the ACP initialize handshake request. */
+const INIT_REQUEST_ID = "__kiro_init__";
+/** ID used for the ACP newSession handshake request. */
+const NEW_SESSION_REQUEST_ID = "__kiro_new_session__";
+/** Maximum time (ms) to wait for kiro-cli ACP readiness before giving up. */
+const KIRO_READY_TIMEOUT_MS = 60_000;
+
 function spawnKiro() {
   const args = ["acp", "--agent", AGENT_NAME];
   const env = { ...process.env, KIRO_API_KEY, NO_COLOR: "1", FORCE_COLOR: "0" };
@@ -468,6 +535,20 @@ function spawnKiro() {
   kiroProc = spawn("kiro-cli", args, { stdio: ["pipe", "pipe", "pipe"], env, cwd: WORKSPACE });
 
   let buffer = "";
+  /** Tracks whether the ACP initialize handshake has completed. */
+  let initDone = false;
+  /** Tracks whether the ACP newSession handshake has completed. */
+  let sessionDone = false;
+
+  /** Timeout handle for kiro-cli readiness — if ACP handshake doesn't complete, fail fast. */
+  const readyTimeout = setTimeout(() => {
+    if (!kiroReady) {
+      logError("kiro-cli did not complete ACP handshake within timeout", { timeoutMs: KIRO_READY_TIMEOUT_MS });
+      sendOutput(`kiro-cli failed to initialize within ${KIRO_READY_TIMEOUT_MS / 1000}s — killing process`, "stderr");
+      try { kiroProc?.kill("SIGTERM"); } catch { /* noop */ }
+    }
+  }, KIRO_READY_TIMEOUT_MS);
+
   kiroProc.stdout.on("data", (chunk) => {
     buffer += chunk.toString();
     const lines = buffer.split("\n");
@@ -483,6 +564,46 @@ function spawnKiro() {
           sendSessionUpdate(msg.params.update);
           continue;
         }
+
+        // ACP handshake responses: initialize → newSession → ready
+        if (msg.id === INIT_REQUEST_ID && (msg.result !== undefined || msg.error !== undefined)) {
+          if (msg.error) {
+            logError("ACP initialize failed", { error: msg.error });
+            sendOutput(`kiro-cli ACP initialize failed: ${JSON.stringify(msg.error)}`, "stderr");
+            clearTimeout(readyTimeout);
+            try { kiroProc?.kill("SIGTERM"); } catch { /* noop */ }
+            continue;
+          }
+          initDone = true;
+          logInfo("ACP initialize complete — sending newSession");
+          // Send newSession request
+          const newSessionMsg = JSON.stringify({
+            jsonrpc: "2.0",
+            method: "newSession",
+            id: NEW_SESSION_REQUEST_ID,
+            params: { cwd: WORKSPACE, mcpServers: [] },
+          });
+          kiroProc.stdin.write(newSessionMsg + "\n");
+          continue;
+        }
+
+        if (msg.id === NEW_SESSION_REQUEST_ID && (msg.result !== undefined || msg.error !== undefined)) {
+          if (msg.error) {
+            logError("ACP newSession failed", { error: msg.error });
+            sendOutput(`kiro-cli ACP newSession failed: ${JSON.stringify(msg.error)}`, "stderr");
+            clearTimeout(readyTimeout);
+            try { kiroProc?.kill("SIGTERM"); } catch { /* noop */ }
+            continue;
+          }
+          sessionDone = true;
+          clearTimeout(readyTimeout);
+          logInfo("ACP newSession complete — kiro-cli is ready", { sessionId: msg.result?.sessionId });
+          kiroReady = true;
+          sendOutput(`kiro-cli ACP session ready`, "system");
+          drainPromptQueue();
+          continue;
+        }
+
         // A JSON-RPC response whose id matches the in-flight prompt means the
         // prompt turn has completed — let the orchestrator send the next one.
         if (currentPromptId !== null && msg.id === currentPromptId && (msg.result !== undefined || msg.error !== undefined)) {
@@ -507,6 +628,37 @@ function spawnKiro() {
           })();
           continue;
         }
+
+        // ACP requestPermission — auto-approve all tool use requests.
+        // kiro-cli sends this as a JSON-RPC request when the agent wants to use
+        // a tool that isn't in `allowedTools`. We must respond or the agent blocks.
+        if (msg.method === "requestPermission" && msg.id !== undefined) {
+          const options = msg.params?.options || [];
+          // Pick "allow_once" first, then "allow_always", then first available
+          const approve =
+            options.find((o) => o.kind === "allow_once") ??
+            options.find((o) => o.kind === "allow_always") ??
+            options[0];
+
+          const response = JSON.stringify({
+            jsonrpc: "2.0",
+            id: msg.id,
+            result: { outcome: { outcome: "selected", optionId: approve?.optionId || "allow" } },
+          });
+          kiroProc.stdin.write(response + "\n");
+          continue;
+        }
+
+        // ACP sessionUpdate notification (alternative path — some versions send it as a request)
+        if (msg.method === "sessionUpdate" && msg.params?.update) {
+          sendSessionUpdate(msg.params.update);
+          // If it has an id, it's a request needing an empty response
+          if (msg.id !== undefined) {
+            kiroProc.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: {} }) + "\n");
+          }
+          continue;
+        }
+
         // Any other structured line — pass through as stdout text.
         sendOutput(trimmed, "stdout");
       } catch {
@@ -521,6 +673,7 @@ function spawnKiro() {
   });
 
   kiroProc.on("exit", (code) => {
+    clearTimeout(readyTimeout);
     logInfo("kiro-cli exited", { code });
     kiroProc = null;
     kiroReady = false;
@@ -529,6 +682,7 @@ function spawnKiro() {
   });
 
   kiroProc.on("error", (err) => {
+    clearTimeout(readyTimeout);
     logError("Failed to spawn kiro-cli", { error: err?.message || String(err) });
     kiroProc = null;
     kiroReady = false;
@@ -536,11 +690,17 @@ function spawnKiro() {
     gracefulShutdown(1);
   });
 
-  // Give kiro a moment to initialize its ACP session before we feed prompts.
-  setTimeout(() => {
-    kiroReady = true;
-    drainPromptQueue();
-  }, 3_000);
+  // Send the ACP initialize handshake (instead of the old 3s blind timeout).
+  // kiro-cli will respond with a JSON-RPC result once it's ready to accept
+  // sessions. Only then do we send newSession, and only after that do we mark
+  // kiroReady=true and drain queued prompts.
+  const initMsg = JSON.stringify({
+    jsonrpc: "2.0",
+    method: "initialize",
+    id: INIT_REQUEST_ID,
+    params: { protocolVersion: "2025-03-26", clientCapabilities: {} },
+  });
+  kiroProc.stdin.write(initMsg + "\n");
 }
 
 function handlePrompt(text, taskMeta) {
