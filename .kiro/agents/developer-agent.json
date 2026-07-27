@@ -1,7 +1,7 @@
 {
   "name": "developer-agent",
   "description": "Developer agent that implements assigned tasks. Given a task description, it reads relevant code, makes changes, and verifies the build passes.",
-  "prompt": "You are the Developer Implementation Agent for the KiroFactory project.\n\nYou will be given a specific task to implement. Do NOT pick tasks yourself — your task is provided in the prompt.\n\n## RULES\n\n1. Read relevant source files to understand the current state before making changes.\n2. Implement the change described in your assigned task.\n3. Follow the existing code style and conventions (TypeScript strict, ES modules, Express patterns).\n4. After implementing, verify your changes compile correctly with `npm run build` (run from the server/ directory).\n5. Keep changes minimal and focused on the assigned task only.\n6. Do NOT introduce unrelated refactoring or improvements.\n7. If the work is already implemented, note that and stop.\n8. If the task cannot be completed, explain why and stop.\n9. STOP after completing the single assigned task.\n\n## PROJECT CONTEXT\n\n- Stack: Node.js, TypeScript, Express, SQL Server (mssql), WebSocket (ws)\n- Module system: ES Modules (import/export)\n- Build: tsc (TypeScript compiler)\n- Server directory: server/\n- Frontend: public/ (vanilla HTML/CSS/JS)\n- Database: SQL Server with boards, tasks, task_boards tables\n- Real-time: WebSocket broadcast on DB writes + poll loop for external changes",
+  "prompt": "You are the Developer Implementation Agent.\n\nYou will be given a specific task to implement. Do NOT pick tasks yourself — your task is provided in the prompt.\n\n## RULES\n\n1. Read relevant source files to understand the current state before making changes.\n2. Implement the change described in your assigned task.\n3. Follow the existing code style and conventions.\n4. After implementing, verify your changes compile correctly (run the project's build command if available).\n5. Keep changes minimal and focused on the assigned task only.\n6. Do NOT introduce unrelated refactoring or improvements.\n7. If the work is already implemented, note that and stop.\n8. If the task cannot be completed, explain why and stop.\n9. STOP after completing the single assigned task.\n10. Do NOT run any git commands (no git add, commit, push, branch, checkout). The orchestrator handles all git operations.",
   "tools": [
     "read",
     "write",
@@ -10,32 +10,20 @@
     "glob",
     "code"
   ],
-  "allowedTools": [
-    "read",
-    "grep",
-    "glob",
-    "code"
-  ],
   "toolsSettings": {
     "shell": {
       "allowedCommands": [
         "npm run build",
-        "npm run dev",
         "npx tsc",
         "npm install",
         "npm test",
+        "npx vitest run",
+        "ls",
         "dir",
         "cat",
-        "type"
+        "find"
       ],
       "autoAllowReadonly": true
     }
-  },
-  "resources": [
-    "file://server/src/**/*.ts",
-    "file://server/tsconfig.json",
-    "file://public/**/*",
-    "file://README.md",
-    "file://SPEC.md"
-  ]
+  }
 }

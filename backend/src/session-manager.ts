@@ -1360,6 +1360,13 @@ async function runLoopModeAca(
   let iteration = 0;
   const maxRuns = meta.runs;
 
+  // Track consecutive failures per task ID to prevent infinite retry loops.
+  // After MAX_TASK_FAILURES consecutive failures on the same task, it is left
+  // as "todo" but skipped for the rest of this session (not re-claimed).
+  const MAX_TASK_FAILURES = 3;
+  const taskFailures = new Map<number, number>(); // taskId → consecutive failure count
+  const blockedTasks = new Set<number>(); // tasks that hit the failure cap this session
+
   let effectiveTabIds: number[] | undefined = meta.tabIds;
   if (meta.tabIds && meta.tabIds.length > 0) {
     const isGeneric = await includesGenericTab(meta.tabIds);
@@ -1414,6 +1421,18 @@ async function runLoopModeAca(
         timestamp: now(),
         stream: "system",
         text: "Failed to claim task (race condition or empty queue).",
+      });
+      await interruptibleSleep(meta.intervalSeconds * 1000, signal);
+      continue;
+    }
+
+    // Skip tasks that have already exceeded failure limit in this session
+    if (blockedTasks.has(task.id)) {
+      await resetTaskToTodo(task.id);
+      appendOutput(managed, {
+        timestamp: now(),
+        stream: "system",
+        text: `Skipping task ${task.id} — exceeded ${MAX_TASK_FAILURES} consecutive failures this session.`,
       });
       await interruptibleSleep(meta.intervalSeconds * 1000, signal);
       continue;
@@ -1491,13 +1510,42 @@ async function runLoopModeAca(
         stream: "system",
         text: `Task ${task.id} marked as "developed" ✓`,
       });
+      // Clear failure counter on success
+      taskFailures.delete(task.id);
     } else {
       await resetTaskToTodo(task.id);
-      appendOutput(managed, {
-        timestamp: now(),
-        stream: "system",
-        text: `Task ${task.id} reset to "todo" (execution failed).`,
-      });
+
+      // Track consecutive failures and apply backoff / blocking
+      const failures = (taskFailures.get(task.id) || 0) + 1;
+      taskFailures.set(task.id, failures);
+
+      if (failures >= MAX_TASK_FAILURES) {
+        blockedTasks.add(task.id);
+        appendOutput(managed, {
+          timestamp: now(),
+          stream: "system",
+          text: `Task ${task.id} reset to "todo" (execution failed). ⛔ Blocked after ${failures} consecutive failures — will not retry this session.`,
+        });
+        recordError({
+          sessionId: meta.id,
+          sessionName: meta.name,
+          agent: meta.agent,
+          message: `Task "${task.title}" failed ${failures} consecutive times — blocked for this session`,
+          context: `Task ID: ${task.id}, type: ${task.type}, priority: P${task.priority}. The agent could not produce file changes after ${failures} attempts. Manual investigation is required.`,
+          taskId: task.id,
+          taskTitle: task.title,
+        });
+      } else {
+        appendOutput(managed, {
+          timestamp: now(),
+          stream: "system",
+          text: `Task ${task.id} reset to "todo" (execution failed). Attempt ${failures}/${MAX_TASK_FAILURES} — will retry with backoff.`,
+        });
+        // Exponential backoff: 30s, 60s after 1st and 2nd failures
+        const backoffMs = 30_000 * Math.pow(2, failures - 1);
+        setActivity(managed, { type: "idle", detail: `Backoff after failure (${Math.round(backoffMs / 1000)}s)...` });
+        await interruptibleSleep(backoffMs, signal);
+      }
     }
 
     meta.currentTaskId = undefined;
