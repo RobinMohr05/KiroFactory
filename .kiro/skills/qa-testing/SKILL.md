@@ -1,5 +1,6 @@
 ---
-inclusion: manual
+name: qa-testing
+description: QA testing credentials and environment for Puppeteer-based UI testing against the deployed Vibecode Heaven application.
 ---
 
 # QA Testing with Puppeteer
