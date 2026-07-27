@@ -29,7 +29,7 @@ const SESSION_ID = process.env.SESSION_ID;
 const ORCHESTRATOR_URL = process.env.ORCHESTRATOR_URL;
 const WORKER_SECRET = process.env.WORKER_SECRET;
 const TASK_ID = process.env.TASK_ID;
-const AGENT_NAME = process.env.AGENT_NAME || "developer-agent";
+const AGENT_NAME = process.env.AGENT_NAME ?? "developer-agent";
 const REPO_URL = process.env.REPO_URL;
 const DEV_BRANCH = process.env.DEV_BRANCH || "develop";
 const KIRO_API_KEY = process.env.KIRO_API_KEY;
@@ -515,6 +515,10 @@ function setupRepo() {
  * we respect it. Otherwise, we create a sensible default.
  */
 function ensureAgentConfig() {
+  if (!AGENT_NAME) {
+    logInfo("No agent configured — skipping agent config injection");
+    return;
+  }
   const kiroDir = `${WORKSPACE}/.kiro`;
   const agentsDir = `${kiroDir}/agents`;
   const agentFile = `${agentsDir}/${AGENT_NAME}.json`;
@@ -1267,10 +1271,10 @@ function handleAcpMessage(msg) {
 }
 
 function spawnKiro() {
-  const args = ["acp", "--agent", AGENT_NAME];
+  const args = AGENT_NAME ? ["acp", "--agent", AGENT_NAME] : ["acp"];
   const env = { ...process.env, KIRO_API_KEY, NO_COLOR: "1", FORCE_COLOR: "0" };
 
-  sendOutput(`Starting kiro-cli acp --agent ${AGENT_NAME}`, "system");
+  sendOutput(AGENT_NAME ? `Starting kiro-cli acp --agent ${AGENT_NAME}` : "Starting kiro-cli acp (no agent)", "system");
 
   kiroProc = spawn("kiro-cli", args, { stdio: ["pipe", "pipe", "pipe"], env, cwd: WORKSPACE });
 

@@ -46,8 +46,8 @@ router.post("/", (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
     const input: CreateSessionInput = req.body;
-    if (!input.name || !input.agent) {
-      res.status(400).json({ error: "name and agent are required" });
+    if (!input.name) {
+      res.status(400).json({ error: "name is required" });
       return;
     }
     // Force userId from auth context (ignore any userId in the body)

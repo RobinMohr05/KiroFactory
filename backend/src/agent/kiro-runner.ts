@@ -31,8 +31,8 @@ export interface McpServerEntry {
 }
 
 export interface KiroRunnerOptions {
-  /** Agent name from .kiro/agents/ */
-  agent: string;
+  /** Agent name from .kiro/agents/ (optional — omit for agentless sessions) */
+  agent?: string;
   /** Working directory for the kiro-cli process */
   cwd: string;
   /** Optional model override */
@@ -116,7 +116,8 @@ export class KiroRunner {
       env.KIRO_API_KEY = process.env.KIRO_API_KEY;
     }
 
-    const args = ["acp", "--agent", opts.agent];
+    const args = ["acp"];
+    if (opts.agent) args.push("--agent", opts.agent);
     if (opts.model) args.push("--model", opts.model);
 
     const cwd = getShortPath(resolve(opts.cwd));

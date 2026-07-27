@@ -258,7 +258,7 @@
       <h2 id="sessionModalTitle">New Agent Session</h2>
       <form id="sessionForm">
         <div class="form-group"><label for="sessionName">Session Name</label><input type="text" id="sessionName" required placeholder="e.g. Feature Builder" /></div>
-        <div class="form-group"><label for="sessionAgent">Agent</label><select id="sessionAgent" required><option value="" disabled selected>Loading agents…</option></select><small class="form-hint agent-description-hint" id="sessionAgentDescription"></small></div>
+        <div class="form-group"><label for="sessionAgent">Agent <small>(optional)</small></label><select id="sessionAgent"><option value="">None (interactive)</option></select><small class="form-hint agent-description-hint" id="sessionAgentDescription"></small></div>
         <div class="form-group"><label for="sessionPrompt">Task <small>(optional)</small></label><textarea id="sessionPrompt" rows="4" placeholder="Leave empty for default prompt, or describe a task..."></textarea></div>
         <div class="form-group"><label class="checkbox-label"><input type="checkbox" id="sessionInteractive" checked /><span>Interactive — allow follow-up prompts</span></label></div>
         <div class="form-row"><div class="form-group"><label for="sessionRuns">Runs <small>(0 = endless)</small></label><input type="number" id="sessionRuns" min="0" value="0" /></div><div class="form-group"><label for="sessionInterval">Interval (seconds)</label><input type="number" id="sessionInterval" min="0" value="10" /></div></div>

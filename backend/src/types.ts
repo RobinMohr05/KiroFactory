@@ -271,7 +271,7 @@ export interface Session {
 
 export interface CreateSessionInput {
   name: string;
-  agent: string;
+  agent?: string;
   prompt?: string;
   cwd?: string;
   timeoutSeconds?: number;
