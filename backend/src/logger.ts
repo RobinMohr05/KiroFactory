@@ -123,13 +123,20 @@ export function logSessionEvent(
   structuredLog(level, event, { component: "session-manager", sessionId, ...data });
 }
 
-/** Log a worker lifecycle event (spawn, connect, exit, crash). */
+/** Log a worker lifecycle event (spawn, connect, exit, crash, prompt turn). */
 export function logWorkerEvent(
-  event: "worker-spawned" | "worker-exited" | "worker-crashed" | "worker-connected",
+  event:
+    | "worker-spawned"
+    | "worker-exited"
+    | "worker-crashed"
+    | "worker-connected"
+    | "worker-prompt-done"
+    | "worker-prompt-failed",
   sessionId: string,
   data?: Record<string, unknown>
 ): void {
-  const level: LogLevel = event === "worker-crashed" ? "error" : "info";
+  const level: LogLevel =
+    event === "worker-crashed" || event === "worker-prompt-failed" ? "error" : "info";
   structuredLog(level, event, { component: "worker", sessionId, ...data });
 }
 
