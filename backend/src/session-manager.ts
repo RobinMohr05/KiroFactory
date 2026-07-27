@@ -964,28 +964,50 @@ function processUpdate(managed: ManagedSession, update: SessionUpdateChunk): voi
         }
         break;
 
-      case "tool_call":
-        if (update.title) {
-          const { icon, label } = getToolDisplayInfo(update.title);
-          setActivity(managed, { type: "tool-call", detail: label });
+      case "tool_call": {
+        // Fall back to `kind` (and finally a generic label) so a tool call is
+        // never silently dropped just because the agent omitted a title.
+        const rawName = update.title || (update as { kind?: string }).kind || "tool";
+        const { icon, label } = getToolDisplayInfo(rawName);
+        setActivity(managed, { type: "tool-call", detail: label });
+        appendOutput(managed, {
+          timestamp: now(),
+          stream: "system",
+          text: `${icon} ${label}${update.title && label !== update.title ? ` — ${update.title}` : ""}`,
+        });
+        break;
+      }
+
+      case "tool_call_update":
+        if (update.status === "completed") {
+          setActivity(managed, { type: "working", detail: "Processing..." });
+        } else if (update.status === "failed") {
+          // Tool failures are the most common reason an agent produces no
+          // changes — always surface them.
           appendOutput(managed, {
             timestamp: now(),
-            stream: "system",
-            text: `${icon} ${label}`,
+            stream: "stderr",
+            text: `⚠️ Tool call failed: ${update.title || (update as { toolCallId?: string }).toolCallId || "unknown tool"}`,
           });
         }
         break;
 
-      case "tool_call_update":
-        // Only log completion as a subtle indicator, not a full line
-        if (update.status === "completed") {
-          setActivity(managed, { type: "working", detail: "Processing..." });
-        }
-        break;
-
+      case "agent_thought_chunk":
       case "thinking":
         setActivity(managed, { type: "thinking", detail: "Thinking..." });
         break;
+
+      case "plan": {
+        const entries = (update as { entries?: Array<{ content?: string; status?: string }> }).entries || [];
+        if (entries.length > 0) {
+          appendOutput(managed, {
+            timestamp: now(),
+            stream: "system",
+            text: `📋 Plan:\n${entries.map((e) => `  [${e.status ?? "?"}] ${e.content ?? ""}`).join("\n")}`,
+          });
+        }
+        break;
+      }
 
       default:
         // Other update types — show only if meaningful, with a clean format
@@ -1330,9 +1352,26 @@ async function waitForWorkerOrAbort(
 }
 
 /**
+ * Result of a single prompt turn reported by an ACA worker.
+ *
+ * `error` carries the ACP/JSON-RPC failure text (or a git failure) so a turn
+ * that never actually ran can be told apart from a turn that ran and produced
+ * nothing. `stopReason` is the ACP StopReason ("end_turn", "cancelled",
+ * "max_tokens", "refusal", ...).
+ */
+interface WorkerPromptResult {
+  hasChanges?: boolean;
+  prUrl?: string;
+  error?: string | null;
+  stopReason?: string | null;
+  toolCalls?: number;
+  durationMs?: number;
+}
+
+/**
  * Send a prompt to an ACA worker and wait for prompt-done response.
  */
-async function streamPromptAca(managed: ManagedSession, text: string, taskMeta?: { id: number; title: string; type: string; description: string; files: string[] }): Promise<{ hasChanges?: boolean; prUrl?: string }> {
+async function streamPromptAca(managed: ManagedSession, text: string, taskMeta?: { id: number; title: string; type: string; description: string; files: string[] }): Promise<WorkerPromptResult> {
   if (!isWorkerConnected(managed.meta.id)) {
     throw new Error("Worker is not connected");
   }
@@ -1361,7 +1400,7 @@ async function streamPromptAca(managed: ManagedSession, text: string, taskMeta?:
   managed.acaPromptResolver = null;
   managed.acaPromptRejecter = null;
 
-  return (result && typeof result === "object") ? result as { hasChanges?: boolean; prUrl?: string } : {};
+  return (result && typeof result === "object") ? result as WorkerPromptResult : {};
 }
 
 /**
@@ -1468,13 +1507,15 @@ async function runLoopModeAca(
 
     const prompt = buildDevPrompt(task, meta.cwd);
     let success = true;
-    let promptResult: { hasChanges?: boolean; prUrl?: string } = {};
+    let promptResult: WorkerPromptResult = {};
+    let failureReason = "";
 
     try {
       promptResult = await streamPromptAca(managed, prompt, { id: task.id, title: task.title, type: task.type, description: task.description, files: task.files });
     } catch (err) {
       success = false;
       const msg = err instanceof Error ? err.message : String(err);
+      failureReason = msg;
       appendOutput(managed, {
         timestamp: now(),
         stream: "stderr",
@@ -1501,14 +1542,54 @@ async function runLoopModeAca(
       break;
     }
 
+    // The agent turn itself failed (ACP error, timeout, git failure). This is a
+    // different failure from "the agent ran but changed nothing" and must be
+    // reported as such — otherwise a broken agent looks like a lazy one.
+    if (success && promptResult.error) {
+      success = false;
+      failureReason = promptResult.error;
+      appendOutput(managed, {
+        timestamp: now(),
+        stream: "stderr",
+        text: `✖ Agent turn failed: ${promptResult.error}`,
+      });
+      recordError({
+        sessionId: meta.id,
+        sessionName: meta.name,
+        agent: meta.agent,
+        message: promptResult.error,
+        context:
+          `Agent turn failed for task "${task.title}" (ID: ${task.id}, type: ${task.type}, priority: P${task.priority}). ` +
+          `stopReason: ${promptResult.stopReason ?? "none"}, tool calls: ${promptResult.toolCalls ?? 0}, ` +
+          `duration: ${Math.round((promptResult.durationMs ?? 0) / 1000)}s.`,
+        taskId: task.id,
+        taskTitle: task.title,
+      });
+    }
+
     // Check if the worker produced any file changes
     if (success && !promptResult.hasChanges) {
       success = false;
+      const details = [
+        `stopReason: ${promptResult.stopReason ?? "unknown"}`,
+        `tool calls: ${promptResult.toolCalls ?? 0}`,
+        `duration: ${Math.round((promptResult.durationMs ?? 0) / 1000)}s`,
+      ].join(", ");
+      failureReason = `No file changes produced (${details})`;
       appendOutput(managed, {
         timestamp: now(),
         stream: "system",
-        text: `⚠ No file changes detected after agent execution — task reset to "todo".`,
+        text: `⚠ No file changes detected after agent execution (${details}) — task reset to "todo".`,
       });
+      if ((promptResult.toolCalls ?? 0) === 0) {
+        appendOutput(managed, {
+          timestamp: now(),
+          stream: "stderr",
+          text:
+            "The agent made zero tool calls, so it never inspected the repository. " +
+            "This usually points at the agent/tool configuration or the ACP handshake, not the task itself.",
+        });
+      }
     }
 
     if (success && promptResult.prUrl) {
@@ -1540,14 +1621,14 @@ async function runLoopModeAca(
         appendOutput(managed, {
           timestamp: now(),
           stream: "system",
-          text: `Task ${task.id} reset to "todo" (execution failed). ⛔ Blocked after ${failures} consecutive failures — will not retry this session.`,
+          text: `Task ${task.id} reset to "todo" (${failureReason || "execution failed"}). ⛔ Blocked after ${failures} consecutive failures — will not retry this session.`,
         });
         recordError({
           sessionId: meta.id,
           sessionName: meta.name,
           agent: meta.agent,
           message: `Task "${task.title}" failed ${failures} consecutive times — blocked for this session`,
-          context: `Task ID: ${task.id}, type: ${task.type}, priority: P${task.priority}. The agent could not produce file changes after ${failures} attempts. Manual investigation is required.`,
+          context: `Task ID: ${task.id}, type: ${task.type}, priority: P${task.priority}. Last failure: ${failureReason || "unknown"}. Manual investigation is required.`,
           taskId: task.id,
           taskTitle: task.title,
         });
@@ -1555,7 +1636,7 @@ async function runLoopModeAca(
         appendOutput(managed, {
           timestamp: now(),
           stream: "system",
-          text: `Task ${task.id} reset to "todo" (execution failed). Attempt ${failures}/${MAX_TASK_FAILURES} — will retry with backoff.`,
+          text: `Task ${task.id} reset to "todo" (${failureReason || "execution failed"}). Attempt ${failures}/${MAX_TASK_FAILURES} — will retry with backoff.`,
         });
         // Exponential backoff: 30s, 60s after 1st and 2nd failures
         const backoffMs = 30_000 * Math.pow(2, failures - 1);
@@ -1597,7 +1678,7 @@ function initWorkerEventHandler(): void {
       appendOutput(session, {
         timestamp: now(),
         stream: "system",
-        text: `Worker ready (ACP session: ${acpSessionId})`,
+        text: `Worker container connected (ACP: ${acpSessionId})`,
       });
       setActivity(session, { type: "idle", detail: "Worker connected" });
     },
@@ -1617,14 +1698,32 @@ function initWorkerEventHandler(): void {
       }
     },
 
-    onWorkerPromptDone(sessionId: string, _result: unknown) {
+    onWorkerPromptDone(sessionId: string, result: unknown) {
       const session = sessions.get(sessionId);
       if (!session) return;
       flushMessageBuffer(session);
+
+      // Log the full turn outcome. Previously this payload was discarded, so an
+      // ACP-level failure was indistinguishable from an idle agent.
+      const r = (result && typeof result === "object" ? result : {}) as WorkerPromptResult;
+      logWorkerEvent(r.error ? "worker-prompt-failed" : "worker-prompt-done", sessionId, {
+        agent: session.meta.agent,
+        taskId: session.meta.currentTaskId,
+        stopReason: r.stopReason ?? null,
+        toolCalls: r.toolCalls ?? null,
+        durationMs: r.durationMs ?? null,
+        hasChanges: r.hasChanges ?? null,
+        prUrl: r.prUrl ?? null,
+        error: r.error ?? null,
+        msg: r.error
+          ? `Prompt turn failed: ${r.error}`
+          : `Prompt turn finished (stopReason: ${r.stopReason ?? "unknown"}, tool calls: ${r.toolCalls ?? 0}, changes: ${r.hasChanges ? "yes" : "no"})`,
+      });
+
       setActivity(session, { type: "idle", detail: "Ready for next prompt" });
       // Resolve the awaiter in streamPromptAca
       if (session.acaPromptResolver) {
-        session.acaPromptResolver(_result);
+        session.acaPromptResolver(result);
         session.acaPromptResolver = null;
         session.acaPromptRejecter = null;
       }
