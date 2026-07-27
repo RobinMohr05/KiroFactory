@@ -397,6 +397,18 @@
           <div class="form-message credential-msg" hidden></div>
         </div>
 
+        <div class="credential-row" data-key="githubPat">
+          <label>GitHub PAT</label>
+          <div class="credential-input-row">
+            <input type="password" placeholder="ghp_... or github_pat_..." autocomplete="off" />
+            <span class="credential-status" title="Not set">○</span>
+            <button type="button" class="btn btn-primary btn-sm">Update</button>
+            <button type="button" class="btn btn-danger btn-sm credential-clear-btn" title="Clear">✕</button>
+          </div>
+          <div class="credential-hint">Needs <code>repo</code> scope (or Contents + Pull requests write for fine-grained tokens) so the worker can push branches and open pull requests.</div>
+          <div class="form-message credential-msg" hidden></div>
+        </div>
+
         <div class="credential-row" data-key="atlassianUsername">
           <label>Atlassian Username (email)</label>
           <div class="credential-input-row">

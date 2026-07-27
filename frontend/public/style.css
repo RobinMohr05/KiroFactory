@@ -2318,6 +2318,21 @@ textarea:focus {
   line-height: 1 !important;
 }
 
+.credential-hint {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  margin-top: 0.3rem;
+  line-height: 1.4;
+}
+
+.credential-hint code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.68rem;
+  padding: 0.05rem 0.25rem;
+  border-radius: 3px;
+  background: var(--bg-tertiary);
+}
+
 .credential-msg {
   margin-top: 0.25rem;
   margin-bottom: 0;

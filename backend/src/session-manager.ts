@@ -89,6 +89,17 @@ const WORKER_MODE: "local" | "remote" = (() => {
 
 const ACA_MODE = WORKER_MODE === "remote";
 
+/**
+ * Absolute path the ACA worker container clones the repository into
+ * (WORKSPACE in worker/worker.js).
+ *
+ * Prompts for remote workers must use this, not `meta.cwd`: the orchestrator's
+ * own cwd is /app inside its container, and telling the agent that /app is the
+ * working directory sends it exploring the orchestrator's image layout instead
+ * of the checked-out repository.
+ */
+const ACA_WORKSPACE_PATH = "/workspace";
+
 log.info("worker-mode", {
   component: "session-manager",
   mode: ACA_MODE ? "remote" : "local",
@@ -1507,7 +1518,7 @@ async function runLoopModeAca(
 
     setActivity(managed, { type: "working", detail: `Working on: ${task.title}` });
 
-    const prompt = buildDevPrompt(task, meta.cwd);
+    const prompt = buildDevPrompt(task, ACA_WORKSPACE_PATH);
     let success = true;
     let promptResult: WorkerPromptResult = {};
     let failureReason = "";
