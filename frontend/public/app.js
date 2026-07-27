@@ -92,6 +92,7 @@ const tabModalTitle = document.getElementById('tabModalTitle');
 const tabFormId = document.getElementById('tabFormId');
 const tabFormName = document.getElementById('tabFormName');
 const tabFormRepo = document.getElementById('tabFormRepo');
+const tabFormGitProvider = document.getElementById('tabFormGitProvider');
 const cancelTabBtn = document.getElementById('cancelTabBtn');
 const submitTabBtn = document.getElementById('submitTabBtn');
 
@@ -470,10 +471,11 @@ async function deleteTask(id) {
   }
 }
 
-async function createBoard(name, repositoryUrl = null) {
+async function createBoard(name, repositoryUrl = null, gitProvider = null) {
   try {
     const body = { name };
     if (repositoryUrl) body.repositoryUrl = repositoryUrl;
+    if (gitProvider) body.gitProvider = gitProvider;
     const res = await fetch('/api/tabs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -836,6 +838,8 @@ function showTabModal(board = null) {
     tabFormId.value = board.id;
     tabFormName.value = board.name || '';
     tabFormRepo.value = board.repositoryUrl || '';
+    // '' = inherit the profile default
+    tabFormGitProvider.value = board.gitProvider || '';
     // Populate MCP config from board
     const mcp = board.mcpConfig || defaultMcp;
     mcpAtlassian.checked = mcp.atlassian !== false;
@@ -848,6 +852,7 @@ function showTabModal(board = null) {
     tabFormId.value = '';
     tabFormName.value = '';
     tabFormRepo.value = '';
+    tabFormGitProvider.value = '';
     // Set defaults for new tab
     mcpAtlassian.checked = defaultMcp.atlassian;
     mcpAzureDevops.checked = defaultMcp.azureDevops;
@@ -867,6 +872,8 @@ async function handleTabFormSubmit() {
   const id = tabFormId.value;
   const name = tabFormName.value.trim();
   const repositoryUrl = tabFormRepo.value.trim() || null;
+  // '' means "inherit the profile default" — sent as null.
+  const gitProvider = tabFormGitProvider.value || null;
   const mcpConfig = {
     atlassian: mcpAtlassian.checked,
     azureDevops: mcpAzureDevops.checked,
@@ -878,10 +885,10 @@ async function handleTabFormSubmit() {
 
   if (id) {
     // Update existing tab
-    await updateBoard(Number(id), name, repositoryUrl, mcpConfig);
+    await updateBoard(Number(id), name, repositoryUrl, mcpConfig, gitProvider);
   } else {
     // Create new tab
-    await createBoard(name, repositoryUrl);
+    await createBoard(name, repositoryUrl, gitProvider);
   }
 
   hideTabModal();
@@ -890,9 +897,9 @@ async function handleTabFormSubmit() {
 /**
  * Update a board's name and repository URL.
  */
-async function updateBoard(id, name, repositoryUrl, mcpConfig) {
+async function updateBoard(id, name, repositoryUrl, mcpConfig, gitProvider = null) {
   try {
-    const body = { name, repositoryUrl };
+    const body = { name, repositoryUrl, gitProvider };
     if (mcpConfig) body.mcpConfig = mcpConfig;
     const res = await apiFetch(`/api/tabs/${id}`, {
       method: 'PUT',
@@ -2537,6 +2544,52 @@ function setupSettings() {
 
   // Credential management
   setupCredentialHandlers();
+
+  // Default git provider
+  const saveGitProviderBtn = document.getElementById('saveGitProviderBtn');
+  if (saveGitProviderBtn) {
+    saveGitProviderBtn.addEventListener('click', async () => {
+      await handleSaveDefaultGitProvider();
+    });
+  }
+}
+
+/**
+ * Persist the profile-level default git provider.
+ * 'auto' clears it, restoring detection from the repository URL.
+ */
+async function handleSaveDefaultGitProvider() {
+  const select = document.getElementById('settingsDefaultGitProvider');
+  const msg = document.getElementById('gitProviderMsg');
+  if (!select) return;
+
+  const value = select.value === 'auto' ? null : select.value;
+
+  try {
+    const res = await apiFetch('/api/auth/me/default-git-provider', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ defaultGitProvider: value })
+    });
+
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      showMessage(msg, data.error || 'Failed to save default provider.', 'error');
+      return;
+    }
+
+    const data = await res.json();
+    if (data.user) currentUser = data.user;
+    showMessage(
+      msg,
+      value ? `Default provider set to ${value}.` : 'Default provider cleared — detecting from repository URL.',
+      'success'
+    );
+  } catch (err) {
+    console.error('Save default git provider error:', err);
+    showMessage(msg, 'Network error. Please try again.', 'error');
+  }
 }
 
 function openSettingsModal() {
@@ -2564,6 +2617,14 @@ function openSettingsModal() {
   const deleteAccountMsg = document.getElementById('deleteAccountMsg');
   deleteAccountForm.reset();
   hideMessage(deleteAccountMsg);
+
+  // Default git provider
+  const gitProviderSelect = document.getElementById('settingsDefaultGitProvider');
+  const gitProviderMsg = document.getElementById('gitProviderMsg');
+  if (gitProviderSelect) {
+    gitProviderSelect.value = currentUser?.defaultGitProvider || 'auto';
+  }
+  if (gitProviderMsg) hideMessage(gitProviderMsg);
 
   // Load credential status
   loadCredentialStatus();

@@ -1,5 +1,6 @@
 import { getPool, sql } from "./connection.js";
-import type { User, CreateUserInput } from "../types.js";
+import type { User, CreateUserInput, GitProvider } from "../types.js";
+import { isGitProvider } from "../types.js";
 import bcrypt from "bcrypt";
 import { encrypt, decrypt } from "../crypto.js";
 
@@ -10,9 +11,11 @@ const BCRYPT_ROUNDS = 12;
  * NEVER includes password_hash or kiro_api_key_encrypted.
  */
 function mapRowToUser(row: Record<string, unknown>): User {
+  const provider = row.default_git_provider as string | null | undefined;
   return {
     id: row.id as number,
     email: row.email as string,
+    defaultGitProvider: isGitProvider(provider) ? provider : null,
     createdAt: (row.created_at as Date).toISOString(),
     updatedAt: (row.updated_at as Date).toISOString(),
   };
@@ -151,6 +154,31 @@ export async function updateUserKiroApiKey(
     .query(`
       UPDATE users
       SET kiro_api_key_encrypted = @kiroApiKeyEncrypted, updated_at = GETUTCDATE()
+      OUTPUT INSERTED.*
+      WHERE id = @id
+    `);
+
+  if (result.recordset.length === 0) return null;
+  return mapRowToUser(result.recordset[0]);
+}
+
+/**
+ * Set (or clear) the user's profile-level default git provider.
+ * Pass null to clear it, which restores URL-based detection.
+ */
+export async function updateUserDefaultGitProvider(
+  userId: number,
+  provider: GitProvider | null
+): Promise<User | null> {
+  const pool = await getPool();
+
+  const result = await pool
+    .request()
+    .input("id", sql.Int, userId)
+    .input("provider", sql.VarChar(20), provider)
+    .query(`
+      UPDATE users
+      SET default_git_provider = @provider, updated_at = GETUTCDATE()
       OUTPUT INSERTED.*
       WHERE id = @id
     `);

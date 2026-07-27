@@ -3,9 +3,61 @@
 export interface User {
   id: number;
   email: string;
+  /**
+   * Profile-level fallback git provider, used for repositories whose provider
+   * cannot be determined from their URL and that have no per-tab override.
+   * Null means "always derive from the repository URL".
+   */
+  defaultGitProvider: GitProvider | null;
   createdAt: string;
   updatedAt: string;
   // NOTE: password_hash and kiro_api_key_encrypted are NEVER returned in API responses
+}
+
+// ─── Git providers ───────────────────────────────────────────────────────────
+
+/**
+ * Supported git hosting providers. Determines which stored credential is used
+ * for clone/push and which REST API opens the pull request.
+ */
+export type GitProvider = "github" | "azure-devops";
+
+export const GIT_PROVIDERS: GitProvider[] = ["github", "azure-devops"];
+
+/** The credential key each provider authenticates with. */
+export const GIT_PROVIDER_CREDENTIAL: Record<GitProvider, CredentialKey> = {
+  github: "githubPat",
+  "azure-devops": "azureDevOpsPat",
+};
+
+export function isGitProvider(value: unknown): value is GitProvider {
+  return value === "github" || value === "azure-devops";
+}
+
+/**
+ * Best-effort provider detection from a repository URL.
+ * Returns null for hosts we don't recognise (self-hosted GitHub Enterprise,
+ * on-prem Azure DevOps Server, GitLab, …) — those need an explicit selection.
+ */
+export function detectGitProviderFromUrl(url: string | null | undefined): GitProvider | null {
+  if (!url) return null;
+  if (url.includes("github.com")) return "github";
+  if (url.includes("dev.azure.com") || url.includes("visualstudio.com")) return "azure-devops";
+  return null;
+}
+
+/**
+ * Resolve the provider to use for a repository.
+ *
+ * Precedence: explicit per-tab choice → profile default → URL detection.
+ * An explicit choice wins over the URL so self-hosted hosts can be used at all.
+ */
+export function resolveGitProvider(
+  tabProvider: GitProvider | null | undefined,
+  userDefault: GitProvider | null | undefined,
+  repositoryUrl: string | null | undefined
+): GitProvider | null {
+  return tabProvider ?? userDefault ?? detectGitProviderFromUrl(repositoryUrl);
 }
 
 export interface CreateUserInput {
@@ -77,6 +129,11 @@ export interface Tab {
   id: number;
   name: string;
   repositoryUrl?: string | null;
+  /**
+   * Git provider for this tab's repository. Null means "inherit": fall back to
+   * the owner's profile default, then to URL detection.
+   */
+  gitProvider: GitProvider | null;
   mcpConfig: TabMcpConfig;
   columns: string[];
   sortOrder: number;
@@ -160,6 +217,7 @@ export interface CreateTabInput {
   name: string;
   userId: number;
   repositoryUrl?: string;
+  gitProvider?: GitProvider | null;
   columns?: string[];
 }
 

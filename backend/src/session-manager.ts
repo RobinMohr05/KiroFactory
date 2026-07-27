@@ -16,7 +16,7 @@ import type { SessionUpdateChunk } from "./agent/kiro-runner.js";
 import { broadcast } from "./websocket-handler.js";
 import { claimTask, markTaskDeveloped, resetTaskToTodo, getAvailableTaskCount } from "./agent/task-claimer.js";
 import { buildDevPrompt } from "./agent/prompt-builder.js";
-import { TabMcpConfig, DEFAULT_MCP_CONFIG } from "./types.js";
+import { TabMcpConfig, DEFAULT_MCP_CONFIG, resolveGitProvider, type GitProvider } from "./types.js";
 import {
   getAllSessionsFromDb,
   getRunningSessionsFromDb,
@@ -1066,18 +1066,74 @@ async function runSessionAca(managed: ManagedSession): Promise<void> {
 
     // Resolve git workspace options from the session's tab configuration.
     // Use the first tab that has a repositoryUrl configured.
-    let gitOptions: { repositoryUrl: string; devBranch?: string; githubPat?: string } | null = null;
+    let gitOptions: {
+      repositoryUrl: string;
+      devBranch?: string;
+      gitProvider?: GitProvider;
+      githubPat?: string;
+      azureDevOpsPat?: string;
+    } | null = null;
     if (meta.tabIds && meta.tabIds.length > 0) {
       for (const tabId of meta.tabIds) {
         const tab = await getTabById(tabId);
         if (tab?.repositoryUrl) {
-          // Get GitHub PAT from user credentials if the repo is on GitHub
+          // Provider precedence: the tab's explicit choice, then the owner's
+          // profile default, then detection from the repository URL.
+          const owner = await getUserById(meta.userId);
+          const provider = resolveGitProvider(
+            tab.gitProvider,
+            owner?.defaultGitProvider,
+            tab.repositoryUrl
+          );
+
+          const source = tab.gitProvider
+            ? "tab"
+            : owner?.defaultGitProvider
+              ? "profile-default"
+              : "url-detection";
+
           let githubPat: string | undefined;
-          if (tab.repositoryUrl.includes("github.com")) {
+          let azureDevOpsPat: string | undefined;
+
+          // Only the selected provider's credential is handed to the worker.
+          if (provider === "github") {
             const pat = await getDecryptedCredential(meta.userId, "githubPat");
             if (pat) githubPat = pat;
+          } else if (provider === "azure-devops") {
+            const pat = await getDecryptedCredential(meta.userId, "azureDevOpsPat");
+            if (pat) azureDevOpsPat = pat;
           }
-          gitOptions = { repositoryUrl: tab.repositoryUrl, devBranch: "develop", githubPat };
+
+          const hasCredential = !!githubPat || !!azureDevOpsPat;
+          log.info("git-provider-resolved", {
+            component: "session-manager",
+            sessionId: meta.id,
+            tabId: tab.id,
+            provider: provider ?? "unresolved",
+            source,
+            hasCredential,
+            msg: `Git provider for tab "${tab.name}": ${provider ?? "unresolved"} (from ${source})`,
+          });
+
+          appendOutput(managed, {
+            timestamp: now(),
+            stream: hasCredential ? "system" : "stderr",
+            text: provider
+              ? `Git provider: ${provider} (from ${source})` +
+                (hasCredential
+                  ? ""
+                  : ` — no ${provider === "github" ? "githubPat" : "azureDevOpsPat"} credential stored, pushing will fail`)
+              : `Git provider could not be determined for ${tab.repositoryUrl}. ` +
+                `Pick one on the tab or set a profile default in Settings.`,
+          });
+
+          gitOptions = {
+            repositoryUrl: tab.repositoryUrl,
+            devBranch: "develop",
+            gitProvider: provider ?? undefined,
+            githubPat,
+            azureDevOpsPat,
+          };
           break;
         }
       }

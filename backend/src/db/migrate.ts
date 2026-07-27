@@ -774,6 +774,37 @@ async function runUpgrades(pool: sql.ConnectionPool): Promise<void> {
     `);
     console.log("[migrate] Upgrade complete: mcp_config_override added to sessions.");
   }
+
+  // Upgrade 17: Git provider selection — per-tab override + per-user default.
+  // NULL on a tab means "inherit the user default"; NULL on a user means
+  // "derive from the repository URL".
+  const tabGitProviderColExists = await pool.request().query(`
+    SELECT COUNT(*) AS cnt
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_NAME = 'tabs' AND COLUMN_NAME = 'git_provider'
+  `);
+
+  if (tabGitProviderColExists.recordset[0].cnt === 0) {
+    console.log("[migrate] Upgrading: adding git_provider column to tabs table...");
+    await pool.request().query(`
+      ALTER TABLE tabs ADD git_provider VARCHAR(20) NULL
+    `);
+    console.log("[migrate] Upgrade complete: git_provider added to tabs.");
+  }
+
+  const userDefaultGitProviderColExists = await pool.request().query(`
+    SELECT COUNT(*) AS cnt
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_NAME = 'users' AND COLUMN_NAME = 'default_git_provider'
+  `);
+
+  if (userDefaultGitProviderColExists.recordset[0].cnt === 0) {
+    console.log("[migrate] Upgrading: adding default_git_provider column to users table...");
+    await pool.request().query(`
+      ALTER TABLE users ADD default_git_provider VARCHAR(20) NULL
+    `);
+    console.log("[migrate] Upgrade complete: default_git_provider added to users.");
+  }
 }
 
 /**

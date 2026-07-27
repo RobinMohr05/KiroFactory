@@ -179,6 +179,18 @@ export interface WorkerGitOptions {
   taskTitle?: string;
   /** GitHub Personal Access Token for push/PR operations */
   githubPat?: string;
+  /**
+   * Azure DevOps Personal Access Token for clone/push/PR operations.
+   * Per-user credential; takes precedence over the orchestrator-wide
+   * AZURE_DEVOPS_EXT_PAT fallback in AcaWorkerConfig.
+   */
+  azureDevOpsPat?: string;
+  /**
+   * Resolved git provider ("github" | "azure-devops"). Sent to the worker so it
+   * uses the selected provider instead of guessing from the URL — required for
+   * self-hosted hosts the worker cannot recognise.
+   */
+  gitProvider?: string;
 }
 
 /**
@@ -240,8 +252,14 @@ export async function startWorkerJob(
       { name: "REPO_URL", value: gitOptions.repositoryUrl },
       { name: "DEV_BRANCH", value: gitOptions.devBranch || "develop" }
     );
-    if (config.azureDevOpsPat) {
-      envVars.push({ name: "AZURE_DEVOPS_PAT", value: config.azureDevOpsPat });
+    if (gitOptions.gitProvider) {
+      envVars.push({ name: "GIT_PROVIDER", value: gitOptions.gitProvider });
+    }
+    // Per-user credential wins; the orchestrator-wide PAT is a fallback for
+    // deployments that use a single service account for all Azure DevOps access.
+    const effectiveAdoPat = gitOptions.azureDevOpsPat || config.azureDevOpsPat;
+    if (effectiveAdoPat) {
+      envVars.push({ name: "AZURE_DEVOPS_PAT", value: effectiveAdoPat });
     }
     if (gitOptions.githubPat) {
       envVars.push({ name: "GITHUB_PAT", value: gitOptions.githubPat });

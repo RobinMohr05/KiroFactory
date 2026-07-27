@@ -11,11 +11,25 @@ import {
 import { broadcast } from "../websocket-handler.js";
 import { requireAuth, getUserId } from "../middleware/auth.js";
 import { log, toErrorFields } from "../logger.js";
+import { GIT_PROVIDERS, isGitProvider, type GitProvider } from "../types.js";
 
 const router = Router();
 
 // All tab routes require authentication
 router.use(requireAuth);
+
+/** Sentinel distinguishing "invalid value supplied" from "explicitly cleared". */
+const INVALID_PROVIDER = Symbol("invalid-git-provider");
+
+/**
+ * Normalise an incoming gitProvider value.
+ * Empty string, null and "inherit" all mean "inherit" (stored as NULL).
+ */
+function parseGitProvider(value: unknown): GitProvider | null | typeof INVALID_PROVIDER {
+  if (value === undefined || value === null || value === "" || value === "inherit") return null;
+  if (isGitProvider(value)) return value;
+  return INVALID_PROVIDER;
+}
 
 // GET /api/tabs — list all tabs (filtered by authenticated user)
 router.get("/", async (req: Request, res: Response) => {
@@ -39,14 +53,24 @@ router.get("/", async (req: Request, res: Response) => {
 router.post("/", async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
-    const { name, repositoryUrl } = req.body as { name: string; repositoryUrl?: string };
+    const { name, repositoryUrl, gitProvider } = req.body as {
+      name: string;
+      repositoryUrl?: string;
+      gitProvider?: string | null;
+    };
     if (!name || typeof name !== "string" || name.trim().length === 0) {
       res.status(400).json({ error: "name is required" });
+      return;
+    }
+    const validatedProvider = parseGitProvider(gitProvider);
+    if (validatedProvider === INVALID_PROVIDER) {
+      res.status(400).json({ error: `gitProvider must be one of: ${GIT_PROVIDERS.join(", ")}, or null` });
       return;
     }
     const tab = await createTab({
       name: name.trim(),
       repositoryUrl: repositoryUrl?.trim() || undefined,
+      gitProvider: validatedProvider,
       userId,
     });
     broadcast({ type: "tab-created", tab });
@@ -144,13 +168,22 @@ router.put("/:id", async (req: Request, res: Response) => {
       res.status(404).json({ error: "Tab not found" });
       return;
     }
-    const { name, repositoryUrl, mcpConfig } = req.body as {
+    const { name, repositoryUrl, mcpConfig, gitProvider } = req.body as {
       name: string;
       repositoryUrl?: string | null;
       mcpConfig?: { atlassian?: boolean; azureDevops?: boolean; awsApi?: boolean; awsDocs?: boolean } | null;
+      gitProvider?: string | null;
     };
     if (!name || typeof name !== "string" || name.trim().length === 0) {
       res.status(400).json({ error: "name is required" });
+      return;
+    }
+    // Omitting gitProvider keeps the current value; sending null/"" clears it
+    // back to "inherit".
+    const validatedProvider =
+      gitProvider === undefined ? existing.gitProvider : parseGitProvider(gitProvider);
+    if (validatedProvider === INVALID_PROVIDER) {
+      res.status(400).json({ error: `gitProvider must be one of: ${GIT_PROVIDERS.join(", ")}, or null` });
       return;
     }
     // Validate mcpConfig shape if provided
@@ -163,7 +196,7 @@ router.put("/:id", async (req: Request, res: Response) => {
         awsDocs: mcpConfig.awsDocs !== false,
       };
     }
-    const tab = await updateTab(id, name.trim(), repositoryUrl, validatedMcpConfig);
+    const tab = await updateTab(id, name.trim(), repositoryUrl, validatedMcpConfig, validatedProvider);
     if (!tab) {
       res.status(404).json({ error: "Tab not found" });
       return;

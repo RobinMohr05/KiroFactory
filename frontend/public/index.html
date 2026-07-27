@@ -310,6 +310,15 @@
           <input type="text" id="tabFormRepo" placeholder="e.g. https://github.com/org/repo" />
           <small class="form-hint">Optional. Links this tab to a specific repository.</small>
         </div>
+        <div class="form-group">
+          <label for="tabFormGitProvider">Git Provider</label>
+          <select id="tabFormGitProvider">
+            <option value="">Use my profile default</option>
+            <option value="github">GitHub</option>
+            <option value="azure-devops">Azure DevOps</option>
+          </select>
+          <small class="form-hint">Decides which stored PAT is used to push and which API opens the pull request. Only needed when the host can't be recognised from the URL, or to override it.</small>
+        </div>
         <div class="form-group mcp-config-group" id="mcpConfigGroup">
           <label>MCP Servers</label>
           <small class="form-hint">Enable or disable MCP servers for agents working on this board.</small>
@@ -377,6 +386,23 @@
           <button type="submit" class="btn btn-primary btn-sm">Update API Key</button>
         </div>
       </form>
+
+      <div class="settings-section" id="gitProviderSection">
+        <h3 class="settings-section-title">Default Git Provider</h3>
+        <p class="credentials-description">Used for repositories whose host can't be recognised from the URL and that don't select a provider themselves. Each tab can override this.</p>
+        <div class="form-group">
+          <label for="settingsDefaultGitProvider">Default provider</label>
+          <select id="settingsDefaultGitProvider">
+            <option value="auto">Detect from repository URL</option>
+            <option value="github">GitHub</option>
+            <option value="azure-devops">Azure DevOps</option>
+          </select>
+        </div>
+        <div class="form-message" id="gitProviderMsg" hidden></div>
+        <div class="form-actions">
+          <button type="button" class="btn btn-primary btn-sm" id="saveGitProviderBtn">Save Default</button>
+        </div>
+      </div>
 
       <div class="settings-section" id="credentialsSection">
         <h3 class="settings-section-title">Service Credentials</h3>
