@@ -1226,6 +1226,17 @@ function setupEventListeners() {
     renderBoard();
   });
 
+  // Refresh tasks
+  const refreshBtn = document.getElementById('refreshTasksBtn');
+  refreshBtn.addEventListener('click', async () => {
+    if (!currentBoardId) return;
+    refreshBtn.classList.add('spinning');
+    refreshBtn.disabled = true;
+    await fetchBoardTasks(currentBoardId);
+    refreshBtn.classList.remove('spinning');
+    refreshBtn.disabled = false;
+  });
+
   // Cancel task form
   cancelTaskBtn.addEventListener('click', hideTaskForm);
 
