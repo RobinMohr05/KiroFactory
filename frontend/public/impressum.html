@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Vibecode Heaven — Impressum</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+  <script>
+    (function() {
+      var theme = localStorage.getItem('vibecode-heaven-theme') ||
+        (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+      document.documentElement.setAttribute('data-theme', theme);
+    })();
+  </script>
+  <style>
+    .impressum-body {
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 2rem 1rem;
+      background: var(--bg-secondary);
+    }
+
+    .impressum-container {
+      width: 100%;
+      max-width: 700px;
+    }
+
+    .impressum-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius);
+      padding: 2.5rem 2rem;
+      box-shadow: var(--shadow-lg);
+    }
+
+    .impressum-logo {
+      text-align: center;
+      margin-bottom: 2rem;
+    }
+
+    .impressum-logo .logo {
+      font-size: 1.8rem;
+    }
+
+    .impressum-title {
+      font-family: 'Barlow', sans-serif;
+      font-weight: 600;
+      font-size: 1.5rem;
+      color: var(--text-primary);
+      margin: 0 0 1.5rem 0;
+    }
+
+    .impressum-section {
+      margin-bottom: 1.5rem;
+    }
+
+    .impressum-section h2 {
+      font-family: 'Barlow', sans-serif;
+      font-weight: 600;
+      font-size: 1.1rem;
+      color: var(--text-primary);
+      margin: 0 0 0.5rem 0;
+    }
+
+    .impressum-section p,
+    .impressum-section address {
+      font-family: 'Inter', sans-serif;
+      font-size: 0.9rem;
+      color: var(--text-secondary);
+      line-height: 1.6;
+      margin: 0 0 0.5rem 0;
+      font-style: normal;
+    }
+
+    .impressum-section a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    .impressum-section a:hover {
+      text-decoration: underline;
+    }
+
+    .impressum-back {
+      display: inline-block;
+      margin-top: 1.5rem;
+      font-family: 'Inter', sans-serif;
+      font-size: 0.85rem;
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    .impressum-back:hover {
+      text-decoration: underline;
+    }
+  </style>
+</head>
+<body class="impressum-body">
+  <div class="impressum-container">
+    <div class="impressum-card">
+      <div class="impressum-logo">
+        <span class="logo">Vibe<span class="logo-accent">code</span> Heaven</span>
+      </div>
+
+      <h1 class="impressum-title">Impressum</h1>
+
+      <div class="impressum-section">
+        <h2>Angaben gemäß § 5 TMG</h2>
+        <address>
+          TecAlliance GmbH<br />
+          Steinheilstraße 10<br />
+          85737 Ismaning<br />
+          Deutschland
+        </address>
+      </div>
+
+      <div class="impressum-section">
+        <h2>Kontakt</h2>
+        <p>
+          Telefon: +49 89 321216-0<br />
+          E-Mail: <a href="mailto:info@tecalliance.net">info@tecalliance.net</a><br />
+          Website: <a href="https://www.tecalliance.net" target="_blank" rel="noopener noreferrer">www.tecalliance.net</a>
+        </p>
+      </div>
+
+      <div class="impressum-section">
+        <h2>Handelsregister</h2>
+        <p>
+          Registergericht: Amtsgericht München<br />
+          Registernummer: HRB 169 009
+        </p>
+      </div>
+
+      <div class="impressum-section">
+        <h2>Umsatzsteuer-ID</h2>
+        <p>
+          Umsatzsteuer-Identifikationsnummer gemäß § 27a Umsatzsteuergesetz:<br />
+          DE 260 381 962
+        </p>
+      </div>
+
+      <div class="impressum-section">
+        <h2>Verantwortlich für den Inhalt nach § 55 Abs. 2 RStV</h2>
+        <address>
+          TecAlliance GmbH<br />
+          Steinheilstraße 10<br />
+          85737 Ismaning<br />
+          Deutschland
+        </address>
+      </div>
+
+      <div class="impressum-section">
+        <h2>Haftungsausschluss</h2>
+        <p>
+          <strong>Haftung für Inhalte:</strong> Die Inhalte dieser Anwendung wurden mit größter Sorgfalt erstellt. Für die Richtigkeit, Vollständigkeit und Aktualität der Inhalte können wir jedoch keine Gewähr übernehmen.
+        </p>
+        <p>
+          <strong>Haftung für Links:</strong> Diese Anwendung enthält möglicherweise Links zu externen Webseiten Dritter, auf deren Inhalte wir keinen Einfluss haben. Deshalb können wir für diese fremden Inhalte auch keine Gewähr übernehmen. Für die Inhalte der verlinkten Seiten ist stets der jeweilige Anbieter oder Betreiber der Seiten verantwortlich.
+        </p>
+      </div>
+
+      <div class="impressum-section">
+        <h2>Datenschutz</h2>
+        <p>
+          Diese Anwendung wird intern von TecAlliance betrieben. Personenbezogene Daten werden nur im Rahmen der technisch notwendigen Nutzung der Anwendung verarbeitet. Für Fragen zum Datenschutz wenden Sie sich bitte an: <a href="mailto:dataprotection@tecalliance.net">dataprotection@tecalliance.net</a>
+        </p>
+      </div>
+
+      <a href="/" class="impressum-back">← Zurück zur Anwendung</a>
+    </div>
+  </div>
+</body>
+</html>
