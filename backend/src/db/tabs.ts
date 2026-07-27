@@ -1,6 +1,6 @@
 import { getPool, sql } from "./connection.js";
-import type { Tab, CreateTabInput, Task, Session, TabMcpConfig } from "../types.js";
-import { DEFAULT_MCP_CONFIG } from "../types.js";
+import type { Tab, CreateTabInput, Task, Session, TabMcpConfig, GitProvider } from "../types.js";
+import { DEFAULT_MCP_CONFIG, isGitProvider } from "../types.js";
 import { getAllSessions } from "../session-manager.js";
 import { getAllErrors } from "../error-store.js";
 
@@ -24,10 +24,13 @@ function mapRowToTab(row: Record<string, unknown>): Tab {
     mcpConfig = { ...DEFAULT_MCP_CONFIG };
   }
 
+  const gitProvider = row.git_provider as string | null | undefined;
+
   return {
     id: row.id as number,
     name: row.name as string,
     repositoryUrl: (row.repository_url as string) || null,
+    gitProvider: isGitProvider(gitProvider) ? gitProvider : null,
     mcpConfig,
     columns,
     sortOrder: (row.sort_order as number) ?? 0,
@@ -161,11 +164,12 @@ export async function createTab(input: CreateTabInput): Promise<Tab> {
     .request()
     .input("name", sql.NVarChar(100), input.name)
     .input("repositoryUrl", sql.NVarChar(500), input.repositoryUrl || null)
+    .input("gitProvider", sql.VarChar(20), input.gitProvider ?? null)
     .input("userId", sql.Int, input.userId)
     .query(`
-      INSERT INTO tabs (name, repository_url, user_id)
+      INSERT INTO tabs (name, repository_url, git_provider, user_id)
       OUTPUT INSERTED.*
-      VALUES (@name, @repositoryUrl, @userId)
+      VALUES (@name, @repositoryUrl, @gitProvider, @userId)
     `);
 
   return mapRowToTab(result.recordset[0]);
@@ -175,7 +179,8 @@ export async function updateTab(
   id: number,
   name: string,
   repositoryUrl?: string | null,
-  mcpConfig?: TabMcpConfig | null
+  mcpConfig?: TabMcpConfig | null,
+  gitProvider?: GitProvider | null
 ): Promise<Tab | null> {
   const pool = await getPool();
   const result = await pool
@@ -184,11 +189,13 @@ export async function updateTab(
     .input("name", sql.NVarChar(100), name)
     .input("repositoryUrl", sql.NVarChar(500), repositoryUrl ?? null)
     .input("mcpConfig", sql.NVarChar(sql.MAX), mcpConfig ? JSON.stringify(mcpConfig) : null)
+    .input("gitProvider", sql.VarChar(20), gitProvider ?? null)
     .query(`
       UPDATE tabs
       SET name = @name,
           repository_url = @repositoryUrl,
-          mcp_config = COALESCE(@mcpConfig, mcp_config)
+          mcp_config = COALESCE(@mcpConfig, mcp_config),
+          git_provider = @gitProvider
       OUTPUT INSERTED.*
       WHERE id = @id
     `);

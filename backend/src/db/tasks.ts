@@ -1,6 +1,6 @@
 import { getPool, sql } from "./connection.js";
 import type { Task, CreateTaskInput, UpdateTaskInput } from "../types.js";
-import { DEFAULT_MCP_CONFIG } from "../types.js";
+import { DEFAULT_MCP_CONFIG, isGitProvider } from "../types.js";
 
 /**
  * Map a raw DB row to a Task object.
@@ -31,7 +31,7 @@ async function attachTabs(tasks: Task[]): Promise<Task[]> {
   const taskIds = tasks.map((t) => t.id);
 
   const result = await pool.request().query(`
-    SELECT tt.task_id, t.id, t.name, t.repository_url, t.sort_order, t.user_id, t.created_at
+    SELECT tt.task_id, t.id, t.name, t.repository_url, t.git_provider, t.sort_order, t.user_id, t.created_at
     FROM task_tabs tt
     INNER JOIN tabs t ON t.id = tt.tab_id
     WHERE tt.task_id IN (${taskIds.join(",")})
@@ -45,6 +45,7 @@ async function attachTabs(tasks: Task[]): Promise<Task[]> {
       id: row.id as number,
       name: row.name as string,
       repositoryUrl: (row.repository_url as string) || null,
+      gitProvider: isGitProvider(row.git_provider) ? row.git_provider : null,
       mcpConfig: { ...DEFAULT_MCP_CONFIG },
       columns: [],
       sortOrder: (row.sort_order as number) ?? 0,

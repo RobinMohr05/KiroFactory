@@ -36,6 +36,8 @@ const KIRO_API_KEY = process.env.KIRO_API_KEY;
 const GIT_USER_NAME = process.env.GIT_USER_NAME || "Vibecode Heaven Agent";
 const GIT_USER_EMAIL = process.env.GIT_USER_EMAIL || "agent@vibecode-heaven.dev";
 const AZURE_DEVOPS_PAT = process.env.AZURE_DEVOPS_PAT;
+/** Provider resolved by the orchestrator ("github" | "azure-devops"), if any. */
+const GIT_PROVIDER = process.env.GIT_PROVIDER || "";
 const PROMPT_TEXT = process.env.PROMPT_TEXT || "";
 
 const WORKSPACE = "/workspace";
@@ -362,23 +364,43 @@ let authRemoteUrl = null;
 
 /** True when we have a credential that can push to REPO_URL. */
 function hasPushCredential() {
-  if (!REPO_URL) return false;
-  if (REPO_URL.includes("github.com")) return !!process.env.GITHUB_PAT;
-  if (REPO_URL.includes("dev.azure.com")) return !!AZURE_DEVOPS_PAT;
-  return false;
+  switch (detectGitProvider(REPO_URL)) {
+    case "github":
+      return !!process.env.GITHUB_PAT;
+    case "azure-devops":
+      return !!AZURE_DEVOPS_PAT;
+    default:
+      return false;
+  }
+}
+
+/** Remove any `user@` / `user:pass@` part already present in a URL. */
+function stripUserInfo(url) {
+  return url.replace(/^(https?:\/\/)[^@/]+@/, "$1");
 }
 
 function buildAuthRemoteUrl() {
   if (!REPO_URL) return null;
-  if (AZURE_DEVOPS_PAT && REPO_URL.includes("dev.azure.com")) {
-    return REPO_URL.replace("https://", `https://pat:${AZURE_DEVOPS_PAT}@`);
+
+  // Azure DevOps clone URLs are often handed out as https://{org}@dev.azure.com/...
+  // Injecting credentials without dropping that part produces a malformed URL.
+  const base = stripUserInfo(REPO_URL);
+
+  switch (detectGitProvider(REPO_URL)) {
+    case "azure-devops":
+      // Azure DevOps accepts a PAT as the password with any (or empty) username.
+      return AZURE_DEVOPS_PAT
+        ? base.replace("https://", `https://pat:${AZURE_DEVOPS_PAT}@`)
+        : base;
+    case "github":
+      // x-access-token is the documented username for GitHub token auth and works
+      // for classic and fine-grained PATs as well as GitHub App tokens.
+      return process.env.GITHUB_PAT
+        ? base.replace("https://", `https://x-access-token:${process.env.GITHUB_PAT}@`)
+        : base;
+    default:
+      return base;
   }
-  if (process.env.GITHUB_PAT && REPO_URL.includes("github.com")) {
-    // x-access-token is the documented username for GitHub token auth and works
-    // for both classic and fine-grained PATs as well as GitHub App tokens.
-    return REPO_URL.replace("https://", `https://x-access-token:${process.env.GITHUB_PAT}@`);
-  }
-  return REPO_URL;
 }
 
 /**
@@ -387,14 +409,25 @@ function buildAuthRemoteUrl() {
  * check against the remote without creating anything.
  */
 function verifyPushAccess() {
+  const provider = detectGitProvider(REPO_URL);
+
+  if (provider === "unknown") {
+    logError("Git provider unresolved — cannot determine which credential to use", {
+      repoUrl: redactSecrets(REPO_URL),
+    });
+    sendOutput(
+      `The repository host was not recognised and no git provider was selected, so no ` +
+        `credential could be chosen. Pick a provider on this tab, or set a profile default ` +
+        `in Settings.`,
+      "stderr"
+    );
+    return false;
+  }
+
   if (!hasPushCredential()) {
-    const host = REPO_URL.includes("github.com")
-      ? "GitHub"
-      : REPO_URL.includes("dev.azure.com")
-        ? "Azure DevOps"
-        : "the git remote";
-    const credName = REPO_URL.includes("github.com") ? "githubPat" : "azureDevOpsPat";
-    logError("No git push credential injected", { repoHost: host, requiredCredential: credName });
+    const host = provider === "github" ? "GitHub" : "Azure DevOps";
+    const credName = provider === "github" ? "githubPat" : "azureDevOpsPat";
+    logError("No git push credential injected", { provider, requiredCredential: credName });
     sendOutput(
       `No ${host} credential was injected into this worker. The repository could be cloned ` +
         `(public read access), but pushing WILL fail. Store a ${credName} credential for this ` +
@@ -429,13 +462,20 @@ function setupRepo() {
 
   authRemoteUrl = buildAuthRemoteUrl();
 
+  const provider = detectGitProvider(REPO_URL);
   logInfo("Git configuration", {
     repoUrl: redactSecrets(REPO_URL),
+    provider,
+    providerSource: GIT_PROVIDER ? "orchestrator" : "url-detection",
     devBranch: DEV_BRANCH,
     hasGithubPat: !!process.env.GITHUB_PAT,
     hasAzureDevOpsPat: !!AZURE_DEVOPS_PAT,
     hasPushCredential: hasPushCredential(),
   });
+  sendOutput(
+    `Git provider: ${provider} (${GIT_PROVIDER ? "selected in settings" : "detected from URL"})`,
+    "system"
+  );
 
   sendOutput("Cloning repository...", "system");
   exec(`git clone --branch ${DEV_BRANCH} "${authRemoteUrl}" ${WORKSPACE}`);
@@ -597,49 +637,102 @@ function commitAndPush() {
 }
 
 // ---------------------------------------------------------------------------
-// GitHub PR creation
+// Pull request creation (GitHub and Azure DevOps)
+//
+// The hosting provider is not configured anywhere — it is derived from
+// REPO_URL. The tab's repository URL is the single source of truth for which
+// provider is used, which credential is needed, and which API creates the PR.
 // ---------------------------------------------------------------------------
 
 const GITHUB_PAT = process.env.GITHUB_PAT;
 
 /**
- * Create a Pull Request via GitHub REST API.
- * Returns the PR URL on success, or null on failure.
+ * Identify the git hosting provider.
+ *
+ * GIT_PROVIDER is set by the orchestrator from the tab's explicit choice or the
+ * user's profile default. It wins over URL sniffing, which is only a fallback
+ * and cannot recognise self-hosted GitHub Enterprise or Azure DevOps Server.
  */
-async function createPullRequest(branchName) {
-  if (!GITHUB_PAT || !REPO_URL || !REPO_URL.includes("github.com")) {
-    logInfo("Skipping PR creation — no GITHUB_PAT or non-GitHub repo");
-    return null;
-  }
+function detectGitProvider(url) {
+  if (GIT_PROVIDER === "github" || GIT_PROVIDER === "azure-devops") return GIT_PROVIDER;
+  if (!url) return "unknown";
+  if (url.includes("github.com")) return "github";
+  if (url.includes("dev.azure.com") || url.includes("visualstudio.com")) return "azure-devops";
+  return "unknown";
+}
 
-  // Parse owner/repo from URL
-  const match = REPO_URL.match(/github\.com[/:]([^/]+)\/([^/.]+)/);
-  if (!match) {
-    logError("Cannot parse owner/repo from REPO_URL", { url: REPO_URL });
-    return null;
-  }
-  const [, owner, repo] = match;
-
+/** Title and body shared by every provider. */
+function buildPrContent() {
   const taskId = currentTaskMeta?.id || TASK_ID || "unknown";
   const taskTitle = currentTaskMeta?.title || `Task ${taskId}`;
   const taskDescription = currentTaskMeta?.description || "";
   const taskType = currentTaskMeta?.type || "task";
 
-  const prTitle = `${taskTitle} [KiroFactory #${taskId}]`;
-  const prBody = [
-    "## Task",
-    "",
-    `**Title:** ${taskTitle}`,
-    `**Type:** ${taskType}`,
-    `**ID:** ${taskId}`,
-    "",
-    "## Description",
-    "",
-    taskDescription || "_(no description provided)_",
-    "",
-    "---",
-    "*Created automatically by KiroFactory*",
-  ].join("\n");
+  return {
+    title: `${taskTitle} [KiroFactory #${taskId}]`,
+    body: [
+      "## Task",
+      "",
+      `**Title:** ${taskTitle}`,
+      `**Type:** ${taskType}`,
+      `**ID:** ${taskId}`,
+      "",
+      "## Description",
+      "",
+      taskDescription || "_(no description provided)_",
+      "",
+      "---",
+      "*Created automatically by KiroFactory*",
+    ].join("\n"),
+  };
+}
+
+/**
+ * Create a Pull Request on whichever provider hosts REPO_URL.
+ * Returns the PR URL on success, or null when no PR could be created.
+ */
+async function createPullRequest(branchName) {
+  const provider = detectGitProvider(REPO_URL);
+
+  switch (provider) {
+    case "github":
+      if (!GITHUB_PAT) {
+        logInfo("Skipping PR creation — GitHub repo but no GITHUB_PAT");
+        sendOutput("Branch pushed, but no GitHub PAT is available to open a pull request.", "stderr");
+        return null;
+      }
+      return createGitHubPullRequest(branchName);
+
+    case "azure-devops":
+      if (!AZURE_DEVOPS_PAT) {
+        logInfo("Skipping PR creation — Azure DevOps repo but no AZURE_DEVOPS_PAT");
+        sendOutput(
+          "Branch pushed, but no Azure DevOps PAT is available to open a pull request.",
+          "stderr"
+        );
+        return null;
+      }
+      return createAzureDevOpsPullRequest(branchName);
+
+    default:
+      logInfo("Skipping PR creation — unrecognised git host", { repoUrl: redactSecrets(REPO_URL) });
+      sendOutput(
+        `Branch pushed. Automatic pull requests are only supported for GitHub and Azure DevOps.`,
+        "system"
+      );
+      return null;
+  }
+}
+
+/** Create a Pull Request via the GitHub REST API. */
+async function createGitHubPullRequest(branchName) {
+  const match = REPO_URL.match(/github\.com[/:]([^/]+)\/([^/.]+)/);
+  if (!match) {
+    logError("Cannot parse owner/repo from REPO_URL", { url: redactSecrets(REPO_URL) });
+    return null;
+  }
+  const [, owner, repo] = match;
+  const { title, body } = buildPrContent();
 
   try {
     const response = await fetch(`https://api.github.com/repos/${owner}/${repo}/pulls`, {
@@ -651,8 +744,8 @@ async function createPullRequest(branchName) {
         "X-GitHub-Api-Version": "2022-11-28",
       },
       body: JSON.stringify({
-        title: prTitle,
-        body: prBody,
+        title,
+        body,
         head: branchName,
         base: DEV_BRANCH,
       }),
@@ -667,10 +760,93 @@ async function createPullRequest(branchName) {
     const errorData = await response.json().catch(() => ({}));
     const errorMsg = errorData.message || `HTTP ${response.status}`;
     sendOutput(`PR creation failed: ${errorMsg}`, "stderr");
-    logError("PR creation failed", { status: response.status, error: errorMsg });
+    logError("GitHub PR creation failed", { status: response.status, error: errorMsg });
     return null;
   } catch (err) {
-    logError("PR creation network error", { error: err?.message || String(err) });
+    logError("GitHub PR creation network error", { error: err?.message || String(err) });
+    sendOutput(`PR creation error: ${err?.message || err}`, "stderr");
+    return null;
+  }
+}
+
+/**
+ * Parse organization / project / repository out of an Azure DevOps repo URL.
+ * Supports both the modern and the legacy host forms:
+ *   https://dev.azure.com/{org}/{project}/_git/{repo}
+ *   https://{org}@dev.azure.com/{org}/{project}/_git/{repo}
+ *   https://{org}.visualstudio.com/{project}/_git/{repo}
+ */
+function parseAzureDevOpsUrl(url) {
+  const modern = url.match(/dev\.azure\.com\/([^/]+)\/([^/]+)\/_git\/([^/?#]+)/);
+  if (modern) {
+    return { org: modern[1], project: modern[2], repo: modern[3].replace(/\.git$/, "") };
+  }
+  const legacy = url.match(/([^/.@]+)\.visualstudio\.com\/([^/]+)\/_git\/([^/?#]+)/);
+  if (legacy) {
+    return { org: legacy[1], project: legacy[2], repo: legacy[3].replace(/\.git$/, "") };
+  }
+  return null;
+}
+
+/** Create a Pull Request via the Azure DevOps REST API. */
+async function createAzureDevOpsPullRequest(branchName) {
+  const parsed = parseAzureDevOpsUrl(REPO_URL);
+  if (!parsed) {
+    logError("Cannot parse org/project/repo from Azure DevOps REPO_URL", {
+      url: redactSecrets(REPO_URL),
+    });
+    sendOutput(
+      "Branch pushed, but the Azure DevOps repository URL could not be parsed to open a pull request.",
+      "stderr"
+    );
+    return null;
+  }
+
+  const { org, project, repo } = parsed;
+  const { title, body } = buildPrContent();
+
+  // Azure DevOps caps the PR description at 4000 characters.
+  const description = body.length > 4000 ? `${body.slice(0, 3990)}\n…` : body;
+
+  const apiUrl =
+    `https://dev.azure.com/${encodeURIComponent(org)}/${encodeURIComponent(project)}` +
+    `/_apis/git/repositories/${encodeURIComponent(repo)}/pullrequests?api-version=7.1`;
+
+  try {
+    const response = await fetch(apiUrl, {
+      method: "POST",
+      headers: {
+        // Azure DevOps PATs authenticate as Basic with an empty username.
+        "Authorization": `Basic ${Buffer.from(`:${AZURE_DEVOPS_PAT}`).toString("base64")}`,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+      },
+      body: JSON.stringify({
+        sourceRefName: `refs/heads/${branchName}`,
+        targetRefName: `refs/heads/${DEV_BRANCH}`,
+        title,
+        description,
+      }),
+    });
+
+    if (response.status === 200 || response.status === 201) {
+      const data = await response.json();
+      const prUrl =
+        data?._links?.web?.href ||
+        (data?.repository?.webUrl && data?.pullRequestId
+          ? `${data.repository.webUrl}/pullrequest/${data.pullRequestId}`
+          : null);
+      sendOutput(`Pull Request created: ${prUrl || `#${data?.pullRequestId ?? "?"}`}`, "system");
+      return prUrl;
+    }
+
+    const errorData = await response.json().catch(() => ({}));
+    const errorMsg = errorData.message || `HTTP ${response.status}`;
+    sendOutput(`PR creation failed: ${errorMsg}`, "stderr");
+    logError("Azure DevOps PR creation failed", { status: response.status, error: errorMsg });
+    return null;
+  } catch (err) {
+    logError("Azure DevOps PR creation network error", { error: err?.message || String(err) });
     sendOutput(`PR creation error: ${err?.message || err}`, "stderr");
     return null;
   }

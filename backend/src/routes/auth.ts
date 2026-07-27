@@ -1,9 +1,10 @@
 import { Router, type Request, type Response } from "express";
 import jwt from "jsonwebtoken";
-import { createUser, verifyPassword, verifyPasswordById, getUserById, getUserByEmail, updateUserPassword, updateUserKiroApiKey, deleteUser } from "../db/users.js";
+import { createUser, verifyPassword, verifyPasswordById, getUserById, getUserByEmail, updateUserPassword, updateUserKiroApiKey, updateUserDefaultGitProvider, deleteUser } from "../db/users.js";
 import { isRegistrationEnabled } from "../db/settings.js";
 import { getUserId } from "../middleware/auth.js";
-import type { CreateUserInput, AuthenticatedRequest } from "../types.js";
+import type { CreateUserInput, AuthenticatedRequest, GitProvider } from "../types.js";
+import { GIT_PROVIDERS, isGitProvider } from "../types.js";
 import { log, toErrorFields } from "../logger.js";
 
 const router = Router();
@@ -298,6 +299,48 @@ router.put("/me/api-key", async (req: Request, res: Response) => {
       msg: "Failed to update API key",
     });
     res.status(500).json({ error: "Failed to update API key" });
+  }
+});
+
+// PUT /api/auth/me/default-git-provider — set the profile-level default provider
+router.put("/me/default-git-provider", async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const { defaultGitProvider } = req.body as { defaultGitProvider?: string | null };
+
+    // null / "" / "auto" all mean "no default — detect from the repository URL"
+    let provider: GitProvider | null = null;
+    if (
+      defaultGitProvider !== undefined &&
+      defaultGitProvider !== null &&
+      defaultGitProvider !== "" &&
+      defaultGitProvider !== "auto"
+    ) {
+      if (!isGitProvider(defaultGitProvider)) {
+        res.status(400).json({
+          error: `defaultGitProvider must be one of: ${GIT_PROVIDERS.join(", ")}, or null`,
+        });
+        return;
+      }
+      provider = defaultGitProvider;
+    }
+
+    const user = await updateUserDefaultGitProvider(userId, provider);
+    if (!user) {
+      res.status(404).json({ error: "User not found" });
+      return;
+    }
+
+    res.json({ message: "Default git provider updated", user });
+  } catch (err) {
+    log.error("route-error", {
+      component: "auth",
+      method: "PUT",
+      path: "/api/auth/me/default-git-provider",
+      ...toErrorFields(err),
+      msg: "Failed to update default git provider",
+    });
+    res.status(500).json({ error: "Failed to update default git provider" });
   }
 });
 
