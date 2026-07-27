@@ -1,5 +1,5 @@
 /**
- * KiroFactory Worker Agent
+ * Vibecode Heaven Worker Agent
  *
  * Runs inside an Azure Container Apps Job. Responsibilities:
  * 1. Connect to the orchestrator via WebSocket (with retry — the orchestrator
@@ -33,8 +33,8 @@ const AGENT_NAME = process.env.AGENT_NAME || "developer-agent";
 const REPO_URL = process.env.REPO_URL;
 const DEV_BRANCH = process.env.DEV_BRANCH || "develop";
 const KIRO_API_KEY = process.env.KIRO_API_KEY;
-const GIT_USER_NAME = process.env.GIT_USER_NAME || "KiroFactory Agent";
-const GIT_USER_EMAIL = process.env.GIT_USER_EMAIL || "agent@kirofactory.dev";
+const GIT_USER_NAME = process.env.GIT_USER_NAME || "Vibecode Heaven Agent";
+const GIT_USER_EMAIL = process.env.GIT_USER_EMAIL || "agent@vibecode-heaven.dev";
 const AZURE_DEVOPS_PAT = process.env.AZURE_DEVOPS_PAT;
 const PROMPT_TEXT = process.env.PROMPT_TEXT || "";
 
@@ -405,13 +405,13 @@ function commitAndPush() {
   // Build commit message with task info
   const taskId = currentTaskMeta?.id || TASK_ID || "unknown";
   const taskTitle = currentTaskMeta?.title || `task ${taskId}`;
-  const commitTitle = `${taskTitle} [KiroFactory #${taskId}]`;
+  const commitTitle = `${taskTitle} [Vibecode Heaven #${taskId}]`;
   const commitBody = currentTaskMeta
     ? `\nType: ${currentTaskMeta.type || "unknown"}\nID: ${taskId}\n\n${currentTaskMeta.description || ""}`
     : "";
   exec(`git commit -m "${commitTitle}${commitBody.replace(/"/g, '\\"')}"`, { cwd: WORKSPACE });
 
-  const branchName = currentBranchName || `kirofactory/${SESSION_ID}`;
+  const branchName = currentBranchName || `vibecode-heaven/${SESSION_ID}`;
   exec(`git push origin "${branchName}"`, { cwd: WORKSPACE });
   sendOutput(`Pushed branch ${branchName}`, "system");
   return { pushed: true, hasChanges: true, branchName };

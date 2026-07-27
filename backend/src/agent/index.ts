@@ -1,7 +1,7 @@
 /**
  * Agent module — Developer agent for autonomous task completion.
  *
- * This module provides the agent infrastructure for KiroFactory:
+ * This module provides the agent infrastructure for Vibecode Heaven:
  * - KiroRunner: Spawns kiro-cli ACP sessions and communicates via NDJSON
  * - Task Claimer: Atomic task claiming from SQL Server with row locking
  * - Prompt Builder: Constructs focused prompts from task data

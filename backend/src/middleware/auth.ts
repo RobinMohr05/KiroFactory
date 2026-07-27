@@ -2,7 +2,7 @@ import type { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import type { AuthenticatedRequest } from "../types.js";
 
-const JWT_SECRET = process.env.JWT_SECRET || "kirofactory-dev-secret-change-in-production";
+const JWT_SECRET = process.env.JWT_SECRET || "vibecode-heaven-dev-secret-change-in-production";
 const COOKIE_NAME = "kf_session";
 
 /**

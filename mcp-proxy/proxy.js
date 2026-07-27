@@ -1,5 +1,5 @@
 /**
- * KiroFactory MCP Proxy — Per-Session MCP Server Sidecar
+ * Vibecode Heaven MCP Proxy — Per-Session MCP Server Sidecar
  *
  * Based on the ta-mcp-proxy pattern from devcontainer-features.
  * Each Kiro session gets its own MCP proxy container for full isolation

@@ -1,14 +1,14 @@
-# KiroFactory — Architecture & Operations Guide
+# Vibecode Heaven — Architecture & Operations Guide
 
-> This document is the top-level reference for the KiroFactory project. It describes what
+> This document is the top-level reference for the Vibecode Heaven project. It describes what
 > the project is, how it is structured, how it is deployed on Azure, and where to look when
 > something breaks. If you are an AI agent or a new developer, read this first.
 
 ---
 
-## 1. What is KiroFactory?
+## 1. What is Vibecode Heaven?
 
-KiroFactory is a web-based orchestration platform for running autonomous **Kiro CLI agent
+Vibecode Heaven is a web-based orchestration platform for running autonomous **Kiro CLI agent
 sessions** against code repositories. It presents a Kanban-style board (like a lightweight
 Jira/Trello) where each **task** can be picked up by an AI agent that clones a repo, does the
 work, and opens a pull request.
@@ -37,9 +37,9 @@ The core idea:
 ## 2. Repository Structure
 
 ```
-KiroFactory/
+VibecodeHeaven/
 ├── ARCHITECTURE.md            ← you are here (top-level guide)
-├── Dockerfile                 ← builds the backend+frontend image (kirofactory-api)
+├── Dockerfile                 ← builds the backend+frontend image (vibecode-heaven-api)
 ├── .dockerignore
 ├── package.json               ← npm workspaces root (backend + frontend)
 ├── package-lock.json          ← single lockfile for the whole monorepo

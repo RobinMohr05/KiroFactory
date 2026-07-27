@@ -5,7 +5,7 @@ import type { WsServerMessage, WsClientMessage } from "./types.js";
 import { startSession, stopSession, sendPrompt, getSessionOutput } from "./session-manager.js";
 import { log } from "./logger.js";
 
-const JWT_SECRET = process.env.JWT_SECRET || "kirofactory-dev-secret-change-in-production";
+const JWT_SECRET = process.env.JWT_SECRET || "vibecode-heaven-dev-secret-change-in-production";
 const COOKIE_NAME = "kf_session";
 
 const clients = new Set<WebSocket>();
@@ -94,7 +94,7 @@ export function setupWebSocket(): WebSocketServer {
 
     clients.add(ws);
     ws.send(
-      JSON.stringify({ type: "connected", message: "KiroFactory WebSocket connected" })
+      JSON.stringify({ type: "connected", message: "Vibecode Heaven WebSocket connected" })
     );
 
     ws.on("message", (data) => {

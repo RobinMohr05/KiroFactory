@@ -95,7 +95,7 @@ export async function createPullRequest(options: CreatePrOptions): Promise<PrRes
 }
 
 /**
- * Build the PR body markdown for a KiroFactory task.
+ * Build the PR body markdown for a Vibecode Heaven task.
  */
 export function buildPrBody(
   taskId: number,
@@ -124,6 +124,6 @@ export function buildPrBody(
     taskDescription || "_(no description provided)_",
     "",
     "---",
-    "*Created automatically by KiroFactory*",
+    "*Created automatically by Vibecode Heaven*",
   ].join("\n");
 }

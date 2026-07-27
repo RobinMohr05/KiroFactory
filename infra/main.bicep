@@ -1,4 +1,4 @@
-// KiroFactory — Azure Container Apps Infrastructure
+// Vibecode Heaven — Azure Container Apps Infrastructure
 // This Bicep template creates the foundational ACA environment.
 //
 // ⚠ DRIFT NOTE: The live environment in resource group "SandboxForRM" was partly created ad hoc
@@ -46,7 +46,7 @@ param acaSubnetPrefix string = '10.0.0.0/23'
 
 @description('Tags applied to all resources')
 param tags object = {
-  project: 'KiroFactory'
+  project: 'VibecodeHeaven'
   environment: 'production'
   managedBy: 'bicep'
 }

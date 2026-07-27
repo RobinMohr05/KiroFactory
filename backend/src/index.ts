@@ -197,7 +197,7 @@ async function start(): Promise<void> {
     log.info("server-listening", {
       component: "startup",
       port: PORT,
-      msg: `KiroFactory server running on http://localhost:${PORT}`,
+      msg: `Vibecode Heaven server running on http://localhost:${PORT}`,
     });
   });
 

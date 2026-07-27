@@ -4,7 +4,7 @@ inclusion: auto
 
 # Developer Agent — Task Lifecycle
 
-This document describes how the KiroFactory developer agent autonomously finds, claims, executes, and resolves tasks. The program takes over entirely — no human intervention is needed during execution.
+This document describes how the Vibecode Heaven developer agent autonomously finds, claims, executes, and resolves tasks. The program takes over entirely — no human intervention is needed during execution.
 
 ## Task Lifecycle Flow
 

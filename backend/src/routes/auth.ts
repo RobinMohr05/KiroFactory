@@ -8,7 +8,7 @@ import { log, toErrorFields } from "../logger.js";
 
 const router = Router();
 
-const JWT_SECRET = process.env.JWT_SECRET || "kirofactory-dev-secret-change-in-production";
+const JWT_SECRET = process.env.JWT_SECRET || "vibecode-heaven-dev-secret-change-in-production";
 const JWT_EXPIRES_IN = "30d"; // 30-day long-lived token
 const COOKIE_NAME = "kf_session";
 const COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days in ms

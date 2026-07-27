@@ -386,7 +386,7 @@ async function runUpgrades(pool: sql.ConnectionPool): Promise<void> {
     console.log("[migrate] Upgrade complete: sort_order added to tabs.");
   }
 
-  // Upgrade 8: Move all tasks from "generic" tab to "KiroFactory" tab
+  // Upgrade 8: Move all tasks from "generic" tab to "Vibecode Heaven" tab
   const genericTab = await pool.request().query(`
     SELECT id FROM tabs WHERE name = 'generic'
   `);
@@ -394,14 +394,14 @@ async function runUpgrades(pool: sql.ConnectionPool): Promise<void> {
   if (genericTab.recordset.length > 0) {
     const genericId = genericTab.recordset[0].id as number;
 
-    // Ensure the "KiroFactory" tab exists (create if needed)
+    // Ensure the "Vibecode Heaven" tab exists (create if needed)
     let kiroFactoryTab = await pool.request().query(`
-      SELECT id FROM tabs WHERE name = 'KiroFactory'
+      SELECT id FROM tabs WHERE name = 'Vibecode Heaven'
     `);
 
     if (kiroFactoryTab.recordset.length === 0) {
-      console.log('[migrate] Upgrading: creating "KiroFactory" tab...');
-      await pool.request().query(`INSERT INTO tabs (name) VALUES ('KiroFactory')`);
+      console.log('[migrate] Upgrading: creating "Vibecode Heaven" tab...');
+      await pool.request().query(`INSERT INTO tabs (name) VALUES ('Vibecode Heaven')`);
       kiroFactoryTab = await pool.request().query(`
         SELECT id FROM tabs WHERE name = 'KiroFactory'
       `);
