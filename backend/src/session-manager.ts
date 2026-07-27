@@ -380,16 +380,17 @@ function setStatus(session: ManagedSession, status: Session["status"]): void {
 
 export function createSession(input: CreateSessionInput): Session {
   const id = generateId();
+  const isAgentless = !input.agent;
   const session: ManagedSession = {
     meta: {
       id,
       name: input.name,
-      agent: input.agent,
+      agent: input.agent || "",
       status: "stopped",
       prompt: input.prompt || "",
-      interactive: input.interactive !== false,
-      loop: input.loop === true,
-      runs: input.runs ?? 0,
+      interactive: isAgentless ? true : (input.interactive !== false),
+      loop: isAgentless ? false : (input.loop === true),
+      runs: isAgentless ? 0 : (input.runs ?? 0),
       intervalSeconds: input.intervalSeconds ?? 10,
       cwd: input.cwd || DEFAULT_CWD,
       timeoutSeconds: input.timeoutSeconds ?? DEFAULT_TIMEOUT,
@@ -493,8 +494,12 @@ export async function startSession(id: string): Promise<boolean> {
     timestamp: now(),
     stream: "system",
     text: ACA_MODE
-      ? `Starting ACA worker for agent "${session.meta.agent}"...`
-      : `Starting agent "${session.meta.agent}" in ${session.meta.cwd}...`,
+      ? session.meta.agent
+        ? `Starting ACA worker for agent "${session.meta.agent}"...`
+        : `Starting ACA worker (no agent)...`
+      : session.meta.agent
+        ? `Starting agent "${session.meta.agent}" in ${session.meta.cwd}...`
+        : `Starting interactive session in ${session.meta.cwd}...`,
   });
 
   // Spawn async — don't block the caller
@@ -579,14 +584,23 @@ export async function stopSession(id: string): Promise<boolean> {
 
 export async function sendPrompt(id: string, text: string): Promise<boolean> {
   const session = sessions.get(id);
-  if (!session || session.meta.status !== "running" || !session.runner) return false;
+  if (!session || session.meta.status !== "running") return false;
   if (!session.meta.interactive) return false;
+
+  // Must have either a local runner or a connected ACA worker
+  const hasLocalRunner = !!session.runner;
+  const hasAcaWorker = ACA_MODE && isWorkerConnected(id);
+  if (!hasLocalRunner && !hasAcaWorker) return false;
 
   appendOutput(session, { timestamp: now(), stream: "system", text: `▶ ${text}` });
   setActivity(session, { type: "working", detail: "Processing prompt..." });
 
   // Run prompt in background
-  streamPrompt(session, text).catch((err) => {
+  const promptFn = hasAcaWorker
+    ? streamPromptAca(session, text)
+    : streamPrompt(session, text);
+
+  promptFn.catch((err) => {
     const msg = err instanceof Error ? err.message : String(err);
     appendOutput(session, { timestamp: now(), stream: "stderr", text: `Prompt error: ${msg}` });
     setActivity(session, { type: "idle" });
@@ -624,7 +638,7 @@ async function runSession(managed: ManagedSession): Promise<void> {
 
     // Create the KiroRunner (kiroApiKey is passed to env and used only during spawn)
     managed.runner = await KiroRunner.create({
-      agent: meta.agent,
+      agent: meta.agent || undefined,
       cwd: meta.cwd,
       model: meta.model ?? null,
       mcpServers: meta.mcpServers?.map((s) => ({
