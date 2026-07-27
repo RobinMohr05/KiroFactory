@@ -8,7 +8,7 @@ import { createServer } from "http";
 import path from "path";
 import { fileURLToPath } from "url";
 
-import { setupWebSocket, broadcast } from "./websocket-handler.js";
+import { setupWebSocket, broadcast, getConnectedClientCount } from "./websocket-handler.js";
 import { setupWorkerWebSocket } from "./worker-ws-handler.js";
 import { isAcaModeEnabled, loadAcaConfig, verifyAcaAccess } from "./aca-worker-spawner.js";
 import { requireAuth, isPublicPath } from "./middleware/auth.js";
@@ -144,6 +144,11 @@ async function pollForChanges(): Promise<void> {
     return; // Skip polling when DB is down — no noise in the logs
   }
 
+  // Skip polling when no WebSocket clients are connected — nobody to notify
+  if (getConnectedClientCount() === 0) {
+    return;
+  }
+
   try {
     const changedTasks = await getChangedTasksSince(lastPollTime);
     const now = new Date().toISOString();
@@ -219,8 +224,8 @@ async function start(): Promise<void> {
     }
   }
 
-  // Start the change detector poll loop
-  pollInterval = setInterval(pollForChanges, 1500);
+  // Start the change detector poll loop (5s — reduced from 1.5s to cut DB costs)
+  pollInterval = setInterval(pollForChanges, 5000);
 
   // Start pool metrics sampling. Rather than emit an identical "all is well"
   // snapshot every minute (pure noise), we only log when the numbers carry

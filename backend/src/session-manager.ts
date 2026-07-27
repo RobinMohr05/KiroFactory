@@ -128,19 +128,37 @@ interface ManagedSession {
 // ---------------------------------------------------------------------------
 
 /**
- * Persist all session metadata to the database.
- * Called after every state mutation so sessions survive server restarts.
+ * Pending persist timers keyed by session ID.
+ * Debounces rapid state changes into a single DB write per session.
  */
-function persistSessions(): void {
+const pendingPersists = new Map<string, ReturnType<typeof setTimeout>>();
+const PERSIST_DEBOUNCE_MS = 2000;
+
+/**
+ * Schedule a debounced persist for a single session.
+ * If called again within PERSIST_DEBOUNCE_MS for the same session, the timer
+ * resets — so rapid mutations (status, activity, taskId) collapse into one write.
+ */
+function persistSession(sessionId: string): void {
   if (!isDbAvailable()) return;
 
-  const allMeta = Array.from(sessions.values()).map((s) => s.meta);
-  for (const meta of allMeta) {
-    updateSessionMeta(meta).catch(() => {
+  // Clear any pending timer for this session
+  const existing = pendingPersists.get(sessionId);
+  if (existing) clearTimeout(existing);
+
+  const timer = setTimeout(() => {
+    pendingPersists.delete(sessionId);
+    const session = sessions.get(sessionId);
+    if (!session) return;
+    updateSessionMeta(session.meta).catch(() => {
       // DB write failed silently — will retry on next state change
     });
-  }
+  }, PERSIST_DEBOUNCE_MS);
+
+  pendingPersists.set(sessionId, timer);
 }
+
+
 
 /**
  * Initialize sessions from the database on server startup.
@@ -342,7 +360,7 @@ function setActivity(session: ManagedSession, activity: Activity): void {
 function setStatus(session: ManagedSession, status: Session["status"]): void {
   session.meta.status = status;
   broadcast({ type: "session-updated", session: session.meta });
-  persistSessions();
+  persistSession(session.meta.id);
 }
 
 // ---------------------------------------------------------------------------
@@ -385,7 +403,6 @@ export function createSession(input: CreateSessionInput): Session {
 
   sessions.set(id, session);
   broadcast({ type: "session-created", session: session.meta });
-  persistSessions();
 
   // Structured log for Azure Monitor
   logSessionEvent("session-created", id, { agent: session.meta.agent, name: session.meta.name });
@@ -435,7 +452,6 @@ export function deleteSession(id: string): boolean {
 
   sessions.delete(id);
   broadcast({ type: "session-deleted", sessionId: id });
-  persistSessions();
 
   // Also delete from DB if available
   if (isDbAvailable()) {
@@ -740,7 +756,7 @@ async function runLoopMode(
     // Track current task
     meta.currentTaskId = task.id;
     broadcast({ type: "session-updated", session: meta });
-    persistSessions();
+    persistSession(meta.id);
 
     appendOutput(managed, {
       timestamp: now(),
@@ -810,7 +826,7 @@ async function runLoopMode(
 
     meta.currentTaskId = undefined;
     broadcast({ type: "session-updated", session: meta });
-    persistSessions();
+    persistSession(meta.id);
 
     // Brief pause between tasks
     if (!signal.aborted && meta.intervalSeconds > 0) {
@@ -1440,7 +1456,7 @@ async function runLoopModeAca(
 
     meta.currentTaskId = task.id;
     broadcast({ type: "session-updated", session: meta });
-    persistSessions();
+    persistSession(meta.id);
 
     appendOutput(managed, {
       timestamp: now(),
@@ -1550,7 +1566,7 @@ async function runLoopModeAca(
 
     meta.currentTaskId = undefined;
     broadcast({ type: "session-updated", session: meta });
-    persistSessions();
+    persistSession(meta.id);
 
     if (!signal.aborted && meta.intervalSeconds > 0) {
       setActivity(managed, { type: "idle", detail: `Next run in ${meta.intervalSeconds}s...` });
