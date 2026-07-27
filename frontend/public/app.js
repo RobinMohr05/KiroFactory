@@ -1001,7 +1001,7 @@ function renderBoardMembers() {
       chip.innerHTML = `
         <span class="chip-status status-${session.status}"></span>
         <span class="chip-name">${escapeHtml(session.name)}</span>
-        <span class="chip-detail">${escapeHtml(session.agent)} · ${session.status}</span>
+        <span class="chip-detail">${session.agent ? escapeHtml(session.agent) : 'Interactive'} · ${session.status}</span>
       `;
       chip.addEventListener('click', () => {
         // Switch to Sessions tab and select this session
@@ -1186,7 +1186,16 @@ function setupTabs() {
   }
 
   tabBoards.addEventListener('click', () => activateTab(tabBoards, panelBoards));
-  tabSessions.addEventListener('click', () => activateTab(tabSessions, panelSessions));
+  tabSessions.addEventListener('click', () => {
+    activateTab(tabSessions, panelSessions);
+    // Auto-select the most recent agentless session if none is currently active
+    if (!activeSessionId && sessions.length > 0) {
+      const agentless = sessions.find(s => !s.agent);
+      if (agentless) {
+        selectSession(agentless.id);
+      }
+    }
+  });
   tabAgents.addEventListener('click', () => {
     activateTab(tabAgents, panelAgents);
     fetchAgents();
@@ -1476,16 +1485,13 @@ function hideSessionForm() {
 
 async function populateAgentDropdown() {
   const select = document.getElementById('sessionAgent');
-  select.innerHTML = '<option value="" disabled selected>Loading agents…</option>';
+  select.innerHTML = '<option value="">None (interactive)</option><option value="" disabled>Loading agents…</option>';
   try {
     const res = await fetch('/api/agents');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const agents = await res.json();
-    select.innerHTML = '';
-    if (agents.length === 0) {
-      select.innerHTML = '<option value="" disabled>No agents found</option>';
-      return;
-    }
+    // Keep "None" as the first option, then append agents
+    select.innerHTML = '<option value="">None (interactive)</option>';
     agents.forEach(agent => {
       const opt = document.createElement('option');
       opt.value = agent.name;
@@ -1493,14 +1499,13 @@ async function populateAgentDropdown() {
       opt.dataset.description = agent.description || '';
       select.appendChild(opt);
     });
-    // Auto-select first agent and show its description
+    // Default selection is "None (interactive)"
     select.selectedIndex = 0;
     const descEl = document.getElementById('sessionAgentDescription');
-    const firstOpt = select.options[0];
-    descEl.textContent = firstOpt ? (firstOpt.dataset.description || '') : '';
+    descEl.textContent = '';
   } catch (e) {
     console.error('Failed to fetch agents:', e);
-    select.innerHTML = '<option value="" disabled>Failed to load agents</option>';
+    select.innerHTML = '<option value="">None (interactive)</option><option value="" disabled>Failed to load agents</option>';
   }
 }
 
@@ -1573,10 +1578,12 @@ async function createAndStartSession() {
     boardIds.push(Number(currentBoardId));
   }
 
-  if (!name || !agent) return;
+  if (!name) return;
 
-  // If runs > 0 or runs === 0 (endless), enable loop mode
-  const loop = true; // always loop — runs controls how many iterations
+  // Agentless sessions are always interactive and never loop
+  const isAgentless = !agent;
+  const loop = isAgentless ? false : true; // agent sessions always loop — runs controls iterations
+  const effectiveInteractive = isAgentless ? true : interactive;
 
   // Collect MCP override if user expanded the section and toggled anything
   let mcpConfigOverride = undefined;
@@ -1590,10 +1597,12 @@ async function createAndStartSession() {
   }
 
   try {
+    const body = { name, prompt, cwd, model, interactive: effectiveInteractive, loop, runs: isAgentless ? 0 : runs, intervalSeconds, tabIds: boardIds.length > 0 ? boardIds : undefined, mcpConfigOverride };
+    if (agent) body.agent = agent;
     const res = await fetch('/api/sessions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, agent, prompt, cwd, model, interactive, loop, runs, intervalSeconds, tabIds: boardIds.length > 0 ? boardIds : undefined, mcpConfigOverride })
+      body: JSON.stringify(body)
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const session = await res.json();
@@ -1693,7 +1702,7 @@ function selectSession(id) {
   sessionDetail.hidden = false;
 
   sessionDetailName.textContent = session.name;
-  sessionDetailAgent.textContent = session.agent;
+  sessionDetailAgent.textContent = session.agent || 'Interactive';
   updateSessionStatusUI(session.status);
 
   loadSessionOutput(id);
@@ -1740,9 +1749,18 @@ function renderSessionList() {
   sessionList.innerHTML = '';
 
   // Filter sessions to only show those assigned to the current board/tab
-  const visibleSessions = currentBoardId
-    ? sessions.filter(s => s.tabIds && s.tabIds.includes(Number(currentBoardId)))
+  // Agentless sessions are always shown regardless of board filter
+  let visibleSessions = currentBoardId
+    ? sessions.filter(s => !s.agent || (s.tabIds && s.tabIds.includes(Number(currentBoardId))))
     : sessions;
+
+  // Sort: agentless (interactive) sessions first, then by creation date desc
+  visibleSessions = [...visibleSessions].sort((a, b) => {
+    const aAgentless = !a.agent ? 0 : 1;
+    const bAgentless = !b.agent ? 0 : 1;
+    if (aAgentless !== bAgentless) return aAgentless - bAgentless;
+    return 0; // preserve existing order within each group
+  });
 
   if (visibleSessions.length === 0) {
     sessionList.innerHTML = '<li class="session-empty-hint">No sessions for this tab. Create one with + New Session.</li>';
@@ -1770,7 +1788,7 @@ function renderSessionList() {
       <span class="${statusClass}" aria-hidden="true"></span>
       <div class="session-item-info">
         <span class="session-item-name">${escapeHtml(session.name)}</span>
-        <span class="session-item-agent">${escapeHtml(session.agent)}</span>
+        <span class="session-item-agent">${session.agent ? escapeHtml(session.agent) : '<em>Interactive</em>'}</span>
         ${activityHtml}
       </div>
     `;
@@ -1829,7 +1847,7 @@ function handleSessionWsMessage(message) {
 
         if (s.id === activeSessionId) {
           sessionDetailName.textContent = s.name;
-          sessionDetailAgent.textContent = s.agent;
+          sessionDetailAgent.textContent = s.agent || 'Interactive';
           updateSessionStatusUI(s.status);
         }
 
