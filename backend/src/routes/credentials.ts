@@ -14,6 +14,7 @@ const VALID_KEYS: Set<string> = new Set([
   "atlassianUsername",
   "awsAccessKeyId",
   "awsSecretAccessKey",
+  "githubPat",
 ]);
 
 /**

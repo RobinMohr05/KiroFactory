@@ -42,8 +42,95 @@ export async function validateCredential(
       return validateAwsAccessKeyIdFormat(value);
     case "awsSecretAccessKey":
       return validateAwsSecretAccessKeyFormat(value);
+    case "githubPat":
+      return validateGitHubPat(value);
     default:
       return { valid: true };
+  }
+}
+
+/**
+ * Validates a GitHub PAT.
+ *
+ * The worker uses this token to clone and, crucially, to PUSH the agent's branch.
+ * A token that can read but not write produces a very late, very confusing failure
+ * (the push fails only after the agent has finished its work), so we check the
+ * granted scopes here and warn when write access is clearly missing.
+ *
+ * Format problems are blocking. Remote results are advisory: fine-grained tokens
+ * don't report their scopes in headers, and GitHub may be unreachable.
+ */
+async function validateGitHubPat(token: string): Promise<ValidationResult> {
+  if (/\s/.test(token)) {
+    return {
+      valid: false,
+      blocking: true,
+      error: "Invalid format — the token contains whitespace",
+    };
+  }
+
+  // Known GitHub token forms: ghp_ (classic), github_pat_ (fine-grained),
+  // gho_/ghu_/ghs_/ghr_ (OAuth / App / refresh), or a legacy 40-char hex token.
+  const looksLikeToken =
+    /^(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}$/.test(token) ||
+    /^github_pat_[A-Za-z0-9_]{20,}$/.test(token) ||
+    /^[a-f0-9]{40}$/.test(token);
+
+  if (!looksLikeToken) {
+    return {
+      valid: false,
+      blocking: true,
+      error:
+        "Invalid format — expected a GitHub token starting with ghp_ or github_pat_ (or a legacy 40-character token)",
+    };
+  }
+
+  try {
+    const res = await fetch("https://api.github.com/user", {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (res.status === 401) {
+      return {
+        valid: false,
+        blocking: false,
+        error: "GitHub rejected this token (401 — invalid or expired). Saved without verification.",
+      };
+    }
+
+    if (!res.ok) {
+      return {
+        valid: false,
+        blocking: false,
+        error: `GitHub returned status ${res.status}. Saved without verification.`,
+      };
+    }
+
+    // Classic tokens report their scopes; fine-grained tokens send an empty header.
+    const scopes = res.headers.get("x-oauth-scopes");
+    if (scopes !== null && scopes !== "" && !/(^|,\s*)(repo|public_repo)(,|$)/.test(scopes)) {
+      return {
+        valid: false,
+        blocking: false,
+        error:
+          `Token is valid but has no repo scope (granted: ${scopes}). Cloning may work for public ` +
+          `repositories, but pushing the agent's branch will fail. Saved anyway.`,
+      };
+    }
+
+    return { valid: true };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    return {
+      valid: false,
+      blocking: false,
+      error: `Could not reach GitHub to verify the token (${message}). Saved without verification.`,
+    };
   }
 }
 
