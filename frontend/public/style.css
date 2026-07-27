@@ -2153,6 +2153,22 @@ textarea:focus {
   text-decoration: underline;
 }
 
+.auth-footer {
+  text-align: center;
+  margin-top: 1.5rem;
+  font-size: 0.8rem;
+}
+
+.auth-footer a {
+  color: var(--text-muted);
+  text-decoration: none;
+}
+
+.auth-footer a:hover {
+  color: var(--accent-primary);
+  text-decoration: underline;
+}
+
 
 /* ===== Header Icon Buttons ===== */
 .btn-header-icon {
@@ -2336,4 +2352,23 @@ textarea:focus {
 .credential-msg {
   margin-top: 0.25rem;
   margin-bottom: 0;
+}
+
+/* ===== App Footer ===== */
+.app-footer {
+  text-align: center;
+  padding: 1rem;
+  font-size: 0.75rem;
+  border-top: 1px solid var(--border-color);
+  margin-top: 2rem;
+}
+
+.app-footer a {
+  color: var(--text-muted);
+  text-decoration: none;
+}
+
+.app-footer a:hover {
+  color: var(--accent-primary);
+  text-decoration: underline;
 }
