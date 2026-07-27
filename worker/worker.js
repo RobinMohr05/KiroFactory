@@ -521,8 +521,6 @@ async function onAuthenticated() {
 
 /** ID used for the ACP initialize handshake request. */
 const INIT_REQUEST_ID = "__kiro_init__";
-/** ID used for the ACP newSession handshake request. */
-const NEW_SESSION_REQUEST_ID = "__kiro_new_session__";
 /** Maximum time (ms) to wait for kiro-cli ACP readiness before giving up. */
 const KIRO_READY_TIMEOUT_MS = 60_000;
 
@@ -535,10 +533,6 @@ function spawnKiro() {
   kiroProc = spawn("kiro-cli", args, { stdio: ["pipe", "pipe", "pipe"], env, cwd: WORKSPACE });
 
   let buffer = "";
-  /** Tracks whether the ACP initialize handshake has completed. */
-  let initDone = false;
-  /** Tracks whether the ACP newSession handshake has completed. */
-  let sessionDone = false;
 
   /** Timeout handle for kiro-cli readiness — if ACP handshake doesn't complete, fail fast. */
   const readyTimeout = setTimeout(() => {
@@ -565,7 +559,9 @@ function spawnKiro() {
           continue;
         }
 
-        // ACP handshake responses: initialize → newSession → ready
+        // ACP initialize response — kiro-cli is ready to accept prompts.
+        // kiro-cli manages its own session internally in ACP mode; we only need
+        // the protocol handshake to confirm it's alive before sending prompts.
         if (msg.id === INIT_REQUEST_ID && (msg.result !== undefined || msg.error !== undefined)) {
           if (msg.error) {
             logError("ACP initialize failed", { error: msg.error });
@@ -574,30 +570,8 @@ function spawnKiro() {
             try { kiroProc?.kill("SIGTERM"); } catch { /* noop */ }
             continue;
           }
-          initDone = true;
-          logInfo("ACP initialize complete — sending newSession");
-          // Send newSession request
-          const newSessionMsg = JSON.stringify({
-            jsonrpc: "2.0",
-            method: "newSession",
-            id: NEW_SESSION_REQUEST_ID,
-            params: { cwd: WORKSPACE, mcpServers: [] },
-          });
-          kiroProc.stdin.write(newSessionMsg + "\n");
-          continue;
-        }
-
-        if (msg.id === NEW_SESSION_REQUEST_ID && (msg.result !== undefined || msg.error !== undefined)) {
-          if (msg.error) {
-            logError("ACP newSession failed", { error: msg.error });
-            sendOutput(`kiro-cli ACP newSession failed: ${JSON.stringify(msg.error)}`, "stderr");
-            clearTimeout(readyTimeout);
-            try { kiroProc?.kill("SIGTERM"); } catch { /* noop */ }
-            continue;
-          }
-          sessionDone = true;
           clearTimeout(readyTimeout);
-          logInfo("ACP newSession complete — kiro-cli is ready", { sessionId: msg.result?.sessionId });
+          logInfo("ACP initialize complete — kiro-cli is ready");
           kiroReady = true;
           sendOutput(`kiro-cli ACP session ready`, "system");
           drainPromptQueue();
@@ -690,10 +664,10 @@ function spawnKiro() {
     gracefulShutdown(1);
   });
 
-  // Send the ACP initialize handshake (instead of the old 3s blind timeout).
-  // kiro-cli will respond with a JSON-RPC result once it's ready to accept
-  // sessions. Only then do we send newSession, and only after that do we mark
-  // kiroReady=true and drain queued prompts.
+  // Send the ACP initialize handshake. kiro-cli responds once it's ready to
+  // accept prompts. We mark kiroReady=true on the response and drain any
+  // queued prompts. No newSession call is needed — kiro-cli manages sessions
+  // internally in ACP mode (the session is "default").
   const initMsg = JSON.stringify({
     jsonrpc: "2.0",
     method: "initialize",
