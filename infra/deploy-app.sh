@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# KiroFactory — Deploy Container App (Orchestrator)
+# Vibecode Heaven — Deploy Container App (Orchestrator)
 #
-# Deploys the KiroFactory backend as an always-on Container App.
+# Deploys the Vibecode Heaven backend as an always-on Container App.
 # Requires:
 #   - Infrastructure deployed (deploy.sh)
 #   - Image pushed to ACR (build-and-push.sh)
@@ -161,7 +161,7 @@ if [ "$WHAT_IF" = true ]; then
                  workerSecret="$ACA_WORKER_SECRET" \
                  azureDevOpsPat="${AZURE_DEVOPS_EXT_PAT:-}"
 else
-  log "Deploying KiroFactory Orchestrator Container App..."
+  log "Deploying Vibecode Heaven Orchestrator Container App..."
   
   RESULT=$(az deployment group create \
     --resource-group "$RESOURCE_GROUP" \

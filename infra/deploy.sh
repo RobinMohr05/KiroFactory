@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# KiroFactory — Deploy Azure Container Apps Environment
+# Vibecode Heaven — Deploy Azure Container Apps Environment
 #
 # Prerequisites:
 #   - Azure CLI installed and logged in (az login)
@@ -74,7 +74,7 @@ log "Ensuring resource group '$RESOURCE_GROUP' exists in '$LOCATION'..."
 az group create \
   --name "$RESOURCE_GROUP" \
   --location "$LOCATION" \
-  --tags project=KiroFactory environment=production managedBy=bicep \
+  --tags project=VibecodeHeaven environment=production managedBy=bicep \
   --output none
 
 log "Resource group ready."
@@ -89,7 +89,7 @@ if [ "$WHAT_IF" = true ]; then
     --parameters "$SCRIPT_DIR/main.parameters.json" \
     --parameters location="$LOCATION"
 else
-  log "Deploying KiroFactory infrastructure..."
+  log "Deploying Vibecode Heaven infrastructure..."
   log "Deployment name: $DEPLOYMENT_NAME"
   
   RESULT=$(az deployment group create \

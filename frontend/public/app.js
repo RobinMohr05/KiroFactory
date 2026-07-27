@@ -115,14 +115,14 @@ const panelErrors = document.getElementById('panel-errors');
 const themeToggle = document.getElementById('themeToggle');
 
 function getPreferredTheme() {
-  const stored = localStorage.getItem('kirofactory-theme');
+  const stored = localStorage.getItem('vibecode-heaven-theme');
   if (stored) return stored;
   return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 }
 
 function applyTheme(theme) {
   document.documentElement.setAttribute('data-theme', theme);
-  localStorage.setItem('kirofactory-theme', theme);
+  localStorage.setItem('vibecode-heaven-theme', theme);
 }
 
 // Apply theme immediately on load
@@ -135,7 +135,7 @@ themeToggle.addEventListener('click', () => {
 
 // Respond to OS theme changes (if user hasn't manually set a preference)
 window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
-  if (!localStorage.getItem('kirofactory-theme')) {
+  if (!localStorage.getItem('vibecode-heaven-theme')) {
     applyTheme(e.matches ? 'dark' : 'light');
   }
 });

@@ -389,7 +389,7 @@ async function runOnce(config: AgentConfig): Promise<boolean> {
 
   // 9. Create Pull Request
   log(`Creating Pull Request...`, "cyan");
-  const prTitle = `${task.title} [KiroFactory #${task.id}]`;
+  const prTitle = `${task.title} [Vibecode Heaven #${task.id}]`;
   const prBody = buildPrBody(task.id, task.title, task.type, task.priority, task.description);
 
   const prResult = await createPullRequest({
@@ -427,7 +427,7 @@ async function main(): Promise<void> {
   const config = parseArgs();
 
   log("════════════════════════════════════════════════════════", "cyan");
-  log("  KiroFactory — Developer Agent", "cyan");
+  log("  Vibecode Heaven — Developer Agent", "cyan");
   log(`  Agent: ${config.agent}`, "cyan");
   log(`  Timeout: ${config.timeoutSeconds}s | Loop: ${config.loop} | TDD: ${config.tdd}`, "cyan");
   if (config.taskId) {

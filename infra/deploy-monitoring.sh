@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# KiroFactory — Deploy Monitoring (Alerts + Dashboard Workbook)
+# Vibecode Heaven — Deploy Monitoring (Alerts + Dashboard Workbook)
 #
 # Deploys Azure Monitor alert rules and an Azure Monitor Workbook.
 # Requires:

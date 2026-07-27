@@ -1,5 +1,5 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# KiroFactory MCP Proxy — Per-Session MCP Server Sidecar
+# Vibecode Heaven MCP Proxy — Per-Session MCP Server Sidecar
 #
 # Based on the ta-mcp-proxy pattern from devcontainer-features.
 # Each Kiro session gets its own MCP proxy container for full isolation
@@ -17,9 +17,9 @@
 
 FROM node:22-alpine AS base
 
-LABEL org.opencontainers.image.title="KiroFactory MCP Proxy"
+LABEL org.opencontainers.image.title="Vibecode Heaven MCP Proxy"
 LABEL org.opencontainers.image.description="Per-session MCP proxy sidecar — spawns and multiplexes MCP servers"
-LABEL org.opencontainers.image.source="https://github.com/RobinMohr/KiroFactory"
+LABEL org.opencontainers.image.source="https://github.com/RobinMohr/vibecode-heaven"
 
 # ─── Install system dependencies ─────────────────────────────────────────────
 

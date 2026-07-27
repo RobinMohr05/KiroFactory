@@ -1,4 +1,4 @@
-# KiroFactory — Backend + Frontend container
+# Vibecode Heaven — Backend + Frontend container
 # Monorepo (npm workspaces) multi-stage build
 
 # Stage 1: Build

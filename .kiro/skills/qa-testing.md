@@ -4,7 +4,7 @@ inclusion: manual
 
 # QA Testing with Puppeteer
 
-When using Puppeteer to test the deployed KiroFactory application, use this account and environment.
+When using Puppeteer to test the deployed Vibecode Heaven application, use this account and environment.
 
 ## Environment
 

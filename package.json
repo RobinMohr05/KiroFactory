@@ -1,5 +1,5 @@
 {
-  "name": "kirofactory",
+  "name": "vibecode-heaven",
   "private": true,
   "workspaces": ["backend", "frontend"],
   "scripts": {

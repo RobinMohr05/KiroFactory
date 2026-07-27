@@ -7,7 +7,7 @@
 
 ## Context
 
-ADR-001 established that KiroFactory uses a single service account PAT (`AZURE_DEVOPS_EXT_PAT`) for all Azure DevOps operations. This ADR addresses the operational concerns around that PAT:
+ADR-001 established that Vibecode Heaven uses a single service account PAT (`AZURE_DEVOPS_EXT_PAT`) for all Azure DevOps operations. This ADR addresses the operational concerns around that PAT:
 
 - What scopes (permissions) does the PAT need?
 - How often should it be rotated?
@@ -28,7 +28,7 @@ These questions are parked until the auth model is finalized and initial deploym
 
 ## Preliminary Scope Analysis
 
-Based on current KiroFactory operations (clone, branch, commit, push, create PR), the minimum PAT scopes are:
+Based on current Vibecode Heaven operations (clone, branch, commit, push, create PR), the minimum PAT scopes are:
 
 | Scope | Access Level | Why |
 |-------|-------------|-----|

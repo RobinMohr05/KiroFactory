@@ -4,7 +4,7 @@
  * Spawns `kiro-cli acp` as a subprocess and communicates over NDJSON/stdio
  * using the Agent Client Protocol.
  *
- * Adapted from TecFactory's kiro-runner.ts for the KiroFactory project.
+ * Adapted from TecFactory's kiro-runner.ts for the Vibecode Heaven project.
  */
 
 import { spawn, execSync, type ChildProcess } from "node:child_process";

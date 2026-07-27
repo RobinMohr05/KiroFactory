@@ -18,7 +18,7 @@ function deriveKey(): Buffer {
   }
   // Use a fixed salt derived from the secret itself — deterministic but still
   // strengthens short keys via scrypt's memory-hardness.
-  const salt = "kirofactory-aes256-salt";
+  const salt = "vibecode-heaven-aes256-salt";
   return scryptSync(secret, salt, KEY_LENGTH);
 }
 

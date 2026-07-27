@@ -35,9 +35,9 @@ export interface AcaWorkerConfig {
   resourceGroup: string;
   /** ACA Job name (must exist — created by infra/Bicep) */
   jobName: string;
-  /** ACR image reference (e.g., kirofactoryacr.azurecr.io/kirofactory-worker:latest) */
+  /** ACR image reference (e.g., kirofactoryacr.azurecr.io/vibecode-heaven-worker:latest) */
   workerImage: string;
-  /** ACR image reference for the MCP proxy sidecar (e.g., kirofactoryacr.azurecr.io/kirofactory-mcp-proxy:latest) */
+  /** ACR image reference for the MCP proxy sidecar (e.g., kirofactoryacr.azurecr.io/vibecode-heaven-mcp-proxy:latest) */
   proxyImage: string;
   /** Internal URL the worker uses to connect back to the orchestrator WebSocket */
   orchestratorUrl: string;
@@ -58,13 +58,13 @@ export interface AcaWorkerConfig {
 export function loadAcaConfig(): AcaWorkerConfig | null {
   const subscriptionId = process.env.ACA_SUBSCRIPTION_ID;
   const resourceGroup = process.env.ACA_RESOURCE_GROUP;
-  const jobName = process.env.ACA_JOB_NAME || "kirofactory-worker";
+  const jobName = process.env.ACA_JOB_NAME || "vibecode-heaven-worker";
   const workerImage = process.env.ACA_WORKER_IMAGE;
   const proxyImage = process.env.ACA_PROXY_IMAGE || "";
   const orchestratorUrl = process.env.ACA_ORCHESTRATOR_URL;
   const workerSecret = process.env.ACA_WORKER_SECRET;
-  const gitUserName = process.env.GIT_USER_NAME || "KiroFactory Agent";
-  const gitUserEmail = process.env.GIT_USER_EMAIL || "agent@kirofactory.dev";
+  const gitUserName = process.env.GIT_USER_NAME || "Vibecode Heaven Agent";
+  const gitUserEmail = process.env.GIT_USER_EMAIL || "agent@vibecode-heaven.dev";
   const azureDevOpsPat = process.env.AZURE_DEVOPS_EXT_PAT || "";
 
   // All required vars must be present to enable ACA mode

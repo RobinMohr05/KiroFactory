@@ -187,7 +187,7 @@ export async function commitChanges(
   await git(["add", "-A"], workspacePath);
 
   // Build commit message
-  const commitTitle = `${taskTitle} [KiroFactory #${taskId}]`;
+  const commitTitle = `${taskTitle} [Vibecode Heaven #${taskId}]`;
   const commitBody = [
     "",
     `Task: ${taskTitle}`,

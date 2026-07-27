@@ -1,8 +1,8 @@
-# KiroFactory Worker — Git Workflow Specification
+# Vibecode Heaven Worker — Git Workflow Specification
 
 ## Overview
 
-This document defines the end-to-end workflow for the KiroFactory developer worker (dev-agent). The worker autonomously claims tasks, checks out the assigned repository, creates a feature branch, executes the implementation via Kiro, commits/pushes changes, and creates a Pull Request on GitHub.
+This document defines the end-to-end workflow for the Vibecode Heaven developer worker (dev-agent). The worker autonomously claims tasks, checks out the assigned repository, creates a feature branch, executes the implementation via Kiro, commits/pushes changes, and creates a Pull Request on GitHub.
 
 ## Workflow Steps
 
@@ -72,7 +72,7 @@ Priority ordering: priority ASC, then origin weight (user > user-assisted > ai),
 
 ### R5 — Agent Execution
 
-- The Kiro agent (via `KiroRunner`) executes in the checked-out repository directory (NOT the KiroFactory project root).
+- The Kiro agent (via `KiroRunner`) executes in the checked-out repository directory (NOT the Vibecode Heaven project root).
 - The prompt instructs the agent NOT to perform any git operations — the orchestrator handles all git work.
 - The agent's `cwd` is set to the repository checkout path.
 - Timeout applies as configured (default 15 minutes).
@@ -85,7 +85,7 @@ After successful agent execution:
    - If no changes: log a warning and proceed to mark developed (the agent may have determined the work was already done).
 2. Stage all changes: `git add -A`
 3. Commit with message:
-   - **Title:** `<task_title> [KiroFactory #<task_id>]`
+   - **Title:** `<task_title> [Vibecode Heaven #<task_id>]`
    - **Body:** Task type, priority, and description
 4. Push: `git push -u origin <branch_name>`
 5. Push failures retry up to 2 attempts with a 2-second delay between attempts.
@@ -99,8 +99,8 @@ After successful push, create a GitHub Pull Request via the REST API.
 - **Request body:**
   ```json
   {
-    "title": "<task_title> [KiroFactory #<task_id>]",
-    "body": "## Task\n\n**Type:** <type>\n**Priority:** <priority>\n**ID:** <task_id>\n\n## Description\n\n<task_description>\n\n---\n*Created automatically by KiroFactory*",
+    "title": "<task_title> [Vibecode Heaven #<task_id>]",
+    "body": "## Task\n\n**Type:** <type>\n**Priority:** <priority>\n**ID:** <task_id>\n\n## Description\n\n<task_description>\n\n---\n*Created automatically by Vibecode Heaven*",
     "head": "<branch_name>",
     "base": "develop"
   }

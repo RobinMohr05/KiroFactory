@@ -1,4 +1,4 @@
-// KiroFactory — Container App: Orchestrator (Backend)
+// Vibecode Heaven — Container App: Orchestrator (Backend)
 // Always-on Container App with min 1 replica for the Express + WebSocket server.
 //
 // This module also deploys the worker Job (via worker-job.bicep) and, through that module,
@@ -78,10 +78,10 @@ param workerSecret string
 param azureDevOpsPat string = ''
 
 @description('Git user name for worker commits')
-param gitUserName string = 'KiroFactory Agent'
+param gitUserName string = 'Vibecode Heaven Agent'
 
 @description('Git user email for worker commits')
-param gitUserEmail string = 'agent@kirofactory.dev'
+param gitUserEmail string = 'agent@vibecode-heaven.dev'
 
 @description('Minimum number of replicas (always-on)')
 @minValue(1)
