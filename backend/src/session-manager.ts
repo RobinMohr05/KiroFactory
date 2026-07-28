@@ -479,6 +479,18 @@ export function deleteSession(id: string): boolean {
   return true;
 }
 
+export function updateSessionTabs(id: string, tabIds: number[]): boolean {
+  const session = sessions.get(id);
+  if (!session) return false;
+
+  session.meta.tabIds = tabIds.length > 0 ? tabIds : undefined;
+  broadcast({ type: "session-updated", session: session.meta });
+  persistSession(id);
+
+  logSessionEvent("session-tabs-updated", id, { tabIds });
+  return true;
+}
+
 export async function startSession(id: string): Promise<boolean> {
   const session = sessions.get(id);
   if (!session) return false;
