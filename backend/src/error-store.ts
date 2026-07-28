@@ -34,6 +34,8 @@ export interface AgentError {
   createdTaskId?: number;
   /** Tab IDs this error is associated with (inherited from session at time of error) */
   tabIds?: number[];
+  /** Owner user ID — errors belong to the account that owns the session */
+  userId: number;
 }
 
 export interface RecordErrorInput {
@@ -46,6 +48,8 @@ export interface RecordErrorInput {
   taskTitle?: string;
   /** Tab IDs this error is associated with (inherited from session) */
   tabIds?: number[];
+  /** Owner user ID — inherited from the session that produced the error */
+  userId: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -75,6 +79,7 @@ export function recordError(input: RecordErrorInput): AgentError {
     taskTitle: input.taskTitle,
     taskCreated: false,
     tabIds: input.tabIds,
+    userId: input.userId,
   };
 
   errors.unshift(error); // newest first
@@ -98,6 +103,13 @@ export function getAllErrors(): AgentError[] {
 }
 
 /**
+ * Get all errors belonging to a specific user (newest first).
+ */
+export function getErrorsByUserId(userId: number): AgentError[] {
+  return errors.filter((e) => e.userId === userId);
+}
+
+/**
  * Get a specific error by ID.
  */
 export function getErrorById(id: string): AgentError | undefined {
@@ -112,6 +124,17 @@ export function markErrorTaskCreated(errorId: string, taskId: number): void {
   if (error) {
     error.taskCreated = true;
     error.createdTaskId = taskId;
+  }
+}
+
+/**
+ * Clear all errors for a specific user.
+ */
+export function clearErrorsByUserId(userId: number): void {
+  for (let i = errors.length - 1; i >= 0; i--) {
+    if (errors[i].userId === userId) {
+      errors.splice(i, 1);
+    }
   }
 }
 

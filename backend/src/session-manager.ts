@@ -539,6 +539,7 @@ export async function startSession(id: string): Promise<boolean> {
       context: "Fatal error during session startup/execution",
       taskId: session.meta.currentTaskId,
       taskTitle: undefined,
+      userId: session.meta.userId,
     });
   });
 
@@ -830,6 +831,7 @@ async function runLoopMode(
         context: `Error while executing task "${task.title}" (ID: ${task.id}, type: ${task.type}, priority: P${task.priority})`,
         taskId: task.id,
         taskTitle: task.title,
+        userId: meta.userId,
       });
     }
 
@@ -1626,6 +1628,7 @@ async function runLoopModeAca(
         context: `Error while executing task "${task.title}" (ID: ${task.id}, type: ${task.type}, priority: P${task.priority})`,
         taskId: task.id,
         taskTitle: task.title,
+        userId: meta.userId,
       });
     }
 
@@ -1675,6 +1678,7 @@ async function runLoopModeAca(
           `duration: ${Math.round((promptResult.durationMs ?? 0) / 1000)}s.`,
         taskId: task.id,
         taskTitle: task.title,
+        userId: meta.userId,
       });
     }
 
@@ -1758,6 +1762,7 @@ async function runLoopModeAca(
           context: `Task ID: ${task.id}, type: ${task.type}, priority: P${task.priority}. Last failure: ${failureReason || "unknown"}. Manual investigation is required.`,
           taskId: task.id,
           taskTitle: task.title,
+          userId: meta.userId,
         });
       } else {
         appendOutput(managed, {
