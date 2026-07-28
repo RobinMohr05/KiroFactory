@@ -326,6 +326,8 @@ export interface AgentError {
   createdTaskId?: number;
   /** Tab IDs this error is associated with (inherited from session at time of error) */
   tabIds?: number[];
+  /** Owner user ID — errors belong to the account that owns the session */
+  userId: number;
 }
 
 export type WsClientMessage =
