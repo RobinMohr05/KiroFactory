@@ -2,7 +2,7 @@
  * Git Workspace Manager — Clone, pull, branch, commit, push operations
  *
  * Handles local repository management for the developer worker:
- * - Preparing a workspace (clone or pull develop)
+ * - Preparing a workspace (clone or pull from develop/dev/main)
  * - Creating feature branches
  * - Committing and pushing changes
  *
@@ -64,20 +64,25 @@ export function getWorkspacePath(repoInfo: RepoInfo): string {
 
 /**
  * Prepare the workspace: clone if missing, or fetch + checkout develop + pull.
- * Ensures the workspace is clean and up-to-date with origin/develop.
+ * Ensures the workspace is clean and up-to-date with the development branch.
  *
- * @returns The absolute path to the workspace directory.
- * @throws If develop branch doesn't exist or git operations fail.
+ * Tries branches in order: develop → dev → main.
+ *
+ * @returns An object with the workspace path and the resolved base branch name.
+ * @throws If none of the candidate branches exist or git operations fail.
  */
 export async function prepareWorkspace(
   repoInfo: RepoInfo,
   pat: string
-): Promise<string> {
+): Promise<{ workspacePath: string; baseBranch: string }> {
   const workspacePath = getWorkspacePath(repoInfo);
   const authUrl = buildAuthenticatedUrl(repoInfo.owner, repoInfo.repo, pat);
+  const candidateBranches = ["develop", "dev", "main"];
 
   // Ensure workspace root exists
   await mkdir(resolve(WORKSPACE_ROOT), { recursive: true });
+
+  let resolvedBranch: string;
 
   if (existsSync(join(workspacePath, ".git"))) {
     // Existing checkout — update it
@@ -95,53 +100,75 @@ export async function prepareWorkspace(
       await git(["rebase", "--abort"], workspacePath);
     } catch { /* no rebase in progress */ }
 
-    // Checkout develop
-    try {
-      await git(["checkout", "develop"], workspacePath);
-    } catch {
-      // Maybe develop doesn't exist locally yet but exists on remote
+    // Try each candidate branch in order
+    let checkedOutBranch: string | null = null;
+    for (const branch of candidateBranches) {
       try {
-        await git(["checkout", "-b", "develop", "origin/develop"], workspacePath);
+        await git(["checkout", branch], workspacePath);
+        checkedOutBranch = branch;
+        break;
       } catch {
-        throw new Error(
-          `Branch 'develop' does not exist on remote for ${repoInfo.owner}/${repoInfo.repo}`
-        );
+        // Maybe branch doesn't exist locally yet but exists on remote
+        try {
+          await git(["checkout", "-b", branch, `origin/${branch}`], workspacePath);
+          checkedOutBranch = branch;
+          break;
+        } catch {
+          // Branch doesn't exist, try next candidate
+        }
       }
     }
 
+    if (!checkedOutBranch) {
+      throw new Error(
+        `None of the branches [${candidateBranches.join(", ")}] exist on remote for ${repoInfo.owner}/${repoInfo.repo}`
+      );
+    }
+
+    resolvedBranch = checkedOutBranch;
+
     // Reset to remote state (discard any local changes from previous runs)
-    await git(["reset", "--hard", "origin/develop"], workspacePath);
+    await git(["reset", "--hard", `origin/${resolvedBranch}`], workspacePath);
 
     // Clean untracked files
     await git(["clean", "-fd"], workspacePath);
   } else {
-    // Fresh clone
+    // Fresh clone — try each candidate branch
     await mkdir(workspacePath, { recursive: true });
-    await execFileAsync("git", ["clone", authUrl, workspacePath], {
-      encoding: "utf-8",
-      timeout: 300_000, // 5 min for clone
-    });
 
-    // Verify develop branch exists
-    try {
-      await git(["checkout", "develop"], workspacePath);
-    } catch {
-      // Try to create it tracking remote
+    let clonedBranch: string | null = null;
+    for (const branch of candidateBranches) {
       try {
-        await git(["checkout", "-b", "develop", "origin/develop"], workspacePath);
+        await execFileAsync("git", ["clone", "--branch", branch, authUrl, workspacePath], {
+          encoding: "utf-8",
+          timeout: 300_000, // 5 min for clone
+        });
+        clonedBranch = branch;
+        break;
       } catch {
-        throw new Error(
-          `Branch 'develop' does not exist on remote for ${repoInfo.owner}/${repoInfo.repo}`
-        );
+        // Branch doesn't exist on remote, try next
+        // Clean up failed clone attempt
+        try {
+          await execFileAsync("rm", ["-rf", workspacePath], { encoding: "utf-8" });
+          await mkdir(workspacePath, { recursive: true });
+        } catch { /* ignore cleanup errors */ }
       }
     }
+
+    if (!clonedBranch) {
+      throw new Error(
+        `None of the branches [${candidateBranches.join(", ")}] exist on remote for ${repoInfo.owner}/${repoInfo.repo}`
+      );
+    }
+
+    resolvedBranch = clonedBranch;
   }
 
-  return workspacePath;
+  return { workspacePath, baseBranch: resolvedBranch };
 }
 
 /**
- * Create a new feature branch from develop.
+ * Create a new feature branch from the current base branch.
  *
  * @returns The branch name that was created.
  */

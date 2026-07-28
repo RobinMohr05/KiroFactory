@@ -4,8 +4,8 @@
  * A standalone agent that:
  * 1. Claims the highest-priority todo task from the database
  * 2. Resolves the repository URL from the task's tab
- * 3. Prepares the workspace (clone or pull develop)
- * 4. Creates a feature branch from develop
+ * 3. Prepares the workspace (clone or pull develop/dev/main)
+ * 4. Creates a feature branch from the base branch
  * 5. Spawns a kiro-cli ACP session to work on the task
  * 6. Commits & pushes changes to the feature branch
  * 7. Creates a Pull Request on GitHub via REST API
@@ -308,12 +308,15 @@ async function runOnce(config: AgentConfig): Promise<boolean> {
     return false;
   }
 
-  // 4. Prepare workspace (clone or pull develop)
+  // 4. Prepare workspace (clone or pull develop/dev/main)
   let workspacePath: string;
+  let baseBranch: string;
   try {
     log(`Preparing workspace for ${repoInfo.owner}/${repoInfo.repo}...`, "cyan");
-    workspacePath = await prepareWorkspace(repoInfo, githubPat);
-    log(`Workspace ready: ${workspacePath}`, "green");
+    const result = await prepareWorkspace(repoInfo, githubPat);
+    workspacePath = result.workspacePath;
+    baseBranch = result.baseBranch;
+    log(`Workspace ready: ${workspacePath} (branch: ${baseBranch})`, "green");
   } catch (err: any) {
     log(`ERROR preparing workspace: ${err.message}`, "red");
     await resetTaskToTodo(task.id);
@@ -397,7 +400,7 @@ async function runOnce(config: AgentConfig): Promise<boolean> {
     repo: repoInfo.repo,
     pat: githubPat,
     head: branchName,
-    base: "develop",
+    base: baseBranch,
     title: prTitle,
     body: prBody,
   });
