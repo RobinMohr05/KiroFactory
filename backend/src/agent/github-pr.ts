@@ -13,7 +13,7 @@ export interface CreatePrOptions {
   pat: string;
   /** Source branch (head) */
   head: string;
-  /** Target branch (base), typically "develop" */
+  /** Target branch (base), typically "develop", "dev", or "main" */
   base: string;
   /** PR title */
   title: string;

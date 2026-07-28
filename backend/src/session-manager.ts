@@ -1155,7 +1155,7 @@ async function runSessionAca(managed: ManagedSession): Promise<void> {
 
           gitOptions = {
             repositoryUrl: tab.repositoryUrl,
-            devBranch: "develop",
+            devBranch: "develop,dev,main",
             gitProvider: provider ?? undefined,
             githubPat,
             azureDevOpsPat,
