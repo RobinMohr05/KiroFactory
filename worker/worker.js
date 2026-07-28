@@ -31,7 +31,8 @@ const WORKER_SECRET = process.env.WORKER_SECRET;
 const TASK_ID = process.env.TASK_ID;
 const AGENT_NAME = process.env.AGENT_NAME ?? "developer-agent";
 const REPO_URL = process.env.REPO_URL;
-const DEV_BRANCH = process.env.DEV_BRANCH || "develop";
+const DEV_BRANCH_CANDIDATES = (process.env.DEV_BRANCH || "develop").split(",").map(b => b.trim());
+let DEV_BRANCH = DEV_BRANCH_CANDIDATES[0];
 const KIRO_API_KEY = process.env.KIRO_API_KEY;
 const GIT_USER_NAME = process.env.GIT_USER_NAME || "Vibecode Heaven Agent";
 const GIT_USER_EMAIL = process.env.GIT_USER_EMAIL || "agent@vibecode-heaven.dev";
@@ -478,7 +479,33 @@ function setupRepo() {
   );
 
   sendOutput("Cloning repository...", "system");
-  exec(`git clone --branch ${DEV_BRANCH} "${authRemoteUrl}" ${WORKSPACE}`);
+
+  // Try each candidate branch in order (develop → dev → main)
+  const branchesToTry = DEV_BRANCH_CANDIDATES.length > 1
+    ? DEV_BRANCH_CANDIDATES
+    : ["develop", "dev", "main"];
+  let clonedBranch = null;
+  for (const branch of branchesToTry) {
+    try {
+      exec(`git clone --branch ${branch} "${authRemoteUrl}" ${WORKSPACE}`);
+      clonedBranch = branch;
+      break;
+    } catch {
+      // Branch doesn't exist on remote, try next
+      try {
+        exec(`rm -rf ${WORKSPACE}`);
+      } catch { /* ignore cleanup errors */ }
+    }
+  }
+
+  if (!clonedBranch) {
+    throw new Error(
+      `None of the branches [${branchesToTry.join(", ")}] exist on remote for ${redactSecrets(REPO_URL)}`
+    );
+  }
+
+  // Update DEV_BRANCH to the branch that was actually cloned
+  DEV_BRANCH = clonedBranch;
 
   // Keep the PAT out of .git/config — pushes use authRemoteUrl explicitly.
   exec(`git remote set-url origin "${REPO_URL}"`, { cwd: WORKSPACE });
