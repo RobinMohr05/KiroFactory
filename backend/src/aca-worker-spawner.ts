@@ -173,7 +173,7 @@ export interface AcaJobExecution {
 export interface WorkerGitOptions {
   /** Repository URL to clone (e.g., https://dev.azure.com/org/project/_git/repo) */
   repositoryUrl: string;
-  /** Branch to use as reference base (default: "develop") */
+  /** Comma-separated list of candidate branches to try (default: "develop,dev,main") */
   devBranch?: string;
   /** Task title (used to generate the working branch name: kirofactory/<slug>-<short-id>) */
   taskTitle?: string;
@@ -250,7 +250,7 @@ export async function startWorkerJob(
   if (gitOptions) {
     envVars.push(
       { name: "REPO_URL", value: gitOptions.repositoryUrl },
-      { name: "DEV_BRANCH", value: gitOptions.devBranch || "develop" }
+      { name: "DEV_BRANCH", value: gitOptions.devBranch || "develop,dev,main" }
     );
     if (gitOptions.gitProvider) {
       envVars.push({ name: "GIT_PROVIDER", value: gitOptions.gitProvider });
