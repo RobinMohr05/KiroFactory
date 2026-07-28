@@ -8,6 +8,7 @@ import {
   startSession,
   stopSession,
   sendPrompt,
+  updateSessionTabs,
 } from "../session-manager.js";
 import { requireAuth, getUserId } from "../middleware/auth.js";
 import type { CreateSessionInput } from "../types.js";
@@ -194,6 +195,38 @@ router.post("/:id/prompt", async (req: Request, res: Response) => {
       msg: "Failed to send prompt",
     });
     res.status(500).json({ error: "Failed to send prompt" });
+  }
+});
+
+// PUT /api/sessions/:id/tabs — update session tab assignments (must belong to authenticated user)
+router.put("/:id/tabs", (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const session = getSession(paramId(req));
+    if (!session || session.userId !== userId) {
+      res.status(404).json({ error: "Session not found" });
+      return;
+    }
+    const { tabIds } = req.body;
+    if (!Array.isArray(tabIds)) {
+      res.status(400).json({ error: "tabIds must be an array" });
+      return;
+    }
+    const ok = updateSessionTabs(paramId(req), tabIds);
+    if (!ok) {
+      res.status(404).json({ error: "Session not found" });
+      return;
+    }
+    res.json({ success: true });
+  } catch (err) {
+    log.error("route-error", {
+      component: "sessions",
+      method: "PUT",
+      path: "/api/sessions/:id/tabs",
+      ...toErrorFields(err),
+      msg: "Failed to update session tabs",
+    });
+    res.status(500).json({ error: "Failed to update session tabs" });
   }
 });
 

@@ -1371,6 +1371,14 @@ const outputPre = document.getElementById('outputPre');
 const sessionPromptInput = document.getElementById('sessionPromptInput');
 const sessionPromptSendBtn = document.getElementById('sessionPromptSendBtn');
 
+// Session tabs editor DOM refs
+const sessionTabsList = document.getElementById('sessionTabsList');
+const sessionEditTabsBtn = document.getElementById('sessionEditTabsBtn');
+const sessionTabsEditor = document.getElementById('sessionTabsEditor');
+const sessionTabsSelect = document.getElementById('sessionTabsSelect');
+const sessionTabsSaveBtn = document.getElementById('sessionTabsSaveBtn');
+const sessionTabsCancelBtn = document.getElementById('sessionTabsCancelBtn');
+
 // MCP override elements in session modal
 const sessionMcpToggle = document.getElementById('sessionMcpToggle');
 const sessionMcpSection = document.getElementById('sessionMcpSection');
@@ -1469,6 +1477,19 @@ function setupSessions() {
       selection.removeAllRanges();
       selection.addRange(range);
     }
+  });
+
+  // Session tabs editing
+  sessionEditTabsBtn.addEventListener('click', () => {
+    openSessionTabsEditor();
+  });
+
+  sessionTabsSaveBtn.addEventListener('click', async () => {
+    await saveSessionTabs();
+  });
+
+  sessionTabsCancelBtn.addEventListener('click', () => {
+    sessionTabsEditor.hidden = true;
   });
 }
 
@@ -1704,6 +1725,10 @@ function selectSession(id) {
   sessionDetailName.textContent = session.name;
   sessionDetailAgent.textContent = session.agent || 'Interactive';
   updateSessionStatusUI(session.status);
+  updateSessionTabsDisplay(session);
+
+  // Hide tabs editor when switching sessions
+  sessionTabsEditor.hidden = true;
 
   loadSessionOutput(id);
 }
@@ -1713,6 +1738,61 @@ async function loadSessionOutput(id) {
   outputPre.innerHTML = '';
   entries.forEach(entry => appendOutputEntry(entry));
   scrollOutputToBottom();
+}
+
+function updateSessionTabsDisplay(session) {
+  if (!session.tabIds || session.tabIds.length === 0) {
+    sessionTabsList.textContent = 'None';
+  } else {
+    const tabNames = session.tabIds
+      .map(tid => { const tab = boards.find(b => b.id === tid); return tab ? tab.name : `#${tid}`; })
+      .join(', ');
+    sessionTabsList.textContent = tabNames;
+  }
+}
+
+function openSessionTabsEditor() {
+  const session = sessions.find(s => s.id === activeSessionId);
+  if (!session) return;
+
+  sessionTabsSelect.innerHTML = '';
+  boards.forEach(board => {
+    const opt = document.createElement('option');
+    opt.value = board.id;
+    opt.textContent = board.name;
+    if (session.tabIds && session.tabIds.includes(board.id)) {
+      opt.selected = true;
+    }
+    sessionTabsSelect.appendChild(opt);
+  });
+
+  sessionTabsEditor.hidden = false;
+}
+
+async function saveSessionTabs() {
+  if (!activeSessionId) return;
+
+  const tabIds = Array.from(sessionTabsSelect.selectedOptions).map(opt => Number(opt.value));
+  try {
+    const res = await fetch(`/api/sessions/${activeSessionId}/tabs`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tabIds }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+    // Update local state
+    const session = sessions.find(s => s.id === activeSessionId);
+    if (session) {
+      session.tabIds = tabIds.length > 0 ? tabIds : undefined;
+      updateSessionTabsDisplay(session);
+      renderSessionList();
+    }
+
+    sessionTabsEditor.hidden = true;
+  } catch (e) {
+    console.error('Failed to update session tabs:', e);
+  }
 }
 
 function showSessionEmpty() {
@@ -1849,6 +1929,7 @@ function handleSessionWsMessage(message) {
           sessionDetailName.textContent = s.name;
           sessionDetailAgent.textContent = s.agent || 'Interactive';
           updateSessionStatusUI(s.status);
+          updateSessionTabsDisplay(s);
         }
 
         // Refresh board members if this session belongs to the current board

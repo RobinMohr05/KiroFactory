@@ -707,6 +707,20 @@ h1, h2, h3, h4, h5, h6 {
   background: #D1D5DB;
 }
 
+.btn-link {
+  background: none;
+  border: none;
+  color: var(--ta-blueprint);
+  cursor: pointer;
+  padding: 0.2rem 0.4rem;
+  font-size: 0.75rem;
+  text-decoration: underline;
+}
+
+.btn-link:hover {
+  color: var(--ta-mango);
+}
+
 /* ===== Select / Input shared ===== */
 select,
 input,
@@ -1313,6 +1327,47 @@ textarea:focus {
   display: flex;
   gap: 0.5rem;
   flex-shrink: 0;
+}
+
+/* ===== Session Tabs Bar ===== */
+.session-tabs-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 1.25rem;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.session-tabs-label {
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.session-tabs-list {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.session-tabs-editor {
+  padding: 0.5rem 1.25rem;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.session-tabs-editor select {
+  width: 100%;
+  font-size: 0.8rem;
+  margin-bottom: 0.4rem;
+}
+
+.session-tabs-editor-actions {
+  display: flex;
+  gap: 0.4rem;
 }
 
 /* ===== Activity Bar ===== */
