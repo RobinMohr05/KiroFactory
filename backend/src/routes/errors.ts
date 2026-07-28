@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from "express";
-import { getAllErrors, getErrorById, markErrorTaskCreated, clearErrors } from "../error-store.js";
+import { getErrorsByUserId, getErrorById, markErrorTaskCreated, clearErrorsByUserId } from "../error-store.js";
 import { createTask } from "../db/tasks.js";
 import { getAllTabs } from "../db/tabs.js";
 import { broadcast } from "../websocket-handler.js";
@@ -13,10 +13,11 @@ const router = Router();
 // All error routes require authentication
 router.use(requireAuth);
 
-// GET /api/errors — list all agent errors (newest first)
-router.get("/", (_req: Request, res: Response) => {
+// GET /api/errors — list agent errors for the authenticated user (newest first)
+router.get("/", (req: Request, res: Response) => {
   try {
-    const errors = getAllErrors();
+    const userId = getUserId(req);
+    const errors = getErrorsByUserId(userId);
     res.json(errors);
   } catch (err) {
     log.error("route-error", {
@@ -38,6 +39,12 @@ router.post("/:id/create-task", async (req: Request, res: Response) => {
     const agentError = getErrorById(errorId);
 
     if (!agentError) {
+      res.status(404).json({ error: "Error not found" });
+      return;
+    }
+
+    // Ensure the error belongs to the authenticated user
+    if (agentError.userId !== userId) {
       res.status(404).json({ error: "Error not found" });
       return;
     }
@@ -123,10 +130,11 @@ router.post("/:id/create-task", async (req: Request, res: Response) => {
   }
 });
 
-// DELETE /api/errors — clear all errors
-router.delete("/", (_req: Request, res: Response) => {
+// DELETE /api/errors — clear all errors for the authenticated user
+router.delete("/", (req: Request, res: Response) => {
   try {
-    clearErrors();
+    const userId = getUserId(req);
+    clearErrorsByUserId(userId);
     res.json({ success: true });
   } catch (err) {
     log.error("route-error", {
