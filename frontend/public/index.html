@@ -127,6 +127,18 @@
               <button class="btn btn-secondary btn-sm" id="sessionDeleteBtn" title="Delete session">Delete</button>
             </div>
           </div>
+          <div class="session-tabs-bar" id="sessionTabsBar">
+            <span class="session-tabs-label">Tabs:</span>
+            <span class="session-tabs-list" id="sessionTabsList">—</span>
+            <button class="btn btn-link btn-sm" id="sessionEditTabsBtn" title="Edit tab assignments">Edit</button>
+          </div>
+          <div class="session-tabs-editor" id="sessionTabsEditor" hidden>
+            <select id="sessionTabsSelect" multiple size="3"></select>
+            <div class="session-tabs-editor-actions">
+              <button class="btn btn-primary btn-sm" id="sessionTabsSaveBtn">Save</button>
+              <button class="btn btn-secondary btn-sm" id="sessionTabsCancelBtn">Cancel</button>
+            </div>
+          </div>
           <div class="session-activity" id="sessionActivityBar">
             <span class="activity-dot" id="activityDot"></span>
             <span id="activityText">Idle</span>
