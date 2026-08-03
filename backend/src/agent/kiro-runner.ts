@@ -9,6 +9,7 @@
 
 import { spawn, execSync, type ChildProcess } from "node:child_process";
 import { resolve } from "node:path";
+import { existsSync } from "node:fs";
 
 // ---------------------------------------------------------------------------
 // Types (avoid hard dependency on @agentclientprotocol/sdk at import time)
@@ -122,6 +123,20 @@ export class KiroRunner {
 
     const cwd = getShortPath(resolve(opts.cwd));
 
+    // A missing cwd also makes Node's spawn() fail with ENOENT — identical to
+    // a missing binary on Windows (both surface as `syscall: "spawn kiro-cli"`,
+    // with no distinguishing field). Check cwd existence up front so we can
+    // give an accurate error instead of always blaming kiro-cli itself. This
+    // matters most when reusing a session persisted with a container-only cwd
+    // (e.g. "/app" from a production ACA run) on a local machine.
+    if (!existsSync(cwd)) {
+      throw new Error(
+        `Session working directory not found: "${cwd}" — this session may have been created ` +
+          "in a different environment (e.g. a production container). Update the session's " +
+          "working directory or create a new session for this machine."
+      );
+    }
+
     const proc = spawn("kiro-cli", args, {
       stdio: ["pipe", "pipe", "pipe"],
       env,
@@ -129,7 +144,9 @@ export class KiroRunner {
       ...(process.platform !== "win32" ? { detached: true } : {}),
     });
 
-    // Catch spawn errors (e.g. ENOENT when kiro-cli is not installed)
+    // Catch spawn errors (e.g. ENOENT when kiro-cli is not installed).
+    // cwd existence was already verified above, so an ENOENT here means the
+    // binary itself could not be found on PATH.
     const spawnReady = new Promise<void>((resolve, reject) => {
       proc.once("error", (err: NodeJS.ErrnoException) => {
         if (err.code === "ENOENT") {

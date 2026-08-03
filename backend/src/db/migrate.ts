@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { getPool, isDbAvailable, sql } from "./connection.js";
+import { getPool, isDbAvailable, tryConnect, sql } from "./connection.js";
 
 /**
  * Load the canonical schema SQL from backend/sql/schema.sql at runtime.
@@ -1074,7 +1074,22 @@ export async function runMigration(): Promise<boolean> {
 const isMain =
   import.meta.url === `file:///${process.argv[1].replace(/\\/g, "/")}`;
 if (isMain) {
-  runMigration()
+  // runMigration() only checks isDbAvailable() — it never connects itself.
+  // Inside the running server, index.ts's start() calls tryConnect() before
+  // runMigration(), so that's always already true by the time it's called
+  // there. When this file is run standalone (`npm run migrate`), nothing
+  // has connected yet, so isDbAvailable() would always be false and the
+  // migration would silently no-op. Connect here first to match that.
+  tryConnect()
+    .then((pool) => {
+      if (!pool) {
+        console.error(
+          "[migrate] ⚠ Could not connect to the database — check DB_* settings in .env."
+        );
+        process.exit(1);
+      }
+      return runMigration();
+    })
     .then((ok) => process.exit(ok ? 0 : 1))
     .catch((err) => {
       console.error("[migrate] Migration failed:", err);
