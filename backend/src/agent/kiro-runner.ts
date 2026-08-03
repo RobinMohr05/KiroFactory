@@ -129,6 +129,33 @@ export class KiroRunner {
       ...(process.platform !== "win32" ? { detached: true } : {}),
     });
 
+    // Catch spawn errors (e.g. ENOENT when kiro-cli is not installed)
+    const spawnReady = new Promise<void>((resolve, reject) => {
+      proc.once("error", (err: NodeJS.ErrnoException) => {
+        if (err.code === "ENOENT") {
+          reject(
+            new Error(
+              "kiro-cli not found on PATH — install it from https://cli.kiro.dev/install " +
+                "or skip agent sessions. Task/board management works without it."
+            )
+          );
+        } else {
+          reject(
+            new Error(`Failed to spawn kiro-cli: ${err.message}`)
+          );
+        }
+      });
+      // If the process has a PID, it spawned successfully
+      if (proc.pid) {
+        resolve();
+      } else {
+        proc.once("spawn", () => resolve());
+      }
+    });
+
+    // Wait for the process to actually spawn before proceeding
+    await spawnReady;
+
     if (process.platform !== "win32") proc.unref();
 
     // Drain stderr

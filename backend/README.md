@@ -105,7 +105,7 @@ Firewall: the ACA environment's outbound IPs must be allowed on the SQL server, 
 
 ## Local development
 
-### Option A: Use the shared Azure SQL database
+### Quick start (using the shared Azure SQL database)
 
 ```bash
 # from repo root
@@ -121,83 +121,85 @@ Your machine's public IP must be allowed in the Azure SQL firewall.
 
 ---
 
-### Option B: Fully offline with SQL Server Express LocalDB (Windows)
+### Run entirely on localhost (no Azure, no Docker)
 
-This lets you run the entire app on localhost with **zero external dependencies** — no Azure
-SQL, no Docker, no network connection required after initial setup.
+You can run the full application on localhost with **zero external dependencies** — no Azure
+SQL, no Docker, no network connection required after initial setup. This uses SQL Server
+Express LocalDB, a lightweight on-demand SQL engine that speaks the same T-SQL dialect the app
+depends on.
 
-LocalDB is a lightweight, on-demand SQL Server engine that speaks the exact same T-SQL dialect
-the app depends on (`OUTPUT INSERTED`, `UPDLOCK`/`READPAST`, `GETUTCDATE()`, etc.) so no
-application code changes are needed.
+> See also: the root [`ARCHITECTURE.md`](../ARCHITECTURE.md) §11 for an overview of this flow.
 
-#### 1. Install LocalDB
+#### Prerequisites
 
-Download and run the **SQL Server Express** installer (pick "Download Media" → "LocalDB"):
-<https://www.microsoft.com/en-us/sql-server/sql-server-downloads>
+- **Node.js 20+**
+- **SQL Server Express LocalDB** (Windows only)
+  - Download: <https://www.microsoft.com/en-us/sql-server/sql-server-downloads>
+  - Or via winget: `winget install Microsoft.SQLServer.2022.Express` (select LocalDB feature)
+  - If you have Visual Studio installed, the default `(localdb)\MSSQLLocalDB` instance is likely
+    already present.
 
-Or install via `winget`:
-
-```powershell
-winget install Microsoft.SQLServer.2022.Express
-```
-
-Only the **LocalDB** feature is needed (a few hundred MB, no Docker, no background service).
-
-If you already have **Visual Studio** installed, LocalDB is likely already present — the
-default instance `(localdb)\MSSQLLocalDB` ships with VS.
-
-#### 2. Start the LocalDB instance
+#### Step-by-step
 
 ```powershell
-# Check if the default instance exists
-sqllocaldb info MSSQLLocalDB
-
-# If not, create it:
-sqllocaldb create MSSQLLocalDB
-
-# Start it:
+# 1. Ensure the LocalDB instance is running
 sqllocaldb start MSSQLLocalDB
-```
 
-The instance runs on-demand (starts when you connect, stops after idle timeout) — no
-persistent background service.
-
-#### 3. Create the database
-
-```powershell
+# 2. Create the database (one-time)
 sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE DATABASE TecFactory;"
 ```
 
-The app's `migrate.ts` creates all tables automatically — you only need to create the
-database itself.
-
-#### 4. Configure the backend
-
 ```bash
-# from repo root
+# 3. Install dependencies (from repo root)
+npm install
+
+# 4. Configure environment
 cp backend/.env.local.example backend/.env
-```
+# Edit backend/.env — generate and set ENCRYPTION_KEY:
+#   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 
-Then generate an encryption key and add it to `backend/.env`:
-
-```bash
-node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-# paste the output as ENCRYPTION_KEY= in .env
-```
-
-The `.env.local.example` is pre-configured for LocalDB with Windows authentication (no
-username/password needed — the `mssql` driver uses NTLM trusted-connection auth when
-`DB_USER` is left empty).
-
-#### 5. Run migrations and start
-
-```bash
-npm install          # from repo root (installs all workspaces)
+# 5. Run database migrations (creates all tables)
 npm run migrate -w backend
+
+# 6. Seed a test user and sample tasks
+npm run seed:local -w backend
+
+# 7. Start the server
 npm run dev -w backend
 ```
 
-Open <http://localhost:3500> — the full app is running entirely offline.
+Open <http://localhost:3500> and log in with:
+- **Email:** `local-dev@example.com`
+- **Password:** `localdev123`
+
+You'll see a populated Kanban board with sample tasks across all types, priorities, and states.
+
+#### What works without `kiro-cli`
+
+The following features work fully **without** `kiro-cli` installed:
+
+- ✅ Login / registration / user management
+- ✅ Task CRUD (create, edit, delete, drag between columns)
+- ✅ Tab/board management (create, rename, reorder, configure)
+- ✅ Real-time WebSocket sync across browser tabs
+- ✅ The entire Kanban UI, filters, and search
+
+The **only** feature that requires `kiro-cli` on PATH is **starting an actual agent session**
+(the "Start" button on a session). If `kiro-cli` is not installed, attempting to start a
+session will show a clear error in the Errors tab:
+
+> "kiro-cli not found on PATH — install it from https://cli.kiro.dev/install or skip agent
+> sessions. Task/board management works without it."
+
+Install `kiro-cli` from <https://cli.kiro.dev/install> only when you need to run agent sessions.
+
+#### Seed script details
+
+The `seed:local` script is idempotent — safe to re-run without duplicating data. It creates:
+- A test user (`local-dev@example.com` / `localdev123`)
+- A "Local Dev" tab
+- 7 sample tasks spanning bug/feature/improvement types, P1–P4 priorities, and
+  todo/in-progress/developed states
 
 #### Troubleshooting
 
@@ -207,23 +209,6 @@ Open <http://localhost:3500> — the full app is running entirely offline.
 | Connection refused / named pipe error | Run `sqllocaldb start MSSQLLocalDB` to ensure the instance is running. |
 | Login failed | LocalDB uses Windows auth by default — make sure `DB_USER` is empty in `.env`. |
 | `ENCRYPTION_KEY` error on startup | Generate and set a 64-char hex key (see step 4 above). |
-
----
-
-### Seed a test user and sample tasks
-
-After migrating a fresh database (either option above), run the local seed script to
-populate it with a test user and sample tasks so you can log in immediately:
-
-```bash
-npm run seed:local -w backend
-```
-
-This creates:
-- **User:** `local-dev@example.com` / `localdev123`
-- **Tab:** "Local Dev" with 7 sample tasks across all types, priorities, and states
-
-The script is idempotent — safe to re-run without duplicating data.
 
 ---
 
