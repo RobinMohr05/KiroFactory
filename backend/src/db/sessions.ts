@@ -15,7 +15,7 @@ import type { Session, McpServerConfig, Activity } from "../types.js";
 
 function mapRowToSession(row: Record<string, unknown>): Session {
   return {
-    id: row.id as string,
+    id: row.id as number,
     name: row.name as string,
     agent: row.agent as string,
     status: row.status as Session["status"],
@@ -80,11 +80,11 @@ export async function getAllSessionsFromDb(
 /**
  * Get a single session by ID.
  */
-export async function getSessionFromDb(id: string): Promise<Session | null> {
+export async function getSessionFromDb(id: number): Promise<Session | null> {
   const pool = await getPool();
   const result = await pool
     .request()
-    .input("id", sql.NVarChar(16), id)
+    .input("id", sql.Int, id)
     .query("SELECT * FROM sessions WHERE id = @id");
 
   if (result.recordset.length === 0) return null;
@@ -106,12 +106,12 @@ export async function getRunningSessionsFromDb(): Promise<Session[]> {
 
 /**
  * Insert a new session into the database.
+ * Returns the auto-generated numeric id (IDENTITY column).
  */
-export async function insertSession(session: Session): Promise<void> {
+export async function insertSession(session: Session): Promise<number> {
   const pool = await getPool();
-  await pool
+  const result = await pool
     .request()
-    .input("id", sql.NVarChar(16), session.id)
     .input("name", sql.NVarChar(200), session.name)
     .input("agent", sql.NVarChar(100), session.agent || "")
     .input("status", sql.VarChar(20), session.status)
@@ -158,17 +158,21 @@ export async function insertSession(session: Session): Promise<void> {
     .input("pinned", sql.Bit, session.pinned ? 1 : 0)
     .query(`
       INSERT INTO sessions (
-        id, name, agent, status, prompt, interactive, loop, runs,
+        name, agent, status, prompt, interactive, loop, runs,
         interval_seconds, cwd, timeout_seconds, model, mcp_servers,
         tab_ids, user_id, created_at, started_at, current_task_id, current_activity,
         mcp_config_override, pinned
-      ) VALUES (
-        @id, @name, @agent, @status, @prompt, @interactive, @loop, @runs,
+      )
+      OUTPUT INSERTED.id
+      VALUES (
+        @name, @agent, @status, @prompt, @interactive, @loop, @runs,
         @intervalSeconds, @cwd, @timeoutSeconds, @model, @mcpServers,
         @tabIds, @userId, @createdAt, @startedAt, @currentTaskId, @currentActivity,
         @mcpConfigOverride, @pinned
       )
     `);
+
+  return result.recordset[0].id as number;
 }
 
 /**
@@ -176,7 +180,7 @@ export async function insertSession(session: Session): Promise<void> {
  * This is called frequently during session lifecycle changes.
  */
 export async function updateSessionStatus(
-  id: string,
+  id: number,
   status: Session["status"],
   startedAt?: string,
   currentTaskId?: number,
@@ -185,7 +189,7 @@ export async function updateSessionStatus(
   const pool = await getPool();
   await pool
     .request()
-    .input("id", sql.NVarChar(16), id)
+    .input("id", sql.Int, id)
     .input("status", sql.VarChar(20), status)
     .input(
       "startedAt",
@@ -215,7 +219,7 @@ export async function updateSessionMeta(session: Session): Promise<void> {
   const pool = await getPool();
   await pool
     .request()
-    .input("id", sql.NVarChar(16), session.id)
+    .input("id", sql.Int, session.id)
     .input("name", sql.NVarChar(200), session.name)
     .input("agent", sql.NVarChar(100), session.agent || "")
     .input("status", sql.VarChar(20), session.status)
@@ -285,11 +289,11 @@ export async function updateSessionMeta(session: Session): Promise<void> {
 /**
  * Delete a session from the database.
  */
-export async function deleteSessionFromDb(id: string): Promise<boolean> {
+export async function deleteSessionFromDb(id: number): Promise<boolean> {
   const pool = await getPool();
   const result = await pool
     .request()
-    .input("id", sql.NVarChar(16), id)
+    .input("id", sql.Int, id)
     .query("DELETE FROM sessions WHERE id = @id");
 
   return (result.rowsAffected[0] ?? 0) > 0;
@@ -299,13 +303,13 @@ export async function deleteSessionFromDb(id: string): Promise<boolean> {
  * Check if a session belongs to a specific user.
  */
 export async function isSessionOwnedByUser(
-  sessionId: string,
+  sessionId: number,
   userId: number
 ): Promise<boolean> {
   const pool = await getPool();
   const result = await pool
     .request()
-    .input("id", sql.NVarChar(16), sessionId)
+    .input("id", sql.Int, sessionId)
     .input("userId", sql.Int, userId)
     .query("SELECT 1 FROM sessions WHERE id = @id AND user_id = @userId");
 

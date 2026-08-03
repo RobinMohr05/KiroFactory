@@ -19,9 +19,11 @@ const router = Router();
 // All session routes require authentication
 router.use(requireAuth);
 
-// Helper to extract :id param safely
-function paramId(req: Request): string {
-  return req.params.id as string;
+// Helper to extract :id param safely, parsed as a number.
+// Returns null if the param is missing or not a valid integer.
+function paramId(req: Request): number | null {
+  const id = Number(req.params.id);
+  return Number.isInteger(id) ? id : null;
 }
 
 // GET /api/sessions — list all sessions for the authenticated user (without full output)
@@ -43,7 +45,7 @@ router.get("/", (req: Request, res: Response) => {
 });
 
 // POST /api/sessions — create a new session (owned by authenticated user)
-router.post("/", (req: Request, res: Response) => {
+router.post("/", async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
     const input: CreateSessionInput = req.body;
@@ -56,7 +58,7 @@ router.post("/", (req: Request, res: Response) => {
     // created at registration) — never honor it from a public request body.
     input.userId = userId;
     input.pinned = false;
-    const session = createSession(input);
+    const session = await createSession(input);
     res.status(201).json(session);
   } catch (err) {
     log.error("route-error", {
@@ -74,7 +76,12 @@ router.post("/", (req: Request, res: Response) => {
 router.get("/:id", (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
-    const session = getSession(paramId(req));
+    const id = paramId(req);
+    if (id === null) {
+      res.status(400).json({ error: "Invalid session id" });
+      return;
+    }
+    const session = getSession(id);
     if (!session || session.userId !== userId) {
       res.status(404).json({ error: "Session not found" });
       return;
@@ -96,12 +103,17 @@ router.get("/:id", (req: Request, res: Response) => {
 router.get("/:id/output", (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
-    const session = getSession(paramId(req));
+    const id = paramId(req);
+    if (id === null) {
+      res.status(400).json({ error: "Invalid session id" });
+      return;
+    }
+    const session = getSession(id);
     if (!session || session.userId !== userId) {
       res.status(404).json({ error: "Session not found" });
       return;
     }
-    const output = getSessionOutput(paramId(req));
+    const output = getSessionOutput(id);
     res.json(output);
   } catch (err) {
     log.error("route-error", {
@@ -119,12 +131,17 @@ router.get("/:id/output", (req: Request, res: Response) => {
 router.post("/:id/start", async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
-    const session = getSession(paramId(req));
+    const id = paramId(req);
+    if (id === null) {
+      res.status(400).json({ error: "Invalid session id" });
+      return;
+    }
+    const session = getSession(id);
     if (!session || session.userId !== userId) {
       res.status(404).json({ error: "Session not found" });
       return;
     }
-    const ok = await startSession(paramId(req));
+    const ok = await startSession(id);
     if (!ok) {
       res.status(404).json({ error: "Session not found" });
       return;
@@ -146,12 +163,17 @@ router.post("/:id/start", async (req: Request, res: Response) => {
 router.post("/:id/stop", async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
-    const session = getSession(paramId(req));
+    const id = paramId(req);
+    if (id === null) {
+      res.status(400).json({ error: "Invalid session id" });
+      return;
+    }
+    const session = getSession(id);
     if (!session || session.userId !== userId) {
       res.status(404).json({ error: "Session not found" });
       return;
     }
-    const ok = await stopSession(paramId(req));
+    const ok = await stopSession(id);
     if (!ok) {
       res.status(404).json({ error: "Session not found" });
       return;
@@ -173,7 +195,12 @@ router.post("/:id/stop", async (req: Request, res: Response) => {
 router.post("/:id/prompt", async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
-    const session = getSession(paramId(req));
+    const id = paramId(req);
+    if (id === null) {
+      res.status(400).json({ error: "Invalid session id" });
+      return;
+    }
+    const session = getSession(id);
     if (!session || session.userId !== userId) {
       res.status(404).json({ error: "Session not found" });
       return;
@@ -183,7 +210,7 @@ router.post("/:id/prompt", async (req: Request, res: Response) => {
       res.status(400).json({ error: "text is required" });
       return;
     }
-    const ok = await sendPrompt(paramId(req), text);
+    const ok = await sendPrompt(id, text);
     if (!ok) {
       res.status(400).json({ error: "Session not found or not running" });
       return;
@@ -205,7 +232,12 @@ router.post("/:id/prompt", async (req: Request, res: Response) => {
 router.put("/:id/tabs", (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
-    const session = getSession(paramId(req));
+    const id = paramId(req);
+    if (id === null) {
+      res.status(400).json({ error: "Invalid session id" });
+      return;
+    }
+    const session = getSession(id);
     if (!session || session.userId !== userId) {
       res.status(404).json({ error: "Session not found" });
       return;
@@ -215,7 +247,7 @@ router.put("/:id/tabs", (req: Request, res: Response) => {
       res.status(400).json({ error: "tabIds must be an array" });
       return;
     }
-    const ok = updateSessionTabs(paramId(req), tabIds);
+    const ok = updateSessionTabs(id, tabIds);
     if (!ok) {
       res.status(404).json({ error: "Session not found" });
       return;
@@ -237,7 +269,12 @@ router.put("/:id/tabs", (req: Request, res: Response) => {
 router.delete("/:id", async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
-    const session = getSession(paramId(req));
+    const id = paramId(req);
+    if (id === null) {
+      res.status(400).json({ error: "Invalid session id" });
+      return;
+    }
+    const session = getSession(id);
     if (!session || session.userId !== userId) {
       res.status(404).json({ error: "Session not found" });
       return;
@@ -246,7 +283,7 @@ router.delete("/:id", async (req: Request, res: Response) => {
       res.status(403).json({ error: "The pinned Chat session cannot be deleted" });
       return;
     }
-    const ok = deleteSession(paramId(req));
+    const ok = deleteSession(id);
     if (!ok) {
       res.status(404).json({ error: "Session not found" });
       return;

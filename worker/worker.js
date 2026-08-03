@@ -26,6 +26,10 @@ import { mkdirSync, existsSync, writeFileSync, appendFileSync } from "node:fs";
 // ---------------------------------------------------------------------------
 
 const SESSION_ID = process.env.SESSION_ID;
+// Env vars are always strings; the orchestrator's sessions.id column is now
+// an INT (auto-increment), so every outgoing message must send it as a
+// number to match backend/src/worker-ws-handler.ts's WorkerMessage type.
+const SESSION_ID_NUM = Number(SESSION_ID);
 const ORCHESTRATOR_URL = process.env.ORCHESTRATOR_URL;
 const WORKER_SECRET = process.env.WORKER_SECRET;
 const TASK_ID = process.env.TASK_ID;
@@ -56,10 +60,10 @@ const HEARTBEAT_INTERVAL_MS = 30_000;
 // ---------------------------------------------------------------------------
 
 function logInfo(msg, extra) {
-  console.log(JSON.stringify({ ts: new Date().toISOString(), level: "info", component: "worker", sessionId: SESSION_ID, msg, ...extra }));
+  console.log(JSON.stringify({ ts: new Date().toISOString(), level: "info", component: "worker", sessionId: SESSION_ID_NUM, msg, ...extra }));
 }
 function logError(msg, extra) {
-  console.error(JSON.stringify({ ts: new Date().toISOString(), level: "error", component: "worker", sessionId: SESSION_ID, msg, ...extra }));
+  console.error(JSON.stringify({ ts: new Date().toISOString(), level: "error", component: "worker", sessionId: SESSION_ID_NUM, msg, ...extra }));
 }
 
 // ---------------------------------------------------------------------------
@@ -115,7 +119,7 @@ function connectWithRetry(attempt = 1) {
 
     ws.send(JSON.stringify({
       action: "worker-auth",
-      sessionId: SESSION_ID,
+      sessionId: SESSION_ID_NUM,
       secret: WORKER_SECRET,
     }));
 
@@ -193,7 +197,7 @@ function stopHeartbeat() {
 
 function send(action, payload = {}) {
   if (!connected || !ws || ws.readyState !== WebSocket.OPEN) return;
-  ws.send(JSON.stringify({ action, sessionId: SESSION_ID, ...payload }));
+  ws.send(JSON.stringify({ action, sessionId: SESSION_ID_NUM, ...payload }));
 }
 
 /** Send an output line. `stream` is one of "stdout" | "stderr" | "system". */
