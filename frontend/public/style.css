@@ -2742,3 +2742,53 @@ textarea:focus {
 [data-theme="dark"] .task-planner-actions {
   background: var(--bg-tertiary);
 }
+
+/* =============================================================================
+   CONFIRM-ON-DOUBLE-CLICK DELETE PATTERN
+   ============================================================================= */
+
+/* Confirming state — button shifts to darker shade with "Confirm?" text */
+.btn-confirm-pending {
+  background: #8b1118 !important;
+  color: #fff !important;
+  animation: confirm-pulse 0.3s ease;
+}
+
+.btn-confirm-pending:hover:not(:disabled) {
+  background: #6b0d12 !important;
+}
+
+/* Small icon button confirming state (board-item-delete in sidebar) */
+.board-item-action.btn-confirm-pending {
+  background: var(--ta-rapid-red) !important;
+  color: #fff !important;
+  border-radius: 3px;
+}
+
+.board-item-action.btn-confirm-pending:hover {
+  background: #8b1118 !important;
+}
+
+/* Context menu delete button confirming state */
+.board-context-danger.btn-confirm-pending {
+  background: #8b1118 !important;
+  color: #fff !important;
+}
+
+/* Subtle pulse animation when entering confirm state */
+@keyframes confirm-pulse {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.05); }
+  100% { transform: scale(1); }
+}
+
+/* Deleted feedback — item fade-out */
+@keyframes delete-fade-out {
+  0% { opacity: 1; }
+  100% { opacity: 0; transform: translateX(-10px); }
+}
+
+.delete-fade-out {
+  animation: delete-fade-out 0.4s ease forwards;
+  pointer-events: none;
+}
