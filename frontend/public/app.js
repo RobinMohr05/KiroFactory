@@ -3483,7 +3483,12 @@ function handleTaskPlannerWsOutput(entry) {
   if (entry.stream === 'stderr') return;
 
   if (entry.stream === 'stdout') {
-    plannerCurrentAssistantMessage += entry.text;
+    // Each output entry represents one logical line from the backend's
+    // message buffering (see bufferAgentMessage in session-manager.ts),
+    // which strips the newline when splitting. Re-add it here, otherwise
+    // multi-line content (like the ```json:task fenced block) gets glued
+    // into a single line and the task-detection regex never matches.
+    plannerCurrentAssistantMessage += (plannerCurrentAssistantMessage ? '\n' : '') + entry.text;
     updatePartialAssistantMessage(plannerCurrentAssistantMessage);
   }
 }
