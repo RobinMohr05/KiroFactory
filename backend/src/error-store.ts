@@ -17,7 +17,7 @@ import { broadcast } from "./websocket-handler.js";
 
 export interface AgentError {
   id: string;
-  sessionId: string;
+  sessionId: number;
   sessionName: string;
   agent: string;
   timestamp: string;
@@ -39,7 +39,7 @@ export interface AgentError {
 }
 
 export interface RecordErrorInput {
-  sessionId: string;
+  sessionId: number;
   sessionName: string;
   agent: string;
   message: string;

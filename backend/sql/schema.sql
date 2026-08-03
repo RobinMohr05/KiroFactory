@@ -121,7 +121,7 @@ CREATE TABLE agent_tabs (
 -- ============================================================================
 
 CREATE TABLE sessions (
-    id                  NVARCHAR(16)    NOT NULL PRIMARY KEY,
+    id                  INT             IDENTITY(1,1) PRIMARY KEY,
     name                NVARCHAR(200)   NOT NULL,
     agent               NVARCHAR(100)   NOT NULL,
     status              VARCHAR(20)     NOT NULL DEFAULT 'stopped',

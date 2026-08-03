@@ -25,7 +25,7 @@ const AUTH_TIMEOUT_MS = 10_000; // 10s to authenticate after connecting
 
 export interface WorkerMessage {
   action: string;
-  sessionId: string;
+  sessionId: number;
   [key: string]: unknown;
 }
 
@@ -62,12 +62,12 @@ export interface WorkerShutdownMessage extends WorkerMessage {
 
 // Callback type for handling worker events in session-manager
 export interface WorkerEventHandler {
-  onWorkerReady: (sessionId: string, acpSessionId: string) => void;
-  onWorkerOutput: (sessionId: string, entry: OutputEntry) => void;
-  onWorkerSessionUpdate: (sessionId: string, update: unknown) => void;
-  onWorkerPromptDone: (sessionId: string, result: unknown) => void;
-  onWorkerExited: (sessionId: string, exitCode: number | null, signal: string | null) => void;
-  onWorkerShutdown: (sessionId: string, exitCode: number) => void;
+  onWorkerReady: (sessionId: number, acpSessionId: string) => void;
+  onWorkerOutput: (sessionId: number, entry: OutputEntry) => void;
+  onWorkerSessionUpdate: (sessionId: number, update: unknown) => void;
+  onWorkerPromptDone: (sessionId: number, result: unknown) => void;
+  onWorkerExited: (sessionId: number, exitCode: number | null, signal: string | null) => void;
+  onWorkerShutdown: (sessionId: number, exitCode: number) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -75,7 +75,7 @@ export interface WorkerEventHandler {
 // ---------------------------------------------------------------------------
 
 /** Map of sessionId → authenticated worker WebSocket */
-const workerConnections = new Map<string, WebSocket>();
+const workerConnections = new Map<number, WebSocket>();
 
 let eventHandler: WorkerEventHandler | null = null;
 
@@ -104,7 +104,7 @@ export function setupWorkerWebSocket(): WebSocketServer {
 
   wss.on("connection", (ws: WebSocket, _req: IncomingMessage) => {
     let authenticated = false;
-    let sessionId: string | null = null;
+    let sessionId: number | null = null;
 
     // Auth timeout — close if not authenticated within 10s
     const authTimer = setTimeout(() => {
@@ -244,7 +244,7 @@ export interface WorkerTaskMeta {
  * Send a prompt command to a connected worker.
  * Optionally includes task metadata for git commit/PR operations.
  */
-export function sendWorkerPrompt(sessionId: string, text: string, taskMeta?: WorkerTaskMeta): boolean {
+export function sendWorkerPrompt(sessionId: number, text: string, taskMeta?: WorkerTaskMeta): boolean {
   const ws = workerConnections.get(sessionId);
   if (!ws || ws.readyState !== WebSocket.OPEN) return false;
 
@@ -259,7 +259,7 @@ export function sendWorkerPrompt(sessionId: string, text: string, taskMeta?: Wor
 /**
  * Send a stop command to a connected worker.
  */
-export function sendWorkerStop(sessionId: string): boolean {
+export function sendWorkerStop(sessionId: number): boolean {
   const ws = workerConnections.get(sessionId);
   if (!ws || ws.readyState !== WebSocket.OPEN) return false;
 
@@ -270,7 +270,7 @@ export function sendWorkerStop(sessionId: string): boolean {
 /**
  * Check if a worker is connected for a given session.
  */
-export function isWorkerConnected(sessionId: string): boolean {
+export function isWorkerConnected(sessionId: number): boolean {
   const ws = workerConnections.get(sessionId);
   return ws !== undefined && ws.readyState === WebSocket.OPEN;
 }
