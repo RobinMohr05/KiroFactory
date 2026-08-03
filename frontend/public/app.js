@@ -1188,17 +1188,34 @@ function setupTabs() {
   tabBoards.addEventListener('click', () => activateTab(tabBoards, panelBoards));
   tabSessions.addEventListener('click', () => {
     activateTab(tabSessions, panelSessions);
-    // Auto-select the most recent agentless session if none is currently active
+    // Auto-select a session if none is currently active, so the detail panel
+    // doesn't sit empty when there's something to show. Prefer an agentless
+    // (interactive) session, otherwise fall back to the first visible one.
     if (!activeSessionId && sessions.length > 0) {
-      const agentless = sessions.find(s => !s.agent);
-      if (agentless) {
-        selectSession(agentless.id);
+      const visible = currentBoardId
+        ? sessions.filter(s => !s.agent || (s.tabIds && s.tabIds.includes(Number(currentBoardId))))
+        : sessions;
+      const preferred = visible.find(s => !s.agent) || visible[0];
+      if (preferred) {
+        selectSession(preferred.id);
+      } else {
+        showSessionEmpty();
       }
+    } else if (!activeSessionId) {
+      showSessionEmpty();
     }
   });
   tabAgents.addEventListener('click', () => {
     activateTab(tabAgents, panelAgents);
-    fetchAgents();
+    fetchAgents().then(() => {
+      // Auto-select the first agent if none is currently active, so the
+      // detail panel doesn't sit empty when agents already exist.
+      if (!activeAgentName && agents.length > 0) {
+        selectAgent(agents[0].name);
+      } else if (!activeAgentName) {
+        showAgentEmpty();
+      }
+    });
   });
   tabErrors.addEventListener('click', () => {
     activateTab(tabErrors, panelErrors);
@@ -1371,6 +1388,13 @@ const outputPre = document.getElementById('outputPre');
 const sessionPromptInput = document.getElementById('sessionPromptInput');
 const sessionPromptSendBtn = document.getElementById('sessionPromptSendBtn');
 
+// Quick-start (empty state) DOM refs
+const quickStartForm = document.getElementById('quickStartForm');
+const quickStartPrompt = document.getElementById('quickStartPrompt');
+const quickStartAgent = document.getElementById('quickStartAgent');
+const quickStartSendBtn = document.getElementById('quickStartSendBtn');
+const quickStartAdvancedBtn = document.getElementById('quickStartAdvancedBtn');
+
 // Session tabs editor DOM refs
 const sessionTabsList = document.getElementById('sessionTabsList');
 const sessionEditTabsBtn = document.getElementById('sessionEditTabsBtn');
@@ -1491,6 +1515,47 @@ function setupSessions() {
   sessionTabsCancelBtn.addEventListener('click', () => {
     sessionTabsEditor.hidden = true;
   });
+
+  // Quick-start form (shown in the empty state)
+  quickStartForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    await createQuickStartSession();
+  });
+  quickStartPrompt.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      createQuickStartSession();
+    }
+  });
+  quickStartAdvancedBtn.addEventListener('click', async () => {
+    sessionModal.hidden = false;
+    await populateAgentDropdown();
+    populateSessionBoardsSelect();
+    prefillSessionMcpFromBoards();
+    sessionMcpOverrideEnabled = false;
+    // Carry over whatever the user already typed
+    if (quickStartPrompt.value.trim()) {
+      document.getElementById('sessionPrompt').value = quickStartPrompt.value.trim();
+    }
+    document.getElementById('sessionName').focus();
+  });
+}
+
+async function populateQuickStartAgentDropdown() {
+  quickStartAgent.innerHTML = '<option value="">No agent (chat)</option>';
+  try {
+    const res = await fetch('/api/agents');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const agentsList = await res.json();
+    agentsList.forEach(agent => {
+      const opt = document.createElement('option');
+      opt.value = agent.name;
+      opt.textContent = agent.name;
+      quickStartAgent.appendChild(opt);
+    });
+  } catch (e) {
+    console.error('Failed to fetch agents for quick-start:', e);
+  }
 }
 
 function hideSessionForm() {
@@ -1580,45 +1645,31 @@ async function fetchSessions() {
   }
 }
 
-async function createAndStartSession() {
-  const name = document.getElementById('sessionName').value.trim();
-  const agent = document.getElementById('sessionAgent').value.trim();
-  const prompt = document.getElementById('sessionPrompt').value.trim() || undefined;
-  const cwd = document.getElementById('sessionCwd').value.trim() || undefined;
-  const model = document.getElementById('sessionModel').value.trim() || undefined;
-  const interactive = document.getElementById('sessionInteractive').checked;
-  const runs = parseInt(document.getElementById('sessionRuns').value, 10) || 0;
-  const intervalSeconds = parseInt(document.getElementById('sessionInterval').value, 10) || 10;
-
-  // Collect selected board IDs from the multi-select
-  const boardsSelect = document.getElementById('sessionBoards');
-  const boardIds = Array.from(boardsSelect.selectedOptions).map(opt => Number(opt.value));
-
-  // If no boards explicitly selected, default to the current board
-  if (boardIds.length === 0 && currentBoardId) {
-    boardIds.push(Number(currentBoardId));
-  }
-
-  if (!name) return;
+/**
+ * Core session creation logic shared by the full "New Session" modal and the
+ * lightweight quick-start form shown in the empty state.
+ */
+async function createAndStartSessionCore({ name, agent, prompt, cwd, model, interactive, runs, intervalSeconds, boardIds, mcpConfigOverride }) {
+  if (!name) return null;
 
   // Agentless sessions are always interactive and never loop
   const isAgentless = !agent;
   const loop = isAgentless ? false : true; // agent sessions always loop — runs controls iterations
   const effectiveInteractive = isAgentless ? true : interactive;
 
-  // Collect MCP override if user expanded the section and toggled anything
-  let mcpConfigOverride = undefined;
-  if (sessionMcpOverrideEnabled) {
-    mcpConfigOverride = {
-      atlassian: sessionMcpAtlassian.checked,
-      azureDevops: sessionMcpAzureDevops.checked,
-      awsApi: sessionMcpAwsApi.checked,
-      awsDocs: sessionMcpAwsDocs.checked,
-    };
-  }
-
   try {
-    const body = { name, prompt, cwd, model, interactive: effectiveInteractive, loop, runs: isAgentless ? 0 : runs, intervalSeconds, tabIds: boardIds.length > 0 ? boardIds : undefined, mcpConfigOverride };
+    const body = {
+      name,
+      prompt: prompt || undefined,
+      cwd: cwd || undefined,
+      model: model || undefined,
+      interactive: effectiveInteractive,
+      loop,
+      runs: isAgentless ? 0 : (runs || 0),
+      intervalSeconds: intervalSeconds || 10,
+      tabIds: boardIds && boardIds.length > 0 ? boardIds : undefined,
+      mcpConfigOverride,
+    };
     if (agent) body.agent = agent;
     const res = await fetch('/api/sessions', {
       method: 'POST',
@@ -1637,13 +1688,70 @@ async function createAndStartSession() {
     }
     renderSessionList();
     selectSession(session.id);
-    hideSessionForm();
 
     // Auto-start the session
     await startAgentSession(session.id);
+    return session;
   } catch (e) {
     console.error('Failed to create session:', e);
     alert('Failed to create session: ' + e.message);
+    return null;
+  }
+}
+
+async function createAndStartSession() {
+  const name = document.getElementById('sessionName').value.trim();
+  const agent = document.getElementById('sessionAgent').value.trim();
+  const prompt = document.getElementById('sessionPrompt').value.trim();
+  const cwd = document.getElementById('sessionCwd').value.trim();
+  const model = document.getElementById('sessionModel').value.trim();
+  const interactive = document.getElementById('sessionInteractive').checked;
+  const runs = parseInt(document.getElementById('sessionRuns').value, 10) || 0;
+  const intervalSeconds = parseInt(document.getElementById('sessionInterval').value, 10) || 10;
+
+  // Collect selected board IDs from the multi-select
+  const boardsSelect = document.getElementById('sessionBoards');
+  const boardIds = Array.from(boardsSelect.selectedOptions).map(opt => Number(opt.value));
+
+  // If no boards explicitly selected, default to the current board
+  if (boardIds.length === 0 && currentBoardId) {
+    boardIds.push(Number(currentBoardId));
+  }
+
+  // Collect MCP override if user expanded the section and toggled anything
+  const mcpConfigOverride = sessionMcpOverrideEnabled ? {
+    atlassian: sessionMcpAtlassian.checked,
+    azureDevops: sessionMcpAzureDevops.checked,
+    awsApi: sessionMcpAwsApi.checked,
+    awsDocs: sessionMcpAwsDocs.checked,
+  } : undefined;
+
+  const session = await createAndStartSessionCore({ name, agent, prompt, cwd, model, interactive, runs, intervalSeconds, boardIds, mcpConfigOverride });
+  if (session) hideSessionForm();
+}
+
+/**
+ * Quick-start: create an interactive (or agent-driven) session directly from
+ * the sessions empty state, without opening the full "New Session" modal.
+ */
+async function createQuickStartSession() {
+  const prompt = quickStartPrompt.value.trim();
+  const agent = quickStartAgent.value.trim();
+  if (!prompt) {
+    quickStartPrompt.focus();
+    return;
+  }
+
+  const boardIds = currentBoardId ? [Number(currentBoardId)] : [];
+  // Derive a short session name from the prompt itself
+  const name = prompt.length > 48 ? prompt.slice(0, 45).trim() + '…' : prompt;
+
+  quickStartSendBtn.disabled = true;
+  try {
+    await createAndStartSessionCore({ name, agent, prompt, interactive: true, boardIds });
+    quickStartForm.reset();
+  } finally {
+    quickStartSendBtn.disabled = false;
   }
 }
 
@@ -1799,6 +1907,8 @@ function showSessionEmpty() {
   sessionEmptyState.hidden = false;
   sessionDetail.hidden = true;
   outputPre.innerHTML = '';
+  populateQuickStartAgentDropdown();
+  quickStartPrompt.focus();
 }
 
 function updateSessionStatusUI(status) {
@@ -2007,6 +2117,7 @@ const agentForm = document.getElementById('agentForm');
 const cancelAgentBtn = document.getElementById('cancelAgentBtn');
 const cancelAgentJsonBtn = document.getElementById('cancelAgentJsonBtn');
 const agentEmptyState = document.getElementById('agentEmptyState');
+const agentEmptyCreateBtn = document.getElementById('agentEmptyCreateBtn');
 const agentDetail = document.getElementById('agentDetail');
 const agentDetailName = document.getElementById('agentDetailName');
 const agentDetailDesc = document.getElementById('agentDetailDesc');
@@ -2030,6 +2141,7 @@ const submitAgentBtn = document.getElementById('submitAgentBtn');
 
 function setupAgents() {
   newAgentBtn.addEventListener('click', () => showAgentModal());
+  agentEmptyCreateBtn.addEventListener('click', () => showAgentModal());
 
   cancelAgentBtn.addEventListener('click', hideAgentModal);
   cancelAgentJsonBtn.addEventListener('click', hideAgentModal);
