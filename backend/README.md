@@ -201,6 +201,15 @@ The `seed:local` script is idempotent — safe to re-run without duplicating dat
 - 7 sample tasks spanning bug/feature/improvement types, P1–P4 priorities, and
   todo/in-progress/developed states
 
+#### Troubleshooting
+
+| Symptom | Fix |
+|---------|-----|
+| `sqlcmd` not found | Install [SQL Server command-line tools](https://learn.microsoft.com/en-us/sql/tools/sqlcmd/sqlcmd-utility) or use the `SqlLocalDB` utility directly. |
+| Connection refused / named pipe error | Run `sqllocaldb start MSSQLLocalDB` to ensure the instance is running. |
+| Login failed | LocalDB uses Windows auth by default — make sure `DB_USER` is empty in `.env`. |
+| `ENCRYPTION_KEY` error on startup | Generate and set a 64-char hex key (see step 4 above). |
+
 ---
 
 ## Deploy
