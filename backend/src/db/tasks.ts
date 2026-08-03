@@ -16,6 +16,8 @@ function mapRowToTask(row: Record<string, unknown>): Task {
     description: row.description as string,
     files: JSON.parse((row.files as string) || "[]"),
     origin: row.origin as Task["origin"],
+    branch: (row.branch as string) || null,
+    pullRequestUrl: (row.pull_request_url as string) || null,
     createdAt: (row.created_at as Date).toISOString(),
     updatedAt: (row.updated_at as Date).toISOString(),
   };
@@ -276,4 +278,26 @@ export async function getChangedTasksSince(since: string): Promise<Task[]> {
 
   const tasks = result.recordset.map(mapRowToTask);
   return attachTabs(tasks);
+}
+
+/**
+ * Set the branch and pull request URL on a task.
+ * Used internally by the agent lifecycle — not exposed through the public update API.
+ */
+export async function setTaskBranchAndPr(
+  taskId: number,
+  branch: string | null,
+  pullRequestUrl: string | null
+): Promise<void> {
+  const pool = await getPool();
+  await pool
+    .request()
+    .input("id", sql.Int, taskId)
+    .input("branch", sql.NVarChar(250), branch)
+    .input("pullRequestUrl", sql.NVarChar(500), pullRequestUrl)
+    .query(`
+      UPDATE tasks
+      SET branch = @branch, pull_request_url = @pullRequestUrl, updated_at = GETUTCDATE()
+      WHERE id = @id
+    `);
 }

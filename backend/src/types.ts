@@ -105,6 +105,8 @@ export interface Task {
   description: string;
   files: string[];
   origin: "user" | "ai" | "user-assisted";
+  branch: string | null;
+  pullRequestUrl: string | null;
   createdAt: string;
   updatedAt: string;
   tabs?: Tab[];

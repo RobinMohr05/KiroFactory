@@ -1242,6 +1242,7 @@ function finishPromptTurn(msg) {
       durationMs,
       hasChanges,
       prUrl,
+      branchName: currentBranchName,
     });
   })();
 }
