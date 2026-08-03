@@ -105,6 +105,8 @@ Firewall: the ACA environment's outbound IPs must be allowed on the SQL server, 
 
 ## Local development
 
+### Quick start (using the shared Azure SQL database)
+
 ```bash
 # from repo root
 npm install
@@ -114,6 +116,90 @@ npm run dev -w backend
 
 `.env` keys of note: `DB_*`, `ENCRYPTION_KEY` (must match whatever encrypted the stored data),
 `WORKER_MODE=local` for local agent runs.
+
+Your machine's public IP must be allowed in the Azure SQL firewall.
+
+---
+
+### Run entirely on localhost (no Azure, no Docker)
+
+You can run the full application on localhost with **zero external dependencies** — no Azure
+SQL, no Docker, no network connection required after initial setup. This uses SQL Server
+Express LocalDB, a lightweight on-demand SQL engine that speaks the same T-SQL dialect the app
+depends on.
+
+> See also: the root [`ARCHITECTURE.md`](../ARCHITECTURE.md) §11 for an overview of this flow.
+
+#### Prerequisites
+
+- **Node.js 20+**
+- **SQL Server Express LocalDB** (Windows only)
+  - Download: <https://www.microsoft.com/en-us/sql-server/sql-server-downloads>
+  - Or via winget: `winget install Microsoft.SQLServer.2022.Express` (select LocalDB feature)
+  - If you have Visual Studio installed, the default `(localdb)\MSSQLLocalDB` instance is likely
+    already present.
+
+#### Step-by-step
+
+```powershell
+# 1. Ensure the LocalDB instance is running
+sqllocaldb start MSSQLLocalDB
+
+# 2. Create the database (one-time)
+sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE DATABASE TecFactory;"
+```
+
+```bash
+# 3. Install dependencies (from repo root)
+npm install
+
+# 4. Configure environment
+cp backend/.env.local.example backend/.env
+# Edit backend/.env — generate and set ENCRYPTION_KEY:
+#   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+
+# 5. Run database migrations (creates all tables)
+npm run migrate -w backend
+
+# 6. Seed a test user and sample tasks
+npm run seed:local -w backend
+
+# 7. Start the server
+npm run dev -w backend
+```
+
+Open <http://localhost:3500> and log in with:
+- **Email:** `local-dev@example.com`
+- **Password:** `localdev123`
+
+You'll see a populated Kanban board with sample tasks across all types, priorities, and states.
+
+#### What works without `kiro-cli`
+
+The following features work fully **without** `kiro-cli` installed:
+
+- ✅ Login / registration / user management
+- ✅ Task CRUD (create, edit, delete, drag between columns)
+- ✅ Tab/board management (create, rename, reorder, configure)
+- ✅ Real-time WebSocket sync across browser tabs
+- ✅ The entire Kanban UI, filters, and search
+
+The **only** feature that requires `kiro-cli` on PATH is **starting an actual agent session**
+(the "Start" button on a session). If `kiro-cli` is not installed, attempting to start a
+session will show a clear error in the Errors tab:
+
+> "kiro-cli not found on PATH — install it from https://cli.kiro.dev/install or skip agent
+> sessions. Task/board management works without it."
+
+Install `kiro-cli` from <https://cli.kiro.dev/install> only when you need to run agent sessions.
+
+#### Seed script details
+
+The `seed:local` script is idempotent — safe to re-run without duplicating data. It creates:
+- A test user (`local-dev@example.com` / `localdev123`)
+- A "Local Dev" tab
+- 7 sample tasks spanning bug/feature/improvement types, P1–P4 priorities, and
+  todo/in-progress/developed states
 
 ---
 

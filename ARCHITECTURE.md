@@ -332,3 +332,30 @@ details on the data-access layer.
 - The API is protected by JWT auth (cookie `kf_session`). SSO (Entra ID / Okta) is a planned,
   low-priority enhancement.
 - Move plaintext env-var secrets to Azure Key Vault before treating this as production-grade.
+
+---
+
+## 11. Running locally without Azure or Docker
+
+The entire application can run on localhost with no external dependencies. This is the
+recommended path for new developers or any environment where Azure SQL, Docker Desktop, or
+network access is unavailable.
+
+**Requirements:** Node.js 20+, SQL Server Express LocalDB (Windows).
+
+**Quick summary:**
+
+1. Install LocalDB → `sqllocaldb start MSSQLLocalDB`
+2. Create database → `sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE DATABASE TecFactory;"`
+3. `cp backend/.env.local.example backend/.env` (set `ENCRYPTION_KEY`)
+4. `npm install && npm run migrate -w backend && npm run seed:local -w backend`
+5. `npm run dev -w backend` → open <http://localhost:3500>
+6. Log in as `local-dev@example.com` / `localdev123`
+
+**What works without `kiro-cli`:** Everything except starting agent sessions. The full UI,
+task/board CRUD, auth, WebSocket sync, and drag-and-drop all work. Only the "Start session"
+action requires `kiro-cli` on PATH — if it's missing, the Errors tab shows a clear message
+instead of a raw Node.js error.
+
+For the detailed step-by-step with troubleshooting, see
+[`backend/README.md` § "Run entirely on localhost"](backend/README.md#run-entirely-on-localhost-no-azure-no-docker).
