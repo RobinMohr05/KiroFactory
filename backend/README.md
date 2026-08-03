@@ -105,6 +105,8 @@ Firewall: the ACA environment's outbound IPs must be allowed on the SQL server, 
 
 ## Local development
 
+### Option A: Use the shared Azure SQL database
+
 ```bash
 # from repo root
 npm install
@@ -114,6 +116,97 @@ npm run dev -w backend
 
 `.env` keys of note: `DB_*`, `ENCRYPTION_KEY` (must match whatever encrypted the stored data),
 `WORKER_MODE=local` for local agent runs.
+
+Your machine's public IP must be allowed in the Azure SQL firewall.
+
+---
+
+### Option B: Fully offline with SQL Server Express LocalDB (Windows)
+
+This lets you run the entire app on localhost with **zero external dependencies** — no Azure
+SQL, no Docker, no network connection required after initial setup.
+
+LocalDB is a lightweight, on-demand SQL Server engine that speaks the exact same T-SQL dialect
+the app depends on (`OUTPUT INSERTED`, `UPDLOCK`/`READPAST`, `GETUTCDATE()`, etc.) so no
+application code changes are needed.
+
+#### 1. Install LocalDB
+
+Download and run the **SQL Server Express** installer (pick "Download Media" → "LocalDB"):
+<https://www.microsoft.com/en-us/sql-server/sql-server-downloads>
+
+Or install via `winget`:
+
+```powershell
+winget install Microsoft.SQLServer.2022.Express
+```
+
+Only the **LocalDB** feature is needed (a few hundred MB, no Docker, no background service).
+
+If you already have **Visual Studio** installed, LocalDB is likely already present — the
+default instance `(localdb)\MSSQLLocalDB` ships with VS.
+
+#### 2. Start the LocalDB instance
+
+```powershell
+# Check if the default instance exists
+sqllocaldb info MSSQLLocalDB
+
+# If not, create it:
+sqllocaldb create MSSQLLocalDB
+
+# Start it:
+sqllocaldb start MSSQLLocalDB
+```
+
+The instance runs on-demand (starts when you connect, stops after idle timeout) — no
+persistent background service.
+
+#### 3. Create the database
+
+```powershell
+sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE DATABASE TecFactory;"
+```
+
+The app's `migrate.ts` creates all tables automatically — you only need to create the
+database itself.
+
+#### 4. Configure the backend
+
+```bash
+# from repo root
+cp backend/.env.local.example backend/.env
+```
+
+Then generate an encryption key and add it to `backend/.env`:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+# paste the output as ENCRYPTION_KEY= in .env
+```
+
+The `.env.local.example` is pre-configured for LocalDB with Windows authentication (no
+username/password needed — the `mssql` driver uses NTLM trusted-connection auth when
+`DB_USER` is left empty).
+
+#### 5. Run migrations and start
+
+```bash
+npm install          # from repo root (installs all workspaces)
+npm run migrate -w backend
+npm run dev -w backend
+```
+
+Open <http://localhost:3500> — the full app is running entirely offline.
+
+#### Troubleshooting
+
+| Symptom | Fix |
+|---------|-----|
+| `sqlcmd` not found | Install [SQL Server command-line tools](https://learn.microsoft.com/en-us/sql/tools/sqlcmd/sqlcmd-utility) or use the `SqlLocalDB` utility directly. |
+| Connection refused / named pipe error | Run `sqllocaldb start MSSQLLocalDB` to ensure the instance is running. |
+| Login failed | LocalDB uses Windows auth by default — make sure `DB_USER` is empty in `.env`. |
+| `ENCRYPTION_KEY` error on startup | Generate and set a 64-char hex key (see step 4 above). |
 
 ---
 
