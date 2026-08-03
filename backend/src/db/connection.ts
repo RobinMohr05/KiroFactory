@@ -4,11 +4,13 @@ import { log } from "../logger.js";
 
 dotenv.config();
 
+// When DB_USER is empty (e.g. LocalDB with Windows auth), use NTLM trusted connection.
+// Otherwise use standard SQL Server authentication (username/password).
+const useWindowsAuth = !process.env.DB_USER;
+
 const config: sql.config = {
   server: process.env.DB_SERVER || "localhost",
   database: process.env.DB_DATABASE || "TecFactory",
-  user: process.env.DB_USER || "sa",
-  password: process.env.DB_PASSWORD || "",
   port: parseInt(process.env.DB_PORT || "1433", 10),
   options: {
     encrypt: process.env.DB_ENCRYPT === "true",
@@ -21,6 +23,22 @@ const config: sql.config = {
     min: 2,
     idleTimeoutMillis: 30000,
   },
+  // Auth: Windows (NTLM/trusted) when no user is provided, SQL auth otherwise
+  ...(useWindowsAuth
+    ? {
+        authentication: {
+          type: "ntlm",
+          options: {
+            domain: process.env.DB_DOMAIN || "",
+            userName: process.env.DB_NTLM_USER || "",
+            password: process.env.DB_NTLM_PASSWORD || "",
+          },
+        },
+      }
+    : {
+        user: process.env.DB_USER || "sa",
+        password: process.env.DB_PASSWORD || "",
+      }),
 };
 
 let pool: sql.ConnectionPool | null = null;
