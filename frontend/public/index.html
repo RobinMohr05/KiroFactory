@@ -276,8 +276,32 @@
         <div class="form-group"><label for="taskDescription">Description</label><textarea id="taskDescription" rows="3" placeholder="Optional description"></textarea></div>
         <div class="form-row"><div class="form-group"><label for="taskType">Type</label><select id="taskType"><option value="improvement">Improvement</option><option value="bug">Bug</option><option value="feature">Feature</option></select></div><div class="form-group"><label for="taskPriority">Priority</label><select id="taskPriority"><option value="1">P1 — Critical</option><option value="2">P2 — High</option><option value="3">P3 — Medium</option><option value="4" selected>P4 — Low</option></select></div></div>
         <div class="form-row"><div class="form-group" id="taskStateGroup"><label for="taskState">State</label><select id="taskState"><option value="todo">To Do</option><option value="in-progress">In Progress</option><option value="developed">Developed</option></select></div><div class="form-group"><label for="taskOrigin">Origin</label><select id="taskOrigin"><option value="user">User</option><option value="ai">AI</option><option value="user-assisted">User-Assisted</option></select></div></div>
-        <div class="form-actions"><button type="button" class="btn btn-danger" id="deleteTaskBtn" hidden>Delete</button><div class="form-actions-right"><button type="button" class="btn btn-secondary" id="cancelTaskBtn">Cancel</button><button type="submit" class="btn btn-primary" id="submitTaskBtn">Create Task</button></div></div>
+        <div class="form-actions"><button type="button" class="btn btn-danger" id="deleteTaskBtn" hidden>Delete</button><div class="form-actions-right"><button type="button" class="btn btn-ai-planner" id="aiPlannerBtn"><span class="ai-icon">✨</span> AI Planner</button><button type="button" class="btn btn-secondary" id="cancelTaskBtn">Cancel</button><button type="submit" class="btn btn-primary" id="submitTaskBtn">Create Task</button></div></div>
       </form>
+    </div>
+  </div>
+
+  <!-- Task Planner Modal -->
+  <div class="modal-backdrop" id="taskPlannerModal" hidden>
+    <div class="modal task-planner-modal" role="dialog" aria-labelledby="taskPlannerTitle">
+      <div class="task-planner-header">
+        <h2 id="taskPlannerTitle">✨ AI Task Planner</h2>
+        <div class="task-planner-status" id="taskPlannerStatus">
+          <span class="status-dot" id="taskPlannerDot"></span>
+          <span id="taskPlannerStatusText">Connecting...</span>
+        </div>
+      </div>
+      <div class="task-planner-messages" id="taskPlannerMessages">
+        <!-- Chat messages appear here -->
+      </div>
+      <div class="task-planner-input-area">
+        <textarea id="taskPlannerInput" rows="1" placeholder="Describe what you want to build..." aria-label="Your message"></textarea>
+        <button type="button" class="btn btn-primary" id="taskPlannerSendBtn" disabled>Send</button>
+      </div>
+      <div class="task-planner-actions">
+        <button type="button" class="btn btn-secondary" id="taskPlannerCancelBtn">Cancel</button>
+        <button type="button" class="btn btn-primary" id="taskPlannerCreateBtn" disabled>Create Task</button>
+      </div>
     </div>
   </div>
 
