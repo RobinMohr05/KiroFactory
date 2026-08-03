@@ -6,7 +6,7 @@ import {
   updateAgent,
   deleteAgent,
 } from "../db/agents.js";
-import { broadcast } from "../websocket-handler.js";
+import { broadcastToUser } from "../websocket-handler.js";
 import type { CreateAgentInput, UpdateAgentInput } from "../types.js";
 import { requireAuth, getUserId } from "../middleware/auth.js";
 import { log, toErrorFields } from "../logger.js";
@@ -73,7 +73,7 @@ router.post("/", async (req: Request, res: Response) => {
     }
 
     const agent = await createAgent({ ...input, name: input.name.trim(), userId });
-    broadcast({ type: "agent-created", agent });
+    broadcastToUser(userId, { type: "agent-created", agent });
     res.status(201).json(agent);
   } catch (err) {
     log.error("route-error", {
@@ -111,7 +111,7 @@ router.put("/:id", async (req: Request, res: Response) => {
       return;
     }
 
-    broadcast({ type: "agent-updated", agent });
+    broadcastToUser(userId, { type: "agent-updated", agent });
     res.json(agent);
   } catch (err) {
     log.error("route-error", {
@@ -147,7 +147,7 @@ router.delete("/:id", async (req: Request, res: Response) => {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    broadcast({ type: "agent-deleted", agentId: id });
+    broadcastToUser(userId, { type: "agent-deleted", agentId: id });
     res.json({ success: true });
   } catch (err) {
     log.error("route-error", {
@@ -185,7 +185,7 @@ router.post("/:id/tabs", async (req: Request, res: Response) => {
     }
 
     const updated = await updateAgent(id, { tabIds });
-    broadcast({ type: "agent-updated", agent: updated! });
+    broadcastToUser(userId, { type: "agent-updated", agent: updated! });
     res.json(updated);
   } catch (err) {
     log.error("route-error", {

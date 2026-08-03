@@ -10,7 +10,7 @@ import {
   isTaskOwnedByUser,
 } from "../db/tasks.js";
 import { getAllTabs } from "../db/tabs.js";
-import { broadcast } from "../websocket-handler.js";
+import { broadcastToUser } from "../websocket-handler.js";
 import { markTaskBroadcast } from "../broadcast-tracker.js";
 import { requireAuth, getUserId } from "../middleware/auth.js";
 import type { CreateTaskInput, UpdateTaskInput } from "../types.js";
@@ -84,7 +84,7 @@ router.post("/", async (req: Request, res: Response) => {
     }
 
     const task = await createTask(input);
-    broadcast({ type: "task-created", task });
+    broadcastToUser(userId, { type: "task-created", task });
     markTaskBroadcast(task.id);
     res.status(201).json(task);
   } catch (err) {
@@ -157,7 +157,7 @@ router.put("/:id", async (req: Request, res: Response) => {
       res.status(404).json({ error: "Task not found" });
       return;
     }
-    broadcast({ type: "task-updated", task });
+    broadcastToUser(userId, { type: "task-updated", task });
     markTaskBroadcast(task.id);
     res.json(task);
   } catch (err) {
@@ -194,7 +194,7 @@ router.delete("/:id", async (req: Request, res: Response) => {
       res.status(404).json({ error: "Task not found" });
       return;
     }
-    broadcast({ type: "task-deleted", taskId: id });
+    broadcastToUser(userId, { type: "task-deleted", taskId: id });
     res.status(204).send();
   } catch (err) {
     log.error("route-error", {
@@ -244,7 +244,7 @@ router.post("/:id/tabs", async (req: Request, res: Response) => {
       res.status(404).json({ error: "Task not found" });
       return;
     }
-    broadcast({ type: "task-updated", task });
+    broadcastToUser(userId, { type: "task-updated", task });
     markTaskBroadcast(task.id);
     res.json(task);
   } catch (err) {
@@ -289,7 +289,7 @@ router.delete("/:id/tabs/:tabId", async (req: Request, res: Response) => {
       res.status(404).json({ error: "Task or tab assignment not found" });
       return;
     }
-    broadcast({ type: "task-updated", task });
+    broadcastToUser(userId, { type: "task-updated", task });
     markTaskBroadcast(task.id);
     res.json(task);
   } catch (err) {

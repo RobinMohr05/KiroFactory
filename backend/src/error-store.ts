@@ -9,7 +9,7 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { broadcast } from "./websocket-handler.js";
+import { broadcastToUser } from "./websocket-handler.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -89,8 +89,8 @@ export function recordError(input: RecordErrorInput): AgentError {
     errors.length = MAX_ERRORS;
   }
 
-  // Broadcast to all connected clients
-  broadcast({ type: "error-created", error });
+  // Broadcast only to the account that owns the session this error came from
+  broadcastToUser(error.userId, { type: "error-created", error });
 
   return error;
 }
