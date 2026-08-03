@@ -1478,6 +1478,8 @@ function setupSessions() {
 
   sessionDeleteBtn.addEventListener('click', async () => {
     if (!activeSessionId) return;
+    const session = sessions.find(s => s.id === activeSessionId);
+    if (session?.pinned) return; // permanent Chat session — button is disabled anyway
     if (!confirm('Delete this session? This will stop the agent if running.')) return;
     await deleteAgentSession(activeSessionId);
   });
@@ -1834,6 +1836,7 @@ function selectSession(id) {
   sessionDetailAgent.textContent = session.agent || 'Interactive';
   updateSessionStatusUI(session.status);
   updateSessionTabsDisplay(session);
+  updateSessionPinnedUI(session);
 
   // Hide tabs editor when switching sessions
   sessionTabsEditor.hidden = true;
@@ -1935,6 +1938,16 @@ function updateSessionStatusUI(status) {
   }
 }
 
+/**
+ * Disables delete for the permanent, pinned Chat session and shows a badge
+ * next to its name in the detail header.
+ */
+function updateSessionPinnedUI(session) {
+  sessionDeleteBtn.disabled = !!session.pinned;
+  sessionDeleteBtn.title = session.pinned ? 'The pinned Chat session cannot be deleted' : 'Delete session';
+  sessionDetailName.classList.toggle('session-detail-name-pinned', !!session.pinned);
+}
+
 function renderSessionList() {
   sessionList.innerHTML = '';
 
@@ -1944,12 +1957,12 @@ function renderSessionList() {
     ? sessions.filter(s => !s.agent || (s.tabIds && s.tabIds.includes(Number(currentBoardId))))
     : sessions;
 
-  // Sort: agentless (interactive) sessions first, then by creation date desc
+  // Sort: pinned session always first, then agentless (interactive) sessions,
+  // then everything else. Order within each group is preserved.
   visibleSessions = [...visibleSessions].sort((a, b) => {
-    const aAgentless = !a.agent ? 0 : 1;
-    const bAgentless = !b.agent ? 0 : 1;
-    if (aAgentless !== bAgentless) return aAgentless - bAgentless;
-    return 0; // preserve existing order within each group
+    const aRank = a.pinned ? 0 : (!a.agent ? 1 : 2);
+    const bRank = b.pinned ? 0 : (!b.agent ? 1 : 2);
+    return aRank - bRank;
   });
 
   if (visibleSessions.length === 0) {
@@ -1959,7 +1972,7 @@ function renderSessionList() {
 
   visibleSessions.forEach(session => {
     const li = document.createElement('li');
-    li.className = 'session-item' + (session.id === activeSessionId ? ' active' : '');
+    li.className = 'session-item' + (session.id === activeSessionId ? ' active' : '') + (session.pinned ? ' session-item-pinned' : '');
     li.dataset.sessionId = session.id;
 
     const statusClass = 'status-dot-sm status-' + session.status;
@@ -1974,10 +1987,12 @@ function renderSessionList() {
       activityHtml = `<span class="session-item-activity">${escapeHtml(activityType)}</span>`;
     }
 
+    const pinIconHtml = session.pinned ? '<span class="session-item-pin" title="Pinned">📌</span>' : '';
+
     li.innerHTML = `
       <span class="${statusClass}" aria-hidden="true"></span>
       <div class="session-item-info">
-        <span class="session-item-name">${escapeHtml(session.name)}</span>
+        <span class="session-item-name">${pinIconHtml}${escapeHtml(session.name)}</span>
         <span class="session-item-agent">${session.agent ? escapeHtml(session.agent) : '<em>Interactive</em>'}</span>
         ${activityHtml}
       </div>
@@ -2040,6 +2055,7 @@ function handleSessionWsMessage(message) {
           sessionDetailAgent.textContent = s.agent || 'Interactive';
           updateSessionStatusUI(s.status);
           updateSessionTabsDisplay(s);
+          updateSessionPinnedUI(s);
         }
 
         // Refresh board members if this session belongs to the current board

@@ -51,8 +51,11 @@ router.post("/", (req: Request, res: Response) => {
       res.status(400).json({ error: "name is required" });
       return;
     }
-    // Force userId from auth context (ignore any userId in the body)
+    // Force userId from auth context (ignore any userId in the body).
+    // `pinned` is internal-only (set for the one permanent Chat session
+    // created at registration) — never honor it from a public request body.
     input.userId = userId;
+    input.pinned = false;
     const session = createSession(input);
     res.status(201).json(session);
   } catch (err) {
@@ -237,6 +240,10 @@ router.delete("/:id", async (req: Request, res: Response) => {
     const session = getSession(paramId(req));
     if (!session || session.userId !== userId) {
       res.status(404).json({ error: "Session not found" });
+      return;
+    }
+    if (session.pinned) {
+      res.status(403).json({ error: "The pinned Chat session cannot be deleted" });
       return;
     }
     const ok = deleteSession(paramId(req));
