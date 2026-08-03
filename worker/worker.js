@@ -972,6 +972,12 @@ const PROMPT_TIMEOUT_MS = (Number(process.env.TIMEOUT_SECONDS) || 900) * 1000;
 const PROMPT_CANCEL_GRACE_MS = 30_000;
 /** Max characters of agent text logged per chunk to the container log. */
 const LOG_TEXT_LIMIT = 400;
+/**
+ * Max characters of captured tool call output (command stdout/stderr, diffs)
+ * logged and forwarded per update. Higher than LOG_TEXT_LIMIT: a truncated
+ * npm/build error is often useless, whereas a truncated chat sentence is fine.
+ */
+const TOOL_OUTPUT_LOG_LIMIT = 4000;
 
 /** The ACP session id returned by session/new. Null until the handshake finishes. */
 let acpSessionId = null;
@@ -1017,6 +1023,52 @@ function truncate(text, limit = LOG_TEXT_LIMIT) {
 }
 
 /**
+ * Pull human-readable text out of a tool_call / tool_call_update's `content`
+ * array and `rawOutput` field.
+ *
+ * Without this, a failed shell command (npm install, a build, a test run) is
+ * reported to the orchestrator as nothing more than "status: failed" — the
+ * actual stdout/stderr that would explain *why* it failed is discarded. That
+ * gap is what made a Tailwind/npm install failure impossible to diagnose from
+ * the container logs afterwards; only the agent's own paraphrased commentary
+ * survived.
+ *
+ * ACP content blocks come in a few shapes depending on agent/version:
+ *   - { type: "content", content: { type: "text", text: "..." } }
+ *   - { type: "text", text: "..." }               (flattened form)
+ *   - { type: "diff", path, oldText, newText }
+ *   - { type: "terminal", terminalId }             (no output here — display-only)
+ * This handles all of them defensively rather than assuming one shape.
+ */
+function extractToolOutputText(update) {
+  const parts = [];
+
+  const content = Array.isArray(update?.content) ? update.content : [];
+  for (const block of content) {
+    if (!block || typeof block !== "object") continue;
+    const text = block.text ?? block.content?.text;
+    if (typeof text === "string" && text) {
+      parts.push(text);
+    } else if (block.type === "diff" && block.path) {
+      parts.push(`[diff] ${block.path}`);
+    }
+  }
+
+  if (update?.rawOutput !== undefined && update?.rawOutput !== null) {
+    try {
+      const raw =
+        typeof update.rawOutput === "string" ? update.rawOutput : JSON.stringify(update.rawOutput);
+      if (raw && !parts.includes(raw)) parts.push(raw);
+    } catch {
+      /* non-serializable rawOutput — skip */
+    }
+  }
+
+  if (parts.length === 0) return null;
+  return truncate(parts.join("\n"), TOOL_OUTPUT_LOG_LIMIT);
+}
+
+/**
  * Log an ACP session/update to the container log so the agent's reasoning and
  * tool usage is visible in ContainerAppConsoleLogs, not just in the UI.
  * The update itself is always forwarded to the orchestrator for rendering.
@@ -1051,12 +1103,26 @@ function logSessionUpdate(update) {
       break;
     }
     case "tool_call_update": {
+      const outputText = extractToolOutputText(update);
       logInfo("agent-tool-call-update", {
         toolCallId: update.toolCallId ?? null,
         status: update.status ?? null,
+        // Always captured when present so completed-but-informative output
+        // (e.g. a command that "succeeds" but prints warnings) isn't lost either.
+        output: outputText,
       });
       if (update.status === "failed") {
-        sendOutput(`Tool call failed: ${update.title || update.toolCallId || "unknown tool"}`, "stderr");
+        // Only failures are forwarded to the live output stream — successful
+        // tool calls (ls, cat, grep, etc.) would otherwise flood the session
+        // output. Their captured text is still in the container log above
+        // (queryable via Log Analytics) for post-hoc debugging either way.
+        const label = update.title || update.toolCallId || "unknown tool";
+        sendOutput(
+          outputText
+            ? `Tool call failed: ${label}\n${outputText}`
+            : `Tool call failed: ${label} (no output captured)`,
+          "stderr"
+        );
       }
       break;
     }
