@@ -18,12 +18,19 @@ DROP TABLE IF EXISTS users;
 -- ============================================================================
 
 CREATE TABLE users (
-    id                      INT             IDENTITY(1,1) PRIMARY KEY,
-    email                   NVARCHAR(255)   NOT NULL UNIQUE,
-    password_hash           NVARCHAR(MAX)   NOT NULL,
-    kiro_api_key_encrypted  NVARCHAR(MAX)   NOT NULL,
-    created_at              DATETIME2       NOT NULL DEFAULT GETUTCDATE(),
-    updated_at              DATETIME2       NOT NULL DEFAULT GETUTCDATE()
+    id                          INT             IDENTITY(1,1) PRIMARY KEY,
+    email                       NVARCHAR(255)   NOT NULL UNIQUE,
+    password_hash               NVARCHAR(MAX)   NOT NULL,
+    kiro_api_key_encrypted      NVARCHAR(MAX)   NOT NULL,
+    default_git_provider        VARCHAR(20)     NULL,
+    cred_azure_devops_pat       NVARCHAR(MAX)   NULL,
+    cred_atlassian_api_token    NVARCHAR(MAX)   NULL,
+    cred_atlassian_username     NVARCHAR(MAX)   NULL,
+    cred_aws_access_key_id      NVARCHAR(MAX)   NULL,
+    cred_aws_secret_access_key  NVARCHAR(MAX)   NULL,
+    cred_github_pat             NVARCHAR(MAX)   NULL,
+    created_at                  DATETIME2       NOT NULL DEFAULT GETUTCDATE(),
+    updated_at                  DATETIME2       NOT NULL DEFAULT GETUTCDATE()
 );
 
 -- ============================================================================
@@ -48,6 +55,8 @@ CREATE TABLE tabs (
     repository_url  NVARCHAR(500)   NULL,
     columns_json    NVARCHAR(MAX)   NOT NULL DEFAULT '["todo","in-progress","developed"]',
     sort_order      INT             NOT NULL DEFAULT 0,
+    mcp_config      NVARCHAR(MAX)   NULL,
+    git_provider    VARCHAR(20)     NULL,
     user_id         INT             NULL REFERENCES users(id),
     created_at      DATETIME2       NOT NULL DEFAULT GETUTCDATE()
 );
@@ -67,6 +76,8 @@ CREATE TABLE tasks (
     description     NVARCHAR(MAX)   NOT NULL DEFAULT '',
     files           NVARCHAR(MAX)   NOT NULL DEFAULT '[]',
     origin          VARCHAR(20)     NOT NULL CHECK (origin IN ('user', 'ai', 'user-assisted')),
+    retry_count     INT             NOT NULL DEFAULT 0,
+    max_retries     INT             NOT NULL DEFAULT 5,
     created_at      DATETIME2       NOT NULL DEFAULT GETUTCDATE(),
     updated_at      DATETIME2       NOT NULL DEFAULT GETUTCDATE()
 );
