@@ -923,6 +923,83 @@ async function runUpgrades(pool: sql.ConnectionPool): Promise<void> {
 
     console.log("[migrate] Upgrade complete: agents now uses numeric id as PK, agent_tabs uses agent_id.");
   }
+
+  // Upgrade 19: Pinned "Chat" session — every user gets exactly one permanent,
+  // agentless, interactive session that always sorts first in the UI and
+  // cannot be deleted. Add the column, then backfill one for every user that
+  // doesn't already have a pinned session.
+  const pinnedColExists = await pool.request().query(`
+    SELECT COUNT(*) AS cnt
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_NAME = 'sessions' AND COLUMN_NAME = 'pinned'
+  `);
+
+  if (pinnedColExists.recordset[0].cnt === 0) {
+    console.log("[migrate] Upgrading: adding pinned column to sessions table...");
+    await pool.request().query(`
+      ALTER TABLE sessions ADD pinned BIT NOT NULL DEFAULT 0
+    `);
+    console.log("[migrate] Upgrade complete: pinned added to sessions.");
+  }
+
+  await backfillPinnedChatSessions(pool);
+}
+
+/**
+ * Ensure every user has exactly one pinned, agentless "Chat" session.
+ * Safe to run on every startup — it's a no-op for users that already have one.
+ */
+async function backfillPinnedChatSessions(pool: sql.ConnectionPool): Promise<void> {
+  const usersWithoutPinned = await pool.request().query(`
+    SELECT u.id, u.email
+    FROM users u
+    WHERE NOT EXISTS (
+      SELECT 1 FROM sessions s WHERE s.user_id = u.id AND s.pinned = 1
+    )
+  `);
+
+  if (usersWithoutPinned.recordset.length === 0) return;
+
+  console.log(
+    `[migrate] Backfilling pinned Chat session for ${usersWithoutPinned.recordset.length} user(s)...`
+  );
+
+  for (const user of usersWithoutPinned.recordset) {
+    try {
+      await createPinnedChatSession(pool, user.id as number);
+    } catch (err: any) {
+      console.warn(`[migrate] ⚠ Could not create pinned Chat session for user ${user.id}: ${err.message}`);
+    }
+  }
+}
+
+/**
+ * Insert the permanent, agentless "Chat" session row for a single user.
+ * Used by the startup backfill only — new users get theirs via
+ * session-manager's createSession() during registration instead, so the
+ * in-memory session map and WebSocket broadcast stay in sync.
+ */
+async function createPinnedChatSession(pool: sql.ConnectionPool, userId: number): Promise<void> {
+  const { randomBytes } = await import("node:crypto");
+  const id = randomBytes(4).toString("hex");
+  const { resolve } = await import("node:path");
+  const cwd = resolve(import.meta.dirname, "../../..");
+
+  await pool
+    .request()
+    .input("id", sql.NVarChar(16), id)
+    .input("name", sql.NVarChar(200), "Chat")
+    .input("cwd", sql.NVarChar(500), cwd)
+    .input("userId", sql.Int, userId)
+    .query(`
+      INSERT INTO sessions (
+        id, name, agent, status, prompt, interactive, loop, runs,
+        interval_seconds, cwd, timeout_seconds, user_id, created_at, pinned
+      ) VALUES (
+        @id, @name, '', 'stopped', '', 1, 0, 0,
+        10, @cwd, 0, @userId, GETUTCDATE(), 1
+      )
+    `);
 }
 
 /**

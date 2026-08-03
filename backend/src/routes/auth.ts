@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from "express";
 import jwt from "jsonwebtoken";
 import { createUser, verifyPassword, verifyPasswordById, getUserById, getUserByEmail, updateUserPassword, updateUserKiroApiKey, updateUserDefaultGitProvider, deleteUser } from "../db/users.js";
 import { isRegistrationEnabled } from "../db/settings.js";
+import { createSession } from "../session-manager.js";
 import { getUserId } from "../middleware/auth.js";
 import type { CreateUserInput, AuthenticatedRequest, GitProvider } from "../types.js";
 import { GIT_PROVIDERS, isGitProvider } from "../types.js";
@@ -113,6 +114,20 @@ router.post("/register", async (req: Request, res: Response) => {
     // Create user (bcrypt hash + AES-256 encryption handled in db/users.ts)
     const input: CreateUserInput = { email, password, kiroApiKey };
     const user = await createUser(input);
+
+    // Every user gets one permanent, agentless "Chat" session, pinned first
+    // in the sidebar. Non-fatal if it fails — the migration backfill will
+    // catch it on the next server restart.
+    try {
+      createSession({ name: "Chat", userId: user.id, pinned: true });
+    } catch (err) {
+      log.warn("pinned-chat-session-create-failed", {
+        component: "auth",
+        userId: user.id,
+        ...toErrorFields(err),
+        msg: "Failed to create pinned Chat session for new user",
+      });
+    }
 
     // Issue session token
     const token = signToken(user.id);
