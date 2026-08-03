@@ -1143,10 +1143,13 @@ function setupDragAndDrop() {
 function showTaskForm(task = null) {
   taskModal.hidden = false;
 
+  const aiPlannerBtnEl = document.getElementById('aiPlannerBtn');
+
   if (task) {
     modalTitle.textContent = 'Edit Task';
     submitTaskBtn.textContent = 'Update Task';
     deleteTaskBtn.hidden = false;
+    if (aiPlannerBtnEl) aiPlannerBtnEl.hidden = true;
     document.getElementById('taskId').value = task.id;
     document.getElementById('taskTitle').value = task.title || '';
     document.getElementById('taskDescription').value = task.description || '';
@@ -1160,6 +1163,7 @@ function showTaskForm(task = null) {
     modalTitle.textContent = 'New Task';
     submitTaskBtn.textContent = 'Create Task';
     deleteTaskBtn.hidden = true;
+    if (aiPlannerBtnEl) aiPlannerBtnEl.hidden = false;
     taskForm.reset();
     document.getElementById('taskId').value = '';
     document.getElementById('taskStateGroup').hidden = true;
@@ -2099,6 +2103,10 @@ function handleSessionWsMessage(message) {
         appendOutputEntry(entry);
         scrollOutputToBottom();
       }
+      // Also feed the task planner if this is its session
+      if (sessionId === taskPlannerSessionId && entry) {
+        handleTaskPlannerWsOutput(entry);
+      }
       break;
     }
 
@@ -2112,6 +2120,10 @@ function handleSessionWsMessage(message) {
       }
       if (sessionId === activeSessionId && activity) {
         updateActivityUI(activity);
+      }
+      // Also update task planner status
+      if (sessionId === taskPlannerSessionId && activity) {
+        handleTaskPlannerWsActivity(activity);
       }
       break;
     }
@@ -3172,4 +3184,376 @@ async function saveCredential(key, value, row, msgEl) {
     updateBtn.disabled = dbDown;
     clearBtn.disabled = dbDown;
   }
+}
+
+// =============================================================================
+// ===== TASK PLANNER MODULE ===================================================
+// =============================================================================
+
+let taskPlannerSessionId = null;
+let taskPlannerMessages = [];
+let taskPlannerReady = false;
+let taskPlannerParsedTask = null;
+
+const taskPlannerModal = document.getElementById('taskPlannerModal');
+const taskPlannerMessagesEl = document.getElementById('taskPlannerMessages');
+const taskPlannerInput = document.getElementById('taskPlannerInput');
+const taskPlannerSendBtn = document.getElementById('taskPlannerSendBtn');
+const taskPlannerCancelBtn = document.getElementById('taskPlannerCancelBtn');
+const taskPlannerCreateBtn = document.getElementById('taskPlannerCreateBtn');
+const taskPlannerDot = document.getElementById('taskPlannerDot');
+const taskPlannerStatusText = document.getElementById('taskPlannerStatusText');
+const aiPlannerBtn = document.getElementById('aiPlannerBtn');
+
+/**
+ * Open the AI Task Planner modal and start a new planning session.
+ */
+async function openTaskPlanner() {
+  // Hide the task form first
+  hideTaskForm();
+
+  // Reset state
+  taskPlannerMessages = [];
+  taskPlannerParsedTask = null;
+  taskPlannerReady = false;
+  taskPlannerSessionId = null;
+  taskPlannerMessagesEl.innerHTML = '';
+  taskPlannerInput.value = '';
+  taskPlannerSendBtn.disabled = true;
+  taskPlannerCreateBtn.disabled = true;
+  taskPlannerModal.hidden = false;
+
+  // Update status
+  setTaskPlannerStatus('connecting');
+
+  // Add system message
+  addPlannerMessage('system', 'Starting AI Task Planner...');
+
+  try {
+    const res = await apiFetch('/api/task-planner/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    taskPlannerSessionId = data.sessionId;
+    taskPlannerReady = true;
+    taskPlannerSendBtn.disabled = false;
+    setTaskPlannerStatus('ready');
+    taskPlannerInput.focus();
+
+    // Output arrives via WebSocket (session-output / session-activity events)
+  } catch (e) {
+    console.error('Failed to start task planner:', e);
+    addPlannerMessage('system', 'Failed to start: ' + e.message);
+    setTaskPlannerStatus('error');
+  }
+}
+
+/**
+ * Close the task planner modal and clean up the session.
+ */
+async function closeTaskPlanner() {
+  taskPlannerModal.hidden = true;
+
+  if (taskPlannerSessionId) {
+    try {
+      await apiFetch(`/api/task-planner/${taskPlannerSessionId}`, { method: 'DELETE' });
+    } catch { /* ignore cleanup errors */ }
+  }
+
+  taskPlannerSessionId = null;
+  taskPlannerReady = false;
+  taskPlannerMessages = [];
+  taskPlannerParsedTask = null;
+  plannerCurrentAssistantMessage = '';
+  partialMessageEl = null;
+}
+
+/**
+ * Send a user message to the task planner.
+ */
+async function sendPlannerMessage() {
+  const text = taskPlannerInput.value.trim();
+  if (!text || !taskPlannerSessionId || !taskPlannerReady) return;
+
+  // Add user message to UI
+  addPlannerMessage('user', text);
+  taskPlannerInput.value = '';
+  taskPlannerSendBtn.disabled = true;
+  setTaskPlannerStatus('thinking');
+
+  try {
+    const res = await apiFetch(`/api/task-planner/${taskPlannerSessionId}/message`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `HTTP ${res.status}`);
+    }
+    // Response will come via output polling
+  } catch (e) {
+    console.error('Failed to send planner message:', e);
+    addPlannerMessage('system', 'Error: ' + e.message);
+    setTaskPlannerStatus('ready');
+    taskPlannerSendBtn.disabled = false;
+  }
+}
+
+// Accumulated assistant message text (built from WebSocket stream)
+let plannerCurrentAssistantMessage = '';
+
+/**
+ * Show a partial (streaming) assistant message.
+ */
+let partialMessageEl = null;
+
+function updatePartialAssistantMessage(text) {
+  if (!partialMessageEl) {
+    partialMessageEl = document.createElement('div');
+    partialMessageEl.className = 'planner-message assistant';
+    taskPlannerMessagesEl.appendChild(partialMessageEl);
+  }
+  partialMessageEl.textContent = text;
+  taskPlannerMessagesEl.scrollTop = taskPlannerMessagesEl.scrollHeight;
+}
+
+/**
+ * Add a finalized message to the planner chat.
+ */
+function addPlannerMessage(role, text) {
+  // Remove partial message element if present
+  if (partialMessageEl) {
+    partialMessageEl.remove();
+    partialMessageEl = null;
+  }
+
+  const msg = document.createElement('div');
+  msg.className = 'planner-message ' + role;
+
+  // Check if message contains a JSON task block
+  const jsonMatch = text.match(/```json:task\s*\n([\s\S]*?)\n```/);
+  if (jsonMatch && role === 'assistant') {
+    const beforeJson = text.substring(0, text.indexOf('```json:task')).trim();
+    const jsonContent = jsonMatch[1];
+    const afterJson = text.substring(text.indexOf('```', text.indexOf('```json:task') + 1) + 3).trim();
+
+    let html = '';
+    if (beforeJson) html += escapeHtml(beforeJson) + '<br><br>';
+    html += '<div class="task-json-block">' + escapeHtml(jsonContent) + '</div>';
+    if (afterJson) html += '<br>' + escapeHtml(afterJson);
+    msg.innerHTML = html;
+  } else {
+    msg.textContent = text;
+  }
+
+  taskPlannerMessages.push({ role, text });
+  taskPlannerMessagesEl.appendChild(msg);
+  taskPlannerMessagesEl.scrollTop = taskPlannerMessagesEl.scrollHeight;
+}
+
+/**
+ * Try to extract a task JSON from an AI response.
+ */
+function tryParseTaskFromMessage(text) {
+  // Look for the ```json:task block
+  const jsonMatch = text.match(/```json:task\s*\n([\s\S]*?)\n```/);
+  if (!jsonMatch) {
+    // Also try standard ```json block as fallback
+    const fallbackMatch = text.match(/```json\s*\n([\s\S]*?)\n```/);
+    if (fallbackMatch) {
+      try {
+        const parsed = JSON.parse(fallbackMatch[1]);
+        if (parsed.title && parsed.priority && parsed.type) {
+          taskPlannerParsedTask = parsed;
+          taskPlannerCreateBtn.disabled = false;
+          addPlannerMessage('system', '✅ Task ready to create! Click "Create Task" to add it to your board.');
+          return;
+        }
+      } catch { /* not valid JSON */ }
+    }
+    return;
+  }
+
+  try {
+    const parsed = JSON.parse(jsonMatch[1]);
+    if (parsed.title && parsed.priority && parsed.type) {
+      taskPlannerParsedTask = parsed;
+      taskPlannerCreateBtn.disabled = false;
+      addPlannerMessage('system', '✅ Task ready to create! Click "Create Task" to add it to your board.');
+    }
+  } catch {
+    // JSON parsing failed — user may need to continue the conversation
+  }
+}
+
+/**
+ * Create the task from the planner conversation.
+ */
+async function createTaskFromPlanner() {
+  if (!taskPlannerParsedTask || !taskPlannerSessionId) return;
+
+  taskPlannerCreateBtn.disabled = true;
+  taskPlannerCreateBtn.textContent = 'Creating...';
+
+  try {
+    const body = {
+      title: taskPlannerParsedTask.title,
+      description: taskPlannerParsedTask.description || '',
+      priority: Number(taskPlannerParsedTask.priority),
+      type: taskPlannerParsedTask.type,
+      files: taskPlannerParsedTask.files || [],
+      tabIds: currentBoardId ? [Number(currentBoardId)] : [],
+    };
+
+    const res = await apiFetch(`/api/task-planner/${taskPlannerSessionId}/create-task`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `HTTP ${res.status}`);
+    }
+
+    const task = await res.json();
+
+    // Add task to local state and render
+    const exists = tasks.find(t => t.id === task.id);
+    if (!exists) {
+      tasks.push(task);
+    } else {
+      const idx = tasks.findIndex(t => t.id === task.id);
+      tasks[idx] = task;
+    }
+    lastTasksJson = JSON.stringify(tasks);
+    renderBoard();
+
+    // Close the planner (session already cleaned up by backend)
+    taskPlannerSessionId = null;
+    taskPlannerModal.hidden = true;
+  } catch (e) {
+    console.error('Failed to create task from planner:', e);
+    addPlannerMessage('system', '❌ Failed to create task: ' + e.message);
+    taskPlannerCreateBtn.disabled = false;
+    taskPlannerCreateBtn.textContent = 'Create Task';
+  }
+}
+
+/**
+ * Set the status indicator for the task planner.
+ */
+function setTaskPlannerStatus(status) {
+  taskPlannerDot.className = 'status-dot';
+  switch (status) {
+    case 'connecting':
+      taskPlannerStatusText.textContent = 'Connecting...';
+      break;
+    case 'ready':
+      taskPlannerDot.classList.add('connected');
+      taskPlannerStatusText.textContent = 'Ready';
+      break;
+    case 'thinking':
+      taskPlannerDot.classList.add('thinking');
+      taskPlannerStatusText.textContent = 'Thinking...';
+      break;
+    case 'error':
+      taskPlannerStatusText.textContent = 'Error';
+      break;
+  }
+}
+
+// ===== Task Planner WebSocket Handlers =====
+
+/**
+ * Handle real-time output from the task planner session via WebSocket.
+ * This provides faster updates than polling.
+ */
+function handleTaskPlannerWsOutput(entry) {
+  if (!taskPlannerSessionId) return;
+
+  // Skip system entries that are just the user's prompt echo
+  if (entry.stream === 'system' && entry.text.startsWith('▶')) return;
+  if (entry.stream === 'stderr') return;
+
+  if (entry.stream === 'stdout') {
+    plannerCurrentAssistantMessage += entry.text;
+    updatePartialAssistantMessage(plannerCurrentAssistantMessage);
+  }
+}
+
+/**
+ * Handle activity updates from the task planner session.
+ */
+function handleTaskPlannerWsActivity(activity) {
+  if (!taskPlannerSessionId) return;
+
+  if (activity.type === 'idle' || activity.type === 'completed') {
+    // AI finished responding — flush accumulated message
+    if (plannerCurrentAssistantMessage.trim()) {
+      addPlannerMessage('assistant', plannerCurrentAssistantMessage.trim());
+      tryParseTaskFromMessage(plannerCurrentAssistantMessage);
+      plannerCurrentAssistantMessage = '';
+    }
+    setTaskPlannerStatus('ready');
+    taskPlannerSendBtn.disabled = false;
+  } else if (activity.type === 'working' || activity.type === 'thinking') {
+    setTaskPlannerStatus('thinking');
+  }
+}
+
+// ===== Task Planner Event Listeners =====
+if (aiPlannerBtn) {
+  aiPlannerBtn.addEventListener('click', (e) => {
+    e.preventDefault();
+    openTaskPlanner();
+  });
+}
+
+if (taskPlannerCancelBtn) {
+  taskPlannerCancelBtn.addEventListener('click', closeTaskPlanner);
+}
+
+if (taskPlannerCreateBtn) {
+  taskPlannerCreateBtn.addEventListener('click', createTaskFromPlanner);
+}
+
+if (taskPlannerSendBtn) {
+  taskPlannerSendBtn.addEventListener('click', sendPlannerMessage);
+}
+
+if (taskPlannerInput) {
+  // Send on Enter (Shift+Enter for newline)
+  taskPlannerInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendPlannerMessage();
+    }
+  });
+
+  // Auto-resize textarea
+  taskPlannerInput.addEventListener('input', () => {
+    taskPlannerInput.style.height = 'auto';
+    taskPlannerInput.style.height = Math.min(taskPlannerInput.scrollHeight, 80) + 'px';
+  });
+}
+
+if (taskPlannerModal) {
+  // Close on backdrop click
+  taskPlannerModal.addEventListener('click', (e) => {
+    if (e.target === taskPlannerModal) closeTaskPlanner();
+  });
+
+  // Close on Escape
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && taskPlannerModal && !taskPlannerModal.hidden) {
+      closeTaskPlanner();
+    }
+  });
 }
