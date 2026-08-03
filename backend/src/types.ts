@@ -243,7 +243,7 @@ export interface Activity {
 }
 
 export interface Session {
-  id: string;
+  id: number;
   name: string;
   agent: string;
   status: "stopped" | "running" | "error" | "completed";
@@ -317,9 +317,9 @@ export type WsServerMessage =
   | { type: "agent-deleted"; agentId: number }
   | { type: "session-created"; session: Session }
   | { type: "session-updated"; session: Session }
-  | { type: "session-deleted"; sessionId: string }
-  | { type: "session-output"; sessionId: string; entry: OutputEntry }
-  | { type: "session-activity"; sessionId: string; activity: Activity }
+  | { type: "session-deleted"; sessionId: number }
+  | { type: "session-output"; sessionId: number; entry: OutputEntry }
+  | { type: "session-activity"; sessionId: number; activity: Activity }
   | { type: "error-created"; error: AgentError }
   | { type: "connected"; message: string };
 
@@ -327,7 +327,7 @@ export type WsServerMessage =
 
 export interface AgentError {
   id: string;
-  sessionId: string;
+  sessionId: number;
   sessionName: string;
   agent: string;
   timestamp: string;
@@ -345,8 +345,8 @@ export interface AgentError {
 
 export type WsClientMessage =
   | { action: "subscribe"; tabId?: number }
-  | { action: "session-start"; sessionId: string }
-  | { action: "session-stop"; sessionId: string }
-  | { action: "session-prompt"; sessionId: string; text: string }
-  | { action: "session-get-output"; sessionId: string }
+  | { action: "session-start"; sessionId: number }
+  | { action: "session-stop"; sessionId: number }
+  | { action: "session-prompt"; sessionId: number; text: string }
+  | { action: "session-get-output"; sessionId: number }
   | { action: "ping" };

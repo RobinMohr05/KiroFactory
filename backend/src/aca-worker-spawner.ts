@@ -205,7 +205,7 @@ export interface WorkerGitOptions {
  */
 export async function startWorkerJob(
   config: AcaWorkerConfig,
-  sessionId: string,
+  sessionId: number,
   agentName: string,
   userId: number,
   timeoutSeconds: number,
@@ -228,7 +228,7 @@ export async function startWorkerJob(
 
   // Build environment variables for the worker container
   const envVars: Array<{ name: string; value: string }> = [
-    { name: "SESSION_ID", value: sessionId },
+    { name: "SESSION_ID", value: String(sessionId) },
     { name: "ORCHESTRATOR_URL", value: config.orchestratorUrl },
     { name: "WORKER_SECRET", value: config.workerSecret },
     { name: "KIRO_API_KEY", value: kiroApiKey },

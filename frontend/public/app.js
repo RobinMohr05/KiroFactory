@@ -170,19 +170,22 @@ if (!isLocalhost) {
   if (connectionStatusEl) connectionStatusEl.hidden = true;
 }
 
-function connectWebSocket() {
-  // Skip WebSocket on non-localhost — use polling only
-  if (!isLocalhost) {
-    startPolling();
-    return;
-  }
+let wsHasConnectedOnce = false;
 
+function connectWebSocket() {
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   ws = new WebSocket(`${protocol}//${location.host}/ws`);
 
   ws.addEventListener('open', () => {
     setConnectionStatus(true);
     stopPolling();
+    // On reconnect (not the initial connect), backfill any session output/activity
+    // that may have been missed while the socket was down. This is a single
+    // one-shot fetch, not a polling loop, so it doesn't add recurring cost.
+    if (wsHasConnectedOnce && activeSessionId) {
+      loadSessionOutput(activeSessionId);
+    }
+    wsHasConnectedOnce = true;
   });
 
   ws.addEventListener('close', (event) => {
@@ -1829,7 +1832,7 @@ function selectSession(id) {
   if (!session) return;
 
   document.querySelectorAll('.session-item').forEach(el => {
-    el.classList.toggle('active', el.dataset.sessionId === id);
+    el.classList.toggle('active', Number(el.dataset.sessionId) === id);
   });
 
   sessionEmptyState.hidden = true;

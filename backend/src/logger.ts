@@ -116,7 +116,7 @@ export function toErrorFields(err: unknown): { error: string; stack?: string } {
 /** Log a session lifecycle event (start, stop, crash, error, retry). */
 export function logSessionEvent(
   event: "session-created" | "session-started" | "session-stopped" | "session-error" | "session-deleted" | "session-retry" | "session-tabs-updated",
-  sessionId: string,
+  sessionId: number,
   data?: Record<string, unknown>
 ): void {
   const level: LogLevel = event === "session-error" ? "error" : "info";
@@ -132,7 +132,7 @@ export function logWorkerEvent(
     | "worker-connected"
     | "worker-prompt-done"
     | "worker-prompt-failed",
-  sessionId: string,
+  sessionId: number,
   data?: Record<string, unknown>
 ): void {
   const level: LogLevel =

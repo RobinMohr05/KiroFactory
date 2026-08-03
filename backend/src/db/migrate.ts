@@ -608,7 +608,7 @@ async function runUpgrades(pool: sql.ConnectionPool): Promise<void> {
     console.log("[migrate] Upgrading: creating sessions table...");
     await pool.request().query(`
       CREATE TABLE sessions (
-        id                  NVARCHAR(16)    NOT NULL PRIMARY KEY,
+        id                  INT             IDENTITY(1,1) PRIMARY KEY,
         name                NVARCHAR(200)   NOT NULL,
         agent               NVARCHAR(100)   NOT NULL,
         status              VARCHAR(20)     NOT NULL DEFAULT 'stopped',
@@ -659,9 +659,10 @@ async function runUpgrades(pool: sql.ConnectionPool): Promise<void> {
 
           for (const s of persisted) {
             try {
+              // Note: the old sessions.json hex id is dropped — sessions.id is
+              // now an IDENTITY column, so SQL Server assigns a fresh numeric id.
               await pool
                 .request()
-                .input("id", sql.NVarChar(16), s.id as string)
                 .input("name", sql.NVarChar(200), s.name as string)
                 .input("agent", sql.NVarChar(100), s.agent as string)
                 .input("status", sql.VarChar(20), s.status === "running" ? "stopped" : (s.status as string))
@@ -681,11 +682,11 @@ async function runUpgrades(pool: sql.ConnectionPool): Promise<void> {
                 .input("currentTaskId", sql.Int, (s.currentTaskId as number) || null)
                 .query(`
                   INSERT INTO sessions (
-                    id, name, agent, status, prompt, interactive, loop, runs,
+                    name, agent, status, prompt, interactive, loop, runs,
                     interval_seconds, cwd, timeout_seconds, model, mcp_servers,
                     tab_ids, user_id, created_at, started_at, current_task_id
                   ) VALUES (
-                    @id, @name, @agent, @status, @prompt, @interactive, @loop, @runs,
+                    @name, @agent, @status, @prompt, @interactive, @loop, @runs,
                     @intervalSeconds, @cwd, @timeoutSeconds, @model, @mcpServers,
                     @tabIds, @userId, @createdAt, @startedAt, @currentTaskId
                   )
@@ -942,6 +943,84 @@ async function runUpgrades(pool: sql.ConnectionPool): Promise<void> {
     console.log("[migrate] Upgrade complete: pinned added to sessions.");
   }
 
+  // Upgrade 20: Convert sessions.id from a randomly generated NVARCHAR(16) hex
+  // token to an auto-increment INT IDENTITY, matching every other table's PK
+  // convention. No other table has a FK on sessions.id, so this is a
+  // straightforward rebuild: create a new table, copy rows across (assigning
+  // fresh identity values — the old hex ids are not preserved), swap names.
+  const sessionsIdColInfo = await pool.request().query(`
+    SELECT DATA_TYPE
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_NAME = 'sessions' AND COLUMN_NAME = 'id'
+  `);
+
+  if (
+    sessionsIdColInfo.recordset.length > 0 &&
+    sessionsIdColInfo.recordset[0].DATA_TYPE !== "int"
+  ) {
+    console.log("[migrate] Upgrading: converting sessions.id to INT IDENTITY...");
+
+    await pool.request().query(`
+      CREATE TABLE sessions_new (
+        id                  INT             IDENTITY(1,1) PRIMARY KEY,
+        name                NVARCHAR(200)   NOT NULL,
+        agent               NVARCHAR(100)   NOT NULL,
+        status              VARCHAR(20)     NOT NULL DEFAULT 'stopped',
+        prompt              NVARCHAR(MAX)   NOT NULL DEFAULT '',
+        interactive         BIT             NOT NULL DEFAULT 1,
+        loop                BIT             NOT NULL DEFAULT 0,
+        runs                INT             NOT NULL DEFAULT 0,
+        interval_seconds    INT             NOT NULL DEFAULT 10,
+        cwd                 NVARCHAR(500)   NOT NULL,
+        timeout_seconds     INT             NOT NULL DEFAULT 0,
+        model               NVARCHAR(100)   NULL,
+        mcp_servers         NVARCHAR(MAX)   NULL,
+        tab_ids             NVARCHAR(MAX)   NULL,
+        user_id             INT             NULL,
+        created_at          DATETIME2       NOT NULL DEFAULT GETUTCDATE(),
+        started_at          DATETIME2       NULL,
+        current_task_id     INT             NULL,
+        current_activity    NVARCHAR(MAX)   NULL,
+        mcp_config_override NVARCHAR(MAX)   NULL,
+        pinned              BIT             NOT NULL DEFAULT 0,
+        CONSTRAINT FK_sessions_new_users FOREIGN KEY (user_id) REFERENCES users(id)
+      )
+    `);
+
+    // Copy rows across, ordered by created_at so identity assignment is at
+    // least chronologically stable. The old hex id is intentionally dropped.
+    await pool.request().query(`
+      INSERT INTO sessions_new (
+        name, agent, status, prompt, interactive, loop, runs,
+        interval_seconds, cwd, timeout_seconds, model, mcp_servers,
+        tab_ids, user_id, created_at, started_at, current_task_id,
+        current_activity, mcp_config_override, pinned
+      )
+      SELECT
+        name, agent, status, prompt, interactive, loop, runs,
+        interval_seconds, cwd, timeout_seconds, model, mcp_servers,
+        tab_ids, user_id, created_at, started_at, current_task_id,
+        current_activity, mcp_config_override, pinned
+      FROM sessions
+      ORDER BY created_at ASC
+    `);
+
+    await pool.request().query(`DROP TABLE sessions`);
+    await pool.request().query(`EXEC sp_rename 'sessions_new', 'sessions'`);
+    await pool.request().query(`EXEC sp_rename 'FK_sessions_new_users', 'FK_sessions_users', 'OBJECT'`);
+
+    // Recreate the indexes that existed on the old table
+    await pool.request().query(`CREATE INDEX IX_sessions_user_id ON sessions (user_id)`);
+    await pool.request().query(`
+      CREATE INDEX IX_sessions_status ON sessions (status) WHERE status = 'running'
+    `);
+
+    console.log(
+      "[migrate] Upgrade complete: sessions.id is now INT IDENTITY(1,1). " +
+      "Existing sessions were preserved but received new numeric ids."
+    );
+  }
+
   await backfillPinnedChatSessions(pool);
 }
 
@@ -980,23 +1059,20 @@ async function backfillPinnedChatSessions(pool: sql.ConnectionPool): Promise<voi
  * in-memory session map and WebSocket broadcast stay in sync.
  */
 async function createPinnedChatSession(pool: sql.ConnectionPool, userId: number): Promise<void> {
-  const { randomBytes } = await import("node:crypto");
-  const id = randomBytes(4).toString("hex");
   const { resolve } = await import("node:path");
   const cwd = resolve(import.meta.dirname, "../../..");
 
   await pool
     .request()
-    .input("id", sql.NVarChar(16), id)
     .input("name", sql.NVarChar(200), "Chat")
     .input("cwd", sql.NVarChar(500), cwd)
     .input("userId", sql.Int, userId)
     .query(`
       INSERT INTO sessions (
-        id, name, agent, status, prompt, interactive, loop, runs,
+        name, agent, status, prompt, interactive, loop, runs,
         interval_seconds, cwd, timeout_seconds, user_id, created_at, pinned
       ) VALUES (
-        @id, @name, '', 'stopped', '', 1, 0, 0,
+        @name, '', 'stopped', '', 1, 0, 0,
         10, @cwd, 0, @userId, GETUTCDATE(), 1
       )
     `);
