@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import {
   getAllAgents,
-  getAgentByName,
+  getAgentById,
   createAgent,
   updateAgent,
   deleteAgent,
@@ -34,12 +34,16 @@ router.get("/", async (req: Request, res: Response) => {
   }
 });
 
-// GET /api/agents/:name — get a single agent by name (verify ownership)
-router.get("/:name", async (req: Request, res: Response) => {
+// GET /api/agents/:id — get a single agent by numeric ID (verify ownership)
+router.get("/:id", async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
-    const name = req.params.name as string;
-    const agent = await getAgentByName(name);
+    const id = Number(req.params.id);
+    if (isNaN(id)) {
+      res.status(400).json({ error: "Invalid agent id" });
+      return;
+    }
+    const agent = await getAgentById(id);
     if (!agent || agent.userId !== userId) {
       res.status(404).json({ error: "Agent not found" });
       return;
@@ -49,7 +53,7 @@ router.get("/:name", async (req: Request, res: Response) => {
     log.error("route-error", {
       component: "agents",
       method: "GET",
-      path: "/api/agents/:name",
+      path: "/api/agents/:id",
       ...toErrorFields(err),
       msg: "Failed to read agent",
     });
@@ -68,13 +72,6 @@ router.post("/", async (req: Request, res: Response) => {
       return;
     }
 
-    // Check if agent already exists
-    const existing = await getAgentByName(input.name.trim());
-    if (existing) {
-      res.status(409).json({ error: "An agent with this name already exists" });
-      return;
-    }
-
     const agent = await createAgent({ ...input, name: input.name.trim(), userId });
     broadcast({ type: "agent-created", agent });
     res.status(201).json(agent);
@@ -90,21 +87,25 @@ router.post("/", async (req: Request, res: Response) => {
   }
 });
 
-// PUT /api/agents/:name — update an existing agent (verify ownership)
-router.put("/:name", async (req: Request, res: Response) => {
+// PUT /api/agents/:id — update an existing agent (verify ownership)
+router.put("/:id", async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
-    const currentName = req.params.name as string;
+    const id = Number(req.params.id);
+    if (isNaN(id)) {
+      res.status(400).json({ error: "Invalid agent id" });
+      return;
+    }
     const input: UpdateAgentInput = req.body;
 
     // Verify ownership before allowing update
-    const existing = await getAgentByName(currentName);
+    const existing = await getAgentById(id);
     if (!existing || existing.userId !== userId) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
 
-    const agent = await updateAgent(currentName, input);
+    const agent = await updateAgent(id, input);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
@@ -112,15 +113,11 @@ router.put("/:name", async (req: Request, res: Response) => {
 
     broadcast({ type: "agent-updated", agent });
     res.json(agent);
-  } catch (err: any) {
-    if (err.message === "An agent with this name already exists") {
-      res.status(409).json({ error: err.message });
-      return;
-    }
+  } catch (err) {
     log.error("route-error", {
       component: "agents",
       method: "PUT",
-      path: "/api/agents/:name",
+      path: "/api/agents/:id",
       ...toErrorFields(err),
       msg: "Failed to update agent",
     });
@@ -128,31 +125,35 @@ router.put("/:name", async (req: Request, res: Response) => {
   }
 });
 
-// DELETE /api/agents/:name — delete an agent (verify ownership)
-router.delete("/:name", async (req: Request, res: Response) => {
+// DELETE /api/agents/:id — delete an agent (verify ownership)
+router.delete("/:id", async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
-    const name = req.params.name as string;
+    const id = Number(req.params.id);
+    if (isNaN(id)) {
+      res.status(400).json({ error: "Invalid agent id" });
+      return;
+    }
 
     // Verify ownership before allowing delete
-    const existing = await getAgentByName(name);
+    const existing = await getAgentById(id);
     if (!existing || existing.userId !== userId) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
 
-    const deleted = await deleteAgent(name);
+    const deleted = await deleteAgent(id);
     if (!deleted) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    broadcast({ type: "agent-deleted", agentName: name });
+    broadcast({ type: "agent-deleted", agentId: id });
     res.json({ success: true });
   } catch (err) {
     log.error("route-error", {
       component: "agents",
       method: "DELETE",
-      path: "/api/agents/:name",
+      path: "/api/agents/:id",
       ...toErrorFields(err),
       msg: "Failed to delete agent",
     });
@@ -160,11 +161,15 @@ router.delete("/:name", async (req: Request, res: Response) => {
   }
 });
 
-// POST /api/agents/:name/tabs — assign agent to tabs (verify ownership)
-router.post("/:name/tabs", async (req: Request, res: Response) => {
+// POST /api/agents/:id/tabs — assign agent to tabs (verify ownership)
+router.post("/:id/tabs", async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
-    const name = req.params.name as string;
+    const id = Number(req.params.id);
+    if (isNaN(id)) {
+      res.status(400).json({ error: "Invalid agent id" });
+      return;
+    }
     const { tabIds } = req.body as { tabIds: number[] };
 
     if (!Array.isArray(tabIds)) {
@@ -173,20 +178,20 @@ router.post("/:name/tabs", async (req: Request, res: Response) => {
     }
 
     // Verify ownership before allowing tab assignment
-    const agent = await getAgentByName(name);
+    const agent = await getAgentById(id);
     if (!agent || agent.userId !== userId) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
 
-    const updated = await updateAgent(name, { tabIds });
+    const updated = await updateAgent(id, { tabIds });
     broadcast({ type: "agent-updated", agent: updated! });
     res.json(updated);
   } catch (err) {
     log.error("route-error", {
       component: "agents",
       method: "POST",
-      path: "/api/agents/:name/tabs",
+      path: "/api/agents/:id/tabs",
       ...toErrorFields(err),
       msg: "Failed to assign agent to tabs",
     });

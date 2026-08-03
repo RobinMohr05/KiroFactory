@@ -9,7 +9,6 @@
  * - Loop (autonomous): automatically claims tasks from the DB and executes them
  */
 
-import { randomBytes } from "node:crypto";
 import { resolve } from "node:path";
 import { KiroRunner } from "./agent/kiro-runner.js";
 import type { SessionUpdateChunk } from "./agent/kiro-runner.js";
@@ -112,7 +111,7 @@ log.info("worker-mode", {
 // In-memory session store
 // ---------------------------------------------------------------------------
 
-const sessions = new Map<string, ManagedSession>();
+const sessions = new Map<number, ManagedSession>();
 
 interface ManagedSession {
   meta: Session;
@@ -142,7 +141,7 @@ interface ManagedSession {
  * Pending persist timers keyed by session ID.
  * Debounces rapid state changes into a single DB write per session.
  */
-const pendingPersists = new Map<string, ReturnType<typeof setTimeout>>();
+const pendingPersists = new Map<number, ReturnType<typeof setTimeout>>();
 const PERSIST_DEBOUNCE_MS = 2000;
 
 /**
@@ -150,7 +149,7 @@ const PERSIST_DEBOUNCE_MS = 2000;
  * If called again within PERSIST_DEBOUNCE_MS for the same session, the timer
  * resets — so rapid mutations (status, activity, taskId) collapse into one write.
  */
-function persistSession(sessionId: string): void {
+function persistSession(sessionId: number): void {
   if (!isDbAvailable()) return;
 
   // Clear any pending timer for this session
@@ -204,7 +203,7 @@ export async function initSessions(): Promise<void> {
     }
   }
 
-  const toRestart: string[] = [];
+  const toRestart: number[] = [];
 
   for (const meta of persisted) {
     // If the session was running, keep the status as "stopped" for now
@@ -285,10 +284,6 @@ export async function initSessions(): Promise<void> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function generateId(): string {
-  return randomBytes(4).toString("hex");
-}
 
 function now(): string {
   return new Date().toISOString();
@@ -378,31 +373,61 @@ function setStatus(session: ManagedSession, status: Session["status"]): void {
 // Public API
 // ---------------------------------------------------------------------------
 
-export function createSession(input: CreateSessionInput): Session {
-  const id = generateId();
+/**
+ * Fallback id space used only when the DB is unavailable at session-creation
+ * time (so no IDENTITY value can be assigned). Negative and decrementing so
+ * these never collide with real, DB-assigned ids. A session created this way
+ * simply won't survive a server restart — same limitation as before the
+ * sessions table existed at all.
+ */
+let localOnlyIdCounter = 0;
+function nextLocalOnlyId(): number {
+  localOnlyIdCounter -= 1;
+  return localOnlyIdCounter;
+}
+
+export async function createSession(input: CreateSessionInput): Promise<Session> {
   const isAgentless = !input.agent;
+  const meta: Session = {
+    id: 0, // placeholder — replaced below once the real id is known
+    name: input.name,
+    agent: input.agent || "",
+    status: "stopped",
+    prompt: input.prompt || "",
+    interactive: isAgentless ? true : (input.interactive !== false),
+    loop: isAgentless ? false : (input.loop === true),
+    runs: isAgentless ? 0 : (input.runs ?? 0),
+    intervalSeconds: input.intervalSeconds ?? 10,
+    cwd: input.cwd || DEFAULT_CWD,
+    timeoutSeconds: input.timeoutSeconds ?? DEFAULT_TIMEOUT,
+    model: input.model,
+    mcpServers: input.mcpServers,
+    mcpConfigOverride: input.mcpConfigOverride ?? undefined,
+    tabIds: input.tabIds,
+    userId: input.userId ?? 0,
+    createdAt: now(),
+    output: [],
+    pinned: input.pinned === true,
+  };
+
+  // The session id is assigned by the database (IDENTITY column), so it must
+  // be known before the session can be registered anywhere.
+  if (isDbAvailable()) {
+    try {
+      meta.id = await insertSession(meta);
+    } catch (err) {
+      log.warn("session-db-insert-failed", {
+        component: "session-manager",
+        ...toErrorFields(err),
+      });
+      meta.id = nextLocalOnlyId();
+    }
+  } else {
+    meta.id = nextLocalOnlyId();
+  }
+
   const session: ManagedSession = {
-    meta: {
-      id,
-      name: input.name,
-      agent: input.agent || "",
-      status: "stopped",
-      prompt: input.prompt || "",
-      interactive: isAgentless ? true : (input.interactive !== false),
-      loop: isAgentless ? false : (input.loop === true),
-      runs: isAgentless ? 0 : (input.runs ?? 0),
-      intervalSeconds: input.intervalSeconds ?? 10,
-      cwd: input.cwd || DEFAULT_CWD,
-      timeoutSeconds: input.timeoutSeconds ?? DEFAULT_TIMEOUT,
-      model: input.model,
-      mcpServers: input.mcpServers,
-      mcpConfigOverride: input.mcpConfigOverride ?? undefined,
-      tabIds: input.tabIds,
-      userId: input.userId ?? 0,
-      createdAt: now(),
-      output: [],
-      pinned: input.pinned === true,
-    },
+    meta,
     runner: null,
     abortController: null,
     messageBuffer: "",
@@ -414,27 +439,16 @@ export function createSession(input: CreateSessionInput): Session {
     acaPromptRejecter: null,
   };
 
-  sessions.set(id, session);
+  sessions.set(meta.id, session);
   broadcast({ type: "session-created", session: session.meta });
 
   // Structured log for Azure Monitor
-  logSessionEvent("session-created", id, { agent: session.meta.agent, name: session.meta.name });
-
-  // Also insert into DB if available
-  if (isDbAvailable()) {
-    insertSession(session.meta).catch((err) => {
-      log.warn("session-db-insert-failed", {
-        component: "session-manager",
-        sessionId: id,
-        ...toErrorFields(err),
-      });
-    });
-  }
+  logSessionEvent("session-created", meta.id, { agent: meta.agent, name: meta.name });
 
   return session.meta;
 }
 
-export function getSession(id: string): Session | undefined {
+export function getSession(id: number): Session | undefined {
   return sessions.get(id)?.meta;
 }
 
@@ -448,13 +462,13 @@ export function getAllSessions(userId?: number): Session[] {
   }));
 }
 
-export function getSessionOutput(id: string): OutputEntry[] {
+export function getSessionOutput(id: number): OutputEntry[] {
   const session = sessions.get(id);
   if (!session) return [];
   return session.meta.output;
 }
 
-export function deleteSession(id: string): boolean {
+export function deleteSession(id: number): boolean {
   const session = sessions.get(id);
   if (!session) return false;
   if (session.meta.pinned) return false; // pinned Chat session is permanent
@@ -481,7 +495,7 @@ export function deleteSession(id: string): boolean {
   return true;
 }
 
-export function updateSessionTabs(id: string, tabIds: number[]): boolean {
+export function updateSessionTabs(id: number, tabIds: number[]): boolean {
   const session = sessions.get(id);
   if (!session) return false;
 
@@ -493,7 +507,7 @@ export function updateSessionTabs(id: string, tabIds: number[]): boolean {
   return true;
 }
 
-export async function startSession(id: string): Promise<boolean> {
+export async function startSession(id: number): Promise<boolean> {
   const session = sessions.get(id);
   if (!session) return false;
   if (session.meta.status === "running") return true; // already running
@@ -548,7 +562,7 @@ export async function startSession(id: string): Promise<boolean> {
   return true;
 }
 
-export async function stopSession(id: string): Promise<boolean> {
+export async function stopSession(id: number): Promise<boolean> {
   const session = sessions.get(id);
   if (!session) return false;
   if (session.meta.status !== "running") return true;
@@ -597,7 +611,7 @@ export async function stopSession(id: string): Promise<boolean> {
   return true;
 }
 
-export async function sendPrompt(id: string, text: string): Promise<boolean> {
+export async function sendPrompt(id: number, text: string): Promise<boolean> {
   const session = sessions.get(id);
   if (!session || session.meta.status !== "running") return false;
   if (!session.meta.interactive) return false;
@@ -1801,7 +1815,7 @@ async function runLoopModeAca(
  */
 function initWorkerEventHandler(): void {
   const handler: WorkerEventHandler = {
-    onWorkerReady(sessionId: string, acpSessionId: string) {
+    onWorkerReady(sessionId: number, acpSessionId: string) {
       const session = sessions.get(sessionId);
       if (!session) return;
       logWorkerEvent("worker-connected", sessionId, {
@@ -1817,13 +1831,13 @@ function initWorkerEventHandler(): void {
       setActivity(session, { type: "idle", detail: "Worker connected" });
     },
 
-    onWorkerOutput(sessionId: string, entry: OutputEntry) {
+    onWorkerOutput(sessionId: number, entry: OutputEntry) {
       const session = sessions.get(sessionId);
       if (!session) return;
       appendOutput(session, entry);
     },
 
-    onWorkerSessionUpdate(sessionId: string, update: unknown) {
+    onWorkerSessionUpdate(sessionId: number, update: unknown) {
       const session = sessions.get(sessionId);
       if (!session) return;
       // Route through the same processUpdate logic used for local mode
@@ -1832,7 +1846,7 @@ function initWorkerEventHandler(): void {
       }
     },
 
-    onWorkerPromptDone(sessionId: string, result: unknown) {
+    onWorkerPromptDone(sessionId: number, result: unknown) {
       const session = sessions.get(sessionId);
       if (!session) return;
       flushMessageBuffer(session);
@@ -1863,7 +1877,7 @@ function initWorkerEventHandler(): void {
       }
     },
 
-    onWorkerExited(sessionId: string, exitCode: number | null, signal: string | null) {
+    onWorkerExited(sessionId: number, exitCode: number | null, signal: string | null) {
       const session = sessions.get(sessionId);
       if (!session) return;
       const reason = signal === "disconnected"
@@ -1889,7 +1903,7 @@ function initWorkerEventHandler(): void {
       }
     },
 
-    onWorkerShutdown(sessionId: string, exitCode: number) {
+    onWorkerShutdown(sessionId: number, exitCode: number) {
       const session = sessions.get(sessionId);
       if (!session) return;
       logWorkerEvent(exitCode === 0 ? "worker-exited" : "worker-crashed", sessionId, {
