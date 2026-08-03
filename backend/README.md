@@ -115,6 +115,21 @@ npm run dev -w backend
 `.env` keys of note: `DB_*`, `ENCRYPTION_KEY` (must match whatever encrypted the stored data),
 `WORKER_MODE=local` for local agent runs.
 
+### Seed a test user and sample tasks
+
+After migrating a fresh database, run the local seed script to populate it with a test user
+and sample tasks so you can log in immediately:
+
+```bash
+npm run seed:local -w backend
+```
+
+This creates:
+- **User:** `local-dev@example.com` / `localdev123`
+- **Tab:** "Local Dev" with 7 sample tasks across all types, priorities, and states
+
+The script is idempotent — safe to re-run without duplicating data.
+
 ---
 
 ## Deploy
