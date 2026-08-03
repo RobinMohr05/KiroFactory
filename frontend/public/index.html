@@ -156,8 +156,13 @@
             <span class="activity-dot" id="activityDot"></span>
             <span id="activityText">Idle</span>
           </div>
-          <div class="session-output" id="sessionOutput" role="log" aria-live="polite" aria-label="Agent output" tabindex="0">
-            <pre class="output-pre" id="outputPre"></pre>
+          <div class="session-output-wrapper">
+            <div class="session-output" id="sessionOutput" role="log" aria-live="polite" aria-label="Agent output" tabindex="0">
+              <pre class="output-pre" id="outputPre"></pre>
+            </div>
+            <button class="scroll-to-bottom-btn" id="scrollToBottomBtn" aria-label="Scroll to bottom" title="Scroll to bottom" hidden>
+              ↓ New output
+            </button>
           </div>
           <div class="session-prompt-bar">
             <input type="text" id="sessionPromptInput" placeholder="Send a follow-up prompt..." aria-label="Follow-up prompt" disabled />
