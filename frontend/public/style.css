@@ -2165,6 +2165,19 @@ textarea:focus {
   font-weight: 500;
 }
 
+.error-dismiss-btn {
+  margin-left: auto;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border-color);
+}
+
+.error-dismiss-btn:hover {
+  color: var(--ta-rapid-red);
+  border-color: var(--ta-rapid-red);
+  background: transparent;
+}
+
 /* ===== Errors Responsive ===== */
 @media (max-width: 768px) {
   .errors-layout {

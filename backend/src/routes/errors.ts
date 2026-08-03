@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from "express";
-import { getErrorsByUserId, getErrorById, markErrorTaskCreated, clearErrorsByUserId } from "../error-store.js";
+import { getErrorsByUserId, getErrorById, markErrorTaskCreated, dismissError, clearErrorsByUserId } from "../error-store.js";
 import { createTask } from "../db/tasks.js";
 import { getAllTabs } from "../db/tabs.js";
 import { broadcastToUser } from "../websocket-handler.js";
@@ -130,11 +130,51 @@ router.post("/:id/create-task", async (req: Request, res: Response) => {
   }
 });
 
+// DELETE /api/errors/:id — dismiss a single error
+router.delete("/:id", (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const errorId = req.params.id as string;
+    const error = getErrorById(errorId);
+
+    if (!error) {
+      res.status(404).json({ error: "Error not found" });
+      return;
+    }
+
+    // Ensure the error belongs to the authenticated user
+    if (error.userId !== userId) {
+      res.status(404).json({ error: "Error not found" });
+      return;
+    }
+
+    dismissError(errorId);
+
+    // Broadcast dismissal so other open tabs/windows update
+    broadcastToUser(userId, { type: "error-dismissed", errorId });
+
+    res.json({ success: true });
+  } catch (err) {
+    log.error("route-error", {
+      component: "errors",
+      method: "DELETE",
+      path: "/api/errors/:id",
+      ...toErrorFields(err),
+      msg: "Failed to dismiss error",
+    });
+    res.status(500).json({ error: "Failed to dismiss error" });
+  }
+});
+
 // DELETE /api/errors — clear all errors for the authenticated user
 router.delete("/", (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
     clearErrorsByUserId(userId);
+
+    // Broadcast so other open tabs/windows update
+    broadcastToUser(userId, { type: "errors-cleared" });
+
     res.json({ success: true });
   } catch (err) {
     log.error("route-error", {
