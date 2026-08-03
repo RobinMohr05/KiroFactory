@@ -156,6 +156,7 @@ export interface TaskTab {
 // ─── Agents ──────────────────────────────────────────────────────────────────
 
 export interface Agent {
+  id: number;
   name: string;
   description: string;
   prompt: string;
@@ -301,7 +302,7 @@ export type WsServerMessage =
   | { type: "tabs-reordered"; tabs: Tab[] }
   | { type: "agent-created"; agent: Agent }
   | { type: "agent-updated"; agent: Agent }
-  | { type: "agent-deleted"; agentName: string }
+  | { type: "agent-deleted"; agentId: number }
   | { type: "session-created"; session: Session }
   | { type: "session-updated"; session: Session }
   | { type: "session-deleted"; sessionId: string }

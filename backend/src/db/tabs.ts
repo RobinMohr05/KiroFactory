@@ -142,14 +142,15 @@ export async function getTabWithTasks(id: number): Promise<Tab | null> {
     .request()
     .input("tabId2", sql.Int, id)
     .query(`
-      SELECT DISTINCT at2.agent_name
-      FROM agent_tabs at2
+      SELECT DISTINCT a.name
+      FROM agents a
+      INNER JOIN agent_tabs at2 ON at2.agent_id = a.id
       WHERE at2.tab_id = @tabId2
          OR at2.tab_id IN (SELECT t.id FROM tabs t WHERE t.name = 'generic')
-      ORDER BY at2.agent_name ASC
+      ORDER BY a.name ASC
     `);
 
-  tab.agents = agentsResult.recordset.map((row) => row.agent_name as string);
+  tab.agents = agentsResult.recordset.map((row: Record<string, unknown>) => row.name as string);
 
   // Populate errors — errors store tabIds in memory, filter from error-store
   const allErrors = getAllErrors();
@@ -221,33 +222,33 @@ export async function deleteTab(id: number): Promise<boolean> {
 /**
  * Get all tab IDs an agent belongs to.
  */
-export async function getAgentTabs(agentName: string): Promise<number[]> {
+export async function getAgentTabs(agentId: number): Promise<number[]> {
   const pool = await getPool();
   const result = await pool
     .request()
-    .input("agentName", sql.NVarChar(100), agentName)
-    .query("SELECT tab_id FROM agent_tabs WHERE agent_name = @agentName");
-  return result.recordset.map((row) => row.tab_id as number);
+    .input("agentId", sql.Int, agentId)
+    .query("SELECT tab_id FROM agent_tabs WHERE agent_id = @agentId");
+  return result.recordset.map((row: Record<string, unknown>) => row.tab_id as number);
 }
 
 /**
  * Assign an agent to one or more tabs (idempotent — duplicates are ignored).
  */
 export async function assignAgentToTabs(
-  agentName: string,
+  agentId: number,
   tabIds: number[]
 ): Promise<void> {
   const pool = await getPool();
   for (const tabId of tabIds) {
     await pool
       .request()
-      .input("agentName", sql.NVarChar(100), agentName)
+      .input("agentId", sql.Int, agentId)
       .input("tabId", sql.Int, tabId)
       .query(`
         IF NOT EXISTS (
-          SELECT 1 FROM agent_tabs WHERE agent_name = @agentName AND tab_id = @tabId
+          SELECT 1 FROM agent_tabs WHERE agent_id = @agentId AND tab_id = @tabId
         )
-        INSERT INTO agent_tabs (agent_name, tab_id) VALUES (@agentName, @tabId)
+        INSERT INTO agent_tabs (agent_id, tab_id) VALUES (@agentId, @tabId)
       `);
   }
 }
@@ -256,15 +257,15 @@ export async function assignAgentToTabs(
  * Remove an agent from a specific tab.
  */
 export async function removeAgentFromTab(
-  agentName: string,
+  agentId: number,
   tabId: number
 ): Promise<boolean> {
   const pool = await getPool();
   const result = await pool
     .request()
-    .input("agentName", sql.NVarChar(100), agentName)
+    .input("agentId", sql.Int, agentId)
     .input("tabId", sql.Int, tabId)
-    .query("DELETE FROM agent_tabs WHERE agent_name = @agentName AND tab_id = @tabId");
+    .query("DELETE FROM agent_tabs WHERE agent_id = @agentId AND tab_id = @tabId");
   return (result.rowsAffected[0] ?? 0) > 0;
 }
 
@@ -272,22 +273,22 @@ export async function removeAgentFromTab(
  * Replace all tab assignments for an agent (set exactly to tabIds).
  */
 export async function setAgentTabs(
-  agentName: string,
+  agentId: number,
   tabIds: number[]
 ): Promise<void> {
   const pool = await getPool();
   // Remove all existing
   await pool
     .request()
-    .input("agentName", sql.NVarChar(100), agentName)
-    .query("DELETE FROM agent_tabs WHERE agent_name = @agentName");
+    .input("agentId", sql.Int, agentId)
+    .query("DELETE FROM agent_tabs WHERE agent_id = @agentId");
   // Add new ones
   for (const tabId of tabIds) {
     await pool
       .request()
-      .input("agentName", sql.NVarChar(100), agentName)
+      .input("agentId", sql.Int, agentId)
       .input("tabId", sql.Int, tabId)
-      .query("INSERT INTO agent_tabs (agent_name, tab_id) VALUES (@agentName, @tabId)");
+      .query("INSERT INTO agent_tabs (agent_id, tab_id) VALUES (@agentId, @tabId)");
   }
 }
 

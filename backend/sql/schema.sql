@@ -91,7 +91,8 @@ CREATE TABLE task_tabs (
 -- ============================================================================
 
 CREATE TABLE agents (
-    name            NVARCHAR(100)   NOT NULL PRIMARY KEY,
+    id              INT             IDENTITY(1,1) PRIMARY KEY,
+    name            NVARCHAR(100)   NOT NULL,
     description     NVARCHAR(MAX)   NOT NULL DEFAULT '',
     prompt          NVARCHAR(MAX)   NOT NULL DEFAULT '',
     tools           NVARCHAR(MAX)   NOT NULL DEFAULT '[]',
@@ -108,10 +109,10 @@ CREATE TABLE agents (
 -- ============================================================================
 
 CREATE TABLE agent_tabs (
-    agent_name  NVARCHAR(100)   NOT NULL,
-    tab_id      INT             NOT NULL,
-    PRIMARY KEY (agent_name, tab_id),
-    FOREIGN KEY (agent_name) REFERENCES agents(name) ON DELETE CASCADE,
+    agent_id    INT   NOT NULL,
+    tab_id      INT   NOT NULL,
+    PRIMARY KEY (agent_id, tab_id),
+    FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE,
     FOREIGN KEY (tab_id) REFERENCES tabs(id) ON DELETE CASCADE
 );
 
