@@ -2677,7 +2677,7 @@ textarea:focus {
   color: var(--text-primary);
   line-height: 1.4;
   max-height: 80px;
-  min-height: 38px;
+  min-height: 58px;
 }
 
 .task-planner-input-area textarea:focus {
