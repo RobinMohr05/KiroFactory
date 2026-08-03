@@ -175,7 +175,10 @@ body {
   background: var(--bg-primary);
   color: var(--text-primary);
   line-height: 1.6;
-  min-height: 100vh;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 h1, h2, h3, h4, h5, h6 {
@@ -184,8 +187,7 @@ h1, h2, h3, h4, h5, h6 {
 
 /* ===== Header ===== */
 .header {
-  position: sticky;
-  top: 0;
+  flex-shrink: 0;
   z-index: 100;
   display: flex;
   align-items: center;
@@ -283,6 +285,7 @@ h1, h2, h3, h4, h5, h6 {
   padding: 0.5rem 1.5rem;
   background: var(--bg-primary);
   border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
 }
 
 .tab-bar .board-list {
@@ -336,6 +339,7 @@ h1, h2, h3, h4, h5, h6 {
   padding: 0 1.5rem;
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
 }
 
 .tab {
@@ -359,6 +363,19 @@ h1, h2, h3, h4, h5, h6 {
   color: var(--text-primary);
   border-bottom-color: var(--ta-mango);
   font-weight: 600;
+}
+
+/* ===== Tab Panels (fill remaining viewport) ===== */
+section[role="tabpanel"] {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+section[role="tabpanel"][hidden] {
+  display: none;
 }
 
 /* ===== Global Board List Bar ===== */
@@ -749,7 +766,9 @@ textarea:focus {
   grid-template-columns: repeat(3, 1fr);
   gap: 1rem;
   padding: 0 1.5rem 1rem;
-  min-height: 300px;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
 }
 
 .column {
@@ -1125,7 +1144,7 @@ textarea:focus {
 .sessions-layout {
   display: grid;
   grid-template-columns: 280px 1fr;
-  height: calc(100vh - 110px);
+  height: 100%;
   overflow: hidden;
 }
 
@@ -1152,6 +1171,19 @@ textarea:focus {
   overflow-y: auto;
   flex: 1;
   padding: 0.5rem;
+}
+
+.session-list-pinned {
+  list-style: none;
+  flex-shrink: 0;
+  padding: 0.5rem;
+  border-bottom: 1px solid var(--border-color);
+  max-height: 30%;
+  overflow-y: auto;
+}
+
+.session-list-pinned:empty {
+  display: none;
 }
 
 .session-item {
@@ -1182,7 +1214,6 @@ textarea:focus {
 }
 
 .session-item-pinned {
-  border-bottom: 1px solid var(--border-color);
   margin-bottom: 0.25rem;
   padding-bottom: 0.9rem;
 }
@@ -1635,7 +1666,7 @@ textarea:focus {
 .agents-layout {
   display: grid;
   grid-template-columns: 280px 1fr;
-  height: calc(100vh - 110px);
+  height: 100%;
   overflow: hidden;
 }
 
@@ -2054,7 +2085,7 @@ textarea:focus {
   padding: 1.5rem;
   max-width: 960px;
   margin: 0 auto;
-  height: calc(100vh - 110px);
+  height: 100%;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -2197,6 +2228,8 @@ textarea:focus {
   align-items: center;
   justify-content: center;
   min-height: 100vh;
+  height: auto;
+  overflow: auto;
   padding: 1rem;
   background: var(--bg-secondary);
 }
