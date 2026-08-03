@@ -1395,8 +1395,12 @@ const sessionDeleteBtn = document.getElementById('sessionDeleteBtn');
 const activityDot = document.getElementById('activityDot');
 const activityText = document.getElementById('activityText');
 const outputPre = document.getElementById('outputPre');
+const scrollToBottomBtn = document.getElementById('scrollToBottomBtn');
 const sessionPromptInput = document.getElementById('sessionPromptInput');
 const sessionPromptSendBtn = document.getElementById('sessionPromptSendBtn');
+
+// Auto-scroll state: when true, new output automatically scrolls to bottom
+let autoScrollEnabled = true;
 
 // Quick-start (empty state) DOM refs
 const quickStartForm = document.getElementById('quickStartForm');
@@ -1513,6 +1517,26 @@ function setupSessions() {
       selection.removeAllRanges();
       selection.addRange(range);
     }
+  });
+
+  // Scroll lock: detect user scrolling away from bottom
+  sessionOutputEl.addEventListener('scroll', () => {
+    const threshold = 30; // px tolerance for "at bottom"
+    const atBottom = sessionOutputEl.scrollHeight - sessionOutputEl.scrollTop - sessionOutputEl.clientHeight < threshold;
+    if (atBottom) {
+      autoScrollEnabled = true;
+      scrollToBottomBtn.hidden = true;
+    } else {
+      autoScrollEnabled = false;
+      scrollToBottomBtn.hidden = false;
+    }
+  });
+
+  // Scroll-to-bottom button: snap to bottom and resume auto-scroll
+  scrollToBottomBtn.addEventListener('click', () => {
+    autoScrollEnabled = true;
+    scrollToBottomBtn.hidden = true;
+    sessionOutputEl.scrollTop = sessionOutputEl.scrollHeight;
   });
 
   // Session tabs editing
@@ -1855,6 +1879,9 @@ function selectSession(id) {
 }
 
 async function loadSessionOutput(id) {
+  // Reset auto-scroll when switching sessions
+  autoScrollEnabled = true;
+  scrollToBottomBtn.hidden = true;
   const entries = await fetchSessionOutput(id);
   outputPre.innerHTML = '';
   entries.forEach(entry => appendOutputEntry(entry));
@@ -1920,6 +1947,8 @@ function showSessionEmpty() {
   sessionEmptyState.hidden = false;
   sessionDetail.hidden = true;
   outputPre.innerHTML = '';
+  autoScrollEnabled = true;
+  scrollToBottomBtn.hidden = true;
   populateQuickStartAgentDropdown();
   quickStartPrompt.focus();
 }
@@ -2024,6 +2053,7 @@ function appendOutputEntry(entry) {
 }
 
 function scrollOutputToBottom() {
+  if (!autoScrollEnabled) return;
   const container = document.getElementById('sessionOutput');
   if (container) {
     container.scrollTop = container.scrollHeight;
