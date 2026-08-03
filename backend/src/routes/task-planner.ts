@@ -10,7 +10,7 @@ import {
 } from "../session-manager.js";
 import { createTask } from "../db/tasks.js";
 import { getAllTabs } from "../db/tabs.js";
-import { broadcast } from "../websocket-handler.js";
+import { broadcastToUser } from "../websocket-handler.js";
 import { markTaskBroadcast } from "../broadcast-tracker.js";
 import { requireAuth, getUserId } from "../middleware/auth.js";
 import { log, toErrorFields } from "../logger.js";
@@ -209,7 +209,7 @@ router.post("/:sessionId/create-task", async (req: Request, res: Response) => {
     };
 
     const task = await createTask(taskInput);
-    broadcast({ type: "task-created", task });
+    broadcastToUser(userId, { type: "task-created", task });
     markTaskBroadcast(task.id);
 
     // Clean up the planner session
