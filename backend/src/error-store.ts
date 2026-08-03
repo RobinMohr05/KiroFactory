@@ -128,6 +128,16 @@ export function markErrorTaskCreated(errorId: string, taskId: number): void {
 }
 
 /**
+ * Dismiss (remove) a single error by ID. Returns the removed error or undefined.
+ */
+export function dismissError(errorId: string): AgentError | undefined {
+  const idx = errors.findIndex((e) => e.id === errorId);
+  if (idx === -1) return undefined;
+  const [removed] = errors.splice(idx, 1);
+  return removed;
+}
+
+/**
  * Clear all errors for a specific user.
  */
 export function clearErrorsByUserId(userId: number): void {

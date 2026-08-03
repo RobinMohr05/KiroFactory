@@ -355,6 +355,23 @@ function handleWsMessage(message) {
       if (type === 'error-created') {
         handleErrorWsMessage(message);
       }
+      if (type === 'error-dismissed') {
+        const { errorId } = message;
+        if (errorId) {
+          agentErrors = agentErrors.filter(e => e.id !== errorId);
+          updateErrorBadge();
+          if (!panelErrors.hidden) {
+            renderErrors();
+          }
+        }
+      }
+      if (type === 'errors-cleared') {
+        agentErrors = [];
+        updateErrorBadge();
+        if (!panelErrors.hidden) {
+          renderErrors();
+        }
+      }
       break;
   }
 }
@@ -2555,7 +2572,7 @@ function setupErrors() {
   clearErrorsBtn.addEventListener('click', async () => {
     if (!confirm('Clear all agent errors? This cannot be undone.')) return;
     try {
-      const res = await fetch('/api/errors', { method: 'DELETE' });
+      const res = await apiFetch('/api/errors', { method: 'DELETE' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       agentErrors = [];
       renderErrors();
@@ -2571,7 +2588,7 @@ function setupErrors() {
 
 async function fetchErrorCount() {
   try {
-    const res = await fetch('/api/errors');
+    const res = await apiFetch('/api/errors');
     if (!res.ok) return;
     const errors = await res.json();
     agentErrors = errors;
@@ -2583,7 +2600,7 @@ async function fetchErrorCount() {
 
 async function fetchErrors() {
   try {
-    const res = await fetch('/api/errors');
+    const res = await apiFetch('/api/errors');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     agentErrors = await res.json();
     renderErrors();
@@ -2656,6 +2673,7 @@ function createErrorCard(error) {
   } else {
     actionsHtml = `<button class="btn btn-primary btn-sm error-create-task-btn" data-error-id="${error.id}">🐛 Create Bug Task</button>`;
   }
+  actionsHtml += `<button class="btn btn-sm error-dismiss-btn" data-error-id="${error.id}" title="Dismiss this error">✕ Dismiss</button>`;
 
   let taskMeta = '';
   if (error.taskTitle) {
@@ -2682,12 +2700,18 @@ function createErrorCard(error) {
     btn.addEventListener('click', () => createBugTaskFromError(error.id));
   }
 
+  // Attach event listener for "Dismiss" button
+  const dismissBtn = card.querySelector('.error-dismiss-btn');
+  if (dismissBtn) {
+    dismissBtn.addEventListener('click', () => dismissError(error.id));
+  }
+
   return card;
 }
 
 async function createBugTaskFromError(errorId) {
   try {
-    const res = await fetch(`/api/errors/${errorId}/create-task`, {
+    const res = await apiFetch(`/api/errors/${errorId}/create-task`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({})
@@ -2716,6 +2740,20 @@ async function createBugTaskFromError(errorId) {
   } catch (e) {
     console.error('Failed to create bug task:', e);
     alert('Failed to create bug task. See console for details.');
+  }
+}
+
+async function dismissError(errorId) {
+  try {
+    const res = await apiFetch(`/api/errors/${errorId}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+    // Remove from local state
+    agentErrors = agentErrors.filter(e => e.id !== errorId);
+    renderErrors();
+    updateErrorBadge();
+  } catch (e) {
+    console.error('Failed to dismiss error:', e);
   }
 }
 
