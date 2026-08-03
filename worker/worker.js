@@ -17,7 +17,7 @@
  *   orchestrator → worker: prompt, stop, auth-ok, auth-failed
  */
 
-import { spawn, execSync } from "node:child_process";
+import { spawn, execSync, execFileSync } from "node:child_process";
 import { WebSocket } from "ws";
 import { mkdirSync, existsSync, writeFileSync, appendFileSync } from "node:fs";
 
@@ -294,6 +294,31 @@ function exec(cmd, opts = {}) {
     }).trim();
   } catch (err) {
     // execSync embeds the full command (and therefore the PAT) in the message.
+    if (err && typeof err.message === "string") err.message = redactSecrets(err.message);
+    throw err;
+  }
+}
+
+/**
+ * Run a command with an explicit argv array — no shell involved.
+ *
+ * Use this instead of exec() whenever an argument can contain arbitrary text
+ * (task titles/descriptions), since those routinely contain double quotes,
+ * backticks, or `$(...)` that break shell-string interpolation. exec()'s
+ * naive `"${value}"` embedding is what caused git commit to fail with
+ * "Syntax error: word unexpected" whenever a task title itself contained a
+ * quote character (e.g. `Fix duplicate pinned "Chat" session`).
+ */
+function execFileArgs(file, args, opts = {}) {
+  logInfo("execFile", { file, args: args.map((a) => redactSecrets(a)) });
+  try {
+    return execFileSync(file, args, {
+      encoding: "utf-8",
+      timeout: 120_000,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+      ...opts,
+    }).trim();
+  } catch (err) {
     if (err && typeof err.message === "string") err.message = redactSecrets(err.message);
     throw err;
   }
@@ -640,14 +665,21 @@ function commitAndPush() {
 
   exec("git add -A", { cwd: WORKSPACE });
 
-  // Build commit message with task info
+  // Build commit message with task info.
+  //
+  // Task titles/descriptions are free-form user (or agent-generated) text and
+  // routinely contain double quotes, backticks, or `$(...)`. Passing them
+  // through a shell string (exec()) is unsafe — any of those characters
+  // breaks the command with a syntax error. execFileArgs() invokes git
+  // directly with an argv array, so the commit message is never re-parsed
+  // by a shell no matter what it contains.
   const taskId = currentTaskMeta?.id || TASK_ID || "unknown";
   const taskTitle = currentTaskMeta?.title || `task ${taskId}`;
   const commitTitle = `${taskTitle} [Vibecode Heaven #${taskId}]`;
   const commitBody = currentTaskMeta
     ? `\nType: ${currentTaskMeta.type || "unknown"}\nID: ${taskId}\n\n${currentTaskMeta.description || ""}`
     : "";
-  exec(`git commit -m "${commitTitle}${commitBody.replace(/"/g, '\\"')}"`, { cwd: WORKSPACE });
+  execFileArgs("git", ["commit", "-m", `${commitTitle}${commitBody}`], { cwd: WORKSPACE });
 
   const branchName = currentBranchName || `vibecode-heaven/${SESSION_ID}`;
 
