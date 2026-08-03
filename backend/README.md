@@ -210,6 +210,23 @@ Open <http://localhost:3500> — the full app is running entirely offline.
 
 ---
 
+### Seed a test user and sample tasks
+
+After migrating a fresh database (either option above), run the local seed script to
+populate it with a test user and sample tasks so you can log in immediately:
+
+```bash
+npm run seed:local -w backend
+```
+
+This creates:
+- **User:** `local-dev@example.com` / `localdev123`
+- **Tab:** "Local Dev" with 7 sample tasks across all types, priorities, and states
+
+The script is idempotent — safe to re-run without duplicating data.
+
+---
+
 ## Deploy
 
 See root `ARCHITECTURE.md` §6. Short version, from repo root:
