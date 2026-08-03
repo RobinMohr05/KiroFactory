@@ -141,6 +141,67 @@ window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e)
   }
 });
 
+// ===== Confirm-on-Double-Click Delete Pattern =====
+/**
+ * Wraps a delete button with double-click-to-confirm behavior.
+ * First click: button enters "confirming" state (visual shift, text changes to label).
+ * Second click within timeout: executes the onConfirm callback.
+ * Timeout (~3s): button resets to its default state.
+ *
+ * @param {HTMLElement} btn - The button element
+ * @param {Object} options
+ * @param {Function} options.onConfirm - Callback when deletion is confirmed (2nd click)
+ * @param {string} [options.confirmLabel='Confirm?'] - Label to show during confirm state
+ * @param {number} [options.timeout=3000] - Ms before resetting
+ * @param {string|null} [options.originalLabel=null] - Original button text (auto-detected if null)
+ * @returns {Function} cleanup function to remove listener (useful for dynamically created buttons)
+ */
+function confirmDeleteButton(btn, { onConfirm, confirmLabel = 'Confirm?', timeout = 3000, originalLabel = null }) {
+  let confirmTimer = null;
+  let isPending = false;
+  const savedLabel = originalLabel !== null ? originalLabel : btn.textContent;
+  const savedInnerHTML = btn.innerHTML;
+
+  function reset() {
+    isPending = false;
+    btn.classList.remove('btn-confirm-pending');
+    btn.innerHTML = savedInnerHTML;
+    btn.setAttribute('aria-label', btn.getAttribute('data-original-aria-label') || '');
+    if (confirmTimer) {
+      clearTimeout(confirmTimer);
+      confirmTimer = null;
+    }
+  }
+
+  function handleClick(e) {
+    e.stopPropagation();
+    e.preventDefault();
+
+    if (isPending) {
+      // Second click — confirm the delete
+      reset();
+      onConfirm();
+    } else {
+      // First click — enter confirming state
+      isPending = true;
+      btn.setAttribute('data-original-aria-label', btn.getAttribute('aria-label') || '');
+      btn.classList.add('btn-confirm-pending');
+      btn.textContent = confirmLabel;
+      btn.setAttribute('aria-label', confirmLabel);
+
+      confirmTimer = setTimeout(reset, timeout);
+    }
+  }
+
+  btn.addEventListener('click', handleClick);
+
+  // Return cleanup function
+  return () => {
+    btn.removeEventListener('click', handleClick);
+    reset();
+  };
+}
+
 // ===== Priority & Origin & Type Maps =====
 const PRIORITY_COLORS = {
   1: '#D22630',  // Rapid Red
@@ -480,14 +541,23 @@ async function updateTask(id, data) {
 
 async function deleteTask(id) {
   try {
+    // Show deletion feedback on the task card
+    const taskCard = document.querySelector(`.task-card[data-task-id="${id}"]`);
+    if (taskCard) {
+      taskCard.classList.add('delete-fade-out');
+    }
     const res = await fetch(`/api/tasks/${id}`, { method: 'DELETE' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     pendingOps.add(`task-deleted-${id}`);
     tasks = tasks.filter(t => t.id !== id);
     lastTasksJson = JSON.stringify(tasks);
-    renderBoard();
+    // Delay render slightly to let fade-out animation play
+    setTimeout(() => renderBoard(), taskCard ? 350 : 0);
   } catch (e) {
     console.error('Failed to delete task:', e);
+    // Remove fade-out on error
+    const taskCard = document.querySelector(`.task-card[data-task-id="${id}"]`);
+    if (taskCard) taskCard.classList.remove('delete-fade-out');
   }
 }
 
@@ -528,27 +598,42 @@ async function createBoard(name, repositoryUrl = null, gitProvider = null) {
 
 async function deleteBoard(id) {
   try {
+    // Show deletion feedback on the board list item
+    const boardItem = boardList.querySelector(`[data-board-id="${id}"]`);
+    if (boardItem) {
+      boardItem.classList.add('delete-fade-out');
+    }
     const res = await fetch(`/api/tabs/${id}`, { method: 'DELETE' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     pendingOps.add(`board-deleted-${id}`);
     boards = boards.filter(b => b.id !== id);
-    renderBoardSelector();
-    if (currentBoardId === id || currentBoardId == id) {
-      currentBoardId = boards.length > 0 ? boards[0].id : null;
+    // Delay render to let fade-out play
+    const doRender = async () => {
       renderBoardSelector();
-      renderSessionList();
-      if (currentBoardId) {
-        await fetchBoardTasks(currentBoardId);
-      } else {
-        tasks = [];
-        boardSessions = [];
-        boardAgents = [];
-        renderBoard();
-        renderBoardMembers();
+      if (currentBoardId === id || currentBoardId == id) {
+        currentBoardId = boards.length > 0 ? boards[0].id : null;
+        renderBoardSelector();
+        renderSessionList();
+        if (currentBoardId) {
+          await fetchBoardTasks(currentBoardId);
+        } else {
+          tasks = [];
+          boardSessions = [];
+          boardAgents = [];
+          renderBoard();
+          renderBoardMembers();
+        }
       }
+    };
+    if (boardItem) {
+      setTimeout(doRender, 350);
+    } else {
+      await doRender();
     }
   } catch (e) {
     console.error('Failed to delete board:', e);
+    const boardItem = boardList.querySelector(`[data-board-id="${id}"]`);
+    if (boardItem) boardItem.classList.remove('delete-fade-out');
   }
 }
 
@@ -573,10 +658,12 @@ function renderBoardSelector() {
       showTabModal(board);
     });
 
-    // Delete button — confirm and delete
-    li.querySelector('.board-item-delete').addEventListener('click', (e) => {
-      e.stopPropagation();
-      if (confirm(`Delete tab "${board.name}"? Tasks will be unassigned from this tab.`)) {
+    // Delete button — confirm-on-double-click
+    const boardDeleteBtn = li.querySelector('.board-item-delete');
+    confirmDeleteButton(boardDeleteBtn, {
+      confirmLabel: '✕',
+      timeout: 3000,
+      onConfirm: () => {
         deleteBoard(board.id);
       }
     });
@@ -718,15 +805,31 @@ function showBoardContextMenu(event, board) {
     const btn = e.target.closest('[data-action]');
     if (!btn) return;
     const action = btn.dataset.action;
-    menu.remove();
-    if (action === 'edit') {
-      showTabModal(board);
-    } else if (action === 'rename') {
-      const li = boardList.querySelector(`[data-board-id="${board.id}"]`);
-      if (li) startBoardEdit(li, board);
-    } else if (action === 'delete') {
-      if (confirm(`Delete tab "${board.name}"? Tasks will be unassigned from this tab.`)) {
-        deleteBoard(board.id);
+    if (action === 'delete') {
+      // First click on delete: enter confirming state (don't close menu yet)
+      if (!btn.classList.contains('btn-confirm-pending')) {
+        e.stopPropagation();
+        btn.classList.add('btn-confirm-pending');
+        btn.textContent = '🗑️ Confirm?';
+        // Reset after timeout
+        setTimeout(() => {
+          if (btn.isConnected) {
+            btn.classList.remove('btn-confirm-pending');
+            btn.textContent = '🗑️ Delete';
+          }
+        }, 3000);
+        return;
+      }
+      // Second click — confirmed
+      menu.remove();
+      deleteBoard(board.id);
+    } else {
+      menu.remove();
+      if (action === 'edit') {
+        showTabModal(board);
+      } else if (action === 'rename') {
+        const li = boardList.querySelector(`[data-board-id="${board.id}"]`);
+        if (li) startBoardEdit(li, board);
       }
     }
   });
@@ -1160,6 +1263,10 @@ function setupDragAndDrop() {
 function showTaskForm(task = null) {
   taskModal.hidden = false;
 
+  // Reset delete button confirm state when modal reopens
+  deleteTaskBtn.classList.remove('btn-confirm-pending');
+  deleteTaskBtn.textContent = 'Delete';
+
   const aiPlannerBtnEl = document.getElementById('aiPlannerBtn');
 
   if (task) {
@@ -1300,13 +1407,15 @@ function setupEventListeners() {
   // Cancel task form
   cancelTaskBtn.addEventListener('click', hideTaskForm);
 
-  // Delete task from edit modal
-  deleteTaskBtn.addEventListener('click', async () => {
-    const id = document.getElementById('taskId').value;
-    if (!id) return;
-    if (!confirm('Delete this task? This cannot be undone.')) return;
-    await deleteTask(id);
-    hideTaskForm();
+  // Delete task from edit modal (confirm-on-double-click)
+  confirmDeleteButton(deleteTaskBtn, {
+    confirmLabel: 'Confirm?',
+    onConfirm: async () => {
+      const id = document.getElementById('taskId').value;
+      if (!id) return;
+      await deleteTask(id);
+      hideTaskForm();
+    }
   });
 
   // Close modal on backdrop click
@@ -1508,12 +1617,15 @@ function setupSessions() {
     if (activeSessionId) stopAgentSession(activeSessionId);
   });
 
-  sessionDeleteBtn.addEventListener('click', async () => {
-    if (!activeSessionId) return;
-    const session = sessions.find(s => s.id === activeSessionId);
-    if (session?.pinned) return; // permanent Chat session — button is disabled anyway
-    if (!confirm('Delete this session? This will stop the agent if running.')) return;
-    await deleteAgentSession(activeSessionId);
+  // Session delete (confirm-on-double-click)
+  confirmDeleteButton(sessionDeleteBtn, {
+    confirmLabel: 'Confirm?',
+    onConfirm: async () => {
+      if (!activeSessionId) return;
+      const session = sessions.find(s => s.id === activeSessionId);
+      if (session?.pinned) return;
+      await deleteAgentSession(activeSessionId);
+    }
   });
 
   sessionClearBtn.addEventListener('click', () => {
@@ -1833,16 +1945,26 @@ async function stopAgentSession(id) {
 
 async function deleteAgentSession(id) {
   try {
+    // Show deletion feedback on the session list item
+    const sessionItem = document.querySelector(`.session-item[data-session-id="${id}"]`);
+    if (sessionItem) {
+      sessionItem.classList.add('delete-fade-out');
+    }
     const res = await fetch(`/api/sessions/${id}`, { method: 'DELETE' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     sessions = sessions.filter(s => s.id !== id);
-    renderSessionList();
-    if (activeSessionId === id) {
-      activeSessionId = null;
-      showSessionEmpty();
-    }
+    // Delay render slightly to let fade-out animation play
+    setTimeout(() => {
+      renderSessionList();
+      if (activeSessionId === id) {
+        activeSessionId = null;
+        showSessionEmpty();
+      }
+    }, sessionItem ? 350 : 0);
   } catch (e) {
     console.error('Failed to delete session:', e);
+    const sessionItem = document.querySelector(`.session-item[data-session-id="${id}"]`);
+    if (sessionItem) sessionItem.classList.remove('delete-fade-out');
   }
 }
 
@@ -1880,6 +2002,10 @@ function selectSession(id) {
   activeSessionId = id;
   const session = sessions.find(s => s.id === id);
   if (!session) return;
+
+  // Reset delete button confirm state when switching sessions
+  sessionDeleteBtn.classList.remove('btn-confirm-pending');
+  sessionDeleteBtn.textContent = 'Delete';
 
   document.querySelectorAll('.session-item').forEach(el => {
     el.classList.toggle('active', Number(el.dataset.sessionId) === id);
@@ -2286,11 +2412,13 @@ function setupAgents() {
     if (agent) showAgentModal(agent);
   });
 
-  agentDeleteBtn.addEventListener('click', async () => {
-    if (!activeAgentId) return;
-    const agent = agents.find(a => a.id === activeAgentId);
-    if (!confirm(`Delete agent "${agent?.name || activeAgentId}"? This cannot be undone.`)) return;
-    await deleteAgent(activeAgentId);
+  // Agent delete (confirm-on-double-click)
+  confirmDeleteButton(agentDeleteBtn, {
+    confirmLabel: 'Confirm?',
+    onConfirm: async () => {
+      if (!activeAgentId) return;
+      await deleteAgent(activeAgentId);
+    }
   });
 
   agentExportBtn.addEventListener('click', () => {
@@ -2359,17 +2487,26 @@ async function updateAgent(id, data) {
 
 async function deleteAgent(id) {
   try {
+    // Show deletion feedback on the agent list item
+    const agentItem = document.querySelector(`.agent-item[data-agent-id="${id}"]`);
+    if (agentItem) {
+      agentItem.classList.add('delete-fade-out');
+    }
     const res = await fetch(`/api/agents/${id}`, { method: 'DELETE' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     agents = agents.filter(a => a.id !== id);
-    renderAgentList();
-    if (activeAgentId === id) {
-      activeAgentId = null;
-      showAgentEmpty();
-    }
+    // Delay render slightly to let fade-out animation play
+    setTimeout(() => {
+      renderAgentList();
+      if (activeAgentId === id) {
+        activeAgentId = null;
+        showAgentEmpty();
+      }
+    }, agentItem ? 350 : 0);
   } catch (e) {
     console.error('Failed to delete agent:', e);
-    alert('Failed to delete agent: ' + e.message);
+    const agentItem = document.querySelector(`.agent-item[data-agent-id="${id}"]`);
+    if (agentItem) agentItem.classList.remove('delete-fade-out');
   }
 }
 
@@ -2529,6 +2666,10 @@ function selectAgent(id) {
   const agent = agents.find(a => a.id === id);
   if (!agent) return;
 
+  // Reset delete button confirm state when switching agents
+  agentDeleteBtn.classList.remove('btn-confirm-pending');
+  agentDeleteBtn.textContent = 'Delete';
+
   document.querySelectorAll('.agent-item').forEach(el => {
     el.classList.toggle('active', Number(el.dataset.agentId) === id);
   });
@@ -2604,16 +2745,19 @@ const clearErrorsBtn = document.getElementById('clearErrorsBtn');
 const errorBadge = document.getElementById('errorBadge');
 
 function setupErrors() {
-  clearErrorsBtn.addEventListener('click', async () => {
-    if (!confirm('Clear all agent errors? This cannot be undone.')) return;
-    try {
-      const res = await apiFetch('/api/errors', { method: 'DELETE' });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      agentErrors = [];
-      renderErrors();
-      updateErrorBadge();
-    } catch (e) {
-      console.error('Failed to clear errors:', e);
+  // Clear errors (confirm-on-double-click)
+  confirmDeleteButton(clearErrorsBtn, {
+    confirmLabel: 'Confirm?',
+    onConfirm: async () => {
+      try {
+        const res = await apiFetch('/api/errors', { method: 'DELETE' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        agentErrors = [];
+        renderErrors();
+        updateErrorBadge();
+      } catch (e) {
+        console.error('Failed to clear errors:', e);
+      }
     }
   });
 
@@ -3041,11 +3185,25 @@ async function handleDeleteAccount() {
     return;
   }
 
-  // Double-confirm with user
-  const confirmed = window.confirm(
-    'Are you sure you want to permanently delete your account? This action cannot be undone.'
-  );
-  if (!confirmed) return;
+  // Use confirm-on-double-click on the submit button instead of window.confirm
+  const submitBtn = document.querySelector('#deleteAccountForm button[type="submit"]');
+  if (submitBtn && !submitBtn.classList.contains('btn-confirm-pending')) {
+    // First click — enter confirming state
+    submitBtn.classList.add('btn-confirm-pending');
+    const savedText = submitBtn.textContent;
+    submitBtn.textContent = 'Click again to confirm';
+    setTimeout(() => {
+      submitBtn.classList.remove('btn-confirm-pending');
+      submitBtn.textContent = savedText;
+    }, 3000);
+    return;
+  }
+
+  // Second click (or already in confirm state from submit handler) — proceed with deletion
+  if (submitBtn) {
+    submitBtn.classList.remove('btn-confirm-pending');
+    submitBtn.textContent = 'Delete My Account';
+  }
 
   try {
     const res = await apiFetch('/api/auth/me', {
