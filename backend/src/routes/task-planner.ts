@@ -9,7 +9,7 @@ import {
   deleteSession,
 } from "../session-manager.js";
 import { createTask } from "../db/tasks.js";
-import { getAllTabs } from "../db/tabs.js";
+import { getAllTabs, getTabById } from "../db/tabs.js";
 import { broadcastToUser } from "../websocket-handler.js";
 import { markTaskBroadcast } from "../broadcast-tracker.js";
 import { requireAuth, getUserId } from "../middleware/auth.js";
@@ -76,16 +76,45 @@ Start by greeting the user and asking what they'd like to accomplish.`;
 router.post("/start", async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
+    const { tabId } = req.body as { tabId?: number };
+
+    // Build the system prompt, optionally enriched with tab/repository context
+    let systemPrompt = TASK_PLANNER_SYSTEM_PROMPT;
+    let sessionTabIds: number[] | undefined;
+
+    if (tabId) {
+      const tab = await getTabById(tabId);
+      if (tab && tab.userId === userId) {
+        sessionTabIds = [tab.id];
+        const contextLines: string[] = [
+          `\n\n## Repository Context`,
+          `You are planning a task for the following project:`,
+          `- **Tab/Project name:** ${tab.name}`,
+        ];
+        if (tab.repositoryUrl) {
+          contextLines.push(`- **Repository URL:** ${tab.repositoryUrl}`);
+        }
+        if (tab.gitProvider) {
+          contextLines.push(`- **Git provider:** ${tab.gitProvider}`);
+        }
+        contextLines.push(
+          `\nUse this context to ask more relevant clarifying questions and suggest accurate file paths. ` +
+          `When proposing the task, ground your suggestions in this specific project.`
+        );
+        systemPrompt += contextLines.join("\n");
+      }
+    }
 
     // Create a dedicated interactive session for this planning conversation
     const session = await createSession({
       name: "Task Planner",
-      prompt: TASK_PLANNER_SYSTEM_PROMPT,
+      prompt: systemPrompt,
       interactive: true,
       loop: false,
       runs: 0,
       intervalSeconds: 0,
       userId,
+      tabIds: sessionTabIds,
       pinned: false,
     });
 
@@ -191,10 +220,15 @@ router.post("/:sessionId/create-task", async (req: Request, res: Response) => {
         return;
       }
     } else {
-      // Default to user's first tab
-      const userTabs = await getAllTabs(userId);
-      if (userTabs.length > 0) {
-        finalTabIds = [userTabs[0].id];
+      // Prefer the tab that was used to start the planning session
+      if (session.tabIds && session.tabIds.length > 0) {
+        finalTabIds = session.tabIds;
+      } else {
+        // Fallback to user's first tab
+        const userTabs = await getAllTabs(userId);
+        if (userTabs.length > 0) {
+          finalTabIds = [userTabs[0].id];
+        }
       }
     }
 
