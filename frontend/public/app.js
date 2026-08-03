@@ -1185,6 +1185,7 @@ function renderTaskCard(task) {
       <span class="card-priority">P${priority}</span>
       <span class="card-origin" title="${task.origin || 'user'}">${originIcon}</span>
     </div>
+    ${task.pullRequestUrl ? `<div class="card-git-info"><a href="${escapeHtml(task.pullRequestUrl)}" target="_blank" rel="noopener noreferrer" class="card-pr-link" title="Pull Request" onclick="event.stopPropagation()">\u{1F517} PR</a></div>` : task.branch ? `<div class="card-git-info"><span class="card-branch" title="${escapeHtml(task.branch)}">\u{1F33F} ${escapeHtml(task.branch)}</span></div>` : ''}
   `;
 
   // Drag events
