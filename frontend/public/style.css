@@ -2496,3 +2496,200 @@ textarea:focus {
   color: var(--accent-primary);
   text-decoration: underline;
 }
+
+/* ===== Task Planner Chat Modal ===== */
+.task-planner-modal {
+  max-width: 600px;
+  height: 70vh;
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+
+.task-planner-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
+}
+
+.task-planner-header h2 {
+  margin: 0;
+  font-family: 'Barlow', sans-serif;
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.task-planner-status {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.task-planner-status .status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.task-planner-status .status-dot.connected {
+  background: var(--status-connected);
+}
+
+.task-planner-status .status-dot.thinking {
+  background: var(--ta-mango);
+  animation: pulse 1s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.task-planner-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.planner-message {
+  max-width: 85%;
+  padding: 0.6rem 0.9rem;
+  border-radius: 12px;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  word-wrap: break-word;
+  white-space: pre-wrap;
+}
+
+.planner-message.user {
+  align-self: flex-end;
+  background: var(--ta-mango);
+  color: var(--ta-rubber);
+  border-bottom-right-radius: 4px;
+}
+
+.planner-message.assistant {
+  align-self: flex-start;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border-bottom-left-radius: 4px;
+}
+
+.planner-message.system {
+  align-self: center;
+  background: none;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  font-style: italic;
+  padding: 0.3rem;
+}
+
+.planner-message .task-json-block {
+  margin-top: 0.5rem;
+  padding: 0.6rem;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  font-family: monospace;
+  font-size: 0.78rem;
+  overflow-x: auto;
+}
+
+.task-planner-input-area {
+  display: flex;
+  gap: 0.5rem;
+  padding: 1rem 1.5rem;
+  border-top: 1px solid var(--border-color);
+  flex-shrink: 0;
+  background: var(--bg-primary);
+}
+
+.task-planner-input-area textarea {
+  flex: 1;
+  resize: none;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 0.5rem 0.75rem;
+  font-family: 'Inter', sans-serif;
+  font-size: 0.85rem;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  line-height: 1.4;
+  max-height: 80px;
+  min-height: 38px;
+}
+
+.task-planner-input-area textarea:focus {
+  outline: none;
+  border-color: var(--ta-mango);
+}
+
+.task-planner-input-area .btn {
+  align-self: flex-end;
+}
+
+.task-planner-actions {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.75rem 1.5rem;
+  border-top: 1px solid var(--border-color);
+  flex-shrink: 0;
+  justify-content: flex-end;
+  background: var(--bg-secondary);
+}
+
+.task-planner-actions .btn {
+  font-size: 0.8rem;
+}
+
+/* AI Planner button in task form */
+.btn-ai-planner {
+  background: linear-gradient(135deg, var(--ta-mango), #e67a00);
+  color: var(--ta-rubber);
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.btn-ai-planner:hover {
+  background: linear-gradient(135deg, #e67a00, #cc6d00);
+}
+
+.btn-ai-planner .ai-icon {
+  font-size: 1rem;
+}
+
+/* Dark mode adjustments */
+[data-theme="dark"] .task-planner-modal {
+  background: var(--bg-secondary);
+}
+
+[data-theme="dark"] .planner-message.assistant {
+  background: var(--bg-tertiary);
+}
+
+[data-theme="dark"] .planner-message .task-json-block {
+  background: var(--bg-primary);
+  border-color: var(--border-color);
+}
+
+[data-theme="dark"] .task-planner-input-area {
+  background: var(--bg-secondary);
+}
+
+[data-theme="dark"] .task-planner-actions {
+  background: var(--bg-tertiary);
+}
