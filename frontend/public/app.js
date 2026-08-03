@@ -1391,6 +1391,7 @@ const sessionDetailAgent = document.getElementById('sessionDetailAgent');
 const sessionDetailStatus = document.getElementById('sessionDetailStatus');
 const sessionStartBtn = document.getElementById('sessionStartBtn');
 const sessionStopBtn = document.getElementById('sessionStopBtn');
+const sessionClearBtn = document.getElementById('sessionClearBtn');
 const sessionDeleteBtn = document.getElementById('sessionDeleteBtn');
 const activityDot = document.getElementById('activityDot');
 const activityText = document.getElementById('activityText');
@@ -1492,6 +1493,10 @@ function setupSessions() {
     if (session?.pinned) return; // permanent Chat session — button is disabled anyway
     if (!confirm('Delete this session? This will stop the agent if running.')) return;
     await deleteAgentSession(activeSessionId);
+  });
+
+  sessionClearBtn.addEventListener('click', () => {
+    outputPre.innerHTML = '';
   });
 
   sessionPromptSendBtn.addEventListener('click', sendFollowUpPrompt);
