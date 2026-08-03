@@ -12,7 +12,7 @@
 import { resolve } from "node:path";
 import { KiroRunner } from "./agent/kiro-runner.js";
 import type { SessionUpdateChunk } from "./agent/kiro-runner.js";
-import { broadcast } from "./websocket-handler.js";
+import { broadcastToUser } from "./websocket-handler.js";
 import { claimTask, markTaskDeveloped, resetTaskToTodo, getAvailableTaskCount } from "./agent/task-claimer.js";
 import { buildDevPrompt } from "./agent/prompt-builder.js";
 import { TabMcpConfig, DEFAULT_MCP_CONFIG, resolveGitProvider, type GitProvider } from "./types.js";
@@ -294,7 +294,7 @@ function appendOutput(session: ManagedSession, entry: OutputEntry): void {
   if (session.meta.output.length > MAX_OUTPUT_ENTRIES) {
     session.meta.output = session.meta.output.slice(-MAX_OUTPUT_ENTRIES);
   }
-  broadcast({ type: "session-output", sessionId: session.meta.id, entry });
+  broadcastToUser(session.meta.userId, { type: "session-output", sessionId: session.meta.id, entry });
 }
 
 /**
@@ -360,12 +360,12 @@ function bufferAgentMessage(session: ManagedSession, text: string): void {
 
 function setActivity(session: ManagedSession, activity: Activity): void {
   session.meta.currentActivity = activity;
-  broadcast({ type: "session-activity", sessionId: session.meta.id, activity });
+  broadcastToUser(session.meta.userId, { type: "session-activity", sessionId: session.meta.id, activity });
 }
 
 function setStatus(session: ManagedSession, status: Session["status"]): void {
   session.meta.status = status;
-  broadcast({ type: "session-updated", session: session.meta });
+  broadcastToUser(session.meta.userId, { type: "session-updated", session: session.meta });
   persistSession(session.meta.id);
 }
 
@@ -440,7 +440,7 @@ export async function createSession(input: CreateSessionInput): Promise<Session>
   };
 
   sessions.set(meta.id, session);
-  broadcast({ type: "session-created", session: session.meta });
+  broadcastToUser(session.meta.userId, { type: "session-created", session: session.meta });
 
   // Structured log for Azure Monitor
   logSessionEvent("session-created", meta.id, { agent: meta.agent, name: meta.name });
@@ -479,7 +479,7 @@ export function deleteSession(id: number): boolean {
   }
 
   sessions.delete(id);
-  broadcast({ type: "session-deleted", sessionId: id });
+  broadcastToUser(session.meta.userId, { type: "session-deleted", sessionId: id });
 
   // Also delete from DB if available
   if (isDbAvailable()) {
@@ -500,7 +500,7 @@ export function updateSessionTabs(id: number, tabIds: number[]): boolean {
   if (!session) return false;
 
   session.meta.tabIds = tabIds.length > 0 ? tabIds : undefined;
-  broadcast({ type: "session-updated", session: session.meta });
+  broadcastToUser(session.meta.userId, { type: "session-updated", session: session.meta });
   persistSession(id);
 
   logSessionEvent("session-tabs-updated", id, { tabIds });
@@ -809,7 +809,7 @@ async function runLoopMode(
 
     // Track current task
     meta.currentTaskId = task.id;
-    broadcast({ type: "session-updated", session: meta });
+    broadcastToUser(meta.userId, { type: "session-updated", session: meta });
     persistSession(meta.id);
 
     appendOutput(managed, {
@@ -880,7 +880,7 @@ async function runLoopMode(
     }
 
     meta.currentTaskId = undefined;
-    broadcast({ type: "session-updated", session: meta });
+    broadcastToUser(meta.userId, { type: "session-updated", session: meta });
     persistSession(meta.id);
 
     // Brief pause between tasks
@@ -1607,7 +1607,7 @@ async function runLoopModeAca(
     }
 
     meta.currentTaskId = task.id;
-    broadcast({ type: "session-updated", session: meta });
+    broadcastToUser(meta.userId, { type: "session-updated", session: meta });
     persistSession(meta.id);
 
     appendOutput(managed, {
@@ -1754,7 +1754,7 @@ async function runLoopModeAca(
           text: `Task ${task.id} reset to "todo" and blocked for this session — fix the git credentials, then re-run.`,
         });
         meta.currentTaskId = undefined;
-        broadcast({ type: "session-updated", session: meta });
+        broadcastToUser(meta.userId, { type: "session-updated", session: meta });
         persistSession(meta.id);
         continue;
       }
@@ -1794,7 +1794,7 @@ async function runLoopModeAca(
     }
 
     meta.currentTaskId = undefined;
-    broadcast({ type: "session-updated", session: meta });
+    broadcastToUser(meta.userId, { type: "session-updated", session: meta });
     persistSession(meta.id);
 
     if (!signal.aborted && meta.intervalSeconds > 0) {

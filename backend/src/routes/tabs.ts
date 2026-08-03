@@ -8,7 +8,7 @@ import {
   deleteTab,
   reorderTabs,
 } from "../db/tabs.js";
-import { broadcast } from "../websocket-handler.js";
+import { broadcastToUser } from "../websocket-handler.js";
 import { requireAuth, getUserId } from "../middleware/auth.js";
 import { log, toErrorFields } from "../logger.js";
 import { GIT_PROVIDERS, isGitProvider, type GitProvider } from "../types.js";
@@ -73,7 +73,7 @@ router.post("/", async (req: Request, res: Response) => {
       gitProvider: validatedProvider,
       userId,
     });
-    broadcast({ type: "tab-created", tab });
+    broadcastToUser(userId, { type: "tab-created", tab });
     res.status(201).json(tab);
   } catch (err) {
     log.error("route-error", {
@@ -106,7 +106,7 @@ router.put("/reorder", async (req: Request, res: Response) => {
     }
     await reorderTabs(tabIds);
     const tabs = await getAllTabs(userId);
-    broadcast({ type: "tabs-reordered", tabs });
+    broadcastToUser(userId, { type: "tabs-reordered", tabs });
     res.json(tabs);
   } catch (err) {
     log.error("route-error", {
@@ -201,7 +201,7 @@ router.put("/:id", async (req: Request, res: Response) => {
       res.status(404).json({ error: "Tab not found" });
       return;
     }
-    broadcast({ type: "tab-updated", tab });
+    broadcastToUser(userId, { type: "tab-updated", tab });
     res.json(tab);
   } catch (err) {
     log.error("route-error", {
@@ -235,7 +235,7 @@ router.delete("/:id", async (req: Request, res: Response) => {
       res.status(404).json({ error: "Tab not found" });
       return;
     }
-    broadcast({ type: "tab-deleted", tabId: id });
+    broadcastToUser(userId, { type: "tab-deleted", tabId: id });
     res.status(204).send();
   } catch (err) {
     log.error("route-error", {

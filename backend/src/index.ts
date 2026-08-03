@@ -8,7 +8,7 @@ import { createServer } from "http";
 import path from "path";
 import { fileURLToPath } from "url";
 
-import { setupWebSocket, broadcast, getConnectedClientCount } from "./websocket-handler.js";
+import { setupWebSocket, broadcastToUser, getConnectedClientCount } from "./websocket-handler.js";
 import { setupWorkerWebSocket } from "./worker-ws-handler.js";
 import { isAcaModeEnabled, loadAcaConfig, verifyAcaAccess } from "./aca-worker-spawner.js";
 import { requireAuth, isPublicPath } from "./middleware/auth.js";
@@ -158,7 +158,13 @@ async function pollForChanges(): Promise<void> {
         if (wasRecentlyBroadcast(task.id)) {
           continue;
         }
-        broadcast({ type: "task-updated", task });
+        // Tasks are only ever assigned to tabs owned by a single user, so
+        // notify each distinct owner (normally exactly one) instead of
+        // broadcasting to every connected client regardless of account.
+        const ownerIds = new Set((task.tabs ?? []).map((t) => t.userId));
+        for (const ownerId of ownerIds) {
+          broadcastToUser(ownerId, { type: "task-updated", task });
+        }
       }
     }
     lastPollTime = now;

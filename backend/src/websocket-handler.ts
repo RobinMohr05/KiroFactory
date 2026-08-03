@@ -2,13 +2,17 @@ import { WebSocketServer, WebSocket } from "ws";
 import type { IncomingMessage } from "http";
 import jwt from "jsonwebtoken";
 import type { WsServerMessage, WsClientMessage } from "./types.js";
-import { startSession, stopSession, sendPrompt, getSessionOutput } from "./session-manager.js";
+import { startSession, stopSession, sendPrompt, getSessionOutput, getSession } from "./session-manager.js";
 import { log } from "./logger.js";
 
 const JWT_SECRET = process.env.JWT_SECRET || "vibecode-heaven-dev-secret-change-in-production";
 const COOKIE_NAME = "kf_session";
 
-const clients = new Set<WebSocket>();
+// Maps each connected socket to the userId it authenticated as. Every
+// broadcast() call MUST pass the target user(s) — sessions, tabs, tasks,
+// agents, and errors are all single-tenant, so a message meant for one
+// account must never reach another account's browser tab.
+const clients = new Map<WebSocket, number>();
 
 /**
  * Extracts the JWT token from an incoming WebSocket upgrade request.
@@ -92,7 +96,7 @@ export function setupWebSocket(): WebSocketServer {
       return;
     }
 
-    clients.add(ws);
+    clients.set(ws, userId);
     ws.send(
       JSON.stringify({ type: "connected", message: "Vibecode Heaven WebSocket connected" })
     );
@@ -100,7 +104,7 @@ export function setupWebSocket(): WebSocketServer {
     ws.on("message", (data) => {
       try {
         const msg: WsClientMessage = JSON.parse(data.toString());
-        handleClientMessage(ws, msg);
+        handleClientMessage(ws, userId, msg);
       } catch {
         /* ignore malformed messages */
       }
@@ -118,23 +122,38 @@ export function setupWebSocket(): WebSocketServer {
   return wss;
 }
 
-async function handleClientMessage(ws: WebSocket, msg: WsClientMessage): Promise<void> {
+/**
+ * All session-scoped WS actions must verify the session belongs to the
+ * connection's authenticated user — otherwise any logged-in user could
+ * start/stop/prompt/read another account's session just by guessing an id.
+ */
+function isOwnSession(sessionId: number, userId: number): boolean {
+  const session = getSession(sessionId);
+  return !!session && session.userId === userId;
+}
+
+async function handleClientMessage(ws: WebSocket, userId: number, msg: WsClientMessage): Promise<void> {
   switch (msg.action) {
     case "session-start":
-      await startSession(msg.sessionId);
+      if (isOwnSession(msg.sessionId, userId)) {
+        await startSession(msg.sessionId);
+      }
       break;
 
     case "session-stop":
-      await stopSession(msg.sessionId);
+      if (isOwnSession(msg.sessionId, userId)) {
+        await stopSession(msg.sessionId);
+      }
       break;
 
     case "session-prompt":
-      if ("text" in msg && msg.text) {
+      if ("text" in msg && msg.text && isOwnSession(msg.sessionId, userId)) {
         await sendPrompt(msg.sessionId, msg.text);
       }
       break;
 
     case "session-get-output": {
+      if (!isOwnSession(msg.sessionId, userId)) break;
       const output = getSessionOutput(msg.sessionId);
       ws.send(JSON.stringify({
         type: "session-output-history",
@@ -158,10 +177,19 @@ export function getConnectedClientCount(): number {
   return clients.size;
 }
 
-export function broadcast(msg: WsServerMessage): void {
+/**
+ * Send a message to every connection belonging to a single user (a user may
+ * have multiple tabs/devices open, so this is a "for each of their sockets"
+ * send, not a single-socket send).
+ *
+ * Every tasks/tabs/sessions/agents/errors record is single-tenant, so all
+ * call sites MUST pass the owning userId — there is no "broadcast to
+ * everyone" use case for this data.
+ */
+export function broadcastToUser(userId: number, msg: WsServerMessage): void {
   const data = JSON.stringify(msg);
-  for (const client of clients) {
-    if (client.readyState === WebSocket.OPEN) {
+  for (const [client, clientUserId] of clients) {
+    if (clientUserId === userId && client.readyState === WebSocket.OPEN) {
       client.send(data);
     }
   }

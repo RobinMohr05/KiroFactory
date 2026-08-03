@@ -2,7 +2,7 @@ import { Router, type Request, type Response } from "express";
 import { getErrorsByUserId, getErrorById, markErrorTaskCreated, clearErrorsByUserId } from "../error-store.js";
 import { createTask } from "../db/tasks.js";
 import { getAllTabs } from "../db/tabs.js";
-import { broadcast } from "../websocket-handler.js";
+import { broadcastToUser } from "../websocket-handler.js";
 import { markTaskBroadcast } from "../broadcast-tracker.js";
 import { isDbAvailable } from "../db/connection.js";
 import { requireAuth, getUserId } from "../middleware/auth.js";
@@ -114,7 +114,7 @@ router.post("/:id/create-task", async (req: Request, res: Response) => {
     markErrorTaskCreated(errorId, task.id);
 
     // Broadcast the new task
-    broadcast({ type: "task-created", task });
+    broadcastToUser(userId, { type: "task-created", task });
     markTaskBroadcast(task.id);
 
     res.status(201).json({ task, errorId });
