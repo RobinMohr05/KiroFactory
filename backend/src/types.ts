@@ -267,6 +267,13 @@ export interface Session {
   currentActivity?: Activity;
   /** Currently claimed task ID (while in loop mode) */
   currentTaskId?: number;
+  /**
+   * True for the one permanent, agentless "Chat" session every user gets.
+   * Pinned sessions are always sorted first in the UI and cannot be deleted.
+   * Never settable through the public create-session API — only internal
+   * code (registration / startup backfill) may set this.
+   */
+  pinned: boolean;
 }
 
 export interface CreateSessionInput {
@@ -287,6 +294,11 @@ export interface CreateSessionInput {
   tabIds?: number[];
   /** Owner user ID (for multi-tenant isolation) */
   userId?: number;
+  /**
+   * Internal-only flag for creating the permanent pinned "Chat" session.
+   * Not accepted from the public POST /api/sessions body — the route strips it.
+   */
+  pinned?: boolean;
 }
 
 // ─── WebSocket Messages ──────────────────────────────────────────────────────

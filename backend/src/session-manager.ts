@@ -401,6 +401,7 @@ export function createSession(input: CreateSessionInput): Session {
       userId: input.userId ?? 0,
       createdAt: now(),
       output: [],
+      pinned: input.pinned === true,
     },
     runner: null,
     abortController: null,
@@ -456,6 +457,7 @@ export function getSessionOutput(id: string): OutputEntry[] {
 export function deleteSession(id: string): boolean {
   const session = sessions.get(id);
   if (!session) return false;
+  if (session.meta.pinned) return false; // pinned Chat session is permanent
 
   // Stop first if running
   if (session.meta.status === "running") {

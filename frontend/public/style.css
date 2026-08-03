@@ -1181,6 +1181,22 @@ textarea:focus {
   border-left: 3px solid var(--ta-mango);
 }
 
+.session-item-pinned {
+  border-bottom: 1px solid var(--border-color);
+  margin-bottom: 0.25rem;
+  padding-bottom: 0.9rem;
+}
+
+.session-item-pin {
+  margin-right: 0.25rem;
+}
+
+.session-detail-name-pinned::after {
+  content: '📌';
+  margin-left: 0.4rem;
+  font-size: 0.8em;
+}
+
 .session-item-info {
   display: flex;
   flex-direction: column;
