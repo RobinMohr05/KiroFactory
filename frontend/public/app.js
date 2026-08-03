@@ -355,6 +355,23 @@ function handleWsMessage(message) {
       if (type === 'error-created') {
         handleErrorWsMessage(message);
       }
+      if (type === 'error-dismissed') {
+        const { errorId } = message;
+        if (errorId) {
+          agentErrors = agentErrors.filter(e => e.id !== errorId);
+          updateErrorBadge();
+          if (!panelErrors.hidden) {
+            renderErrors();
+          }
+        }
+      }
+      if (type === 'errors-cleared') {
+        agentErrors = [];
+        updateErrorBadge();
+        if (!panelErrors.hidden) {
+          renderErrors();
+        }
+      }
       break;
   }
 }
@@ -1395,8 +1412,12 @@ const sessionDeleteBtn = document.getElementById('sessionDeleteBtn');
 const activityDot = document.getElementById('activityDot');
 const activityText = document.getElementById('activityText');
 const outputPre = document.getElementById('outputPre');
+const scrollToBottomBtn = document.getElementById('scrollToBottomBtn');
 const sessionPromptInput = document.getElementById('sessionPromptInput');
 const sessionPromptSendBtn = document.getElementById('sessionPromptSendBtn');
+
+// Auto-scroll state: when true, new output automatically scrolls to bottom
+let autoScrollEnabled = true;
 
 // Quick-start (empty state) DOM refs
 const quickStartForm = document.getElementById('quickStartForm');
@@ -1513,6 +1534,26 @@ function setupSessions() {
       selection.removeAllRanges();
       selection.addRange(range);
     }
+  });
+
+  // Scroll lock: detect user scrolling away from bottom
+  sessionOutputEl.addEventListener('scroll', () => {
+    const threshold = 30; // px tolerance for "at bottom"
+    const atBottom = sessionOutputEl.scrollHeight - sessionOutputEl.scrollTop - sessionOutputEl.clientHeight < threshold;
+    if (atBottom) {
+      autoScrollEnabled = true;
+      scrollToBottomBtn.hidden = true;
+    } else {
+      autoScrollEnabled = false;
+      scrollToBottomBtn.hidden = false;
+    }
+  });
+
+  // Scroll-to-bottom button: snap to bottom and resume auto-scroll
+  scrollToBottomBtn.addEventListener('click', () => {
+    autoScrollEnabled = true;
+    scrollToBottomBtn.hidden = true;
+    sessionOutputEl.scrollTop = sessionOutputEl.scrollHeight;
   });
 
   // Session tabs editing
@@ -1855,6 +1896,9 @@ function selectSession(id) {
 }
 
 async function loadSessionOutput(id) {
+  // Reset auto-scroll when switching sessions
+  autoScrollEnabled = true;
+  scrollToBottomBtn.hidden = true;
   const entries = await fetchSessionOutput(id);
   outputPre.innerHTML = '';
   entries.forEach(entry => appendOutputEntry(entry));
@@ -1920,6 +1964,8 @@ function showSessionEmpty() {
   sessionEmptyState.hidden = false;
   sessionDetail.hidden = true;
   outputPre.innerHTML = '';
+  autoScrollEnabled = true;
+  scrollToBottomBtn.hidden = true;
   populateQuickStartAgentDropdown();
   quickStartPrompt.focus();
 }
@@ -2024,6 +2070,7 @@ function appendOutputEntry(entry) {
 }
 
 function scrollOutputToBottom() {
+  if (!autoScrollEnabled) return;
   const container = document.getElementById('sessionOutput');
   if (container) {
     container.scrollTop = container.scrollHeight;
@@ -2555,7 +2602,7 @@ function setupErrors() {
   clearErrorsBtn.addEventListener('click', async () => {
     if (!confirm('Clear all agent errors? This cannot be undone.')) return;
     try {
-      const res = await fetch('/api/errors', { method: 'DELETE' });
+      const res = await apiFetch('/api/errors', { method: 'DELETE' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       agentErrors = [];
       renderErrors();
@@ -2571,7 +2618,7 @@ function setupErrors() {
 
 async function fetchErrorCount() {
   try {
-    const res = await fetch('/api/errors');
+    const res = await apiFetch('/api/errors');
     if (!res.ok) return;
     const errors = await res.json();
     agentErrors = errors;
@@ -2583,7 +2630,7 @@ async function fetchErrorCount() {
 
 async function fetchErrors() {
   try {
-    const res = await fetch('/api/errors');
+    const res = await apiFetch('/api/errors');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     agentErrors = await res.json();
     renderErrors();
@@ -2656,6 +2703,7 @@ function createErrorCard(error) {
   } else {
     actionsHtml = `<button class="btn btn-primary btn-sm error-create-task-btn" data-error-id="${error.id}">🐛 Create Bug Task</button>`;
   }
+  actionsHtml += `<button class="btn btn-sm error-dismiss-btn" data-error-id="${error.id}" title="Dismiss this error">✕ Dismiss</button>`;
 
   let taskMeta = '';
   if (error.taskTitle) {
@@ -2682,12 +2730,18 @@ function createErrorCard(error) {
     btn.addEventListener('click', () => createBugTaskFromError(error.id));
   }
 
+  // Attach event listener for "Dismiss" button
+  const dismissBtn = card.querySelector('.error-dismiss-btn');
+  if (dismissBtn) {
+    dismissBtn.addEventListener('click', () => dismissError(error.id));
+  }
+
   return card;
 }
 
 async function createBugTaskFromError(errorId) {
   try {
-    const res = await fetch(`/api/errors/${errorId}/create-task`, {
+    const res = await apiFetch(`/api/errors/${errorId}/create-task`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({})
@@ -2716,6 +2770,20 @@ async function createBugTaskFromError(errorId) {
   } catch (e) {
     console.error('Failed to create bug task:', e);
     alert('Failed to create bug task. See console for details.');
+  }
+}
+
+async function dismissError(errorId) {
+  try {
+    const res = await apiFetch(`/api/errors/${errorId}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+    // Remove from local state
+    agentErrors = agentErrors.filter(e => e.id !== errorId);
+    renderErrors();
+    updateErrorBadge();
+  } catch (e) {
+    console.error('Failed to dismiss error:', e);
   }
 }
 
