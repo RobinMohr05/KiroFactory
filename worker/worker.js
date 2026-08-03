@@ -376,8 +376,10 @@ function resetWorkingTree() {
 function createTaskBranch(taskMeta) {
   const branchName = buildBranchName(taskMeta.type || "task", taskMeta.id, taskMeta.title);
   resetWorkingTree();
-  exec(`git checkout ${DEV_BRANCH}`, { cwd: WORKSPACE });
-  exec(`git checkout -B "${branchName}" ${DEV_BRANCH}`, { cwd: WORKSPACE });
+  // execFileArgs — not exec() — so nothing DEV_BRANCH/branchName contain can
+  // ever be re-parsed by a shell (see the note on execFileArgs() below).
+  execFileArgs("git", ["checkout", DEV_BRANCH], { cwd: WORKSPACE });
+  execFileArgs("git", ["checkout", "-B", branchName, DEV_BRANCH], { cwd: WORKSPACE });
   sendOutput(`Created branch: ${branchName} (from ${DEV_BRANCH})`, "system");
   return branchName;
 }
@@ -468,7 +470,9 @@ function verifyPushAccess() {
   }
 
   try {
-    exec(`git push --dry-run "${authRemoteUrl}" HEAD:refs/heads/__vch_push_preflight__`, { cwd: WORKSPACE });
+    execFileArgs("git", ["push", "--dry-run", authRemoteUrl, "HEAD:refs/heads/__vch_push_preflight__"], {
+      cwd: WORKSPACE,
+    });
     logInfo("Push access verified");
     sendOutput("Git push access verified", "system");
     return true;
@@ -516,13 +520,13 @@ function setupRepo() {
   let clonedBranch = null;
   for (const branch of branchesToTry) {
     try {
-      exec(`git clone --branch ${branch} "${authRemoteUrl}" ${WORKSPACE}`);
+      execFileArgs("git", ["clone", "--branch", branch, authRemoteUrl, WORKSPACE]);
       clonedBranch = branch;
       break;
     } catch {
       // Branch doesn't exist on remote, try next
       try {
-        exec(`rm -rf ${WORKSPACE}`);
+        execFileArgs("rm", ["-rf", WORKSPACE]);
       } catch { /* ignore cleanup errors */ }
     }
   }
@@ -537,10 +541,10 @@ function setupRepo() {
   DEV_BRANCH = clonedBranch;
 
   // Keep the PAT out of .git/config — pushes use authRemoteUrl explicitly.
-  exec(`git remote set-url origin "${REPO_URL}"`, { cwd: WORKSPACE });
+  execFileArgs("git", ["remote", "set-url", "origin", REPO_URL], { cwd: WORKSPACE });
 
-  exec(`git config user.name "${GIT_USER_NAME}"`, { cwd: WORKSPACE });
-  exec(`git config user.email "${GIT_USER_EMAIL}"`, { cwd: WORKSPACE });
+  execFileArgs("git", ["config", "user.name", GIT_USER_NAME], { cwd: WORKSPACE });
+  execFileArgs("git", ["config", "user.email", GIT_USER_EMAIL], { cwd: WORKSPACE });
 
   verifyPushAccess();
 
@@ -691,7 +695,9 @@ function commitAndPush() {
   // committed, and the orchestrator needs to tell "the agent produced nothing"
   // apart from "the agent produced work we could not deliver".
   try {
-    exec(`git push "${authRemoteUrl || "origin"}" "HEAD:refs/heads/${branchName}"`, { cwd: WORKSPACE });
+    execFileArgs("git", ["push", authRemoteUrl || "origin", `HEAD:refs/heads/${branchName}`], {
+      cwd: WORKSPACE,
+    });
   } catch (err) {
     const pushError = redactSecrets(err?.message || String(err));
     logError("git push failed", { branchName, error: pushError });
@@ -1517,7 +1523,7 @@ function handlePrompt(text, taskMeta) {
       // Fall back to a session-scoped branch (-B so a retry can't collide).
       currentBranchName = `kirofactory/${SESSION_ID}`;
       try {
-        exec(`git checkout -B "${currentBranchName}"`, { cwd: WORKSPACE });
+        execFileArgs("git", ["checkout", "-B", currentBranchName], { cwd: WORKSPACE });
         sendOutput(`Using fallback branch: ${currentBranchName}`, "stderr");
       } catch (fallbackErr) {
         logError("Fallback branch checkout failed", { error: fallbackErr?.message || String(fallbackErr) });
