@@ -1698,6 +1698,34 @@ async function runLoopModeAca(
       });
     }
 
+    // A cancelled turn (timeout, or the orchestrator's own session/cancel) never
+    // reached end_turn — the agent was mid-work when it was cut off. It can still
+    // report hasChanges + a clean push (git operations run unconditionally after
+    // the turn ends), so without this check a task that never finished — and was
+    // very possibly never verified to build — looks identical to a real success
+    // and gets marked "developed" with a PR opened on unverified work.
+    if (success && promptResult.stopReason === "cancelled") {
+      success = false;
+      failureReason = `Agent turn was cancelled (timeout) before completing — stopReason: cancelled, tool calls: ${promptResult.toolCalls ?? 0}, duration: ${Math.round((promptResult.durationMs ?? 0) / 1000)}s`;
+      appendOutput(managed, {
+        timestamp: now(),
+        stream: "stderr",
+        text: `✖ Agent turn was cancelled before it finished (likely a timeout) — task reset to "todo" instead of being marked developed.`,
+      });
+      recordError({
+        sessionId: meta.id,
+        sessionName: meta.name,
+        agent: meta.agent,
+        message: failureReason,
+        context:
+          `Task "${task.title}" (ID: ${task.id}, type: ${task.type}, priority: P${task.priority}) was cancelled ` +
+          `before the agent reached end_turn. Any pushed branch/PR reflects unverified, possibly incomplete work.`,
+        taskId: task.id,
+        taskTitle: task.title,
+        userId: meta.userId,
+      });
+    }
+
     // Check if the worker produced any file changes
     if (success && !promptResult.hasChanges) {
       success = false;
