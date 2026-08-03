@@ -1,67 +1,22 @@
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { getPool, isDbAvailable, sql } from "./connection.js";
 
-const SCHEMA_SQL = `
--- Tabs (formerly boards)
-CREATE TABLE tabs (
-    id              INT             IDENTITY(1,1) PRIMARY KEY,
-    name            NVARCHAR(100)   NOT NULL,
-    repository_url  NVARCHAR(500)   NULL,
-    columns_json    NVARCHAR(MAX)   NOT NULL DEFAULT '["todo","in-progress","developed"]',
-    created_at      DATETIME2       NOT NULL DEFAULT GETUTCDATE()
-);
-
-INSERT INTO tabs (name) VALUES ('generic');
-
--- Tasks
-CREATE TABLE tasks (
-    id              INT             IDENTITY(1,1) PRIMARY KEY,
-    title           NVARCHAR(200)   NOT NULL,
-    priority        TINYINT         NOT NULL CHECK (priority BETWEEN 1 AND 4),
-    type            VARCHAR(20)     NOT NULL CHECK (type IN ('improvement', 'bug', 'feature')),
-    state           VARCHAR(50)     NOT NULL DEFAULT 'todo',
-    description     NVARCHAR(MAX)   NOT NULL DEFAULT '',
-    files           NVARCHAR(MAX)   NOT NULL DEFAULT '[]',
-    origin          VARCHAR(20)     NOT NULL CHECK (origin IN ('user', 'ai', 'user-assisted')),
-    created_at      DATETIME2       NOT NULL DEFAULT GETUTCDATE(),
-    updated_at      DATETIME2       NOT NULL DEFAULT GETUTCDATE()
-);
-
-CREATE INDEX IX_tasks_todo_priority ON tasks (priority, origin)
-WHERE state = 'todo';
-
--- Junction: tasks <-> tabs (many-to-many)
-CREATE TABLE task_tabs (
-    task_id     INT NOT NULL,
-    tab_id      INT NOT NULL,
-    PRIMARY KEY (task_id, tab_id),
-    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
-    FOREIGN KEY (tab_id) REFERENCES tabs(id) ON DELETE CASCADE
-);
-
--- Agents
-CREATE TABLE agents (
-    id              INT             IDENTITY(1,1) PRIMARY KEY,
-    name            NVARCHAR(100)   NOT NULL,
-    description     NVARCHAR(MAX)   NOT NULL DEFAULT '',
-    prompt          NVARCHAR(MAX)   NOT NULL DEFAULT '',
-    tools           NVARCHAR(MAX)   NOT NULL DEFAULT '[]',
-    allowed_tools   NVARCHAR(MAX)   NOT NULL DEFAULT '[]',
-    tools_settings  NVARCHAR(MAX)   NOT NULL DEFAULT '{}',
-    resources       NVARCHAR(MAX)   NOT NULL DEFAULT '[]',
-    user_id         INT             NULL,
-    created_at      DATETIME2       NOT NULL DEFAULT GETUTCDATE(),
-    updated_at      DATETIME2       NOT NULL DEFAULT GETUTCDATE()
-);
-
--- Junction: agents <-> tabs (many-to-many)
-CREATE TABLE agent_tabs (
-    agent_id    INT   NOT NULL,
-    tab_id      INT   NOT NULL,
-    PRIMARY KEY (agent_id, tab_id),
-    FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE,
-    FOREIGN KEY (tab_id) REFERENCES tabs(id) ON DELETE CASCADE
-);
-`;
+/**
+ * Load the canonical schema SQL from backend/sql/schema.sql at runtime.
+ * This eliminates duplication — there is exactly one source of truth for the
+ * fresh-install schema. The DROP TABLE statements at the top of schema.sql are
+ * stripped out so the migration only creates (never drops existing tables).
+ */
+function loadSchemaSql(): string {
+  const schemaPath = resolve(import.meta.dirname, "../../sql/schema.sql");
+  const raw = readFileSync(schemaPath, "utf-8");
+  // Strip DROP TABLE IF EXISTS lines — we only want the CREATE statements
+  return raw
+    .split("\n")
+    .filter((line) => !line.trim().startsWith("DROP TABLE"))
+    .join("\n");
+}
 
 /**
  * Runs incremental upgrades on an existing database.
@@ -645,8 +600,6 @@ async function runUpgrades(pool: sql.ConnectionPool): Promise<void> {
 
     // Migrate existing sessions.json data if it exists
     try {
-      const { readFileSync, existsSync } = await import("node:fs");
-      const { resolve } = await import("node:path");
       const storePath = resolve(import.meta.dirname, "../../../sessions.json");
       if (existsSync(storePath)) {
         const raw = readFileSync(storePath, "utf-8");
@@ -1059,7 +1012,6 @@ async function backfillPinnedChatSessions(pool: sql.ConnectionPool): Promise<voi
  * in-memory session map and WebSocket broadcast stay in sync.
  */
 async function createPinnedChatSession(pool: sql.ConnectionPool, userId: number): Promise<void> {
-  const { resolve } = await import("node:path");
   const cwd = resolve(import.meta.dirname, "../../..");
 
   await pool
@@ -1107,7 +1059,8 @@ export async function runMigration(): Promise<boolean> {
     }
 
     console.log("[migrate] Creating tables...");
-    await pool.request().batch(SCHEMA_SQL);
+    const schemaSql = loadSchemaSql();
+    await pool.request().batch(schemaSql);
     console.log("[migrate] Migration complete.");
     return true;
   } catch (err: any) {
