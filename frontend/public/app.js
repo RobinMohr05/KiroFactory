@@ -1504,6 +1504,7 @@ let sessions = [];
 let activeSessionId = null;
 
 // Session DOM refs
+const sessionListPinned = document.getElementById('sessionListPinned');
 const sessionList = document.getElementById('sessionList');
 const newSessionBtn = document.getElementById('newSessionBtn');
 const sessionModal = document.getElementById('sessionModal');
@@ -2136,6 +2137,7 @@ function updateSessionPinnedUI(session) {
 }
 
 function renderSessionList() {
+  sessionListPinned.innerHTML = '';
   sessionList.innerHTML = '';
 
   // Filter sessions to only show those assigned to the current board/tab
@@ -2186,7 +2188,13 @@ function renderSessionList() {
     `;
 
     li.addEventListener('click', () => selectSession(session.id));
-    sessionList.appendChild(li);
+
+    // Render pinned sessions in the pinned (non-scrolling) section
+    if (session.pinned) {
+      sessionListPinned.appendChild(li);
+    } else {
+      sessionList.appendChild(li);
+    }
   });
 }
 
