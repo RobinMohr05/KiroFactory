@@ -4,7 +4,7 @@ const SCHEMA_SQL = `
 -- Tabs (formerly boards)
 CREATE TABLE tabs (
     id              INT             IDENTITY(1,1) PRIMARY KEY,
-    name            NVARCHAR(100)   NOT NULL UNIQUE,
+    name            NVARCHAR(100)   NOT NULL,
     repository_url  NVARCHAR(500)   NULL,
     columns_json    NVARCHAR(MAX)   NOT NULL DEFAULT '["todo","in-progress","developed"]',
     created_at      DATETIME2       NOT NULL DEFAULT GETUTCDATE()
@@ -38,11 +38,27 @@ CREATE TABLE task_tabs (
     FOREIGN KEY (tab_id) REFERENCES tabs(id) ON DELETE CASCADE
 );
 
+-- Agents
+CREATE TABLE agents (
+    id              INT             IDENTITY(1,1) PRIMARY KEY,
+    name            NVARCHAR(100)   NOT NULL,
+    description     NVARCHAR(MAX)   NOT NULL DEFAULT '',
+    prompt          NVARCHAR(MAX)   NOT NULL DEFAULT '',
+    tools           NVARCHAR(MAX)   NOT NULL DEFAULT '[]',
+    allowed_tools   NVARCHAR(MAX)   NOT NULL DEFAULT '[]',
+    tools_settings  NVARCHAR(MAX)   NOT NULL DEFAULT '{}',
+    resources       NVARCHAR(MAX)   NOT NULL DEFAULT '[]',
+    user_id         INT             NULL,
+    created_at      DATETIME2       NOT NULL DEFAULT GETUTCDATE(),
+    updated_at      DATETIME2       NOT NULL DEFAULT GETUTCDATE()
+);
+
 -- Junction: agents <-> tabs (many-to-many)
 CREATE TABLE agent_tabs (
-    agent_name  NVARCHAR(100)   NOT NULL,
-    tab_id      INT             NOT NULL,
-    PRIMARY KEY (agent_name, tab_id),
+    agent_id    INT   NOT NULL,
+    tab_id      INT   NOT NULL,
+    PRIMARY KEY (agent_id, tab_id),
+    FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE,
     FOREIGN KEY (tab_id) REFERENCES tabs(id) ON DELETE CASCADE
 );
 `;
@@ -804,6 +820,108 @@ async function runUpgrades(pool: sql.ConnectionPool): Promise<void> {
       ALTER TABLE users ADD default_git_provider VARCHAR(20) NULL
     `);
     console.log("[migrate] Upgrade complete: default_git_provider added to users.");
+  }
+
+  // Upgrade 18: Remove UNIQUE constraint on tabs.name and restructure agents to use numeric ID
+  // ─── Part A: Drop UNIQUE constraint on tabs.name ───
+  const tabsUniqueConstraint = await pool.request().query(`
+    SELECT tc.CONSTRAINT_NAME
+    FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
+    JOIN INFORMATION_SCHEMA.CONSTRAINT_COLUMN_USAGE ccu
+      ON tc.CONSTRAINT_NAME = ccu.CONSTRAINT_NAME
+    WHERE tc.TABLE_NAME = 'tabs'
+      AND ccu.COLUMN_NAME = 'name'
+      AND tc.CONSTRAINT_TYPE = 'UNIQUE'
+  `);
+
+  if (tabsUniqueConstraint.recordset.length > 0) {
+    const constraintName = tabsUniqueConstraint.recordset[0].CONSTRAINT_NAME;
+    console.log(`[migrate] Upgrading: dropping UNIQUE constraint on tabs.name (${constraintName})...`);
+    await pool.request().query(`ALTER TABLE tabs DROP CONSTRAINT [${constraintName}]`);
+    console.log("[migrate] Upgrade complete: tabs.name is no longer UNIQUE.");
+  }
+
+  // ─── Part B: Add numeric id column to agents table ───
+  const agentsIdColExists = await pool.request().query(`
+    SELECT COUNT(*) AS cnt
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_NAME = 'agents' AND COLUMN_NAME = 'id'
+  `);
+
+  if (agentsIdColExists.recordset[0].cnt === 0) {
+    console.log("[migrate] Upgrading: adding numeric id to agents table and restructuring...");
+
+    // 1. Drop all FK constraints referencing agents table
+    const agentFks = await pool.request().query(`
+      SELECT fk.name AS fk_name, OBJECT_NAME(fk.parent_object_id) AS table_name
+      FROM sys.foreign_keys fk
+      WHERE OBJECT_NAME(fk.referenced_object_id) = 'agents'
+    `);
+    for (const fk of agentFks.recordset) {
+      try {
+        await pool.request().query(`ALTER TABLE [${fk.table_name}] DROP CONSTRAINT [${fk.fk_name}]`);
+      } catch (e: any) {
+        console.warn(`[migrate] ⚠ Could not drop FK ${fk.fk_name}: ${e.message}`);
+      }
+    }
+
+    // 2. Drop PK constraint on agents.name
+    const agentPk = await pool.request().query(`
+      SELECT tc.CONSTRAINT_NAME
+      FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
+      WHERE tc.TABLE_NAME = 'agents' AND tc.CONSTRAINT_TYPE = 'PRIMARY KEY'
+    `);
+    if (agentPk.recordset.length > 0) {
+      const pkName = agentPk.recordset[0].CONSTRAINT_NAME;
+      await pool.request().query(`ALTER TABLE agents DROP CONSTRAINT [${pkName}]`);
+    }
+
+    // 3. Add id column as IDENTITY
+    await pool.request().query(`
+      ALTER TABLE agents ADD id INT IDENTITY(1,1) NOT NULL
+    `);
+
+    // 4. Add PK constraint on id
+    await pool.request().query(`
+      ALTER TABLE agents ADD CONSTRAINT PK_agents PRIMARY KEY (id)
+    `);
+
+    // 5. Recreate agent_tabs with agent_id (INT) instead of agent_name
+    // First, save existing mappings
+    const existingMappings = await pool.request().query(`
+      SELECT at2.agent_name, at2.tab_id
+      FROM agent_tabs at2
+    `);
+
+    // Drop old agent_tabs table
+    await pool.request().query(`DROP TABLE agent_tabs`);
+
+    // Create new agent_tabs with agent_id
+    await pool.request().query(`
+      CREATE TABLE agent_tabs (
+        agent_id    INT   NOT NULL,
+        tab_id      INT   NOT NULL,
+        PRIMARY KEY (agent_id, tab_id),
+        FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE,
+        FOREIGN KEY (tab_id) REFERENCES tabs(id) ON DELETE CASCADE
+      )
+    `);
+
+    // Restore mappings using the new id column
+    for (const mapping of existingMappings.recordset) {
+      const agentIdResult = await pool.request()
+        .input("agentName", sql.NVarChar(100), mapping.agent_name)
+        .query(`SELECT id FROM agents WHERE name = @agentName`);
+      if (agentIdResult.recordset.length > 0) {
+        const agentId = agentIdResult.recordset[0].id;
+        await pool.request()
+          .input("agentId", sql.Int, agentId)
+          .input("tabId", sql.Int, mapping.tab_id)
+          .query(`INSERT INTO agent_tabs (agent_id, tab_id) VALUES (@agentId, @tabId)`);
+      }
+    }
+
+    console.log("[migrate] Upgrade complete: agents now uses numeric id as PK, agent_tabs uses agent_id.");
   }
 }
 

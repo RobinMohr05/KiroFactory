@@ -6,6 +6,7 @@ import type { Agent, CreateAgentInput, UpdateAgentInput } from "../types.js";
  */
 function mapRowToAgent(row: Record<string, unknown>): Agent {
   return {
+    id: row.id as number,
     name: row.name as string,
     description: row.description as string,
     prompt: row.prompt as string,
@@ -42,16 +43,16 @@ export async function getAllAgents(userId?: number): Promise<Agent[]> {
 
   // Attach tabIds for each agent
   const tabsResult = await pool.request().query(
-    "SELECT agent_name, tab_id FROM agent_tabs ORDER BY agent_name"
+    "SELECT agent_id, tab_id FROM agent_tabs ORDER BY agent_id"
   );
-  const tabMap = new Map<string, number[]>();
+  const tabMap = new Map<number, number[]>();
   for (const row of tabsResult.recordset) {
-    const name = row.agent_name as string;
-    if (!tabMap.has(name)) tabMap.set(name, []);
-    tabMap.get(name)!.push(row.tab_id as number);
+    const id = row.agent_id as number;
+    if (!tabMap.has(id)) tabMap.set(id, []);
+    tabMap.get(id)!.push(row.tab_id as number);
   }
   for (const agent of agents) {
-    agent.tabIds = tabMap.get(agent.name) || [];
+    agent.tabIds = tabMap.get(agent.id) || [];
   }
 
   return agents;
@@ -74,9 +75,33 @@ export async function getAgentByName(name: string): Promise<Agent | null> {
   // Attach tabIds
   const tabsResult = await pool
     .request()
-    .input("agentName", sql.NVarChar(100), name)
-    .query("SELECT tab_id FROM agent_tabs WHERE agent_name = @agentName");
-  agent.tabIds = tabsResult.recordset.map((row) => row.tab_id as number);
+    .input("agentId", sql.Int, agent.id)
+    .query("SELECT tab_id FROM agent_tabs WHERE agent_id = @agentId");
+  agent.tabIds = tabsResult.recordset.map((row: Record<string, unknown>) => row.tab_id as number);
+
+  return agent;
+}
+
+/**
+ * Get a single agent by numeric ID.
+ */
+export async function getAgentById(id: number): Promise<Agent | null> {
+  const pool = await getPool();
+  const result = await pool
+    .request()
+    .input("id", sql.Int, id)
+    .query("SELECT * FROM agents WHERE id = @id");
+
+  if (result.recordset.length === 0) return null;
+
+  const agent = mapRowToAgent(result.recordset[0]);
+
+  // Attach tabIds
+  const tabsResult = await pool
+    .request()
+    .input("agentId", sql.Int, agent.id)
+    .query("SELECT tab_id FROM agent_tabs WHERE agent_id = @agentId");
+  agent.tabIds = tabsResult.recordset.map((row: Record<string, unknown>) => row.tab_id as number);
 
   return agent;
 }
@@ -106,7 +131,7 @@ export async function createAgent(input: CreateAgentInput): Promise<Agent> {
 
   // Assign to tabs if provided
   if (input.tabIds && input.tabIds.length > 0) {
-    await setAgentTabAssignments(input.name, input.tabIds);
+    await setAgentTabAssignments(agent.id, input.tabIds);
     agent.tabIds = input.tabIds;
   } else {
     agent.tabIds = [];
@@ -116,67 +141,24 @@ export async function createAgent(input: CreateAgentInput): Promise<Agent> {
 }
 
 /**
- * Update an existing agent. If name changes, the old name row is deleted and a new one is created.
+ * Update an existing agent by numeric ID.
  */
 export async function updateAgent(
-  currentName: string,
+  agentId: number,
   input: UpdateAgentInput
 ): Promise<Agent | null> {
   const pool = await getPool();
 
   // Check the agent exists
-  const existing = await getAgentByName(currentName);
+  const existing = await getAgentById(agentId);
   if (!existing) return null;
 
-  const newName = input.name || currentName;
-  const isRename = newName !== currentName;
+  const newName = input.name || existing.name;
 
-  if (isRename) {
-    // Check new name doesn't exist
-    const conflict = await getAgentByName(newName);
-    if (conflict) {
-      throw new Error("An agent with this name already exists");
-    }
-
-    // Delete old agent (cascade removes agent_tabs entries)
-    await pool
-      .request()
-      .input("oldName", sql.NVarChar(100), currentName)
-      .query("DELETE FROM agents WHERE name = @oldName");
-
-    // Insert as new name (preserve user_id from the existing agent)
-    const result = await pool
-      .request()
-      .input("name", sql.NVarChar(100), newName)
-      .input("description", sql.NVarChar(sql.MAX), input.description ?? existing.description)
-      .input("prompt", sql.NVarChar(sql.MAX), input.prompt ?? existing.prompt)
-      .input("tools", sql.NVarChar(sql.MAX), JSON.stringify(input.tools ?? existing.tools))
-      .input("allowedTools", sql.NVarChar(sql.MAX), JSON.stringify(input.allowedTools ?? existing.allowedTools))
-      .input("toolsSettings", sql.NVarChar(sql.MAX), JSON.stringify(input.toolsSettings ?? existing.toolsSettings))
-      .input("resources", sql.NVarChar(sql.MAX), JSON.stringify(input.resources ?? existing.resources))
-      .input("userId", sql.Int, existing.userId)
-      .query(`
-        INSERT INTO agents (name, description, prompt, tools, allowed_tools, tools_settings, resources, user_id)
-        OUTPUT INSERTED.*
-        VALUES (@name, @description, @prompt, @tools, @allowedTools, @toolsSettings, @resources, @userId)
-      `);
-
-    const agent = mapRowToAgent(result.recordset[0]);
-
-    // Reassign tabs
-    const tabIds = input.tabIds ?? existing.tabIds ?? [];
-    if (tabIds.length > 0) {
-      await setAgentTabAssignments(newName, tabIds);
-    }
-    agent.tabIds = tabIds;
-
-    return agent;
-  }
-
-  // Simple update (no rename)
   const result = await pool
     .request()
-    .input("name", sql.NVarChar(100), currentName)
+    .input("id", sql.Int, agentId)
+    .input("name", sql.NVarChar(100), newName)
     .input("description", sql.NVarChar(sql.MAX), input.description ?? existing.description)
     .input("prompt", sql.NVarChar(sql.MAX), input.prompt ?? existing.prompt)
     .input("tools", sql.NVarChar(sql.MAX), JSON.stringify(input.tools ?? existing.tools))
@@ -185,7 +167,8 @@ export async function updateAgent(
     .input("resources", sql.NVarChar(sql.MAX), JSON.stringify(input.resources ?? existing.resources))
     .query(`
       UPDATE agents
-      SET description = @description,
+      SET name = @name,
+          description = @description,
           prompt = @prompt,
           tools = @tools,
           allowed_tools = @allowedTools,
@@ -193,7 +176,7 @@ export async function updateAgent(
           resources = @resources,
           updated_at = GETUTCDATE()
       OUTPUT INSERTED.*
-      WHERE name = @name
+      WHERE id = @id
     `);
 
   if (result.recordset.length === 0) return null;
@@ -201,7 +184,7 @@ export async function updateAgent(
 
   // Update tab assignments if provided
   if (input.tabIds !== undefined) {
-    await setAgentTabAssignments(currentName, input.tabIds);
+    await setAgentTabAssignments(agentId, input.tabIds);
     agent.tabIds = input.tabIds;
   } else {
     agent.tabIds = existing.tabIds;
@@ -211,14 +194,14 @@ export async function updateAgent(
 }
 
 /**
- * Delete an agent by name.
+ * Delete an agent by numeric ID.
  */
-export async function deleteAgent(name: string): Promise<boolean> {
+export async function deleteAgent(id: number): Promise<boolean> {
   const pool = await getPool();
   const result = await pool
     .request()
-    .input("name", sql.NVarChar(100), name)
-    .query("DELETE FROM agents WHERE name = @name");
+    .input("id", sql.Int, id)
+    .query("DELETE FROM agents WHERE id = @id");
 
   return (result.rowsAffected[0] ?? 0) > 0;
 }
@@ -239,7 +222,7 @@ export async function getAgentsForTab(tabId: number): Promise<Agent[]> {
     .query(`
       SELECT DISTINCT a.*
       FROM agents a
-      INNER JOIN agent_tabs at2 ON at2.agent_name = a.name
+      INNER JOIN agent_tabs at2 ON at2.agent_id = a.id
       WHERE at2.tab_id = @tabId
          OR at2.tab_id IN (SELECT t.id FROM tabs t WHERE t.name = 'generic')
       ORDER BY a.name ASC
@@ -249,27 +232,22 @@ export async function getAgentsForTab(tabId: number): Promise<Agent[]> {
 
   // Attach tabIds for each agent
   if (agents.length > 0) {
-    const names = agents.map((a) => a.name);
-    const tabsResult = await pool.request().query(
-      `SELECT agent_name, tab_id FROM agent_tabs WHERE agent_name IN (${names.map((_, i) => `@name${i}`).join(", ")})`
-        .replace(/SELECT/, "SELECT") // no-op, just to use parameterized below
-    );
-    // Re-query with parameters for safety
+    const ids = agents.map((a: Agent) => a.id);
     const tabRequest = pool.request();
-    names.forEach((name, i) => {
-      tabRequest.input(`name${i}`, sql.NVarChar(100), name);
+    ids.forEach((id: number, i: number) => {
+      tabRequest.input(`id${i}`, sql.Int, id);
     });
     const tabsRes = await tabRequest.query(
-      `SELECT agent_name, tab_id FROM agent_tabs WHERE agent_name IN (${names.map((_, i) => `@name${i}`).join(", ")})`
+      `SELECT agent_id, tab_id FROM agent_tabs WHERE agent_id IN (${ids.map((_: number, i: number) => `@id${i}`).join(", ")})`
     );
-    const tabMap = new Map<string, number[]>();
+    const tabMap = new Map<number, number[]>();
     for (const row of tabsRes.recordset) {
-      const name = row.agent_name as string;
-      if (!tabMap.has(name)) tabMap.set(name, []);
-      tabMap.get(name)!.push(row.tab_id as number);
+      const id = row.agent_id as number;
+      if (!tabMap.has(id)) tabMap.set(id, []);
+      tabMap.get(id)!.push(row.tab_id as number);
     }
     for (const agent of agents) {
-      agent.tabIds = tabMap.get(agent.name) || [];
+      agent.tabIds = tabMap.get(agent.id) || [];
     }
   }
 
@@ -284,21 +262,21 @@ export async function getAgentsForTab(tabId: number): Promise<Agent[]> {
  * Replace all tab assignments for an agent (set exactly to tabIds).
  */
 async function setAgentTabAssignments(
-  agentName: string,
+  agentId: number,
   tabIds: number[]
 ): Promise<void> {
   const pool = await getPool();
   // Remove all existing
   await pool
     .request()
-    .input("agentName", sql.NVarChar(100), agentName)
-    .query("DELETE FROM agent_tabs WHERE agent_name = @agentName");
+    .input("agentId", sql.Int, agentId)
+    .query("DELETE FROM agent_tabs WHERE agent_id = @agentId");
   // Add new ones
   for (const tabId of tabIds) {
     await pool
       .request()
-      .input("agentName", sql.NVarChar(100), agentName)
+      .input("agentId", sql.Int, agentId)
       .input("tabId", sql.Int, tabId)
-      .query("INSERT INTO agent_tabs (agent_name, tab_id) VALUES (@agentName, @tabId)");
+      .query("INSERT INTO agent_tabs (agent_id, tab_id) VALUES (@agentId, @tabId)");
   }
 }

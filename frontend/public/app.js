@@ -1028,9 +1028,12 @@ function renderBoardMembers() {
         <span class="chip-name">${escapeHtml(agentName)}</span>
       `;
       chip.addEventListener('click', () => {
-        // Switch to Agents tab and select this agent
+        // Switch to Agents tab and select this agent by name lookup
         tabAgents.click();
-        fetchAgents().then(() => selectAgent(agentName));
+        fetchAgents().then(() => {
+          const found = agents.find(a => a.name === agentName);
+          if (found) selectAgent(found.id);
+        });
       });
       chip.style.cursor = 'pointer';
       agentsList.appendChild(chip);
@@ -1997,7 +2000,7 @@ function updateActivityUI(activity) {
 // =============================================================================
 
 let agents = [];
-let activeAgentName = null;
+let activeAgentId = null;
 
 // Agent DOM refs
 const agentList = document.getElementById('agentList');
@@ -2084,18 +2087,19 @@ function setupAgents() {
 
   // Detail actions
   agentEditBtn.addEventListener('click', () => {
-    const agent = agents.find(a => a.name === activeAgentName);
+    const agent = agents.find(a => a.id === activeAgentId);
     if (agent) showAgentModal(agent);
   });
 
   agentDeleteBtn.addEventListener('click', async () => {
-    if (!activeAgentName) return;
-    if (!confirm(`Delete agent "${activeAgentName}"? This cannot be undone.`)) return;
-    await deleteAgent(activeAgentName);
+    if (!activeAgentId) return;
+    const agent = agents.find(a => a.id === activeAgentId);
+    if (!confirm(`Delete agent "${agent?.name || activeAgentId}"? This cannot be undone.`)) return;
+    await deleteAgent(activeAgentId);
   });
 
   agentExportBtn.addEventListener('click', () => {
-    const agent = agents.find(a => a.name === activeAgentName);
+    const agent = agents.find(a => a.id === activeAgentId);
     if (agent) exportAgentAsJson(agent);
   });
 }
@@ -2126,7 +2130,7 @@ async function createAgent(data) {
     const agent = await res.json();
     agents.push(agent);
     renderAgentList();
-    selectAgent(agent.name);
+    selectAgent(agent.id);
     return agent;
   } catch (e) {
     alert('Failed to create agent: ' + e.message);
@@ -2134,9 +2138,9 @@ async function createAgent(data) {
   }
 }
 
-async function updateAgent(name, data) {
+async function updateAgent(id, data) {
   try {
-    const res = await fetch(`/api/agents/${encodeURIComponent(name)}`, {
+    const res = await fetch(`/api/agents/${id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data)
@@ -2146,11 +2150,11 @@ async function updateAgent(name, data) {
       throw new Error(err.error || `HTTP ${res.status}`);
     }
     const agent = await res.json();
-    const idx = agents.findIndex(a => a.name === name);
+    const idx = agents.findIndex(a => a.id === id);
     if (idx !== -1) agents[idx] = agent;
     else agents.push(agent);
     renderAgentList();
-    selectAgent(agent.name);
+    selectAgent(agent.id);
     return agent;
   } catch (e) {
     alert('Failed to update agent: ' + e.message);
@@ -2158,14 +2162,14 @@ async function updateAgent(name, data) {
   }
 }
 
-async function deleteAgent(name) {
+async function deleteAgent(id) {
   try {
-    const res = await fetch(`/api/agents/${encodeURIComponent(name)}`, { method: 'DELETE' });
+    const res = await fetch(`/api/agents/${id}`, { method: 'DELETE' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    agents = agents.filter(a => a.name !== name);
+    agents = agents.filter(a => a.id !== id);
     renderAgentList();
-    if (activeAgentName === name) {
-      activeAgentName = null;
+    if (activeAgentId === id) {
+      activeAgentId = null;
       showAgentEmpty();
     }
   } catch (e) {
@@ -2215,7 +2219,7 @@ function showAgentModal(agent = null) {
   if (agent) {
     agentModalTitle.textContent = 'Edit Agent';
     submitAgentBtn.textContent = 'Update Agent';
-    document.getElementById('agentFormOriginalName').value = agent.name;
+    document.getElementById('agentFormOriginalName').value = String(agent.id);
     document.getElementById('agentFormName').value = agent.name || '';
     document.getElementById('agentFormDescription').value = agent.description || '';
     document.getElementById('agentFormPrompt').value = agent.prompt || '';
@@ -2245,7 +2249,7 @@ function hideAgentModal() {
 
 // ===== Submit Handlers =====
 async function submitAgentGuided() {
-  const originalName = document.getElementById('agentFormOriginalName').value;
+  const originalId = document.getElementById('agentFormOriginalName').value;
   const name = document.getElementById('agentFormName').value.trim();
   const description = document.getElementById('agentFormDescription').value.trim();
   const prompt = document.getElementById('agentFormPrompt').value.trim();
@@ -2273,8 +2277,8 @@ async function submitAgentGuided() {
   const data = { name, description, prompt, tools, allowedTools, toolsSettings, resources };
 
   try {
-    if (originalName) {
-      await updateAgent(originalName, data);
+    if (originalId) {
+      await updateAgent(Number(originalId), data);
     } else {
       await createAgent(data);
     }
@@ -2325,13 +2329,13 @@ function showJsonError(msg) {
 }
 
 // ===== Agent Selection & Rendering =====
-function selectAgent(name) {
-  activeAgentName = name;
-  const agent = agents.find(a => a.name === name);
+function selectAgent(id) {
+  activeAgentId = id;
+  const agent = agents.find(a => a.id === id);
   if (!agent) return;
 
   document.querySelectorAll('.agent-item').forEach(el => {
-    el.classList.toggle('active', el.dataset.agentName === name);
+    el.classList.toggle('active', Number(el.dataset.agentId) === id);
   });
 
   agentEmptyState.hidden = true;
@@ -2359,8 +2363,8 @@ function renderAgentList() {
   agentList.innerHTML = '';
   agents.forEach(agent => {
     const li = document.createElement('li');
-    li.className = 'agent-item' + (agent.name === activeAgentName ? ' active' : '');
-    li.dataset.agentName = agent.name;
+    li.className = 'agent-item' + (agent.id === activeAgentId ? ' active' : '');
+    li.dataset.agentId = String(agent.id);
 
     const initials = (agent.name || '?').substring(0, 2).toUpperCase();
 
@@ -2372,7 +2376,7 @@ function renderAgentList() {
       </div>
     `;
 
-    li.addEventListener('click', () => selectAgent(agent.name));
+    li.addEventListener('click', () => selectAgent(agent.id));
     agentList.appendChild(li);
   });
 }
