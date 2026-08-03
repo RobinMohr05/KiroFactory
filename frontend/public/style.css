@@ -1244,13 +1244,62 @@ textarea:focus {
   overflow: hidden;
 }
 
+.session-empty-state[hidden],
+.session-detail[hidden] {
+  display: none;
+}
+
 .session-empty-state {
   display: flex;
-  align-items: center;
-  justify-content: center;
+  flex-direction: column;
   height: 100%;
+  overflow: hidden;
+  padding: 2rem;
+}
+
+/* ===== Quick-start empty states (Sessions & Agents) ===== */
+.quick-start {
+  max-width: 480px;
+  margin: 0 auto;
+  width: 100%;
+  padding-top: 2.5rem;
+}
+
+.quick-start h3 {
+  font-size: 1.05rem;
+  font-weight: 600;
+  margin: 0 0 0.4rem;
+  color: var(--text-primary);
+}
+
+.quick-start-hint {
+  font-size: 0.85rem;
   color: var(--text-muted);
-  font-size: 0.95rem;
+  margin: 0 0 1.25rem;
+  line-height: 1.5;
+}
+
+.quick-start-form textarea {
+  width: 100%;
+  resize: vertical;
+  margin-bottom: 0.75rem;
+}
+
+.quick-start-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.quick-start-actions select {
+  flex: 1;
+  min-width: 0;
+}
+
+.quick-start-advanced {
+  display: block;
+  margin-top: 1rem;
+  font-size: 0.8rem;
+  padding: 0;
 }
 
 .session-detail {
@@ -1627,13 +1676,17 @@ textarea:focus {
   overflow: hidden;
 }
 
+.agent-empty-state[hidden],
+.agent-detail[hidden] {
+  display: none;
+}
+
 .agent-empty-state {
   display: flex;
-  align-items: center;
-  justify-content: center;
+  flex-direction: column;
   height: 100%;
-  color: var(--text-muted);
-  font-size: 0.95rem;
+  overflow: hidden;
+  padding: 2rem;
 }
 
 .agent-detail {

@@ -112,7 +112,20 @@
       </aside>
       <div class="session-detail-panel" id="sessionDetailPanel">
         <div class="session-empty-state" id="sessionEmptyState">
-          <p>Select a session or create a new session to get started.</p>
+          <div class="quick-start">
+            <h3>Start a new session</h3>
+            <p class="quick-start-hint">Type what you'd like the agent to do. This creates an interactive session and sends it as the first message.</p>
+            <form id="quickStartForm" class="quick-start-form">
+              <textarea id="quickStartPrompt" rows="3" placeholder="e.g. Refactor the auth middleware to support API keys..."></textarea>
+              <div class="quick-start-actions">
+                <select id="quickStartAgent" aria-label="Agent (optional)">
+                  <option value="">No agent (chat)</option>
+                </select>
+                <button type="submit" class="btn btn-primary" id="quickStartSendBtn">Start Session</button>
+              </div>
+            </form>
+            <button type="button" class="btn-link quick-start-advanced" id="quickStartAdvancedBtn">Need loop mode, a working directory, or tab targeting? Use the full form →</button>
+          </div>
         </div>
         <div class="session-detail" id="sessionDetail" hidden>
           <div class="session-detail-header">
@@ -166,7 +179,11 @@
       </aside>
       <div class="agent-detail-panel" id="agentDetailPanel">
         <div class="agent-empty-state" id="agentEmptyState">
-          <p>Select an agent to view details, or create a new one.</p>
+          <div class="quick-start">
+            <h3>No agents yet</h3>
+            <p class="quick-start-hint">Agents are reusable prompt + tool presets you can launch sessions with. Create one to get started, or select one from the list.</p>
+            <button type="button" class="btn btn-primary" id="agentEmptyCreateBtn">+ New Agent</button>
+          </div>
         </div>
         <div class="agent-detail" id="agentDetail" hidden>
           <div class="agent-detail-header">
