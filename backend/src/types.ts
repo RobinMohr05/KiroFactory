@@ -321,6 +321,8 @@ export type WsServerMessage =
   | { type: "session-output"; sessionId: number; entry: OutputEntry }
   | { type: "session-activity"; sessionId: number; activity: Activity }
   | { type: "error-created"; error: AgentError }
+  | { type: "error-dismissed"; errorId: string }
+  | { type: "errors-cleared" }
   | { type: "connected"; message: string };
 
 // ─── Agent Errors ────────────────────────────────────────────────────────────
