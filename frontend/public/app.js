@@ -3472,6 +3472,7 @@ async function openTaskPlanner() {
     const res = await apiFetch('/api/task-planner/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tabId: currentBoardId ? Number(currentBoardId) : undefined }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
