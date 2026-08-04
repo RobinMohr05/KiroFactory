@@ -275,6 +275,11 @@ export interface Session {
    * code (registration / startup backfill) may set this.
    */
   pinned: boolean;
+  /**
+   * Cumulative Kiro credits consumed across all prompt turns since this
+   * session was last started. Reset to 0 on each start.
+   */
+  totalCreditsUsed?: number;
 }
 
 export interface CreateSessionInput {

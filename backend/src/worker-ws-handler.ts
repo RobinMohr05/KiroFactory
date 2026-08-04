@@ -46,7 +46,17 @@ export interface WorkerReadyMessage extends WorkerMessage {
 
 export interface WorkerPromptDoneMessage extends WorkerMessage {
   action: "prompt-done";
-  result: unknown;
+  result: {
+    stopReason?: string | null;
+    error?: string | null;
+    deliveryFailed?: boolean;
+    toolCalls?: number;
+    durationMs?: number;
+    hasChanges?: boolean;
+    prUrl?: string | null;
+    /** Kiro credits consumed this turn (from _kiro.dev/metadata meteringUsage). */
+    credits?: number;
+  };
 }
 
 export interface WorkerExitedMessage extends WorkerMessage {
