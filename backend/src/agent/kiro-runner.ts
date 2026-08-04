@@ -79,6 +79,14 @@ export class KiroRunner {
   private updateResolve: (() => void) | null = null;
   private turnDone = false;
 
+  /**
+   * Credits consumed by the most recently completed prompt turn.
+   * Set from the `_kiro.dev/metadata` notification that carries `meteringUsage`
+   * (emitted just before the PromptResponse). Reset to 0 at the start of each
+   * turn; read after the `prompt()` async generator completes.
+   */
+  private _lastTurnCredits = 0;
+
   private constructor(proc: ChildProcess) {
     this.proc = proc;
   }
@@ -224,6 +232,20 @@ export class KiroRunner {
             client.updateResolve = null;
           }
         }
+        // Capture credit/usage data from the end-of-turn metadata notification
+        if (msg.method === "_kiro.dev/metadata") {
+          const params = msg.params as {
+            meteringUsage?: Array<{ value: number; unit: string; unitPlural: string }>;
+          } | undefined;
+          if (params?.meteringUsage?.length) {
+            // Sum all credit entries (typically just one)
+            let credits = 0;
+            for (const entry of params.meteringUsage) {
+              if (entry.unit === "credit") credits += entry.value;
+            }
+            client._lastTurnCredits = credits;
+          }
+        }
         return;
       }
       // Standard ACP message — forward to SDK
@@ -305,6 +327,7 @@ export class KiroRunner {
 
     this.turnDone = false;
     this.updateQueue = [];
+    this._lastTurnCredits = 0;
 
     const promptDone = this.conn
       .prompt({
@@ -379,5 +402,14 @@ export class KiroRunner {
   /** Get the subprocess PID. */
   get pid(): number | undefined {
     return this.proc.pid;
+  }
+
+  /**
+   * Credits consumed by the last completed prompt turn.
+   * Read this after the `prompt()` async generator finishes to capture per-turn cost.
+   * Returns 0 if no metering data was received (e.g. kiro-cli version without support).
+   */
+  get lastTurnCredits(): number {
+    return this._lastTurnCredits;
   }
 }
