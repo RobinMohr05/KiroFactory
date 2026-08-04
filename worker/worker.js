@@ -36,6 +36,13 @@ const TASK_ID = process.env.TASK_ID;
 const AGENT_NAME = process.env.AGENT_NAME ?? "developer-agent";
 /** Agent kind: "editor" commits/pushes changes, "inspector" discards unexpected changes. */
 const AGENT_KIND = process.env.AGENT_KIND || "editor";
+/**
+ * Base64-encoded `.kiro/agents/<AGENT_NAME>.json` content, built by the
+ * orchestrator from the session's DB Agent record (see
+ * backend/src/agent/agent-config-writer.ts). Takes precedence over the
+ * hardcoded default in ensureAgentConfig() below.
+ */
+const AGENT_CONFIG_JSON_B64 = process.env.AGENT_CONFIG_JSON_B64;
 const REPO_URL = process.env.REPO_URL;
 const DEV_BRANCH_CANDIDATES = (process.env.DEV_BRANCH || "develop").split(",").map(b => b.trim());
 let DEV_BRANCH = DEV_BRANCH_CANDIDATES[0];
@@ -592,7 +599,27 @@ function ensureAgentConfig() {
 
   mkdirSync(agentsDir, { recursive: true });
 
-  // Default agent config: full tool access, no restrictive allowedTools list.
+  // Prefer the orchestrator-supplied config (the session's actual DB Agent
+  // record — prompt, tools, allowedTools, resources). Only fall back to the
+  // hardcoded default below if the orchestrator didn't send one (e.g. an
+  // agentless session, or the named agent no longer exists in the DB).
+  if (AGENT_CONFIG_JSON_B64) {
+    try {
+      const decoded = Buffer.from(AGENT_CONFIG_JSON_B64, "base64").toString("utf-8");
+      const agentConfig = JSON.parse(decoded);
+      writeFileSync(agentFile, JSON.stringify(agentConfig, null, 2), "utf-8");
+      logInfo("Wrote orchestrator-supplied agent config to workspace", { path: agentFile });
+      sendOutput(`Injected .kiro/agents/${AGENT_NAME}.json from agent configuration`, "system");
+      excludeAgentFileFromGit();
+      return;
+    } catch (err) {
+      logError("Failed to decode/write orchestrator-supplied agent config — falling back to default", {
+        error: err?.message || String(err),
+      });
+    }
+  }
+
+  // Fallback default agent config: full tool access, no restrictive allowedTools list.
   // The prompt itself constrains what the agent should do — the tools should be
   // available for it to actually make changes.
   const agentConfig = {
@@ -628,10 +655,15 @@ function ensureAgentConfig() {
   writeFileSync(agentFile, JSON.stringify(agentConfig, null, 2), "utf-8");
   logInfo("Created agent config in workspace", { path: agentFile });
   sendOutput(`Injected .kiro/agents/${AGENT_NAME}.json into workspace`, "system");
+  excludeAgentFileFromGit();
+}
 
-  // Keep the injected config out of `git status` — otherwise it would be
-  // committed as part of every task AND would make the "did the agent change
-  // anything?" check report a false positive.
+/**
+ * Keep the injected agent config out of `git status` — otherwise it would be
+ * committed as part of every task AND would make the "did the agent change
+ * anything?" check report a false positive.
+ */
+function excludeAgentFileFromGit() {
   try {
     if (existsSync(`${WORKSPACE}/.git/info`)) {
       appendFileSync(`${WORKSPACE}/.git/info/exclude`, `\n.kiro/agents/${AGENT_NAME}.json\n`, "utf-8");
@@ -1495,9 +1527,13 @@ function handleAcpMessage(msg) {
         cwd: WORKSPACE,
         mcpServers: [
           {
+            // `env` is required by kiro-cli's ACP schema (untagged enum match
+            // fails silently without it — the whole session/new request gets
+            // rejected as a parse error and kiro-cli exits immediately).
             name: "verdict",
             command: "node",
             args: ["/app/verdict-mcp-server.js"],
+            env: [],
           },
         ],
       },
