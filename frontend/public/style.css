@@ -1983,6 +1983,25 @@ textarea:focus {
   font-family: 'JetBrains Mono', 'Fira Code', monospace;
 }
 
+.agent-pipeline-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.agent-pipeline-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+}
+
+.agent-pipeline-label {
+  font-weight: 500;
+  color: var(--text-secondary);
+  min-width: 100px;
+}
+
 /* ===== Agent Modal (wider) ===== */
 .modal-wide {
   max-width: 640px;

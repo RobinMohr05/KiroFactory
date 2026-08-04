@@ -157,6 +157,15 @@ export interface TaskTab {
 
 // ─── Agents ──────────────────────────────────────────────────────────────────
 
+/** Agent kind: editors change code, inspectors only review. */
+export type AgentKind = "editor" | "inspector";
+
+export const AGENT_KINDS: AgentKind[] = ["editor", "inspector"];
+
+export function isAgentKind(value: unknown): value is AgentKind {
+  return value === "editor" || value === "inspector";
+}
+
 export interface Agent {
   id: number;
   name: string;
@@ -166,6 +175,14 @@ export interface Agent {
   allowedTools: string[];
   toolsSettings: Record<string, unknown>;
   resources: string[];
+  /** Agent kind: "editor" (changes code) or "inspector" (reviews only). Defaults to "editor". */
+  kind: AgentKind;
+  /** Pipeline state to claim tasks from (e.g. "todo", "developed"). */
+  claimState: string | null;
+  /** Pipeline state to set on the task while working (e.g. "in-progress", "in-code-review"). */
+  workingState: string | null;
+  /** Pipeline state to move the task to on successful completion (e.g. "developed", "reviewed"). */
+  resolveState: string | null;
   tabIds?: number[];
   userId: number;
   createdAt: string;
@@ -181,6 +198,10 @@ export interface CreateAgentInput {
   allowedTools?: string[];
   toolsSettings?: Record<string, unknown>;
   resources?: string[];
+  kind?: AgentKind;
+  claimState?: string | null;
+  workingState?: string | null;
+  resolveState?: string | null;
   tabIds?: number[];
 }
 
@@ -192,6 +213,10 @@ export interface UpdateAgentInput {
   allowedTools?: string[];
   toolsSettings?: Record<string, unknown>;
   resources?: string[];
+  kind?: AgentKind;
+  claimState?: string | null;
+  workingState?: string | null;
+  resolveState?: string | null;
   tabIds?: number[];
 }
 

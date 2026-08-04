@@ -8,6 +8,7 @@ import {
 } from "../db/agents.js";
 import { broadcastToUser } from "../websocket-handler.js";
 import type { CreateAgentInput, UpdateAgentInput } from "../types.js";
+import { isAgentKind } from "../types.js";
 import { requireAuth, getUserId } from "../middleware/auth.js";
 import { log, toErrorFields } from "../logger.js";
 
@@ -72,6 +73,12 @@ router.post("/", async (req: Request, res: Response) => {
       return;
     }
 
+    // Validate kind if provided
+    if (input.kind !== undefined && !isAgentKind(input.kind)) {
+      res.status(400).json({ error: "Invalid agent kind. Must be 'editor' or 'inspector'." });
+      return;
+    }
+
     const agent = await createAgent({ ...input, name: input.name.trim(), userId });
     broadcastToUser(userId, { type: "agent-created", agent });
     res.status(201).json(agent);
@@ -97,6 +104,12 @@ router.put("/:id", async (req: Request, res: Response) => {
       return;
     }
     const input: UpdateAgentInput = req.body;
+
+    // Validate kind if provided
+    if (input.kind !== undefined && !isAgentKind(input.kind)) {
+      res.status(400).json({ error: "Invalid agent kind. Must be 'editor' or 'inspector'." });
+      return;
+    }
 
     // Verify ownership before allowing update
     const existing = await getAgentById(id);

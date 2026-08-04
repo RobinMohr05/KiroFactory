@@ -2580,6 +2580,10 @@ function showAgentModal(agent = null) {
     document.getElementById('agentFormSettings').value = agent.toolsSettings
       ? JSON.stringify(agent.toolsSettings, null, 2)
       : '';
+    document.getElementById('agentFormKind').value = agent.kind || 'editor';
+    document.getElementById('agentFormClaimState').value = agent.claimState || '';
+    document.getElementById('agentFormWorkingState').value = agent.workingState || '';
+    document.getElementById('agentFormResolveState').value = agent.resolveState || '';
   } else {
     agentModalTitle.textContent = 'New Agent';
     submitAgentBtn.textContent = 'Create Agent';
@@ -2608,6 +2612,10 @@ async function submitAgentGuided() {
   const allowedStr = document.getElementById('agentFormAllowed').value.trim();
   const resourcesStr = document.getElementById('agentFormResources').value.trim();
   const settingsStr = document.getElementById('agentFormSettings').value.trim();
+  const kind = document.getElementById('agentFormKind').value;
+  const claimState = document.getElementById('agentFormClaimState').value.trim() || null;
+  const workingState = document.getElementById('agentFormWorkingState').value.trim() || null;
+  const resolveState = document.getElementById('agentFormResolveState').value.trim() || null;
 
   if (!name || !prompt) return;
 
@@ -2625,7 +2633,7 @@ async function submitAgentGuided() {
     }
   }
 
-  const data = { name, description, prompt, tools, allowedTools, toolsSettings, resources };
+  const data = { name, description, prompt, tools, allowedTools, toolsSettings, resources, kind, claimState, workingState, resolveState };
 
   try {
     if (originalId) {
@@ -2703,6 +2711,21 @@ function selectAgent(id) {
   renderAgentTags(agentDetailTools, agent.tools || []);
   renderAgentTags(agentDetailAllowed, agent.allowedTools || []);
   renderAgentTags(agentDetailResources, agent.resources || []);
+
+  // Render kind & pipeline info
+  const pipelineEl = document.getElementById('agentDetailPipeline');
+  if (pipelineEl) {
+    const kindLabel = agent.kind === 'inspector' ? 'Inspector (reviews only)' : 'Editor (changes code)';
+    const claim = agent.claimState || '—';
+    const working = agent.workingState || '—';
+    const resolve = agent.resolveState || '—';
+    pipelineEl.innerHTML = `
+      <div class="agent-pipeline-row"><span class="agent-pipeline-label">Kind:</span> <span class="agent-tag">${escapeHtml(kindLabel)}</span></div>
+      <div class="agent-pipeline-row"><span class="agent-pipeline-label">Claim from:</span> <span class="agent-tag">${escapeHtml(claim)}</span></div>
+      <div class="agent-pipeline-row"><span class="agent-pipeline-label">Working state:</span> <span class="agent-tag">${escapeHtml(working)}</span></div>
+      <div class="agent-pipeline-row"><span class="agent-pipeline-label">Resolve to:</span> <span class="agent-tag">${escapeHtml(resolve)}</span></div>
+    `;
+  }
 
   agentDetailSettings.textContent = agent.toolsSettings && Object.keys(agent.toolsSettings).length > 0
     ? JSON.stringify(agent.toolsSettings, null, 2)
