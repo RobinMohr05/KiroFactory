@@ -16,6 +16,10 @@ export interface ClaimedTask {
   description: string;
   files: string[];
   origin: "user" | "ai" | "user-assisted";
+  /** Existing branch name from a previous stage (null if first stage) */
+  branch: string | null;
+  /** Existing pull request URL from a previous stage (null if first stage) */
+  pullRequestUrl: string | null;
   /** Repository URL from the task's associated tab (null if not set) */
   repositoryUrl: string | null;
   /** User ID of the tab owner (for credential lookup) */
@@ -73,7 +77,9 @@ export async function claimTask(
           INSERTED.type,
           INSERTED.description,
           INSERTED.files,
-          INSERTED.origin
+          INSERTED.origin,
+          INSERTED.branch,
+          INSERTED.pull_request_url
         WHERE id = @taskId AND state = @claimState
       `;
     } else if (tabIds && tabIds.length > 0) {
@@ -94,7 +100,9 @@ export async function claimTask(
           INSERTED.type,
           INSERTED.description,
           INSERTED.files,
-          INSERTED.origin
+          INSERTED.origin,
+          INSERTED.branch,
+          INSERTED.pull_request_url
         WHERE id = (
           SELECT TOP 1 t.id
           FROM tasks t WITH (UPDLOCK, READPAST)
@@ -125,7 +133,9 @@ export async function claimTask(
           INSERTED.type,
           INSERTED.description,
           INSERTED.files,
-          INSERTED.origin
+          INSERTED.origin,
+          INSERTED.branch,
+          INSERTED.pull_request_url
         WHERE id = (
           SELECT TOP 1 id
           FROM tasks WITH (UPDLOCK, READPAST)
@@ -175,6 +185,8 @@ export async function claimTask(
       description: row.description,
       files: JSON.parse(row.files || "[]"),
       origin: row.origin,
+      branch: row.branch || null,
+      pullRequestUrl: row.pull_request_url || null,
       repositoryUrl: tabRow?.repository_url || null,
       userId: tabRow?.user_id || null,
     };
