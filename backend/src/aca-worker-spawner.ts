@@ -211,7 +211,14 @@ export async function startWorkerJob(
   timeoutSeconds: number,
   mcpSidecar?: McpProxySidecarConfig | null,
   gitOptions?: WorkerGitOptions | null,
-  agentKind?: "editor" | "inspector"
+  agentKind?: "editor" | "inspector",
+  /**
+   * Base64-encoded `.kiro/agents/<name>.json` content (see
+   * agent-config-writer.ts), built from the session's DB Agent record.
+   * The worker writes this to the workspace before invoking kiro-cli, unless
+   * the target repo already ships its own file of the same name.
+   */
+  agentConfigBase64?: string
 ): Promise<AcaJobExecution> {
   // Decrypt the user's Kiro API key
   const kiroApiKey = await getUserKiroApiKey(userId);
@@ -239,6 +246,10 @@ export async function startWorkerJob(
     { name: "GIT_USER_EMAIL", value: config.gitUserEmail },
     { name: "TIMEOUT_SECONDS", value: String(timeoutSeconds || 900) },
   ];
+
+  if (agentConfigBase64) {
+    envVars.push({ name: "AGENT_CONFIG_JSON_B64", value: agentConfigBase64 });
+  }
 
   // MCP proxy sidecar: tell the worker where to connect (localhost because same pod)
   if (mcpSidecar) {
