@@ -1,8 +1,9 @@
 # Vibecode Heaven Worker — Runs kiro-cli acp inside ACA Jobs
 FROM node:22-slim
 
-# Install git, curl, unzip (needed for clone/push and kiro-cli installer)
-RUN apt-get update && apt-get install -y --no-install-recommends git curl ca-certificates unzip && \
+# Install git, curl, unzip (needed for clone/push and kiro-cli installer),
+# and netcat-openbsd (needed by ta-mcp-connect to bridge to the MCP proxy sidecar)
+RUN apt-get update && apt-get install -y --no-install-recommends git curl ca-certificates unzip netcat-openbsd && \
     rm -rf /var/lib/apt/lists/*
 
 # Install kiro-cli
@@ -18,6 +19,8 @@ RUN npm install --omit=dev
 # Copy worker script
 COPY worker.js ./
 COPY verdict-mcp-server.js ./
+COPY ta-mcp-connect ./
+RUN chmod +x ./ta-mcp-connect
 
 # Create workspace directory
 RUN mkdir -p /workspace

@@ -252,10 +252,17 @@ export async function startWorkerJob(
   }
 
   // MCP proxy sidecar: tell the worker where to connect (localhost because same pod)
+  // and which server names the sidecar was actually configured with, so the
+  // worker can bridge each one into kiro-cli's mcpServers list via ta-mcp-connect.
+  // Without MCP_SIDECAR_SERVER_NAMES the worker has no way to discover those
+  // names — the server list itself (MCP_SERVERS_JSON_B64) is only ever sent to
+  // the mcp-proxy container below, not to the worker.
   if (mcpSidecar) {
+    const serverNames = Object.keys(mcpSidecar.serversConfig);
     envVars.push(
       { name: "MCP_PROXY_HOST", value: "localhost" },
-      { name: "MCP_PROXY_PORT", value: "9090" }
+      { name: "MCP_PROXY_PORT", value: "9090" },
+      { name: "MCP_SIDECAR_SERVER_NAMES", value: serverNames.join(",") }
     );
   }
 
