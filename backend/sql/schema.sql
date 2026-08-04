@@ -112,9 +112,14 @@ CREATE TABLE agents (
     allowed_tools   NVARCHAR(MAX)   NOT NULL DEFAULT '[]',
     tools_settings  NVARCHAR(MAX)   NOT NULL DEFAULT '{}',
     resources       NVARCHAR(MAX)   NOT NULL DEFAULT '[]',
+    kind            VARCHAR(20)     NOT NULL DEFAULT 'editor',
+    claim_state     NVARCHAR(50)    NULL,
+    working_state   NVARCHAR(50)    NULL,
+    resolve_state   NVARCHAR(50)    NULL,
     user_id         INT             NULL REFERENCES users(id),
     created_at      DATETIME2       NOT NULL DEFAULT GETUTCDATE(),
-    updated_at      DATETIME2       NOT NULL DEFAULT GETUTCDATE()
+    updated_at      DATETIME2       NOT NULL DEFAULT GETUTCDATE(),
+    CONSTRAINT CK_agents_kind CHECK (kind IN ('editor', 'inspector'))
 );
 
 -- ============================================================================

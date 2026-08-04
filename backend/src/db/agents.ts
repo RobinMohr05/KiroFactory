@@ -1,5 +1,5 @@
 import { getPool, sql } from "./connection.js";
-import type { Agent, CreateAgentInput, UpdateAgentInput } from "../types.js";
+import type { Agent, CreateAgentInput, UpdateAgentInput, AgentKind } from "../types.js";
 
 /**
  * Map a raw DB row to an Agent object.
@@ -14,6 +14,10 @@ function mapRowToAgent(row: Record<string, unknown>): Agent {
     allowedTools: JSON.parse((row.allowed_tools as string) || "[]"),
     toolsSettings: JSON.parse((row.tools_settings as string) || "{}"),
     resources: JSON.parse((row.resources as string) || "[]"),
+    kind: ((row.kind as string) || "editor") as AgentKind,
+    claimState: (row.claim_state as string) || null,
+    workingState: (row.working_state as string) || null,
+    resolveState: (row.resolve_state as string) || null,
     userId: (row.user_id as number) ?? 0,
     createdAt: (row.created_at as Date).toISOString(),
     updatedAt: (row.updated_at as Date).toISOString(),
@@ -120,11 +124,15 @@ export async function createAgent(input: CreateAgentInput): Promise<Agent> {
     .input("allowedTools", sql.NVarChar(sql.MAX), JSON.stringify(input.allowedTools || []))
     .input("toolsSettings", sql.NVarChar(sql.MAX), JSON.stringify(input.toolsSettings || {}))
     .input("resources", sql.NVarChar(sql.MAX), JSON.stringify(input.resources || []))
+    .input("kind", sql.VarChar(20), input.kind || "editor")
+    .input("claimState", sql.NVarChar(50), input.claimState || null)
+    .input("workingState", sql.NVarChar(50), input.workingState || null)
+    .input("resolveState", sql.NVarChar(50), input.resolveState || null)
     .input("userId", sql.Int, input.userId)
     .query(`
-      INSERT INTO agents (name, description, prompt, tools, allowed_tools, tools_settings, resources, user_id)
+      INSERT INTO agents (name, description, prompt, tools, allowed_tools, tools_settings, resources, kind, claim_state, working_state, resolve_state, user_id)
       OUTPUT INSERTED.*
-      VALUES (@name, @description, @prompt, @tools, @allowedTools, @toolsSettings, @resources, @userId)
+      VALUES (@name, @description, @prompt, @tools, @allowedTools, @toolsSettings, @resources, @kind, @claimState, @workingState, @resolveState, @userId)
     `);
 
   const agent = mapRowToAgent(result.recordset[0]);
@@ -165,6 +173,10 @@ export async function updateAgent(
     .input("allowedTools", sql.NVarChar(sql.MAX), JSON.stringify(input.allowedTools ?? existing.allowedTools))
     .input("toolsSettings", sql.NVarChar(sql.MAX), JSON.stringify(input.toolsSettings ?? existing.toolsSettings))
     .input("resources", sql.NVarChar(sql.MAX), JSON.stringify(input.resources ?? existing.resources))
+    .input("kind", sql.VarChar(20), input.kind ?? existing.kind)
+    .input("claimState", sql.NVarChar(50), input.claimState !== undefined ? input.claimState : existing.claimState)
+    .input("workingState", sql.NVarChar(50), input.workingState !== undefined ? input.workingState : existing.workingState)
+    .input("resolveState", sql.NVarChar(50), input.resolveState !== undefined ? input.resolveState : existing.resolveState)
     .query(`
       UPDATE agents
       SET name = @name,
@@ -174,6 +186,10 @@ export async function updateAgent(
           allowed_tools = @allowedTools,
           tools_settings = @toolsSettings,
           resources = @resources,
+          kind = @kind,
+          claim_state = @claimState,
+          working_state = @workingState,
+          resolve_state = @resolveState,
           updated_at = GETUTCDATE()
       OUTPUT INSERTED.*
       WHERE id = @id

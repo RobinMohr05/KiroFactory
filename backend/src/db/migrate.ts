@@ -992,6 +992,34 @@ async function runUpgrades(pool: sql.ConnectionPool): Promise<void> {
   }
 
   await backfillPinnedChatSessions(pool);
+
+  // Upgrade 22: Add kind and pipeline stage columns to agents table
+  const agentKindColExists = await pool.request().query(`
+    SELECT COUNT(*) AS cnt
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_NAME = 'agents' AND COLUMN_NAME = 'kind'
+  `);
+
+  if (agentKindColExists.recordset[0].cnt === 0) {
+    console.log("[migrate] Upgrading: adding kind, claim_state, working_state, resolve_state to agents table...");
+    await pool.request().query(`
+      ALTER TABLE agents ADD
+        kind            VARCHAR(20)   NOT NULL DEFAULT 'editor',
+        claim_state     NVARCHAR(50)  NULL,
+        working_state   NVARCHAR(50)  NULL,
+        resolve_state   NVARCHAR(50)  NULL
+    `);
+    // Add CHECK constraint for kind
+    try {
+      await pool.request().query(`
+        ALTER TABLE agents ADD CONSTRAINT CK_agents_kind
+          CHECK (kind IN ('editor', 'inspector'))
+      `);
+    } catch (e: any) {
+      console.warn(`[migrate] ⚠ Could not add CK_agents_kind: ${e.message}`);
+    }
+    console.log("[migrate] Upgrade complete: kind and pipeline stage columns added to agents.");
+  }
 }
 
 /**
