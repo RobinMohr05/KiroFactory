@@ -15,7 +15,7 @@ import { createInterface } from "node:readline";
 const SERVER_NAME = "verdict-mcp-server";
 const SERVER_VERSION = "1.0.0";
 
-const VALID_VERDICTS = ["resolved", "no_action_needed"];
+const VALID_VERDICTS = ["resolved", "no_action_needed", "changes_requested"];
 
 const TOOL_DEFINITION = {
   name: "report_verdict",
@@ -33,7 +33,9 @@ const TOOL_DEFINITION = {
         description:
           'Use "no_action_needed" when no changes are required (task is already done, ' +
           'nothing to fix/review). Use "resolved" when the task was completed normally ' +
-          "(you made changes).",
+          '(you made changes). Use "changes_requested" when your review/QA found one or ' +
+          "more issues and you have posted them as PR comments — the task will be sent " +
+          "back for rework.",
       },
       reason: {
         type: "string",
