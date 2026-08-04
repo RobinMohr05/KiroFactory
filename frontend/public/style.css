@@ -2073,6 +2073,54 @@ textarea:focus {
   user-select: none;
 }
 
+/* ===== Custom MCP Servers (per-session) ===== */
+.custom-mcp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin: 0.5rem 0;
+}
+
+.custom-mcp-row {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 0.6rem;
+  background: var(--bg-secondary);
+}
+
+.custom-mcp-row-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+}
+
+.custom-mcp-row-fields input {
+  font-size: 0.8rem;
+}
+
+.custom-mcp-row-fields .custom-mcp-full-width {
+  grid-column: 1 / -1;
+}
+
+.custom-mcp-row-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 0.4rem;
+}
+
+.custom-mcp-remove-btn {
+  background: none;
+  border: none;
+  color: var(--ta-rapid-red);
+  font-size: 0.75rem;
+  cursor: pointer;
+  padding: 0.2rem 0.4rem;
+}
+
+.custom-mcp-remove-btn:hover {
+  text-decoration: underline;
+}
+
 .form-error {
   background: rgba(210, 38, 48, 0.08);
   border: 1px solid var(--ta-rapid-red);

@@ -389,6 +389,16 @@
             </div>
           </div>
         </div>
+        <div class="form-group mcp-config-group">
+          <label class="agent-section-toggle" id="sessionCustomMcpToggle" aria-expanded="false">
+            <span class="toggle-icon">▶</span> Custom MCP Servers <small>(add your own, e.g. a browser/Puppeteer server for e2e testing)</small>
+          </label>
+          <div class="agent-collapsible" id="sessionCustomMcpSection">
+            <small class="form-hint">These run only for this session, in addition to the tab-level servers above. The agent's prompt must mention when/how to use them.</small>
+            <div id="sessionCustomMcpList" class="custom-mcp-list"></div>
+            <button type="button" class="btn btn-secondary btn-sm" id="sessionCustomMcpAddBtn">+ Add MCP server</button>
+          </div>
+        </div>
         <div class="form-actions"><button type="button" class="btn btn-secondary" id="cancelSessionBtn">Cancel</button><button type="submit" class="btn btn-primary" id="submitSessionBtn">Create & Start</button></div>
       </form>
     </div>
