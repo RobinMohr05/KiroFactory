@@ -22,7 +22,7 @@
 export { KiroRunner } from "./kiro-runner.js";
 export type { SessionUpdateChunk, KiroRunnerOptions, McpServerEntry } from "./kiro-runner.js";
 
-export { claimTask, markTaskDeveloped, resetTaskToTodo, getAvailableTaskCount } from "./task-claimer.js";
+export { claimTask, markTaskDeveloped, markTaskDone, resetTaskToTodo, getAvailableTaskCount } from "./task-claimer.js";
 export type { ClaimedTask } from "./task-claimer.js";
 
 export { buildDevPrompt, buildVerifyPrompt } from "./prompt-builder.js";

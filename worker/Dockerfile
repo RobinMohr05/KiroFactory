@@ -17,6 +17,7 @@ RUN npm install --omit=dev
 
 # Copy worker script
 COPY worker.js ./
+COPY verdict-mcp-server.js ./
 
 # Create workspace directory
 RUN mkdir -p /workspace
