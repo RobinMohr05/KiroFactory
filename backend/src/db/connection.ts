@@ -20,7 +20,10 @@ const config: sql.config = {
   requestTimeout: 30000,
   pool: {
     max: 10,
-    min: 2,
+    // min: 0 — no idle connections kept alive. The pool grows from zero on demand
+    // and fully releases connections when they go idle. This allows Azure SQL
+    // serverless to actually auto-pause when no activity is happening.
+    min: 0,
     idleTimeoutMillis: 30000,
   },
   // Auth: Windows (NTLM/trusted) when no user is provided, SQL auth otherwise
