@@ -992,7 +992,7 @@ let readyTimeout = null;
 /** Handle for the in-flight prompt timeout. */
 let promptTimer = null;
 /** Counters for the current turn, reported alongside prompt-done. */
-let turnStats = { toolCalls: 0, messageChars: 0, thoughtChars: 0, startedAt: 0 };
+let turnStats = { toolCalls: 0, messageChars: 0, thoughtChars: 0, startedAt: 0, credits: 0 };
 
 function clearReadyTimeout() {
   if (readyTimeout) {
@@ -1243,6 +1243,7 @@ function finishPromptTurn(msg) {
       hasChanges,
       prUrl,
       branchName: currentBranchName,
+      credits: turnStats.credits || undefined,
     });
   })();
 }
@@ -1316,6 +1317,27 @@ function handleAcpMessage(msg) {
           `kiro-cli fell back to its built-in default agent.`,
         "stderr"
       );
+      return true;
+    }
+
+    // Capture credit/usage data from the end-of-turn metadata notification.
+    // kiro-cli emits `_kiro.dev/metadata` with `meteringUsage` after each turn.
+    if (method === "_kiro.dev/metadata") {
+      const params = msg.params ?? {};
+      if (params.meteringUsage?.length) {
+        // Sum all credit entries (typically just one)
+        let credits = 0;
+        for (const entry of params.meteringUsage) {
+          if (entry.unit === "credit") credits += entry.value;
+        }
+        turnStats.credits = credits;
+        logInfo("turn-metering", {
+          credits,
+          unit: params.meteringUsage[0].unit,
+          turnDurationMs: params.turnDurationMs,
+          contextUsagePercentage: params.contextUsagePercentage,
+        });
+      }
       return true;
     }
 
@@ -1558,7 +1580,7 @@ function deliverPrompt(text) {
 
   promptCounter += 1;
   currentPromptId = promptCounter;
-  turnStats = { toolCalls: 0, messageChars: 0, thoughtChars: 0, startedAt: Date.now() };
+  turnStats = { toolCalls: 0, messageChars: 0, thoughtChars: 0, startedAt: Date.now(), credits: 0 };
 
   const sent = writeToKiro({
     jsonrpc: "2.0",
