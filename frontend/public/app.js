@@ -2176,6 +2176,15 @@ function renderSessionList() {
       activityHtml = `<span class="session-item-activity">${escapeHtml(activityType)}</span>`;
     }
 
+    // Show cumulative credit usage for running sessions with non-zero usage
+    let usageHtml = '';
+    if (session.status === 'running' && session.totalCreditsUsed > 0) {
+      const formatted = session.totalCreditsUsed < 10
+        ? session.totalCreditsUsed.toFixed(2)
+        : Math.round(session.totalCreditsUsed).toString();
+      usageHtml = `<span class="session-item-usage">💰 ${formatted} credits</span>`;
+    }
+
     const pinIconHtml = session.pinned ? '<span class="session-item-pin" title="Pinned">📌</span>' : '';
 
     li.innerHTML = `
@@ -2184,6 +2193,7 @@ function renderSessionList() {
         <span class="session-item-name">${pinIconHtml}${escapeHtml(session.name)}</span>
         <span class="session-item-agent">${session.agent ? escapeHtml(session.agent) : '<em>Interactive</em>'}</span>
         ${activityHtml}
+        ${usageHtml}
       </div>
     `;
 
