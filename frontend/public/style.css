@@ -1282,6 +1282,16 @@ textarea:focus {
   max-width: 180px;
 }
 
+.session-item-usage {
+  font-size: 0.65rem;
+  color: var(--ta-torque-teal);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 180px;
+  opacity: 0.85;
+}
+
 /* Status dots (small, in list) */
 .status-dot-sm {
   width: 8px;
