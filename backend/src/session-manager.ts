@@ -13,7 +13,7 @@ import { resolve } from "node:path";
 import { KiroRunner } from "./agent/kiro-runner.js";
 import type { SessionUpdateChunk } from "./agent/kiro-runner.js";
 import { broadcastToUser } from "./websocket-handler.js";
-import { claimTask, markTaskDeveloped, resetTaskToTodo, getAvailableTaskCount } from "./agent/task-claimer.js";
+import { claimTask, resolveTask, resetTask, getAvailableTaskCount } from "./agent/task-claimer.js";
 import { buildDevPrompt } from "./agent/prompt-builder.js";
 import { TabMcpConfig, DEFAULT_MCP_CONFIG, resolveGitProvider, type GitProvider } from "./types.js";
 import {
@@ -31,6 +31,7 @@ import { isDbAvailable } from "./db/connection.js";
 import { recordError } from "./error-store.js";
 import { log, logSessionEvent, logWorkerEvent, toErrorFields } from "./logger.js";
 import { includesGenericTab, getAgentTabs, getTabById } from "./db/tabs.js";
+import { getAgentByName } from "./db/agents.js";
 import { buildProxyServersConfig, type SessionCredentials } from "./mcp-proxy-config.js";
 import {
   loadAcaConfig,
@@ -737,6 +738,42 @@ async function runSession(managed: ManagedSession): Promise<void> {
 // Loop mode: auto-claim tasks and execute them
 // ---------------------------------------------------------------------------
 
+/**
+ * Stage states for a given agent, used to parameterize the task lifecycle.
+ * Defaults match the original developer-agent pipeline: todo → in-progress → developed.
+ */
+interface AgentStageStates {
+  claimState: string;
+  workingState: string;
+  resolveState: string;
+}
+
+const DEFAULT_STAGE_STATES: AgentStageStates = {
+  claimState: "todo",
+  workingState: "in-progress",
+  resolveState: "developed",
+};
+
+/**
+ * Look up the agent's configured stage states from the DB.
+ * Falls back to the default developer pipeline if the agent is not found
+ * or has no stage states configured.
+ */
+async function getAgentStageStates(agentName: string): Promise<AgentStageStates> {
+  if (!agentName) return DEFAULT_STAGE_STATES;
+  try {
+    const agent = await getAgentByName(agentName);
+    if (!agent) return DEFAULT_STAGE_STATES;
+    return {
+      claimState: agent.claimState,
+      workingState: agent.workingState,
+      resolveState: agent.resolveState,
+    };
+  } catch {
+    return DEFAULT_STAGE_STATES;
+  }
+}
+
 async function runLoopMode(
   managed: ManagedSession,
   signal: AbortSignal
@@ -744,6 +781,9 @@ async function runLoopMode(
   const { meta } = managed;
   let iteration = 0;
   const maxRuns = meta.runs; // 0 = endless
+
+  // Look up the agent's stage states once per loop start
+  const stages = await getAgentStageStates(meta.agent);
 
   // Determine effective tab filter for task claiming:
   // If the session's tabs include "generic", the agent can work on tasks from ANY tab.
@@ -776,8 +816,8 @@ async function runLoopMode(
       return;
     }
 
-    // Check for available tasks (filtered by effective tab assignments)
-    const todoCount = await getAvailableTaskCount(effectiveTabIds);
+    // Check for available tasks (filtered by effective tab assignments + agent's claim state)
+    const todoCount = await getAvailableTaskCount(effectiveTabIds, stages.claimState);
 
     if (todoCount === 0) {
       setActivity(managed, {
@@ -802,7 +842,7 @@ async function runLoopMode(
       text: `── Run ${progressLabel} ── ${todoCount} task(s) available`,
     });
 
-    const task = await claimTask(undefined, effectiveTabIds);
+    const task = await claimTask(undefined, effectiveTabIds, stages.claimState, stages.workingState);
     if (!task) {
       appendOutput(managed, {
         timestamp: now(),
@@ -859,29 +899,29 @@ async function runLoopMode(
 
     // Update task state
     if (signal.aborted) {
-      // Session was stopped mid-task — reset to todo
-      await resetTaskToTodo(task.id);
+      // Session was stopped mid-task — reset to claim state
+      await resetTask(task.id, stages.claimState);
       appendOutput(managed, {
         timestamp: now(),
         stream: "system",
-        text: `Task ${task.id} reset to "todo" (session stopped).`,
+        text: `Task ${task.id} reset to "${stages.claimState}" (session stopped).`,
       });
       break;
     }
 
     if (success) {
-      await markTaskDeveloped(task.id);
+      await resolveTask(task.id, stages.resolveState);
       appendOutput(managed, {
         timestamp: now(),
         stream: "system",
-        text: `Task ${task.id} marked as "developed" ✓`,
+        text: `Task ${task.id} marked as "${stages.resolveState}" ✓`,
       });
     } else {
-      await resetTaskToTodo(task.id);
+      await resetTask(task.id, stages.claimState);
       appendOutput(managed, {
         timestamp: now(),
         stream: "system",
-        text: `Task ${task.id} reset to "todo" (execution failed).`,
+        text: `Task ${task.id} reset to "${stages.claimState}" (execution failed).`,
       });
     }
 
@@ -1552,9 +1592,12 @@ async function runLoopModeAca(
   let iteration = 0;
   const maxRuns = meta.runs;
 
+  // Look up the agent's stage states once per loop start
+  const stages = await getAgentStageStates(meta.agent);
+
   // Track consecutive failures per task ID to prevent infinite retry loops.
   // After MAX_TASK_FAILURES consecutive failures on the same task, it is left
-  // as "todo" but skipped for the rest of this session (not re-claimed).
+  // in claimState but skipped for the rest of this session (not re-claimed).
   const MAX_TASK_FAILURES = 3;
   const taskFailures = new Map<number, number>(); // taskId → consecutive failure count
   const blockedTasks = new Set<number>(); // tasks that hit the failure cap this session
@@ -1586,7 +1629,7 @@ async function runLoopModeAca(
       return;
     }
 
-    const todoCount = await getAvailableTaskCount(effectiveTabIds);
+    const todoCount = await getAvailableTaskCount(effectiveTabIds, stages.claimState);
 
     if (todoCount === 0) {
       setActivity(managed, {
@@ -1607,7 +1650,7 @@ async function runLoopModeAca(
       text: `── Run ${progressLabel} ── ${todoCount} task(s) available`,
     });
 
-    const task = await claimTask(undefined, effectiveTabIds);
+    const task = await claimTask(undefined, effectiveTabIds, stages.claimState, stages.workingState);
     if (!task) {
       appendOutput(managed, {
         timestamp: now(),
@@ -1620,7 +1663,7 @@ async function runLoopModeAca(
 
     // Skip tasks that have already exceeded failure limit in this session
     if (blockedTasks.has(task.id)) {
-      await resetTaskToTodo(task.id);
+      await resetTask(task.id, stages.claimState);
       appendOutput(managed, {
         timestamp: now(),
         stream: "system",
@@ -1673,11 +1716,11 @@ async function runLoopModeAca(
     }
 
     if (signal.aborted) {
-      await resetTaskToTodo(task.id);
+      await resetTask(task.id, stages.claimState);
       appendOutput(managed, {
         timestamp: now(),
         stream: "system",
-        text: `Task ${task.id} reset to "todo" (session stopped).`,
+        text: `Task ${task.id} reset to "${stages.claimState}" (session stopped).`,
       });
       break;
     }
@@ -1734,7 +1777,7 @@ async function runLoopModeAca(
       appendOutput(managed, {
         timestamp: now(),
         stream: "stderr",
-        text: `✖ Agent turn was cancelled before it finished (likely a timeout) — task reset to "todo" instead of being marked developed.`,
+        text: `✖ Agent turn was cancelled before it finished (likely a timeout) — task reset to "${stages.claimState}" instead of being marked "${stages.resolveState}".`,
       });
       recordError({
         sessionId: meta.id,
@@ -1762,7 +1805,7 @@ async function runLoopModeAca(
       appendOutput(managed, {
         timestamp: now(),
         stream: "system",
-        text: `⚠ No file changes detected after agent execution (${details}) — task reset to "todo".`,
+        text: `⚠ No file changes detected after agent execution (${details}) — task reset to "${stages.claimState}".`,
       });
       if ((promptResult.toolCalls ?? 0) === 0) {
         appendOutput(managed, {
@@ -1784,17 +1827,17 @@ async function runLoopModeAca(
     }
 
     if (success) {
-      await markTaskDeveloped(task.id, promptResult.branchName ?? null, promptResult.prUrl ?? null);
+      await resolveTask(task.id, stages.resolveState, promptResult.branchName ?? null, promptResult.prUrl ?? null);
       appendOutput(managed, {
         timestamp: now(),
         stream: "system",
-        text: `Task ${task.id} marked as "developed" ✓`,
+        text: `Task ${task.id} marked as "${stages.resolveState}" ✓`,
       });
       // Clear failure counter on success
       taskFailures.delete(task.id);
     } else {
       // On failure, pass branch/PR info if the worker managed a best-effort push
-      await resetTaskToTodo(task.id, promptResult.branchName ?? null, promptResult.prUrl ?? null);
+      await resetTask(task.id, stages.claimState, promptResult.branchName ?? null, promptResult.prUrl ?? null);
 
       // A delivery failure is an environment problem, not a task problem —
       // block immediately instead of spending the whole retry budget
@@ -1804,7 +1847,7 @@ async function runLoopModeAca(
         appendOutput(managed, {
           timestamp: now(),
           stream: "system",
-          text: `Task ${task.id} reset to "todo" and blocked for this session — fix the git credentials, then re-run.`,
+          text: `Task ${task.id} reset to "${stages.claimState}" and blocked for this session — fix the git credentials, then re-run.`,
         });
         meta.currentTaskId = undefined;
         broadcastToUser(meta.userId, { type: "session-updated", session: meta });
@@ -1821,7 +1864,7 @@ async function runLoopModeAca(
         appendOutput(managed, {
           timestamp: now(),
           stream: "system",
-          text: `Task ${task.id} reset to "todo" (${failureReason || "execution failed"}). ⛔ Blocked after ${failures} consecutive failures — will not retry this session.`,
+          text: `Task ${task.id} reset to "${stages.claimState}" (${failureReason || "execution failed"}). ⛔ Blocked after ${failures} consecutive failures — will not retry this session.`,
         });
         recordError({
           sessionId: meta.id,
@@ -1837,7 +1880,7 @@ async function runLoopModeAca(
         appendOutput(managed, {
           timestamp: now(),
           stream: "system",
-          text: `Task ${task.id} reset to "todo" (${failureReason || "execution failed"}). Attempt ${failures}/${MAX_TASK_FAILURES} — will retry with backoff.`,
+          text: `Task ${task.id} reset to "${stages.claimState}" (${failureReason || "execution failed"}). Attempt ${failures}/${MAX_TASK_FAILURES} — will retry with backoff.`,
         });
         // Exponential backoff: 30s, 60s after 1st and 2nd failures
         const backoffMs = 30_000 * Math.pow(2, failures - 1);

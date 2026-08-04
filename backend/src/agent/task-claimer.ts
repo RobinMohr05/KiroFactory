@@ -23,7 +23,7 @@ export interface ClaimedTask {
 }
 
 /**
- * Atomically claim the highest-priority todo task.
+ * Atomically claim the highest-priority task in the given claim state.
  *
  * Uses SQL Server's UPDLOCK + READPAST hints:
  * - UPDLOCK: prevents other transactions from reading the same row
@@ -36,10 +36,17 @@ export interface ClaimedTask {
  * (user > user-assisted > ai), then by creation date (oldest first).
  *
  * @param taskId Optional specific task ID to claim (skips priority ordering)
- * @param tabIds Optional tab IDs to filter by — only tasks belonging to at least one of these tabs are eligible. If empty/undefined, all todo tasks are eligible.
+ * @param tabIds Optional tab IDs to filter by — only tasks belonging to at least one of these tabs are eligible. If empty/undefined, all tasks in claimState are eligible.
+ * @param claimState The state to claim FROM (default: "todo")
+ * @param workingState The state to transition TO on claim (default: "in-progress")
  * @returns The claimed task, or null if no claimable tasks exist
  */
-export async function claimTask(taskId?: number, tabIds?: number[]): Promise<ClaimedTask | null> {
+export async function claimTask(
+  taskId?: number,
+  tabIds?: number[],
+  claimState: string = "todo",
+  workingState: string = "in-progress"
+): Promise<ClaimedTask | null> {
   const pool = await getPool();
 
   // Use a transaction with row locking for atomicity
@@ -48,6 +55,8 @@ export async function claimTask(taskId?: number, tabIds?: number[]): Promise<Cla
 
   try {
     const request = new sql.Request(transaction);
+    request.input("claimState", sql.VarChar(50), claimState);
+    request.input("workingState", sql.VarChar(50), workingState);
 
     let query: string;
 
@@ -56,7 +65,7 @@ export async function claimTask(taskId?: number, tabIds?: number[]): Promise<Cla
       request.input("taskId", sql.Int, taskId);
       query = `
         UPDATE tasks
-        SET state = 'in-progress', updated_at = GETUTCDATE()
+        SET state = @workingState, updated_at = GETUTCDATE()
         OUTPUT
           INSERTED.id,
           INSERTED.title,
@@ -65,7 +74,7 @@ export async function claimTask(taskId?: number, tabIds?: number[]): Promise<Cla
           INSERTED.description,
           INSERTED.files,
           INSERTED.origin
-        WHERE id = @taskId AND state = 'todo'
+        WHERE id = @taskId AND state = @claimState
       `;
     } else if (tabIds && tabIds.length > 0) {
       // Claim the highest-priority task that belongs to at least one of the given tabs
@@ -77,7 +86,7 @@ export async function claimTask(taskId?: number, tabIds?: number[]): Promise<Cla
 
       query = `
         UPDATE tasks
-        SET state = 'in-progress', updated_at = GETUTCDATE()
+        SET state = @workingState, updated_at = GETUTCDATE()
         OUTPUT
           INSERTED.id,
           INSERTED.title,
@@ -90,7 +99,7 @@ export async function claimTask(taskId?: number, tabIds?: number[]): Promise<Cla
           SELECT TOP 1 t.id
           FROM tasks t WITH (UPDLOCK, READPAST)
           INNER JOIN task_tabs tt ON tt.task_id = t.id
-          WHERE t.state = 'todo'
+          WHERE t.state = @claimState
             AND tt.tab_id IN (${tabIdParams.join(", ")})
           ORDER BY
             t.priority ASC,
@@ -108,7 +117,7 @@ export async function claimTask(taskId?: number, tabIds?: number[]): Promise<Cla
       // UPDLOCK + READPAST ensures concurrency safety
       query = `
         UPDATE tasks
-        SET state = 'in-progress', updated_at = GETUTCDATE()
+        SET state = @workingState, updated_at = GETUTCDATE()
         OUTPUT
           INSERTED.id,
           INSERTED.title,
@@ -120,7 +129,7 @@ export async function claimTask(taskId?: number, tabIds?: number[]): Promise<Cla
         WHERE id = (
           SELECT TOP 1 id
           FROM tasks WITH (UPDLOCK, READPAST)
-          WHERE state = 'todo'
+          WHERE state = @claimState
           ORDER BY
             priority ASC,
             CASE origin
@@ -176,34 +185,62 @@ export async function claimTask(taskId?: number, tabIds?: number[]): Promise<Cla
 }
 
 /**
- * Mark a task as "developed" (completed by the agent).
+ * Resolve a task to the given target state (agent completed successfully).
  * Optionally persists the branch name and pull request URL in the same UPDATE.
+ *
+ * @param taskId The task to resolve
+ * @param resolveState The target state (e.g. "developed", "reviewed", "done")
+ * @param branch Optional branch name
+ * @param pullRequestUrl Optional pull request URL
+ */
+export async function resolveTask(
+  taskId: number,
+  resolveState: string,
+  branch?: string | null,
+  pullRequestUrl?: string | null
+): Promise<void> {
+  const pool = await getPool();
+  await pool
+    .request()
+    .input("id", sql.Int, taskId)
+    .input("resolveState", sql.VarChar(50), resolveState)
+    .input("branch", sql.NVarChar(250), branch ?? null)
+    .input("pullRequestUrl", sql.NVarChar(500), pullRequestUrl ?? null)
+    .query(`
+      UPDATE tasks
+      SET state = @resolveState, branch = @branch, pull_request_url = @pullRequestUrl, updated_at = GETUTCDATE()
+      WHERE id = @id
+    `);
+}
+
+/**
+ * Mark a task as "developed" (completed by the developer agent).
+ * Thin wrapper around resolveTask for backward compatibility.
  */
 export async function markTaskDeveloped(
   taskId: number,
   branch?: string | null,
   pullRequestUrl?: string | null
 ): Promise<void> {
-  const pool = await getPool();
-  await pool
-    .request()
-    .input("id", sql.Int, taskId)
-    .input("branch", sql.NVarChar(250), branch ?? null)
-    .input("pullRequestUrl", sql.NVarChar(500), pullRequestUrl ?? null)
-    .query(`
-      UPDATE tasks
-      SET state = 'developed', branch = @branch, pull_request_url = @pullRequestUrl, updated_at = GETUTCDATE()
-      WHERE id = @id
-    `);
+  return resolveTask(taskId, "developed", branch, pullRequestUrl);
 }
 
 /**
- * Reset a task back to "todo" (agent failed or timed out).
+ * Reset a task back to a given state (agent failed or timed out).
+ * Each agent stage resets to its own claim state on failure — e.g. a failed
+ * review resets to "developed" (the reviewer's claimState), not to "todo".
+ *
  * Optionally persists branch/PR info if a best-effort push succeeded before the reset,
  * or explicitly nulls them out to clear stale links from a previous attempt.
+ *
+ * @param taskId The task to reset
+ * @param resetState The state to reset TO (default: "todo")
+ * @param branch Optional branch name (or null to clear)
+ * @param pullRequestUrl Optional PR URL (or null to clear)
  */
-export async function resetTaskToTodo(
+export async function resetTask(
   taskId: number,
+  resetState: string,
   branch?: string | null,
   pullRequestUrl?: string | null
 ): Promise<void> {
@@ -211,13 +248,26 @@ export async function resetTaskToTodo(
   await pool
     .request()
     .input("id", sql.Int, taskId)
+    .input("resetState", sql.VarChar(50), resetState)
     .input("branch", sql.NVarChar(250), branch !== undefined ? branch : null)
     .input("pullRequestUrl", sql.NVarChar(500), pullRequestUrl !== undefined ? pullRequestUrl : null)
     .query(`
       UPDATE tasks
-      SET state = 'todo', branch = @branch, pull_request_url = @pullRequestUrl, updated_at = GETUTCDATE()
+      SET state = @resetState, branch = @branch, pull_request_url = @pullRequestUrl, updated_at = GETUTCDATE()
       WHERE id = @id
     `);
+}
+
+/**
+ * Reset a task back to "todo" (developer agent failed or timed out).
+ * Thin wrapper around resetTask for backward compatibility.
+ */
+export async function resetTaskToTodo(
+  taskId: number,
+  branch?: string | null,
+  pullRequestUrl?: string | null
+): Promise<void> {
+  return resetTask(taskId, "todo", branch, pullRequestUrl);
 }
 
 /**
@@ -240,12 +290,14 @@ export async function resetOrphanedTasks(): Promise<number> {
 }
 
 /**
- * Get the count of available (todo) tasks.
+ * Get the count of available tasks in the given claim state.
  *
  * Uses a short TTL cache (5s) to avoid redundant COUNT queries when multiple
- * loop sessions poll simultaneously. The cache is keyed by the sorted tabIds.
+ * loop sessions poll simultaneously. The cache is keyed by the sorted tabIds
+ * AND the claim state.
  *
- * @param tabIds Optional tab IDs to filter by — only tasks belonging to at least one of these tabs are counted. If empty/undefined, all todo tasks are counted.
+ * @param tabIds Optional tab IDs to filter by — only tasks belonging to at least one of these tabs are counted. If empty/undefined, all tasks in the given state are counted.
+ * @param claimState The state to count tasks in (default: "todo")
  */
 
 interface CachedCount {
@@ -256,11 +308,12 @@ interface CachedCount {
 const countCache = new Map<string, CachedCount>();
 const COUNT_CACHE_TTL_MS = 5000;
 
-export async function getAvailableTaskCount(tabIds?: number[]): Promise<number> {
-  // Build a stable cache key from the sorted tab IDs
-  const cacheKey = tabIds && tabIds.length > 0
+export async function getAvailableTaskCount(tabIds?: number[], claimState: string = "todo"): Promise<number> {
+  // Build a stable cache key from the sorted tab IDs + claim state
+  const tabPart = tabIds && tabIds.length > 0
     ? `tabs:${[...tabIds].sort((a, b) => a - b).join(",")}`
     : "all";
+  const cacheKey = `${tabPart}:state:${claimState}`;
 
   const cached = countCache.get(cacheKey);
   if (cached && Date.now() < cached.expiresAt) {
@@ -272,6 +325,7 @@ export async function getAvailableTaskCount(tabIds?: number[]): Promise<number> 
 
   if (tabIds && tabIds.length > 0) {
     const request = pool.request();
+    request.input("claimState", sql.VarChar(50), claimState);
     const tabIdParams = tabIds.map((id, i) => `@tabId${i}`);
     tabIds.forEach((id, i) => {
       request.input(`tabId${i}`, sql.Int, id);
@@ -281,14 +335,15 @@ export async function getAvailableTaskCount(tabIds?: number[]): Promise<number> 
       SELECT COUNT(DISTINCT t.id) as count
       FROM tasks t
       INNER JOIN task_tabs tt ON tt.task_id = t.id
-      WHERE t.state = 'todo'
+      WHERE t.state = @claimState
         AND tt.tab_id IN (${tabIdParams.join(", ")})
     `);
     count = result.recordset[0].count;
   } else {
     const result = await pool
       .request()
-      .query("SELECT COUNT(*) as count FROM tasks WHERE state = 'todo'");
+      .input("claimState", sql.VarChar(50), claimState)
+      .query("SELECT COUNT(*) as count FROM tasks WHERE state = @claimState");
     count = result.recordset[0].count;
   }
 
