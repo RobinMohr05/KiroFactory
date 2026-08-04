@@ -78,6 +78,8 @@ CREATE TABLE tasks (
     origin          VARCHAR(20)     NOT NULL CHECK (origin IN ('user', 'ai', 'user-assisted')),
     retry_count     INT             NOT NULL DEFAULT 0,
     max_retries     INT             NOT NULL DEFAULT 5,
+    branch          NVARCHAR(250)   NULL,
+    pull_request_url NVARCHAR(500)  NULL,
     created_at      DATETIME2       NOT NULL DEFAULT GETUTCDATE(),
     updated_at      DATETIME2       NOT NULL DEFAULT GETUTCDATE()
 );

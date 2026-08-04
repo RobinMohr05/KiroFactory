@@ -345,7 +345,39 @@ async function runOnce(config: AgentConfig): Promise<boolean> {
 
   if (!agentSuccess) {
     log(`Agent failed or timed out for task ${task.id}.`, "red");
-    await resetTaskToTodo(task.id);
+
+    // Best-effort: try to commit & push whatever exists so the work isn't lost
+    let failBranch: string | null = null;
+    let failPrUrl: string | null = null;
+    try {
+      const hasChanges = await commitChanges(workspacePath, task.id, task.title, task.type, task.priority, task.description);
+      if (hasChanges) {
+        await pushBranch(workspacePath, branchName);
+        failBranch = branchName;
+        log(`Best-effort push to "${branchName}" succeeded.`, "yellow");
+
+        // Attempt PR creation too
+        const prTitle = `[WIP] ${task.title} [Vibecode Heaven #${task.id}]`;
+        const prBody = buildPrBody(task.id, task.title, task.type, task.priority, task.description);
+        const prResult = await createPullRequest({
+          owner: repoInfo.owner,
+          repo: repoInfo.repo,
+          pat: githubPat,
+          head: branchName,
+          base: baseBranch,
+          title: prTitle,
+          body: prBody,
+        });
+        if (prResult.success) {
+          failPrUrl = prResult.prUrl!;
+          log(`Best-effort PR created: ${failPrUrl}`, "yellow");
+        }
+      }
+    } catch {
+      // Best effort — ignore failures
+    }
+
+    await resetTaskToTodo(task.id, failBranch, failPrUrl);
     log(`Task ${task.id} reset to "todo".`, "red");
     return false;
   }
@@ -365,7 +397,7 @@ async function runOnce(config: AgentConfig): Promise<boolean> {
     if (!hasChanges) {
       log(`No changes after agent execution — task may already be implemented.`, "yellow");
       // Still mark as developed (the agent determined nothing needed doing)
-      await markTaskDeveloped(task.id);
+      await markTaskDeveloped(task.id, branchName, null);
       log(`Task ${task.id} marked as "developed" (no changes needed).`, "green");
       return true;
     }
@@ -416,7 +448,7 @@ async function runOnce(config: AgentConfig): Promise<boolean> {
   log(`Pull Request created: ${prResult.prUrl}`, "green");
 
   // 10. Mark task as developed
-  await markTaskDeveloped(task.id);
+  await markTaskDeveloped(task.id, branchName, prResult.prUrl);
   log(`Task ${task.id} marked as "developed" ✓`, "green");
 
   return true;

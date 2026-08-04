@@ -1473,6 +1473,7 @@ async function waitForWorkerOrAbort(
 interface WorkerPromptResult {
   hasChanges?: boolean;
   prUrl?: string;
+  branchName?: string;
   error?: string | null;
   stopReason?: string | null;
   toolCalls?: number;
@@ -1760,7 +1761,7 @@ async function runLoopModeAca(
     }
 
     if (success) {
-      await markTaskDeveloped(task.id);
+      await markTaskDeveloped(task.id, promptResult.branchName ?? null, promptResult.prUrl ?? null);
       appendOutput(managed, {
         timestamp: now(),
         stream: "system",
@@ -1769,7 +1770,10 @@ async function runLoopModeAca(
       // Clear failure counter on success
       taskFailures.delete(task.id);
     } else {
-      await resetTaskToTodo(task.id);
+      // On failure, preserve branch/PR info if the worker managed to push (best-effort)
+      const failBranch = promptResult.branchName ?? null;
+      const failPrUrl = promptResult.prUrl ?? null;
+      await resetTaskToTodo(task.id, failBranch, failPrUrl);
 
       // A delivery failure is an environment problem, not a task problem —
       // block immediately instead of spending the whole retry budget

@@ -177,30 +177,45 @@ export async function claimTask(taskId?: number, tabIds?: number[]): Promise<Cla
 
 /**
  * Mark a task as "developed" (completed by the agent).
+ * Optionally records the branch and pull request URL.
  */
-export async function markTaskDeveloped(taskId: number): Promise<void> {
+export async function markTaskDeveloped(
+  taskId: number,
+  branch?: string | null,
+  pullRequestUrl?: string | null
+): Promise<void> {
   const pool = await getPool();
   await pool
     .request()
     .input("id", sql.Int, taskId)
+    .input("branch", sql.NVarChar(250), branch ?? null)
+    .input("pullRequestUrl", sql.NVarChar(500), pullRequestUrl ?? null)
     .query(`
       UPDATE tasks
-      SET state = 'developed', updated_at = GETUTCDATE()
+      SET state = 'developed', branch = @branch, pull_request_url = @pullRequestUrl, updated_at = GETUTCDATE()
       WHERE id = @id
     `);
 }
 
 /**
  * Reset a task back to "todo" (agent failed or timed out).
+ * Optionally sets branch/PR info if a best-effort push succeeded before the reset.
+ * Pass null explicitly to clear stale branch/PR info from a previous attempt.
  */
-export async function resetTaskToTodo(taskId: number): Promise<void> {
+export async function resetTaskToTodo(
+  taskId: number,
+  branch?: string | null,
+  pullRequestUrl?: string | null
+): Promise<void> {
   const pool = await getPool();
   await pool
     .request()
     .input("id", sql.Int, taskId)
+    .input("branch", sql.NVarChar(250), branch !== undefined ? branch : null)
+    .input("pullRequestUrl", sql.NVarChar(500), pullRequestUrl !== undefined ? pullRequestUrl : null)
     .query(`
       UPDATE tasks
-      SET state = 'todo', updated_at = GETUTCDATE()
+      SET state = 'todo', branch = @branch, pull_request_url = @pullRequestUrl, updated_at = GETUTCDATE()
       WHERE id = @id
     `);
 }
