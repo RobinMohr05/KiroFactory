@@ -34,6 +34,8 @@ const ORCHESTRATOR_URL = process.env.ORCHESTRATOR_URL;
 const WORKER_SECRET = process.env.WORKER_SECRET;
 const TASK_ID = process.env.TASK_ID;
 const AGENT_NAME = process.env.AGENT_NAME ?? "developer-agent";
+/** Agent kind: "editor" commits/pushes changes, "inspector" discards unexpected changes. */
+const AGENT_KIND = process.env.AGENT_KIND || "editor";
 const REPO_URL = process.env.REPO_URL;
 const DEV_BRANCH_CANDIDATES = (process.env.DEV_BRANCH || "develop").split(",").map(b => b.trim());
 let DEV_BRANCH = DEV_BRANCH_CANDIDATES[0];
@@ -1219,19 +1221,48 @@ function finishPromptTurn(msg) {
     let committed = false;
     let prUrl = null;
     let gitError = null;
-    try {
-      const gitResult = commitAndPush();
-      hasChanges = gitResult.hasChanges;
-      committed = !!gitResult.committed;
-      if (gitResult.pushError) gitError = gitResult.pushError;
-      if (gitResult.pushed && gitResult.branchName) {
-        prUrl = await createPullRequest(gitResult.branchName);
+
+    if (AGENT_KIND === "inspector") {
+      // Inspector-kind agents must not change files. If they did, discard the
+      // changes and log a warning — but do NOT fail the task over it.
+      try {
+        const status = exec("git status --porcelain", { cwd: WORKSPACE });
+        if (status) {
+          const changedFiles = status.split("\n").filter(Boolean);
+          const fileList = changedFiles.map((l) => `  ${l}`).join("\n");
+          logError("Inspector-kind agent produced unexpected file changes — discarding", {
+            agent: AGENT_NAME,
+            fileCount: changedFiles.length,
+            files: changedFiles.slice(0, 50),
+          });
+          sendOutput(
+            `⚠ Inspector-kind agent produced ${changedFiles.length} changed file(s) — discarded:\n${fileList}`,
+            "stderr"
+          );
+          exec("git reset --hard HEAD", { cwd: WORKSPACE });
+          exec("git clean -fd", { cwd: WORKSPACE });
+        }
+      } catch (err) {
+        logError("Inspector discard-changes check failed", { error: err?.message || String(err) });
       }
-    } catch (err) {
-      gitError = redactSecrets(err?.message || String(err));
-      logError("Post-prompt git/PR operations failed", { error: gitError });
-      sendOutput(`Post-prompt error: ${gitError}`, "stderr");
+      // hasChanges stays false — inspector agents never produce deliverable changes
+    } else {
+      // Editor-kind: existing commit/push/PR flow
+      try {
+        const gitResult = commitAndPush();
+        hasChanges = gitResult.hasChanges;
+        committed = !!gitResult.committed;
+        if (gitResult.pushError) gitError = gitResult.pushError;
+        if (gitResult.pushed && gitResult.branchName) {
+          prUrl = await createPullRequest(gitResult.branchName);
+        }
+      } catch (err) {
+        gitError = redactSecrets(err?.message || String(err));
+        logError("Post-prompt git/PR operations failed", { error: gitError });
+        sendOutput(`Post-prompt error: ${gitError}`, "stderr");
+      }
     }
+
     sendPromptDone({
       stopReason,
       error: promptError || gitError || null,
@@ -1620,12 +1651,14 @@ let shuttingDown = false;
 
 function commitOnExitAndShutdown(exitCode) {
   if (shuttingDown) return;
-  try {
-    const result = commitAndPush();
-    if (result.pushed) sendOutput(`Changes pushed to ${result.branchName}`, "system");
-  } catch (err) {
-    logError("commit/push on exit failed", { error: err?.message || String(err) });
-    sendOutput(`commit/push failed: ${err?.message || String(err)}`, "stderr");
+  if (AGENT_KIND !== "inspector") {
+    try {
+      const result = commitAndPush();
+      if (result.pushed) sendOutput(`Changes pushed to ${result.branchName}`, "system");
+    } catch (err) {
+      logError("commit/push on exit failed", { error: err?.message || String(err) });
+      sendOutput(`commit/push failed: ${err?.message || String(err)}`, "stderr");
+    }
   }
   // worker-shutdown drives the orchestrator's final session status; the socket
   // close that follows is what signals the disconnect.
