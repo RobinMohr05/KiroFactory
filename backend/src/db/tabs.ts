@@ -137,18 +137,21 @@ export async function getTabWithTasks(id: number): Promise<Tab | null> {
     .filter((s) => s.tabIds?.includes(id))
     .map((s) => ({ id: s.id, name: s.name, agent: s.agent, status: s.status }));
 
-  // Populate agents via agent_tabs junction.
-  // Include agents directly assigned to this tab AND agents assigned to the
-  // "generic" tab (which can be used on any tab).
+  // Populate agents. Include agents directly assigned to this tab AND agents
+  // with no tab assignment at all (unassigned = usable on every board owned
+  // by the same user).
   const agentsResult = await pool
     .request()
     .input("tabId2", sql.Int, id)
     .query(`
       SELECT DISTINCT a.name
       FROM agents a
-      INNER JOIN agent_tabs at2 ON at2.agent_id = a.id
-      WHERE at2.tab_id = @tabId2
-         OR at2.tab_id IN (SELECT t.id FROM tabs t WHERE t.name = 'generic')
+      INNER JOIN tabs t ON t.id = @tabId2
+      WHERE a.user_id = t.user_id
+        AND (
+          a.id IN (SELECT agent_id FROM agent_tabs WHERE tab_id = @tabId2)
+          OR a.id NOT IN (SELECT agent_id FROM agent_tabs)
+        )
       ORDER BY a.name ASC
     `);
 
@@ -295,19 +298,4 @@ export async function setAgentTabs(
 }
 
 
-// ---------------------------------------------------------------------------
-// Utility helpers
-// ---------------------------------------------------------------------------
 
-/**
- * Check if the given tab IDs include the "generic" tab.
- * Used by session-manager to decide if an agent can claim tasks from any tab.
- */
-export async function includesGenericTab(tabIds: number[]): Promise<boolean> {
-  if (tabIds.length === 0) return false;
-  const pool = await getPool();
-  const result = await pool
-    .request()
-    .query(`SELECT id FROM tabs WHERE name = 'generic' AND id IN (${tabIds.join(",")})`);
-  return result.recordset.length > 0;
-}
