@@ -954,6 +954,15 @@ async function runLoopMode(
           stream: "system",
           text: `Task ${task.id} → "done" (agent verdict: no_action_needed) ✓`,
         });
+      } else if (managed.turnVerdict === "changes_requested") {
+        // Reviewer/QA agent found issues — send back to "todo" for rework,
+        // preserving branch/PR so the developer agent can resume.
+        await resetTask(task.id, "todo");
+        appendOutput(managed, {
+          timestamp: now(),
+          stream: "system",
+          text: `Task ${task.id} sent back to "todo" — reviewer/QA requested changes (see PR comments).`,
+        });
       } else {
         await resolveTask(task.id, stages.resolveState);
         appendOutput(managed, {
@@ -1635,19 +1644,19 @@ interface WorkerPromptResult {
   /** Kiro credits consumed this turn (from _kiro.dev/metadata meteringUsage). */
   credits?: number;
   /** Agent-reported verdict via the report_verdict MCP tool. Cross-checked against git diff by the worker. */
-  verdict?: "resolved" | "no_action_needed";
+  verdict?: "resolved" | "no_action_needed" | "changes_requested";
 }
 
 /**
  * Send a prompt to an ACA worker and wait for prompt-done response.
  */
-async function streamPromptAca(managed: ManagedSession, text: string, taskMeta?: { id: number; title: string; type: string; description: string; files: string[]; branch?: string | null }): Promise<WorkerPromptResult> {
+async function streamPromptAca(managed: ManagedSession, text: string, taskMeta?: { id: number; title: string; type: string; description: string; files: string[]; branch?: string | null; pullRequestUrl?: string | null }): Promise<WorkerPromptResult> {
   if (!isWorkerConnected(managed.meta.id)) {
     throw new Error("Worker is not connected");
   }
 
   // Send the prompt to the worker (with optional task metadata for branch/commit/PR)
-  const workerTaskMeta = taskMeta ? { id: taskMeta.id, title: taskMeta.title, type: taskMeta.type, description: taskMeta.description, files: taskMeta.files, branch: taskMeta.branch ?? null } : undefined;
+  const workerTaskMeta = taskMeta ? { id: taskMeta.id, title: taskMeta.title, type: taskMeta.type, description: taskMeta.description, files: taskMeta.files, branch: taskMeta.branch ?? null, pullRequestUrl: taskMeta.pullRequestUrl ?? null } : undefined;
   const sent = sendWorkerPrompt(managed.meta.id, text, workerTaskMeta);
   if (!sent) {
     throw new Error("Failed to send prompt to worker");
@@ -1782,7 +1791,7 @@ async function runLoopModeAca(
     let deliveryFailure = false;
 
     try {
-      promptResult = await streamPromptAca(managed, prompt, { id: task.id, title: task.title, type: task.type, description: task.description, files: task.files, branch: task.branch });
+      promptResult = await streamPromptAca(managed, prompt, { id: task.id, title: task.title, type: task.type, description: task.description, files: task.files, branch: task.branch, pullRequestUrl: task.pullRequestUrl });
     } catch (err) {
       success = false;
       const msg = err instanceof Error ? err.message : String(err);
@@ -1883,8 +1892,9 @@ async function runLoopModeAca(
     }
 
     // Check if the worker produced any file changes.
-    // Skip this check when the agent reported "no_action_needed" — no changes is expected.
-    if (success && !promptResult.hasChanges && promptResult.verdict !== "no_action_needed") {
+    // Skip this check when the agent reported any verdict — inspector/QA agents
+    // legitimately never produce file changes (they only post PR comments).
+    if (success && !promptResult.hasChanges && !promptResult.verdict) {
       success = false;
       const details = [
         `stopReason: ${promptResult.stopReason ?? "unknown"}`,
@@ -1925,6 +1935,15 @@ async function runLoopModeAca(
           timestamp: now(),
           stream: "system",
           text: `Task ${task.id} → "done" (agent verdict: no_action_needed, no changes) ✓`,
+        });
+      } else if (promptResult.verdict === "changes_requested") {
+        // Reviewer/QA agent found issues — send back to "todo" for rework,
+        // preserving the existing branch and PR so the developer agent can resume.
+        await resetTask(task.id, "todo", promptResult.branchName ?? null, promptResult.prUrl ?? null);
+        appendOutput(managed, {
+          timestamp: now(),
+          stream: "system",
+          text: `Task ${task.id} sent back to "todo" — reviewer/QA requested changes (see PR comments).`,
         });
       } else {
         await resolveTask(task.id, stages.resolveState, promptResult.branchName ?? null, promptResult.prUrl ?? null);
