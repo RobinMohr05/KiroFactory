@@ -13,7 +13,7 @@ import { resolve } from "node:path";
 import { KiroRunner } from "./agent/kiro-runner.js";
 import type { SessionUpdateChunk } from "./agent/kiro-runner.js";
 import { broadcastToUser } from "./websocket-handler.js";
-import { claimTask, markTaskDeveloped, resetTaskToTodo, getAvailableTaskCount } from "./agent/task-claimer.js";
+import { claimTask, markTaskDeveloped, markTaskDone, resetTaskToTodo, getAvailableTaskCount } from "./agent/task-claimer.js";
 import { buildDevPrompt } from "./agent/prompt-builder.js";
 import { TabMcpConfig, DEFAULT_MCP_CONFIG, resolveGitProvider, type GitProvider } from "./types.js";
 import {
@@ -133,6 +133,10 @@ interface ManagedSession {
   acaPromptRejecter: ((err: Error) => void) | null;
   /** Cumulative credits consumed this session (tracked via _kiro.dev/metadata) */
   totalCreditsUsed: number;
+  /** Verdict reported by the agent via report_verdict MCP tool this turn (local mode only) */
+  turnVerdict: string | null;
+  /** Tracks toolCallId for the report_verdict tool to capture verdict from tool_call_update */
+  verdictToolCallId: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -223,6 +227,8 @@ export async function initSessions(): Promise<void> {
       acaPromptResolver: null,
       acaPromptRejecter: null,
       totalCreditsUsed: 0,
+      turnVerdict: null,
+      verdictToolCallId: null,
     });
 
     // Check if this session should auto-restart.
@@ -441,6 +447,8 @@ export async function createSession(input: CreateSessionInput): Promise<Session>
     acaPromptResolver: null,
     acaPromptRejecter: null,
     totalCreditsUsed: 0,
+    turnVerdict: null,
+    verdictToolCallId: null,
   };
 
   sessions.set(meta.id, session);
@@ -833,6 +841,10 @@ async function runLoopMode(
     const prompt = buildDevPrompt(task, meta.cwd);
     let success = true;
 
+    // Reset per-turn verdict tracking before each prompt
+    managed.turnVerdict = null;
+    managed.verdictToolCallId = null;
+
     try {
       await streamPrompt(managed, prompt);
     } catch (err) {
@@ -870,12 +882,25 @@ async function runLoopMode(
     }
 
     if (success) {
-      await markTaskDeveloped(task.id);
-      appendOutput(managed, {
-        timestamp: now(),
-        stream: "system",
-        text: `Task ${task.id} marked as "developed" ✓`,
-      });
+      // If the agent reported "no_action_needed" via the report_verdict tool,
+      // resolve straight to "done" (skip remaining pipeline stages).
+      // Note: local mode has no git operations, so no diff cross-check needed here —
+      // the tool_call itself is the signal.
+      if (managed.turnVerdict === "no_action_needed") {
+        await markTaskDone(task.id);
+        appendOutput(managed, {
+          timestamp: now(),
+          stream: "system",
+          text: `Task ${task.id} → "done" (agent verdict: no_action_needed) ✓`,
+        });
+      } else {
+        await markTaskDeveloped(task.id);
+        appendOutput(managed, {
+          timestamp: now(),
+          stream: "system",
+          text: `Task ${task.id} marked as "developed" ✓`,
+        });
+      }
     } else {
       await resetTaskToTodo(task.id);
       appendOutput(managed, {
@@ -1051,11 +1076,36 @@ function processUpdate(managed: ManagedSession, update: SessionUpdateChunk): voi
           stream: "system",
           text: `${icon} ${label}${update.title && label !== update.title ? ` — ${update.title}` : ""}`,
         });
+        // Track report_verdict tool calls so we can capture the verdict from the update
+        if (rawName === "report_verdict") {
+          managed.verdictToolCallId = (update as { toolCallId?: string }).toolCallId ?? null;
+        }
         break;
       }
 
       case "tool_call_update":
         if (update.status === "completed") {
+          // Check if this is a completed report_verdict call — capture the verdict
+          if (
+            managed.verdictToolCallId &&
+            (update as { toolCallId?: string }).toolCallId === managed.verdictToolCallId
+          ) {
+            // Extract verdict from tool output content
+            const content = (update as { content?: Array<{ type?: string; text?: string }> }).content;
+            if (Array.isArray(content)) {
+              for (const block of content) {
+                if (block?.type === "text" && block.text) {
+                  try {
+                    const parsed = JSON.parse(block.text);
+                    if (parsed?.verdict) {
+                      managed.turnVerdict = parsed.verdict;
+                    }
+                  } catch { /* not JSON — ignore */ }
+                }
+              }
+            }
+            managed.verdictToolCallId = null;
+          }
           setActivity(managed, { type: "working", detail: "Processing..." });
         } else if (update.status === "failed") {
           // Tool failures are the most common reason an agent produces no
@@ -1503,6 +1553,8 @@ interface WorkerPromptResult {
   deliveryFailed?: boolean;
   /** Kiro credits consumed this turn (from _kiro.dev/metadata meteringUsage). */
   credits?: number;
+  /** Agent-reported verdict via the report_verdict MCP tool. Cross-checked against git diff by the worker. */
+  verdict?: "resolved" | "no_action_needed";
 }
 
 /**
@@ -1750,8 +1802,9 @@ async function runLoopModeAca(
       });
     }
 
-    // Check if the worker produced any file changes
-    if (success && !promptResult.hasChanges) {
+    // Check if the worker produced any file changes.
+    // Skip this check when the agent reported "no_action_needed" — no changes is expected.
+    if (success && !promptResult.hasChanges && promptResult.verdict !== "no_action_needed") {
       success = false;
       const details = [
         `stopReason: ${promptResult.stopReason ?? "unknown"}`,
@@ -1784,12 +1837,23 @@ async function runLoopModeAca(
     }
 
     if (success) {
-      await markTaskDeveloped(task.id, promptResult.branchName ?? null, promptResult.prUrl ?? null);
-      appendOutput(managed, {
-        timestamp: now(),
-        stream: "system",
-        text: `Task ${task.id} marked as "developed" ✓`,
-      });
+      // If the agent reported "no_action_needed" and no file changes exist (cross-check
+      // passed in the worker), skip remaining pipeline stages → resolve straight to "done".
+      if (promptResult.verdict === "no_action_needed" && !promptResult.hasChanges) {
+        await markTaskDone(task.id, promptResult.branchName ?? null, promptResult.prUrl ?? null);
+        appendOutput(managed, {
+          timestamp: now(),
+          stream: "system",
+          text: `Task ${task.id} → "done" (agent verdict: no_action_needed, no changes) ✓`,
+        });
+      } else {
+        await markTaskDeveloped(task.id, promptResult.branchName ?? null, promptResult.prUrl ?? null);
+        appendOutput(managed, {
+          timestamp: now(),
+          stream: "system",
+          text: `Task ${task.id} marked as "developed" ✓`,
+        });
+      }
       // Clear failure counter on success
       taskFailures.delete(task.id);
     } else {
