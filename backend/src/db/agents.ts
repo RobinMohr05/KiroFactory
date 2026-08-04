@@ -15,6 +15,11 @@ function mapRowToAgent(row: Record<string, unknown>): Agent {
     toolsSettings: JSON.parse((row.tools_settings as string) || "{}"),
     resources: JSON.parse((row.resources as string) || "[]"),
     userId: (row.user_id as number) ?? 0,
+    // Stage state columns — fall back to developer-pipeline defaults if columns
+    // don't exist yet (pre-migration) or are NULL.
+    claimState: (row.claim_state as string) ?? "todo",
+    workingState: (row.working_state as string) ?? "in-progress",
+    resolveState: (row.resolve_state as string) ?? "developed",
     createdAt: (row.created_at as Date).toISOString(),
     updatedAt: (row.updated_at as Date).toISOString(),
   };
