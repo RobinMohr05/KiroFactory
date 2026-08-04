@@ -131,6 +131,8 @@ interface ManagedSession {
   acaPromptResolver: ((result: unknown) => void) | null;
   /** Rejecter for awaiting prompt completion from ACA worker */
   acaPromptRejecter: ((err: Error) => void) | null;
+  /** Cumulative credits consumed this session (tracked via _kiro.dev/metadata) */
+  totalCreditsUsed: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -220,6 +222,7 @@ export async function initSessions(): Promise<void> {
       acaExecutionName: null,
       acaPromptResolver: null,
       acaPromptRejecter: null,
+      totalCreditsUsed: 0,
     });
 
     // Check if this session should auto-restart.
@@ -437,6 +440,7 @@ export async function createSession(input: CreateSessionInput): Promise<Session>
     acaExecutionName: null,
     acaPromptResolver: null,
     acaPromptRejecter: null,
+    totalCreditsUsed: 0,
   };
 
   sessions.set(meta.id, session);
@@ -514,6 +518,8 @@ export async function startSession(id: number): Promise<boolean> {
 
   session.meta.output = [];
   session.meta.startedAt = now();
+  session.totalCreditsUsed = 0;
+  session.meta.totalCreditsUsed = 0;
   setStatus(session, "running");
   setActivity(session, { type: "working", detail: "Starting ACP session..." });
   logSessionEvent("session-started", id, { agent: session.meta.agent, name: session.meta.name, mode: ACA_MODE ? "remote" : "local" });
@@ -1479,6 +1485,8 @@ interface WorkerPromptResult {
   durationMs?: number;
   /** The agent's work was committed but could not be pushed — retrying won't help. */
   deliveryFailed?: boolean;
+  /** Kiro credits consumed this turn (from _kiro.dev/metadata meteringUsage). */
+  credits?: number;
 }
 
 /**
@@ -1891,10 +1899,24 @@ function initWorkerEventHandler(): void {
         hasChanges: r.hasChanges ?? null,
         prUrl: r.prUrl ?? null,
         error: r.error ?? null,
+        credits: r.credits ?? null,
         msg: r.error
           ? `Prompt turn failed: ${r.error}`
           : `Prompt turn finished (stopReason: ${r.stopReason ?? "unknown"}, tool calls: ${r.toolCalls ?? 0}, changes: ${r.hasChanges ? "yes" : "no"})`,
       });
+
+      // Accumulate credit usage from this turn
+      if (r.credits && r.credits > 0) {
+        session.totalCreditsUsed += r.credits;
+        session.meta.totalCreditsUsed = session.totalCreditsUsed;
+        appendOutput(session, {
+          timestamp: now(),
+          stream: "system",
+          text: `Task used ${r.credits.toFixed(4)} credits (session total: ${session.totalCreditsUsed.toFixed(4)} credits).`,
+        });
+        broadcastToUser(session.meta.userId, { type: "session-updated", session: session.meta });
+        persistSession(session.meta.id);
+      }
 
       setActivity(session, { type: "idle", detail: "Ready for next prompt" });
       // Resolve the awaiter in streamPromptAca
