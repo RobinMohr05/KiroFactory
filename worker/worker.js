@@ -1648,7 +1648,17 @@ function handlePrompt(text, taskMeta) {
   if (taskMeta && REPO_URL) {
     currentTaskMeta = taskMeta;
     try {
-      currentBranchName = createTaskBranch(taskMeta);
+      // If the task already has a branch from a previous pipeline stage,
+      // fetch and check it out instead of creating a new one.
+      if (taskMeta.branch) {
+        resetWorkingTree();
+        execFileArgs("git", ["fetch", "origin", taskMeta.branch], { cwd: WORKSPACE });
+        execFileArgs("git", ["checkout", taskMeta.branch], { cwd: WORKSPACE });
+        currentBranchName = taskMeta.branch;
+        sendOutput(`Checked out existing branch: ${taskMeta.branch}`, "system");
+      } else {
+        currentBranchName = createTaskBranch(taskMeta);
+      }
     } catch (err) {
       sendOutput(`Warning: could not create task branch: ${err?.message || err}`, "stderr");
       logError("Failed to create task branch", { error: err?.message || String(err) });

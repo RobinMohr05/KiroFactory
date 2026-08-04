@@ -250,6 +250,8 @@ export interface WorkerTaskMeta {
   type?: string;
   description: string;
   files: string[];
+  /** Existing branch from a previous pipeline stage (null = create new branch) */
+  branch?: string | null;
 }
 
 /**
