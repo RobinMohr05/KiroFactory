@@ -38,10 +38,11 @@ ${filesList}
 
 ## INSTRUCTIONS
 
-1. Read the relevant source files to understand the current state of the code.
-2. Implement the change described above. Follow the existing code style and conventions.
-3. After implementing, verify your changes compile correctly (run \`npm run build\` if applicable).
-4. STOP after completing this single task. Do not pick another task.
+1. If this task already has an associated pull request (you are resuming on an existing branch, not starting fresh), call the \`get_pr_review_comments\` tool first. Treat every comment it returns as a required fix and address ALL of them.
+2. Read the relevant source files to understand the current state of the code.
+3. Implement the change described above. Follow the existing code style and conventions.
+4. After implementing, verify your changes compile correctly (run \`npm run build\` if applicable).
+5. STOP after completing this single task. Do not pick another task.
 
 ## CRITICAL RULES
 
@@ -91,6 +92,11 @@ export function buildTddDevPrompt(task: ClaimedTask, cwd: string): string {
 ${filesList}
 
 ## TDD WORKFLOW (follow this exact order)
+
+### Step 0 — Check for PR review comments (rework pass)
+- If this task already has an associated pull request (you are resuming on an existing branch, not starting fresh), call the \`get_pr_review_comments\` tool first.
+- Treat every comment it returns as a required fix — write a failing test for each one where applicable, then implement the fix, following the same RED-GREEN-REFACTOR flow as any other requirement.
+- Address ALL review comments before considering the task complete.
 
 ### Step 1 — Write tests FIRST
 - Identify or create the test file for the module being changed (colocated: \`foo.test.ts\` next to \`foo.ts\`).
