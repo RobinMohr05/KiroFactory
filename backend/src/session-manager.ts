@@ -131,6 +131,8 @@ interface ManagedSession {
   acaPromptResolver: ((result: unknown) => void) | null;
   /** Rejecter for awaiting prompt completion from ACA worker */
   acaPromptRejecter: ((err: Error) => void) | null;
+  /** Cumulative credits consumed this session (local mode only — tracked via _kiro.dev/metadata) */
+  totalCreditsUsed: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -220,6 +222,7 @@ export async function initSessions(): Promise<void> {
       acaExecutionName: null,
       acaPromptResolver: null,
       acaPromptRejecter: null,
+      totalCreditsUsed: 0,
     });
 
     // Check if this session should auto-restart.
@@ -437,6 +440,7 @@ export async function createSession(input: CreateSessionInput): Promise<Session>
     acaExecutionName: null,
     acaPromptResolver: null,
     acaPromptRejecter: null,
+    totalCreditsUsed: 0,
   };
 
   sessions.set(meta.id, session);
@@ -514,6 +518,8 @@ export async function startSession(id: number): Promise<boolean> {
 
   session.meta.output = [];
   session.meta.startedAt = now();
+  session.totalCreditsUsed = 0;
+  session.meta.totalCreditsUsed = 0;
   setStatus(session, "running");
   setActivity(session, { type: "working", detail: "Starting ACP session..." });
   logSessionEvent("session-started", id, { agent: session.meta.agent, name: session.meta.name, mode: ACA_MODE ? "remote" : "local" });
@@ -916,6 +922,21 @@ async function streamPrompt(managed: ManagedSession, text: string): Promise<void
     }
     // Flush any remaining buffered agent message text
     flushMessageBuffer(managed);
+
+    // Capture credit usage from the completed turn
+    const turnCredits = managed.runner.lastTurnCredits;
+    if (turnCredits > 0) {
+      managed.totalCreditsUsed += turnCredits;
+      managed.meta.totalCreditsUsed = managed.totalCreditsUsed;
+      appendOutput(managed, {
+        timestamp: now(),
+        stream: "system",
+        text: `Task used ${turnCredits.toFixed(4)} credits (session total: ${managed.totalCreditsUsed.toFixed(4)} credits).`,
+      });
+      broadcastToUser(managed.meta.userId, { type: "session-updated", session: managed.meta });
+      persistSession(managed.meta.id);
+    }
+
     setActivity(managed, { type: "idle", detail: "Ready for next prompt" });
   } catch (err) {
     // Flush buffer even on error so partial text isn't lost
