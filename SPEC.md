@@ -619,7 +619,7 @@ if (pendingOps.has(opKey)) {
 | Graceful Stop | Cancel ACP session, kill subprocess tree, report exit code |
 | Error Handling | Log crashes/timeouts, surface errors in the UI |
 | Multi-client Sync | Multiple browser tabs see the same state via WebSocket broadcast |
-| Persistence | Session configs stored in sessions.json, survive server restart |
+| Persistence | Session configs stored in SQL Server, survive server restart |
 | **Tasks & Boards** | |
 | Task CRUD | Create, read, update, delete tasks in SQL Server |
 | Board Management | Create/rename/delete boards, each with its own task view |
@@ -649,7 +649,7 @@ if (pendingOps.has(opKey)) {
 | Agent Types | Hardcoded types (dev, qa, task-order) | Generic — any agent, any prompt |
 | Prompt Model | Built-in prompts per type | User-provided prompts per session |
 | Concurrency | Lock-file-based task claiming for parallelism | DB-level task claiming (row locking) |
-| Persistence | JSON files on disk | SQL Server (tasks/boards) + JSON (sessions) |
+| Persistence | JSON files on disk | SQL Server (tasks/boards/sessions) |
 | Frontend | Vanilla HTML/JS | Vanilla HTML/CSS/JS (no build step) |
 
 ---
@@ -782,8 +782,7 @@ kirofactory/
 │   ├── style.css              # Styles (dark mode support)
 │   └── app.js                 # Client-side logic + WebSocket + board view
 ├── sql/
-│   └── schema.sql             # Database schema (boards, tasks, task_boards)
-├── sessions.json              # Persisted session configs (file-based)
+│   └── schema.sql             # Database schema (boards, tasks, task_boards, sessions)
 ├── templates.json             # Saved session templates
 ├── package.json
 ├── tsconfig.json
