@@ -118,7 +118,8 @@ CREATE TABLE agents (
     resolve_state   VARCHAR(50)     NOT NULL DEFAULT 'developed',
     user_id         INT             NULL REFERENCES users(id),
     created_at      DATETIME2       NOT NULL DEFAULT GETUTCDATE(),
-    updated_at      DATETIME2       NOT NULL DEFAULT GETUTCDATE()
+    updated_at      DATETIME2       NOT NULL DEFAULT GETUTCDATE(),
+    CONSTRAINT CK_agents_kind CHECK (kind IN ('editor', 'inspector'))
 );
 
 -- ============================================================================

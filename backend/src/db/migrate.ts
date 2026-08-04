@@ -1005,15 +1005,19 @@ async function runUpgrades(pool: sql.ConnectionPool): Promise<void> {
 
   if (agentKindColExists.recordset[0].cnt === 0) {
     console.log("[migrate] Upgrading: adding kind, claim_state, working_state, resolve_state to agents table...");
-
     // Add kind column with CHECK constraint
     await pool.request().query(`
       ALTER TABLE agents ADD
         kind VARCHAR(20) NOT NULL DEFAULT 'editor'
     `);
-    await pool.request().query(`
-      ALTER TABLE agents ADD CONSTRAINT CK_agents_kind CHECK (kind IN ('editor','inspector'))
-    `);
+    // Add CHECK constraint (wrapped in try/catch for idempotency)
+    try {
+      await pool.request().query(`
+        ALTER TABLE agents ADD CONSTRAINT CK_agents_kind CHECK (kind IN ('editor','inspector'))
+      `);
+    } catch (e: any) {
+      console.warn(`[migrate] ⚠ Could not add CK_agents_kind: ${e.message}`);
+    }
 
     // Add stage state columns
     await pool.request().query(`
@@ -1024,61 +1028,6 @@ async function runUpgrades(pool: sql.ConnectionPool): Promise<void> {
     `);
 
     console.log("[migrate] Upgrade complete: agent kind + stage state columns added.");
-  }
-
-  // Upgrade 22b: Update tabs.columns_json default and existing rows to 7-column pipeline.
-  // Decision: UPDATE all existing rows that still have the old 3-column default.
-  // Tabs that have been manually customized (different from the old default) are left alone.
-  // This ensures all standard tabs get the new pipeline without destroying intentional
-  // per-tab customization.
-  const oldColumnsJson = '["todo","in-progress","developed"]';
-  const newColumnsJson = '["todo","in-progress","developed","in-code-review","reviewed","in-qa","done"]';
-
-  const tabsWithOldColumns = await pool.request()
-    .input("oldColumns", sql.NVarChar(sql.MAX), oldColumnsJson)
-    .query(`
-      SELECT COUNT(*) AS cnt FROM tabs WHERE columns_json = @oldColumns
-    `);
-
-  if (tabsWithOldColumns.recordset[0].cnt > 0) {
-    console.log(`[migrate] Upgrading: expanding ${tabsWithOldColumns.recordset[0].cnt} tab(s) from 3-column to 7-column pipeline...`);
-    await pool.request()
-      .input("oldColumns", sql.NVarChar(sql.MAX), oldColumnsJson)
-      .input("newColumns", sql.NVarChar(sql.MAX), newColumnsJson)
-      .query(`
-        UPDATE tabs SET columns_json = @newColumns WHERE columns_json = @oldColumns
-      `);
-    console.log("[migrate] Upgrade complete: tabs expanded to 7-column pipeline.");
-  }
-
-  // Update the DEFAULT constraint on tabs.columns_json to the new 7-element value.
-  // This ensures any new tabs created after this migration get the full pipeline.
-  const tabsColumnsDefault = await pool.request().query(`
-    SELECT dc.name
-    FROM sys.default_constraints dc
-    JOIN sys.columns c ON dc.parent_object_id = c.object_id AND dc.parent_column_id = c.column_id
-    WHERE c.object_id = OBJECT_ID('tabs') AND c.name = 'columns_json'
-  `);
-
-  if (tabsColumnsDefault.recordset.length > 0) {
-    const defaultName = tabsColumnsDefault.recordset[0].name;
-    // Check if the current default is still the old 3-element value
-    const currentDefault = await pool.request().query(`
-      SELECT dc.definition
-      FROM sys.default_constraints dc
-      WHERE dc.name = '${defaultName}'
-    `);
-    if (currentDefault.recordset.length > 0 && (currentDefault.recordset[0].definition as string).includes("in-progress")) {
-      // Only update if it's still the old default (contains 'in-progress' but not 'in-code-review')
-      if (!(currentDefault.recordset[0].definition as string).includes("in-code-review")) {
-        console.log("[migrate] Upgrading: updating tabs.columns_json DEFAULT constraint to 7-column pipeline...");
-        await pool.request().query(`ALTER TABLE tabs DROP CONSTRAINT [${defaultName}]`);
-        await pool.request().query(`
-          ALTER TABLE tabs ADD DEFAULT '${newColumnsJson}' FOR columns_json
-        `);
-        console.log("[migrate] Upgrade complete: tabs.columns_json DEFAULT updated.");
-      }
-    }
   }
 }
 
