@@ -764,6 +764,7 @@ textarea:focus {
 .kanban {
   display: grid;
   grid-template-columns: repeat(7, minmax(200px, 1fr));
+  grid-template-rows: 1fr;
   gap: 1rem;
   padding: 0 1.5rem 1rem;
   min-height: 0;
@@ -778,6 +779,7 @@ textarea:focus {
   border: 2px solid transparent;
   display: flex;
   flex-direction: column;
+  min-height: 0;
   transition: border-color 0.2s;
 }
 
@@ -1132,6 +1134,8 @@ textarea:focus {
 
   .kanban {
     grid-template-columns: 1fr;
+    grid-template-rows: none;
+    overflow-y: auto;
   }
 
   .board-members {
