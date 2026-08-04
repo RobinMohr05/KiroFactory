@@ -974,6 +974,23 @@ async function runUpgrades(pool: sql.ConnectionPool): Promise<void> {
     );
   }
 
+  // Upgrade 21: Add branch and pull_request_url columns to tasks table
+  const branchColExists = await pool.request().query(`
+    SELECT COUNT(*) AS cnt
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_NAME = 'tasks' AND COLUMN_NAME = 'branch'
+  `);
+
+  if (branchColExists.recordset[0].cnt === 0) {
+    console.log("[migrate] Upgrading: adding branch and pull_request_url to tasks table...");
+    await pool.request().query(`
+      ALTER TABLE tasks ADD
+        branch            NVARCHAR(250) NULL,
+        pull_request_url  NVARCHAR(500) NULL
+    `);
+    console.log("[migrate] Upgrade complete: branch and pull_request_url added to tasks.");
+  }
+
   await backfillPinnedChatSessions(pool);
 }
 
