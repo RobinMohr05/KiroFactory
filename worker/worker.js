@@ -1252,6 +1252,40 @@ function buildMcpServers() {
     },
   ];
 
+  // Include the pr-review MCP server for inspector-kind agents (code review
+  // pipeline stage). The server reads REPO_URL, GIT_PROVIDER, credentials,
+  // TASK_PR_URL, and DEV_BRANCH from its environment. All except TASK_PR_URL
+  // are inherited from the worker's process.env; TASK_PR_URL is set in
+  // handlePrompt() when the task's pullRequestUrl is received from the
+  // orchestrator. The MCP server should read it at tool-call time, not at
+  // module load, because the PR URL is only known after a task is claimed.
+  if (AGENT_KIND === "inspector") {
+    const prReviewEnv = [
+      { name: "REPO_URL", value: REPO_URL || "" },
+      { name: "GIT_PROVIDER", value: GIT_PROVIDER },
+      { name: "DEV_BRANCH", value: DEV_BRANCH || "" },
+    ];
+    if (process.env.GITHUB_PAT) {
+      prReviewEnv.push({ name: "GITHUB_PAT", value: process.env.GITHUB_PAT });
+    }
+    if (AZURE_DEVOPS_PAT) {
+      prReviewEnv.push({ name: "AZURE_DEVOPS_PAT", value: AZURE_DEVOPS_PAT });
+    }
+    // TASK_PR_URL may be empty at session creation — the MCP server handles
+    // this gracefully (returns an error to the agent if no PR URL is set).
+    // It will be populated in process.env when handlePrompt() receives taskMeta.
+    if (process.env.TASK_PR_URL) {
+      prReviewEnv.push({ name: "TASK_PR_URL", value: process.env.TASK_PR_URL });
+    }
+    servers.push({
+      name: "pr-review",
+      command: "node",
+      args: ["/app/pr-review-mcp-server.js"],
+      env: prReviewEnv,
+    });
+    logInfo("Including pr-review MCP server for inspector agent");
+  }
+
   for (const name of MCP_SIDECAR_SERVER_NAMES) {
     servers.push({
       name,
@@ -1725,6 +1759,13 @@ function handlePrompt(text, taskMeta) {
   // If task metadata is provided and we have a git repo, create a task-specific branch
   if (taskMeta && REPO_URL) {
     currentTaskMeta = taskMeta;
+
+    // Make the task's PR URL available in process.env for child processes
+    // (e.g. the pr-review MCP server reads it at tool-call time).
+    if (taskMeta.pullRequestUrl) {
+      process.env.TASK_PR_URL = taskMeta.pullRequestUrl;
+    }
+
     try {
       // If the task already has a branch from a previous pipeline stage,
       // fetch and check it out instead of creating a new one.

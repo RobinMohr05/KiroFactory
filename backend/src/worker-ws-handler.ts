@@ -252,6 +252,8 @@ export interface WorkerTaskMeta {
   files: string[];
   /** Existing branch from a previous pipeline stage (null = create new branch) */
   branch?: string | null;
+  /** Pull request URL from a previous pipeline stage (null = no PR yet) */
+  pullRequestUrl?: string | null;
 }
 
 /**
