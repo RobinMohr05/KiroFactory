@@ -254,6 +254,10 @@
               <div class="agent-tags" id="agentDetailResources"></div>
             </div>
             <div class="agent-section">
+              <h4>Kind & Pipeline</h4>
+              <div class="agent-pipeline-info" id="agentDetailPipeline"></div>
+            </div>
+            <div class="agent-section">
               <h4>Tools Settings (JSON)</h4>
               <pre class="agent-json-pre" id="agentDetailSettings"></pre>
             </div>
@@ -293,6 +297,9 @@
         <div class="form-group"><label for="agentFormPrompt">System Prompt <span class="required">*</span></label><textarea id="agentFormPrompt" rows="8" required placeholder="Instructions for the agent..."></textarea></div>
         <div class="form-row"><div class="form-group"><label for="agentFormTools">Tools <small>(comma-separated)</small></label><input type="text" id="agentFormTools" placeholder="read, write, shell, grep, glob, code" /></div><div class="form-group"><label for="agentFormAllowed">Allowed Tools <small>(comma-separated)</small></label><input type="text" id="agentFormAllowed" placeholder="read, grep, glob, code" /></div></div>
         <div class="form-group"><label for="agentFormResources">Resources <small>(one per line)</small></label><textarea id="agentFormResources" rows="3" placeholder="file://src/**/*.ts&#10;file://README.md"></textarea></div>
+        <div class="form-row"><div class="form-group"><label for="agentFormKind">Kind</label><select id="agentFormKind"><option value="editor">Editor (changes code)</option><option value="inspector">Inspector (reviews only)</option></select></div><div class="form-group"></div></div>
+        <div class="form-row"><div class="form-group"><label for="agentFormClaimState">Claim State</label><input type="text" id="agentFormClaimState" placeholder="e.g. todo" /></div><div class="form-group"><label for="agentFormWorkingState">Working State</label><input type="text" id="agentFormWorkingState" placeholder="e.g. in-progress" /></div></div>
+        <div class="form-group"><label for="agentFormResolveState">Resolve State</label><input type="text" id="agentFormResolveState" placeholder="e.g. developed" /></div>
         <div class="form-group"><label for="agentFormSettings">Tools Settings <small>(JSON)</small></label><textarea id="agentFormSettings" rows="4" placeholder='{"shell": {"allowedCommands": ["npm run build"]}}'></textarea></div>
         <div class="form-actions"><button type="button" class="btn btn-secondary" id="cancelAgentBtn">Cancel</button><button type="submit" class="btn btn-primary" id="submitAgentBtn">Create Agent</button></div>
       </form>

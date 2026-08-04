@@ -159,6 +159,13 @@ export interface TaskTab {
 
 export type AgentKind = "editor" | "inspector";
 
+export const AGENT_KINDS: AgentKind[] = ["editor", "inspector"];
+
+export function isAgentKind(value: unknown): value is AgentKind {
+  return value === "editor" || value === "inspector";
+}
+
+
 export interface Agent {
   id: number;
   name: string;
