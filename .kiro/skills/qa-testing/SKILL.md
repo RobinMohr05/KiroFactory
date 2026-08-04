@@ -22,12 +22,16 @@ When using Puppeteer to test the deployed Vibecode Heaven application, use this 
 ## Login Flow
 
 1. Navigate to the login page
-2. Fill `#email` with the email above
-3. Fill `#password` with the password above
+2. Fill `#loginEmail` with the email above
+3. Fill `#loginPassword` with the password above
 4. Click the login submit button
 5. After redirect, you're on the main dashboard
 
 ## Notes
 
-- This is a QA/test account. The Kiro API Key is a placeholder and will not run actual AI agent sessions.
+- This is a QA/test account. It now has a real, usable Kiro API key attached, so
+  actual AI agent sessions (developer agent, etc.) can be started and will run
+  for real — not just UI navigation. Feel free to exercise full session flows
+  (starting a session, sending prompts, watching it work) during QA testing,
+  not just static page checks.
 - Always use this account for Puppeteer-based UI testing on the deployed site.
