@@ -135,19 +135,31 @@ server.on("upgrade", (req, socket, head) => {
   }
 });
 
-// ─── DB Change Detector (poll loop) ─────────────────────────────────────────
+// ─── DB Change Detector (adaptive poll loop) ─────────────────────────────────
+//
+// Interval adapts based on activity to reduce unnecessary DB queries:
+//   - After a change is found: reset to POLL_MIN_MS (fast catch-up)
+//   - After an idle cycle: back off by POLL_BACKOFF_FACTOR, capped at POLL_MAX_MS
+//
+// With no active sessions the DB can auto-pause; with a running agent we stay
+// at 5s so the board updates promptly. Typical idle cost: ~2 queries/min vs ~12.
+
+const POLL_MIN_MS = 5_000;   // Minimum interval — used right after a change
+const POLL_MAX_MS = 30_000;  // Maximum interval — reached after ~4 idle cycles
+const POLL_BACKOFF_FACTOR = 2;
 
 let lastPollTime = new Date().toISOString();
-let pollInterval: ReturnType<typeof setInterval> | null = null;
+let pollInterval: ReturnType<typeof setTimeout> | null = null;
 let poolMetricsInterval: ReturnType<typeof setInterval> | null = null;
+let currentPollMs = POLL_MIN_MS;
 
 async function pollForChanges(): Promise<void> {
-  if (!isDbAvailable()) {
-    return; // Skip polling when DB is down — no noise in the logs
-  }
+  let nextInterval = Math.min(currentPollMs * POLL_BACKOFF_FACTOR, POLL_MAX_MS);
 
-  // Skip polling when no WebSocket clients are connected — nobody to notify
-  if (getConnectedClientCount() === 0) {
+  if (!isDbAvailable() || getConnectedClientCount() === 0) {
+    // No DB or no clients — back off fully, nothing to do
+    currentPollMs = nextInterval;
+    schedulePoll(nextInterval);
     return;
   }
 
@@ -155,6 +167,8 @@ async function pollForChanges(): Promise<void> {
     const changedTasks = await getChangedTasksSince(lastPollTime);
     const now = new Date().toISOString();
     if (changedTasks.length > 0) {
+      // Changes found — reset to fast interval so subsequent updates land quickly
+      nextInterval = POLL_MIN_MS;
       for (const task of changedTasks) {
         // Skip tasks that were recently broadcast by REST routes (avoid duplicates)
         if (wasRecentlyBroadcast(task.id)) {
@@ -177,6 +191,24 @@ async function pollForChanges(): Promise<void> {
       msg: "Task change poll cycle failed; will retry on next interval",
       error: err instanceof Error ? err.message : String(err),
     });
+  }
+
+  currentPollMs = nextInterval;
+  schedulePoll(nextInterval);
+}
+
+function schedulePoll(delayMs: number): void {
+  if (pollInterval !== null) return; // already scheduled
+  pollInterval = setTimeout(() => {
+    pollInterval = null;
+    pollForChanges();
+  }, delayMs);
+}
+
+function cancelPoll(): void {
+  if (pollInterval !== null) {
+    clearTimeout(pollInterval);
+    pollInterval = null;
   }
 }
 
@@ -232,8 +264,10 @@ async function start(): Promise<void> {
     }
   }
 
-  // Start the change detector poll loop (5s — reduced from 1.5s to cut DB costs)
-  pollInterval = setInterval(pollForChanges, 5000);
+  // Start the adaptive change-detector poll loop.
+  // Begins at POLL_MIN_MS (5s), backs off to POLL_MAX_MS (30s) when idle,
+  // resets to fast on activity — see schedulePoll / pollForChanges above.
+  schedulePoll(POLL_MIN_MS);
 
   // Start pool metrics sampling. Rather than emit an identical "all is well"
   // snapshot every minute (pure noise), we only log when the numbers carry
@@ -286,9 +320,7 @@ function samplePoolMetrics(): void {
 
 async function shutdown(): Promise<void> {
   log.info("shutdown", { component: "startup", msg: "Shutting down..." });
-  if (pollInterval) {
-    clearInterval(pollInterval);
-  }
+  cancelPoll();
   if (poolMetricsInterval) {
     clearInterval(poolMetricsInterval);
   }
