@@ -174,6 +174,21 @@ export interface Agent {
   resolveState: string;
   tabIds?: number[];
   userId: number;
+  /**
+   * The task state this agent claims FROM (e.g. "todo" for dev, "developed" for reviewer).
+   * Defaults to "todo" if the column is not yet populated (pre-migration compat).
+   */
+  claimState: string;
+  /**
+   * The task state set while the agent is actively working (e.g. "in-progress").
+   * Defaults to "in-progress" if the column is not yet populated.
+   */
+  workingState: string;
+  /**
+   * The task state set on successful completion (e.g. "developed" for dev, "reviewed" for reviewer).
+   * Defaults to "developed" if the column is not yet populated.
+   */
+  resolveState: string;
   createdAt: string;
   updatedAt: string;
 }
