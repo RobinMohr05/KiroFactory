@@ -14,12 +14,22 @@ import { broadcastToUser } from "../websocket-handler.js";
 import { markTaskBroadcast } from "../broadcast-tracker.js";
 import { requireAuth, getUserId } from "../middleware/auth.js";
 import { log, toErrorFields } from "../logger.js";
+import { getDecryptedCredential } from "../db/credentials.js";
+import { resolveGitProvider } from "../types.js";
+import { getUserById } from "../db/users.js";
+import { preparePlannerWorkspace, cleanupPlannerWorkspace } from "../agent/planner-workspace.js";
 import type { CreateTaskInput } from "../types.js";
 
 const router = Router();
 
 // All task planner routes require authentication
 router.use(requireAuth);
+
+/**
+ * Tracks the temporary workspace path for each planner session,
+ * so it can be cleaned up when the session is closed/deleted.
+ */
+const plannerWorkspaces = new Map<number, string>();
 
 /**
  * System prompt for the task planner agent.
@@ -81,6 +91,7 @@ router.post("/start", async (req: Request, res: Response) => {
     // Build the system prompt, optionally enriched with tab/repository context
     let systemPrompt = TASK_PLANNER_SYSTEM_PROMPT;
     let sessionTabIds: number[] | undefined;
+    let sessionCwd: string | undefined;
 
     if (tabId) {
       const tab = await getTabById(tabId);
@@ -97,6 +108,45 @@ router.post("/start", async (req: Request, res: Response) => {
         if (tab.gitProvider) {
           contextLines.push(`- **Git provider:** ${tab.gitProvider}`);
         }
+
+        // Clone the repository so the planner can read actual files
+        if (tab.repositoryUrl) {
+          const owner = await getUserById(userId);
+          const provider = resolveGitProvider(
+            tab.gitProvider,
+            owner?.defaultGitProvider,
+            tab.repositoryUrl
+          );
+
+          // Retrieve the appropriate PAT for private repos
+          let githubPat: string | undefined;
+          let azureDevOpsPat: string | undefined;
+          if (provider === "github") {
+            const pat = await getDecryptedCredential(userId, "githubPat");
+            if (pat) githubPat = pat;
+          } else if (provider === "azure-devops") {
+            const pat = await getDecryptedCredential(userId, "azureDevOpsPat");
+            if (pat) azureDevOpsPat = pat;
+          }
+
+          const workspace = await preparePlannerWorkspace({
+            repositoryUrl: tab.repositoryUrl,
+            gitProvider: provider,
+            githubPat,
+            azureDevOpsPat,
+          });
+
+          if (workspace) {
+            sessionCwd = workspace.workspacePath;
+            contextLines.push(
+              `\n**You have full read access to this repository's files.** ` +
+              `Use your file reading tools (readFile, listDirectory, etc.) to browse the codebase. ` +
+              `Read README.md, any SPEC.md or architecture docs, and browse the file tree to understand ` +
+              `the project structure before proposing tasks. Reference actual file paths that exist in the repo.`
+            );
+          }
+        }
+
         contextLines.push(
           `\nUse this context to ask more relevant clarifying questions and suggest accurate file paths. ` +
           `When proposing the task, ground your suggestions in this specific project.`
@@ -116,7 +166,13 @@ router.post("/start", async (req: Request, res: Response) => {
       userId,
       tabIds: sessionTabIds,
       pinned: false,
+      cwd: sessionCwd,
     });
+
+    // Track workspace path for cleanup when the session ends
+    if (sessionCwd) {
+      plannerWorkspaces.set(session.id, sessionCwd);
+    }
 
     // Start the session immediately
     await startSession(session.id);
@@ -254,6 +310,15 @@ router.post("/:sessionId/create-task", async (req: Request, res: Response) => {
       // Non-fatal — session cleanup failure doesn't affect the created task
     }
 
+    // Clean up the cloned workspace
+    const workspacePath = plannerWorkspaces.get(sessionId);
+    if (workspacePath) {
+      plannerWorkspaces.delete(sessionId);
+      cleanupPlannerWorkspace(workspacePath).catch(() => {
+        // Non-fatal — workspace cleanup runs in background
+      });
+    }
+
     res.status(201).json(task);
   } catch (err) {
     log.error("route-error", {
@@ -285,6 +350,15 @@ router.delete("/:sessionId", async (req: Request, res: Response) => {
 
     await stopSession(sessionId);
     deleteSession(sessionId);
+
+    // Clean up the cloned workspace
+    const workspacePath = plannerWorkspaces.get(sessionId);
+    if (workspacePath) {
+      plannerWorkspaces.delete(sessionId);
+      cleanupPlannerWorkspace(workspacePath).catch(() => {
+        // Non-fatal — workspace cleanup runs in background
+      });
+    }
 
     res.status(204).send();
   } catch (err) {
