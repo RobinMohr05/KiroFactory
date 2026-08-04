@@ -169,9 +169,6 @@ export interface Agent {
   toolsSettings: Record<string, unknown>;
   resources: string[];
   kind: AgentKind;
-  claimState: string;
-  workingState: string;
-  resolveState: string;
   tabIds?: number[];
   userId: number;
   /**

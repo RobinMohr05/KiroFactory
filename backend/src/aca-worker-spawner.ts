@@ -210,7 +210,8 @@ export async function startWorkerJob(
   userId: number,
   timeoutSeconds: number,
   mcpSidecar?: McpProxySidecarConfig | null,
-  gitOptions?: WorkerGitOptions | null
+  gitOptions?: WorkerGitOptions | null,
+  agentKind?: "editor" | "inspector"
 ): Promise<AcaJobExecution> {
   // Decrypt the user's Kiro API key
   const kiroApiKey = await getUserKiroApiKey(userId);
@@ -233,6 +234,7 @@ export async function startWorkerJob(
     { name: "WORKER_SECRET", value: config.workerSecret },
     { name: "KIRO_API_KEY", value: kiroApiKey },
     { name: "AGENT_NAME", value: agentName },
+    { name: "AGENT_KIND", value: agentKind || "editor" },
     { name: "GIT_USER_NAME", value: config.gitUserName },
     { name: "GIT_USER_EMAIL", value: config.gitUserEmail },
     { name: "TIMEOUT_SECONDS", value: String(timeoutSeconds || 900) },

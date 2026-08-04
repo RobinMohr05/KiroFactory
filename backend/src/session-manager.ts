@@ -1309,6 +1309,17 @@ async function runSessionAca(managed: ManagedSession): Promise<void> {
     }
 
     // Start the ACA Job execution via Azure REST API
+    // Look up the agent's kind to pass to the worker container
+    let agentKind: "editor" | "inspector" = "editor";
+    if (meta.agent) {
+      try {
+        const agentRecord = await getAgentByName(meta.agent);
+        if (agentRecord) agentKind = agentRecord.kind;
+      } catch {
+        // Agent lookup failed — default to editor (safe: existing behavior)
+      }
+    }
+
     const execution = await startWorkerJob(
       acaConfig,
       meta.id,
@@ -1316,7 +1327,8 @@ async function runSessionAca(managed: ManagedSession): Promise<void> {
       meta.userId,
       meta.timeoutSeconds,
       mcpSidecar,
-      gitOptions
+      gitOptions,
+      agentKind
     );
 
     managed.acaExecutionName = execution.executionName;
