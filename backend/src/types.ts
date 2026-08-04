@@ -157,6 +157,8 @@ export interface TaskTab {
 
 // ─── Agents ──────────────────────────────────────────────────────────────────
 
+export type AgentKind = "editor" | "inspector";
+
 export interface Agent {
   id: number;
   name: string;
@@ -166,6 +168,10 @@ export interface Agent {
   allowedTools: string[];
   toolsSettings: Record<string, unknown>;
   resources: string[];
+  kind: AgentKind;
+  claimState: string;
+  workingState: string;
+  resolveState: string;
   tabIds?: number[];
   userId: number;
   createdAt: string;
@@ -181,6 +187,10 @@ export interface CreateAgentInput {
   allowedTools?: string[];
   toolsSettings?: Record<string, unknown>;
   resources?: string[];
+  kind?: AgentKind;
+  claimState?: string;
+  workingState?: string;
+  resolveState?: string;
   tabIds?: number[];
 }
 
@@ -192,6 +202,10 @@ export interface UpdateAgentInput {
   allowedTools?: string[];
   toolsSettings?: Record<string, unknown>;
   resources?: string[];
+  kind?: AgentKind;
+  claimState?: string;
+  workingState?: string;
+  resolveState?: string;
   tabIds?: number[];
 }
 

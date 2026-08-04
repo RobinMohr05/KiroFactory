@@ -8,7 +8,7 @@ import { getAllErrors } from "../error-store.js";
  * Map a raw DB row to a Tab object.
  */
 function mapRowToTab(row: Record<string, unknown>): Tab {
-  const DEFAULT_COLUMNS = ["todo", "in-progress", "developed"];
+  const DEFAULT_COLUMNS = ["todo", "in-progress", "developed", "in-code-review", "reviewed", "in-qa", "done"];
   let columns: string[];
   try {
     columns = JSON.parse((row.columns_json as string) || "[]");
