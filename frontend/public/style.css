@@ -906,7 +906,7 @@ textarea:focus {
 }
 
 .card-git-info {
-  margin-top: 0.3rem;
+  margin-top: 0.25rem;
   font-size: 0.7rem;
   overflow: hidden;
   text-overflow: ellipsis;

@@ -177,7 +177,7 @@ export async function claimTask(taskId?: number, tabIds?: number[]): Promise<Cla
 
 /**
  * Mark a task as "developed" (completed by the agent).
- * Optionally records the branch and pull request URL.
+ * Optionally persists the branch name and pull request URL in the same UPDATE.
  */
 export async function markTaskDeveloped(
   taskId: number,
@@ -199,8 +199,8 @@ export async function markTaskDeveloped(
 
 /**
  * Reset a task back to "todo" (agent failed or timed out).
- * Optionally sets branch/PR info if a best-effort push succeeded before the reset.
- * Pass null explicitly to clear stale branch/PR info from a previous attempt.
+ * Optionally persists branch/PR info if a best-effort push succeeded before the reset,
+ * or explicitly nulls them out to clear stale links from a previous attempt.
  */
 export async function resetTaskToTodo(
   taskId: number,
