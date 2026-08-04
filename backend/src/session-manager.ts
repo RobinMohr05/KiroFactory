@@ -30,8 +30,9 @@ import { getAllDecryptedCredentials, getDecryptedCredential } from "./db/credent
 import { isDbAvailable } from "./db/connection.js";
 import { recordError } from "./error-store.js";
 import { log, logSessionEvent, logWorkerEvent, toErrorFields } from "./logger.js";
-import { includesGenericTab, getAgentTabs, getTabById } from "./db/tabs.js";
+import { getAgentTabs, getTabById } from "./db/tabs.js";
 import { getAgentByName } from "./db/agents.js";
+import { materializeAgentConfigIfMissing, encodeAgentConfigBase64 } from "./agent/agent-config-writer.js";
 import { buildProxyServersConfig, type SessionCredentials } from "./mcp-proxy-config.js";
 import {
   loadAcaConfig,
@@ -680,6 +681,34 @@ async function runSession(managed: ManagedSession): Promise<void> {
       }
     }
 
+    // Materialize the DB-configured agent (prompt/tools/allowedTools/resources)
+    // into .kiro/agents/<name>.json in the session's workspace, so kiro-cli
+    // actually uses it. A repo-committed agent file of the same name always
+    // wins — this only fills in the gap when none exists.
+    if (meta.agent) {
+      try {
+        const agentRecord = await getAgentByName(meta.agent);
+        if (agentRecord) {
+          const wrote = materializeAgentConfigIfMissing(agentRecord, meta.cwd);
+          if (wrote) {
+            appendOutput(managed, {
+              timestamp: now(),
+              stream: "system",
+              text: `Materialized .kiro/agents/${meta.agent}.json from agent configuration.`,
+            });
+          }
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        appendOutput(managed, {
+          timestamp: now(),
+          stream: "stderr",
+          text: `Warning: could not materialize agent config for "${meta.agent}": ${msg}`,
+        });
+        // Non-fatal — kiro-cli falls back to its own agent resolution.
+      }
+    }
+
     // Create the KiroRunner (kiroApiKey is passed to env and used only during spawn)
     managed.runner = await KiroRunner.create({
       agent: meta.agent || undefined,
@@ -793,16 +822,9 @@ async function runLoopMode(
   // Look up the agent's stage states once per loop start
   const stages = await getAgentStageStates(meta.agent);
 
-  // Determine effective tab filter for task claiming:
-  // If the session's tabs include "generic", the agent can work on tasks from ANY tab.
-  // Otherwise, only claim tasks from the specific tabs assigned.
-  let effectiveTabIds: number[] | undefined = meta.tabIds;
-  if (meta.tabIds && meta.tabIds.length > 0) {
-    const isGeneric = await includesGenericTab(meta.tabIds);
-    if (isGeneric) {
-      effectiveTabIds = undefined; // No filter — can claim from any tab
-    }
-  }
+  // Task-claiming tab filter: a session with no tabs assigned claims from
+  // ANY tab. A session assigned to specific tabs only claims from those.
+  const effectiveTabIds: number[] | undefined = meta.tabIds;
 
   const runsLabel = maxRuns === 0 ? "endless" : `${maxRuns} run(s)`;
   appendOutput(managed, {
@@ -1358,12 +1380,19 @@ async function runSessionAca(managed: ManagedSession): Promise<void> {
     }
 
     // Start the ACA Job execution via Azure REST API
-    // Look up the agent's kind to pass to the worker container
+    // Look up the agent's kind + full config to pass to the worker container.
+    // The config lets the worker materialize .kiro/agents/<name>.json from
+    // this session's actual DB-configured prompt/tools/resources instead of
+    // its own hardcoded default.
     let agentKind: "editor" | "inspector" = "editor";
+    let agentConfigBase64: string | undefined;
     if (meta.agent) {
       try {
         const agentRecord = await getAgentByName(meta.agent);
-        if (agentRecord) agentKind = agentRecord.kind;
+        if (agentRecord) {
+          agentKind = agentRecord.kind;
+          agentConfigBase64 = encodeAgentConfigBase64(agentRecord);
+        }
       } catch {
         // Agent lookup failed — default to editor (safe: existing behavior)
       }
@@ -1377,7 +1406,8 @@ async function runSessionAca(managed: ManagedSession): Promise<void> {
       meta.timeoutSeconds,
       mcpSidecar,
       gitOptions,
-      agentKind
+      agentKind,
+      agentConfigBase64
     );
 
     managed.acaExecutionName = execution.executionName;
@@ -1665,13 +1695,9 @@ async function runLoopModeAca(
   const taskFailures = new Map<number, number>(); // taskId → consecutive failure count
   const blockedTasks = new Set<number>(); // tasks that hit the failure cap this session
 
-  let effectiveTabIds: number[] | undefined = meta.tabIds;
-  if (meta.tabIds && meta.tabIds.length > 0) {
-    const isGeneric = await includesGenericTab(meta.tabIds);
-    if (isGeneric) {
-      effectiveTabIds = undefined;
-    }
-  }
+  // Task-claiming tab filter: a session with no tabs assigned claims from
+  // ANY tab. A session assigned to specific tabs only claims from those.
+  const effectiveTabIds: number[] | undefined = meta.tabIds;
 
   const runsLabel = maxRuns === 0 ? "endless" : `${maxRuns} run(s)`;
   appendOutput(managed, {

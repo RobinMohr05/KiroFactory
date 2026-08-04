@@ -224,23 +224,26 @@ export async function deleteAgent(id: number): Promise<boolean> {
 
 /**
  * Get agents available for a specific tab.
- * Returns agents directly assigned to the given tab OR assigned to the "generic" tab.
- * This implements the rule: "generic" agents can be used in any board,
- * while board-specific agents can only be used in their assigned board.
+ * Returns agents directly assigned to the given tab OR not assigned to any tab
+ * at all (an empty tab assignment means "usable on every board"). Only agents
+ * owned by the tab's owner are considered, so unassigned agents never leak
+ * across accounts.
  */
 export async function getAgentsForTab(tabId: number): Promise<Agent[]> {
   const pool = await getPool();
 
-  // Get agents assigned to this tab OR to the "generic" tab
   const result = await pool
     .request()
     .input("tabId", sql.Int, tabId)
     .query(`
       SELECT DISTINCT a.*
       FROM agents a
-      INNER JOIN agent_tabs at2 ON at2.agent_id = a.id
-      WHERE at2.tab_id = @tabId
-         OR at2.tab_id IN (SELECT t.id FROM tabs t WHERE t.name = 'generic')
+      INNER JOIN tabs t ON t.id = @tabId
+      WHERE a.user_id = t.user_id
+        AND (
+          a.id IN (SELECT agent_id FROM agent_tabs WHERE tab_id = @tabId)
+          OR a.id NOT IN (SELECT agent_id FROM agent_tabs)
+        )
       ORDER BY a.name ASC
     `);
 
