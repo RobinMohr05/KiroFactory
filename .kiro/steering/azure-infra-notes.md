@@ -63,3 +63,50 @@ was cut off mid-work (e.g. still debugging a broken `npm install`) could still g
 successful and have a PR opened against unverified, possibly broken code, as long as some
 files had changed and the git push succeeded. See commit "fix: treat cancelled agent turns
 as task failures".
+
+## Critical bug: `session/new` mcpServers entries need `env`, or kiro-cli rejects the whole request
+
+Found 2026-08-04 while debugging why every local `KiroRunner.create()` call failed instantly
+with `Error: ACP connection closed` (thrown from `@agentclientprotocol/sdk`'s `Connection.close`
+when the underlying stdio stream ends with no matching response).
+
+**Root cause:** kiro-cli 2.15.2's ACP schema defines `McpServer` as an **untagged enum** with three
+variants (`McpServerHttp`, `McpServerSse`, `McpServerStdio`). `McpServerStdio` requires `env:
+Array<EnvVariable>` as a **mandatory** field (see
+`node_modules/@agentclientprotocol/sdk/dist/schema/types.gen.d.ts`). Both `kiro-runner.ts` and
+`worker/worker.js` always inject a hardcoded "verdict" MCP server entry into every `session/new`
+call — and both omitted `env` entirely. Since the enum is untagged, serde can't match *any*
+variant against `{name, command, args}` without `env`, so kiro-cli logs `ERROR ... Connection
+error: Parse error: data did not match any variant of untagged enum McpServer` and exits
+immediately (code 0, no stderr visible to the caller). The Node-side symptom is generic and
+misleading: `Error: ACP connection closed`, with no indication of *why* the stream closed.
+
+Confirmed by hand-driving the raw JSON-RPC protocol over stdio (bypassing the SDK entirely):
+`initialize` always succeeded; `session/new` failed instantly whenever `mcpServers` contained an
+entry without `env`, and succeeded the moment `env: []` was added.
+
+**Fixed in this session** (commit pending) — added `env: []` to the verdict server entry in both:
+- `backend/src/agent/kiro-runner.ts` (local/dev worker mode)
+- `worker/worker.js` (`ensureAgentConfig`'s ACA/production worker path, the `session/new` call
+  around line 1524)
+
+Verified the fix end-to-end locally: `KiroRunner.create()` → real prompt → real model response
+("PONG") → real credit usage reported (0.072 credits). Before the fix, every attempt died before
+a single prompt could be sent.
+
+**Production impact — this shipped as a real regression, not just a local dev issue.** Log
+Analytics (`ContainerAppConsoleLogs_CL`, workspace `workspacesandboxforrm86f0`) shows the bug was
+introduced by an AI dev-agent session while implementing **task 142** ("Add report_verdict MCP
+tool for 'no further stage needed' signal, with diff cross-check") — the git diff in that
+session's own tool-call logs shows it added the `mcpServers: [{name: "verdict", ...}]` block to
+`worker.js`'s `session/new` call *without* `env`. Every worker session since that task merged has
+been failing `session/new` immediately — no task work ever happens, the ACP session never comes
+up, and per the existing "cancelled turns = failure" fix the task just silently resets to `todo`
+and gets retried forever. This is very likely the explanation for unexplained task churn / tasks
+that never seem to get worked despite the worker "running."
+
+**If debugging a similarly mysterious instant worker failure in the future:** don't trust `Error:
+ACP connection closed` at face value — it means the stdio stream ended, but says nothing about
+why. Re-run kiro-cli directly with `acp -vv` (verbose) piped through manually-crafted JSON-RPC to
+see the actual `ERROR chat_cli_v2::agent::acp::acp_agent` line, which does name the real
+deserialization failure.

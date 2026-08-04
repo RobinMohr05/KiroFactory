@@ -311,11 +311,14 @@ export class KiroRunner {
     const result = await client.conn.newSession({
       cwd,
       mcpServers: [
-        // Always include the verdict MCP server so agents can report "no_action_needed"
+        // Always include the verdict MCP server so agents can report "no_action_needed".
+        // `env` is required by kiro-cli's ACP schema (untagged enum match fails silently
+        // without it — the whole session/new request gets rejected as a parse error).
         {
           name: "verdict",
           command: "node",
           args: [resolve(import.meta.dirname, "../../../worker/verdict-mcp-server.js")],
+          env: [],
         },
         ...((opts.mcpServers ?? []) as any[]),
       ],
