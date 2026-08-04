@@ -5,6 +5,7 @@ import type { Agent, CreateAgentInput, UpdateAgentInput } from "../types.js";
  * Map a raw DB row to an Agent object.
  */
 function mapRowToAgent(row: Record<string, unknown>): Agent {
+  const rawKind = row.kind as string | undefined | null;
   return {
     id: row.id as number,
     name: row.name as string,
@@ -15,6 +16,8 @@ function mapRowToAgent(row: Record<string, unknown>): Agent {
     toolsSettings: JSON.parse((row.tools_settings as string) || "{}"),
     resources: JSON.parse((row.resources as string) || "[]"),
     userId: (row.user_id as number) ?? 0,
+    // kind column — fall back to "editor" if column doesn't exist yet (pre-migration)
+    kind: (rawKind === "editor" || rawKind === "inspector") ? rawKind : "editor",
     createdAt: (row.created_at as Date).toISOString(),
     updatedAt: (row.updated_at as Date).toISOString(),
   };

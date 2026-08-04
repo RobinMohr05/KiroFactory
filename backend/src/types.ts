@@ -168,6 +168,12 @@ export interface Agent {
   resources: string[];
   tabIds?: number[];
   userId: number;
+  /**
+   * Agent kind determines post-turn behavior:
+   * - "editor": commits/pushes file changes (default, existing behavior)
+   * - "inspector": read-only — discards any unexpected file changes
+   */
+  kind: "editor" | "inspector";
   createdAt: string;
   updatedAt: string;
 }
