@@ -1073,7 +1073,7 @@ function truncateUrl(url) {
 }
 
 function renderBoard() {
-  const columns = ['todo', 'in-progress', 'developed'];
+  const columns = ['todo', 'in-progress', 'developed', 'in-code-review', 'reviewed', 'in-qa', 'done'];
 
   columns.forEach(state => {
     const container = document.getElementById(`cards-${state}`);

@@ -98,6 +98,38 @@
         </div>
         <div class="column-cards" id="cards-developed"></div>
       </div>
+
+      <div class="column" data-state="in-code-review">
+        <div class="column-header">
+          <h2>In Code Review</h2>
+          <span class="column-count" id="count-in-code-review">0</span>
+        </div>
+        <div class="column-cards" id="cards-in-code-review"></div>
+      </div>
+
+      <div class="column" data-state="reviewed">
+        <div class="column-header">
+          <h2>Reviewed</h2>
+          <span class="column-count" id="count-reviewed">0</span>
+        </div>
+        <div class="column-cards" id="cards-reviewed"></div>
+      </div>
+
+      <div class="column" data-state="in-qa">
+        <div class="column-header">
+          <h2>In QA</h2>
+          <span class="column-count" id="count-in-qa">0</span>
+        </div>
+        <div class="column-cards" id="cards-in-qa"></div>
+      </div>
+
+      <div class="column" data-state="done">
+        <div class="column-header">
+          <h2>Done</h2>
+          <span class="column-count" id="count-done">0</span>
+        </div>
+        <div class="column-cards" id="cards-done"></div>
+      </div>
     </div>
   </section>
 
@@ -282,7 +314,7 @@
         <div class="form-group"><label for="taskTitle">Title</label><input type="text" id="taskTitle" required placeholder="Task title" /></div>
         <div class="form-group"><label for="taskDescription">Description</label><textarea id="taskDescription" rows="3" placeholder="Optional description"></textarea></div>
         <div class="form-row"><div class="form-group"><label for="taskType">Type</label><select id="taskType"><option value="improvement">Improvement</option><option value="bug">Bug</option><option value="feature">Feature</option></select></div><div class="form-group"><label for="taskPriority">Priority</label><select id="taskPriority"><option value="1">P1 — Critical</option><option value="2">P2 — High</option><option value="3">P3 — Medium</option><option value="4" selected>P4 — Low</option></select></div></div>
-        <div class="form-row"><div class="form-group" id="taskStateGroup"><label for="taskState">State</label><select id="taskState"><option value="todo">To Do</option><option value="in-progress">In Progress</option><option value="developed">Developed</option></select></div><div class="form-group"><label for="taskOrigin">Origin</label><select id="taskOrigin"><option value="user">User</option><option value="ai">AI</option><option value="user-assisted">User-Assisted</option></select></div></div>
+        <div class="form-row"><div class="form-group" id="taskStateGroup"><label for="taskState">State</label><select id="taskState"><option value="todo">To Do</option><option value="in-progress">In Progress</option><option value="developed">Developed</option><option value="in-code-review">In Code Review</option><option value="reviewed">Reviewed</option><option value="in-qa">In QA</option><option value="done">Done</option></select></div><div class="form-group"><label for="taskOrigin">Origin</label><select id="taskOrigin"><option value="user">User</option><option value="ai">AI</option><option value="user-assisted">User-Assisted</option></select></div></div>
         <div class="form-actions"><button type="button" class="btn btn-danger" id="deleteTaskBtn" hidden>Delete</button><div class="form-actions-right"><button type="button" class="btn btn-ai-planner" id="aiPlannerBtn"><span class="ai-icon">✨</span> AI Planner</button><button type="button" class="btn btn-secondary" id="cancelTaskBtn">Cancel</button><button type="submit" class="btn btn-primary" id="submitTaskBtn">Create Task</button></div></div>
       </form>
     </div>
