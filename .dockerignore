@@ -4,6 +4,5 @@ backend/dist
 .git
 .idea
 .kiro
-sessions.json
 *.md
 backend/.env
