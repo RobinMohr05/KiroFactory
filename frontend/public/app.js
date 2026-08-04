@@ -1555,6 +1555,69 @@ const sessionMcpAwsApi = document.getElementById('sessionMcpAwsApi');
 const sessionMcpAwsDocs = document.getElementById('sessionMcpAwsDocs');
 let sessionMcpOverrideEnabled = false; // Track if user toggled any MCP checkbox
 
+// Custom (per-session) MCP servers — e.g. a browser/Puppeteer server for e2e testing
+const sessionCustomMcpToggle = document.getElementById('sessionCustomMcpToggle');
+const sessionCustomMcpSection = document.getElementById('sessionCustomMcpSection');
+const sessionCustomMcpList = document.getElementById('sessionCustomMcpList');
+const sessionCustomMcpAddBtn = document.getElementById('sessionCustomMcpAddBtn');
+let customMcpRowSeq = 0;
+
+/**
+ * Render one custom MCP server row into sessionCustomMcpList.
+ * @param {{name?: string, command?: string, args?: string, env?: string}} initial
+ */
+function addCustomMcpRow(initial = {}) {
+  const rowId = `customMcp${customMcpRowSeq++}`;
+  const row = document.createElement('div');
+  row.className = 'custom-mcp-row';
+  row.dataset.rowId = rowId;
+  row.innerHTML = `
+    <div class="custom-mcp-row-fields">
+      <input type="text" class="mcp-name" placeholder="Server name (e.g. puppeteer)" value="${escapeHtml(initial.name || '')}" />
+      <input type="text" class="mcp-command" placeholder="Command (e.g. npx)" value="${escapeHtml(initial.command || '')}" />
+      <input type="text" class="mcp-args custom-mcp-full-width" placeholder="Args, space-separated (e.g. -y @modelcontextprotocol/server-puppeteer)" value="${escapeHtml(initial.args || '')}" />
+      <input type="text" class="mcp-env custom-mcp-full-width" placeholder="Env vars, comma-separated as KEY=value (optional)" value="${escapeHtml(initial.env || '')}" />
+    </div>
+    <div class="custom-mcp-row-footer">
+      <button type="button" class="custom-mcp-remove-btn">Remove</button>
+    </div>
+  `;
+  row.querySelector('.custom-mcp-remove-btn').addEventListener('click', () => row.remove());
+  sessionCustomMcpList.appendChild(row);
+}
+
+function clearCustomMcpRows() {
+  sessionCustomMcpList.innerHTML = '';
+}
+
+/**
+ * Collect all custom MCP server rows into the McpServerConfig[] shape the
+ * backend expects. Rows missing a name or command are skipped.
+ */
+function collectCustomMcpServers() {
+  const servers = [];
+  sessionCustomMcpList.querySelectorAll('.custom-mcp-row').forEach((row) => {
+    const name = row.querySelector('.mcp-name').value.trim();
+    const command = row.querySelector('.mcp-command').value.trim();
+    const argsRaw = row.querySelector('.mcp-args').value.trim();
+    const envRaw = row.querySelector('.mcp-env').value.trim();
+    if (!name || !command) return; // incomplete row — skip silently
+
+    const args = argsRaw ? argsRaw.split(/\s+/) : [];
+    const env = envRaw
+      ? envRaw.split(',').map(l => l.trim()).filter(Boolean).map(pair => {
+          const idx = pair.indexOf('=');
+          return idx === -1
+            ? { name: pair, value: '' }
+            : { name: pair.slice(0, idx).trim(), value: pair.slice(idx + 1).trim() };
+        })
+      : [];
+
+    servers.push({ name, command, args, env });
+  });
+  return servers;
+}
+
 function setupSessions() {
   fetchSessions();
 
@@ -1575,6 +1638,15 @@ function setupSessions() {
     sessionMcpToggle.setAttribute('aria-expanded', String(!expanded));
     sessionMcpSection.classList.toggle('expanded', !expanded);
   });
+
+  // Custom MCP servers collapsible toggle
+  sessionCustomMcpToggle.addEventListener('click', () => {
+    const expanded = sessionCustomMcpToggle.getAttribute('aria-expanded') === 'true';
+    sessionCustomMcpToggle.setAttribute('aria-expanded', String(!expanded));
+    sessionCustomMcpSection.classList.toggle('expanded', !expanded);
+  });
+
+  sessionCustomMcpAddBtn.addEventListener('click', () => addCustomMcpRow());
 
   // Re-fill MCP defaults when board selection changes
   document.getElementById('sessionBoards').addEventListener('change', () => {
@@ -1737,6 +1809,10 @@ function hideSessionForm() {
   sessionMcpToggle.setAttribute('aria-expanded', 'false');
   sessionMcpSection.classList.remove('expanded');
   sessionMcpOverrideEnabled = false;
+  // Reset custom MCP servers section
+  sessionCustomMcpToggle.setAttribute('aria-expanded', 'false');
+  sessionCustomMcpSection.classList.remove('expanded');
+  clearCustomMcpRows();
   // Clear agent description hint
   document.getElementById('sessionAgentDescription').textContent = '';
 }
@@ -1821,7 +1897,7 @@ async function fetchSessions() {
  * Core session creation logic shared by the full "New Session" modal and the
  * lightweight quick-start form shown in the empty state.
  */
-async function createAndStartSessionCore({ name, agent, prompt, cwd, model, interactive, runs, intervalSeconds, boardIds, mcpConfigOverride }) {
+async function createAndStartSessionCore({ name, agent, prompt, cwd, model, interactive, runs, intervalSeconds, boardIds, mcpConfigOverride, mcpServers }) {
   if (!name) return null;
 
   // Agentless sessions are always interactive and never loop
@@ -1841,6 +1917,7 @@ async function createAndStartSessionCore({ name, agent, prompt, cwd, model, inte
       intervalSeconds: intervalSeconds || 10,
       tabIds: boardIds && boardIds.length > 0 ? boardIds : undefined,
       mcpConfigOverride,
+      mcpServers: mcpServers && mcpServers.length > 0 ? mcpServers : undefined,
     };
     if (agent) body.agent = agent;
     const res = await fetch('/api/sessions', {
@@ -1898,7 +1975,9 @@ async function createAndStartSession() {
     awsDocs: sessionMcpAwsDocs.checked,
   } : undefined;
 
-  const session = await createAndStartSessionCore({ name, agent, prompt, cwd, model, interactive, runs, intervalSeconds, boardIds, mcpConfigOverride });
+  const mcpServers = collectCustomMcpServers();
+
+  const session = await createAndStartSessionCore({ name, agent, prompt, cwd, model, interactive, runs, intervalSeconds, boardIds, mcpConfigOverride, mcpServers });
   if (session) hideSessionForm();
 }
 
