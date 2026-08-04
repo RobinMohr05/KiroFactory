@@ -310,7 +310,15 @@ export class KiroRunner {
 
     const result = await client.conn.newSession({
       cwd,
-      mcpServers: (opts.mcpServers ?? []) as any,
+      mcpServers: [
+        // Always include the verdict MCP server so agents can report "no_action_needed"
+        {
+          name: "verdict",
+          command: "node",
+          args: [resolve(import.meta.dirname, "../../../worker/verdict-mcp-server.js")],
+        },
+        ...((opts.mcpServers ?? []) as any[]),
+      ],
     });
     client.sessionId = result.sessionId;
 

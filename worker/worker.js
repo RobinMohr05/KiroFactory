@@ -995,6 +995,13 @@ let readyTimeout = null;
 let promptTimer = null;
 /** Counters for the current turn, reported alongside prompt-done. */
 let turnStats = { toolCalls: 0, messageChars: 0, thoughtChars: 0, startedAt: 0, credits: 0 };
+/**
+ * Verdict reported by the agent via the report_verdict MCP tool this turn.
+ * null means no verdict was reported (normal flow).
+ */
+let turnVerdict = null; // { verdict: "resolved"|"no_action_needed", reason: string } | null
+/** Tracks toolCallId → tool name for verdict detection across tool_call/tool_call_update. */
+let verdictToolCallId = null;
 
 function clearReadyTimeout() {
   if (readyTimeout) {
@@ -1108,6 +1115,10 @@ function logSessionUpdate(update) {
         kind: update.kind ?? null,
         status: update.status ?? null,
       });
+      // Track if this is a report_verdict call so we can capture the verdict from the update
+      if (update.title === "report_verdict" || update.kind === "report_verdict") {
+        verdictToolCallId = update.toolCallId ?? null;
+      }
       break;
     }
     case "tool_call_update": {
@@ -1119,6 +1130,35 @@ function logSessionUpdate(update) {
         // (e.g. a command that "succeeds" but prints warnings) isn't lost either.
         output: outputText,
       });
+      // Capture verdict from the report_verdict tool's completed output
+      if (
+        verdictToolCallId &&
+        update.toolCallId === verdictToolCallId &&
+        update.status === "completed" &&
+        outputText
+      ) {
+        try {
+          const parsed = JSON.parse(outputText);
+          if (parsed && parsed.verdict) {
+            turnVerdict = { verdict: parsed.verdict, reason: parsed.reason || "" };
+            logInfo("verdict-captured", { verdict: turnVerdict.verdict, reason: turnVerdict.reason });
+          }
+        } catch {
+          // Output wasn't valid JSON — may be a multi-line response, try extracting
+          // the JSON portion
+          const jsonMatch = outputText.match(/\{[^}]*"verdict"\s*:\s*"[^"]+"/);
+          if (jsonMatch) {
+            try {
+              const parsed = JSON.parse(jsonMatch[0] + "}");
+              if (parsed && parsed.verdict) {
+                turnVerdict = { verdict: parsed.verdict, reason: parsed.reason || "" };
+                logInfo("verdict-captured", { verdict: turnVerdict.verdict, reason: turnVerdict.reason });
+              }
+            } catch { /* give up */ }
+          }
+        }
+        verdictToolCallId = null;
+      }
       if (update.status === "failed") {
         // Only failures are forwarded to the live output stream — successful
         // tool calls (ls, cat, grep, etc.) would otherwise flood the session
@@ -1221,6 +1261,7 @@ function finishPromptTurn(msg) {
     let committed = false;
     let prUrl = null;
     let gitError = null;
+    let effectiveVerdict = turnVerdict; // may be nulled if cross-check fails
 
     if (AGENT_KIND === "inspector") {
       // Inspector-kind agents must not change files. If they did, discard the
@@ -1247,7 +1288,34 @@ function finishPromptTurn(msg) {
       }
       // hasChanges stays false — inspector agents never produce deliverable changes
     } else {
-      // Editor-kind: existing commit/push/PR flow
+      // Editor-kind: cross-check verdict, then commit/push/PR flow.
+
+      // Cross-check: if the agent reported "no_action_needed" but the workspace
+      // actually has uncommitted changes, that's a contradiction — fall back to
+      // the normal commit/push pipeline as if no verdict had been reported.
+      if (effectiveVerdict && effectiveVerdict.verdict === "no_action_needed") {
+        try {
+          const status = exec("git status --porcelain", { cwd: WORKSPACE });
+          if (status) {
+            const changedFiles = status.split("\n").filter(Boolean);
+            logError("Verdict cross-check failed: agent reported no_action_needed but workspace has changes — ignoring verdict", {
+              verdict: effectiveVerdict,
+              fileCount: changedFiles.length,
+              files: changedFiles.slice(0, 20),
+            });
+            sendOutput(
+              `⚠ Agent reported "no_action_needed" but the workspace has ${changedFiles.length} changed file(s) — ` +
+              `verdict ignored, proceeding with normal commit/push flow.`,
+              "stderr"
+            );
+            effectiveVerdict = null; // Discard the contradictory verdict
+          }
+        } catch {
+          // git status failed — can't verify, fall through to normal flow
+          effectiveVerdict = null;
+        }
+      }
+
       try {
         const gitResult = commitAndPush();
         hasChanges = gitResult.hasChanges;
@@ -1275,6 +1343,7 @@ function finishPromptTurn(msg) {
       prUrl,
       branchName: currentBranchName,
       credits: turnStats.credits || undefined,
+      verdict: effectiveVerdict ? effectiveVerdict.verdict : undefined,
     });
   })();
 }
@@ -1422,7 +1491,16 @@ function handleAcpMessage(msg) {
       jsonrpc: "2.0",
       method: "session/new",
       id: NEW_SESSION_REQUEST_ID,
-      params: { cwd: WORKSPACE, mcpServers: [] },
+      params: {
+        cwd: WORKSPACE,
+        mcpServers: [
+          {
+            name: "verdict",
+            command: "node",
+            args: ["/app/verdict-mcp-server.js"],
+          },
+        ],
+      },
     });
     return true;
   }
@@ -1612,6 +1690,8 @@ function deliverPrompt(text) {
   promptCounter += 1;
   currentPromptId = promptCounter;
   turnStats = { toolCalls: 0, messageChars: 0, thoughtChars: 0, startedAt: Date.now(), credits: 0 };
+  turnVerdict = null;
+  verdictToolCallId = null;
 
   const sent = writeToKiro({
     jsonrpc: "2.0",

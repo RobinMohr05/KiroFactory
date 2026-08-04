@@ -350,3 +350,26 @@ export async function getAvailableTaskCount(tabIds?: number[], claimState: strin
   countCache.set(cacheKey, { value: count, expiresAt: Date.now() + COUNT_CACHE_TTL_MS });
   return count;
 }
+
+/**
+ * Mark a task as "done" — skipping remaining pipeline stages.
+ * Used when an agent reports verdict "no_action_needed" (nothing to change/review),
+ * indicating the task should bypass further stages and go straight to done.
+ */
+export async function markTaskDone(
+  taskId: number,
+  branch?: string | null,
+  pullRequestUrl?: string | null
+): Promise<void> {
+  const pool = await getPool();
+  await pool
+    .request()
+    .input("id", sql.Int, taskId)
+    .input("branch", sql.NVarChar(250), branch ?? null)
+    .input("pullRequestUrl", sql.NVarChar(500), pullRequestUrl ?? null)
+    .query(`
+      UPDATE tasks
+      SET state = 'done', branch = @branch, pull_request_url = @pullRequestUrl, updated_at = GETUTCDATE()
+      WHERE id = @id
+    `);
+}

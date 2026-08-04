@@ -56,6 +56,8 @@ export interface WorkerPromptDoneMessage extends WorkerMessage {
     prUrl?: string | null;
     /** Kiro credits consumed this turn (from _kiro.dev/metadata meteringUsage). */
     credits?: number;
+    /** Agent-reported verdict via the report_verdict MCP tool. Cross-checked against git diff. */
+    verdict?: "resolved" | "no_action_needed";
   };
 }
 
