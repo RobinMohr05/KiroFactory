@@ -53,6 +53,16 @@ const AZURE_DEVOPS_PAT = process.env.AZURE_DEVOPS_PAT;
 /** Provider resolved by the orchestrator ("github" | "azure-devops"), if any. */
 const GIT_PROVIDER = process.env.GIT_PROVIDER || "";
 const PROMPT_TEXT = process.env.PROMPT_TEXT || "";
+/**
+ * Comma-separated list of MCP server names hosted by the per-session MCP
+ * proxy sidecar (see backend/src/aca-worker-spawner.ts::startWorkerJob).
+ * Each name here must be bridged into kiro-cli's mcpServers via
+ * ta-mcp-connect — the sidecar itself is not reachable by kiro-cli directly.
+ */
+const MCP_SIDECAR_SERVER_NAMES = (process.env.MCP_SIDECAR_SERVER_NAMES || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 
 const WORKSPACE = "/workspace";
 
@@ -1219,6 +1229,48 @@ function logSessionUpdate(update) {
 }
 
 /**
+ * Build the `mcpServers` array passed to kiro-cli's `session/new`.
+ *
+ * Always includes the hardcoded "verdict" server. If the orchestrator started
+ * an MCP proxy sidecar for this session (MCP_SIDECAR_SERVER_NAMES non-empty),
+ * one entry per sidecar server name is added too, each using ta-mcp-connect
+ * to bridge stdio ↔ the proxy's TCP endpoint (MCP_PROXY_HOST:MCP_PROXY_PORT).
+ * Without this, every proxy-hosted server (atlassian, azure-devops, aws-api,
+ * aws-docs, session-level custom servers) is silently unreachable by kiro-cli
+ * even though the sidecar container is running and correctly configured.
+ */
+function buildMcpServers() {
+  const servers = [
+    {
+      // `env` is required by kiro-cli's ACP schema (untagged enum match
+      // fails silently without it — the whole session/new request gets
+      // rejected as a parse error and kiro-cli exits immediately).
+      name: "verdict",
+      command: "node",
+      args: ["/app/verdict-mcp-server.js"],
+      env: [],
+    },
+  ];
+
+  for (const name of MCP_SIDECAR_SERVER_NAMES) {
+    servers.push({
+      name,
+      command: "/app/ta-mcp-connect",
+      args: [name],
+      env: [],
+    });
+  }
+
+  if (MCP_SIDECAR_SERVER_NAMES.length > 0) {
+    logInfo("Bridging MCP proxy sidecar servers into kiro-cli", {
+      servers: MCP_SIDECAR_SERVER_NAMES,
+    });
+  }
+
+  return servers;
+}
+
+/**
  * Auto-approve a session/request_permission request from the agent.
  * Without a response the agent blocks forever on its first tool call.
  */
@@ -1525,17 +1577,7 @@ function handleAcpMessage(msg) {
       id: NEW_SESSION_REQUEST_ID,
       params: {
         cwd: WORKSPACE,
-        mcpServers: [
-          {
-            // `env` is required by kiro-cli's ACP schema (untagged enum match
-            // fails silently without it — the whole session/new request gets
-            // rejected as a parse error and kiro-cli exits immediately).
-            name: "verdict",
-            command: "node",
-            args: ["/app/verdict-mcp-server.js"],
-            env: [],
-          },
-        ],
+        mcpServers: buildMcpServers(),
       },
     });
     return true;
