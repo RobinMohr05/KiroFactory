@@ -1,7 +1,7 @@
 /**
- * Seed/update pipeline-stage agents (code-reviewer-agent).
+ * Seed/update pipeline-stage agents (code-reviewer-agent, qa-improvement-agent).
  *
- * Creates the agent if it doesn't exist, or updates it in place if it does
+ * Creates agents if they don't exist, or updates them in place if they do
  * (e.g. from a prior ValueModeller-era import).
  *
  * Usage: cd backend && npx tsx scripts/seed-pipeline-agents.ts
@@ -18,6 +18,10 @@ const TARGET_EMAIL = "robin.mohr@tecalliance.net";
 
 // Tab ID for VCH (Vibecode Heaven / KiroFactory repository)
 const VCH_TAB_ID = 2;
+
+// ---------------------------------------------------------------------------
+// Agent definitions
+// ---------------------------------------------------------------------------
 
 const CODE_REVIEWER_PROMPT = `You are a code reviewer agent. You review pull requests by reading the diff, identifying concrete issues, and posting inline review comments on the PR.
 
@@ -57,21 +61,94 @@ You are working on an already-checked-out branch for a specific task that has an
 - Never create or modify any files in the repository.
 - Focus on the CHANGED lines — don't review unchanged code unless a change introduces a bug in how it interacts with existing code.`;
 
-const CODE_REVIEWER_AGENT = {
-  name: "code-reviewer-agent",
-  description:
-    "Inspector agent that reviews pull requests for bugs, security issues, and convention violations. Posts inline PR comments and sends tasks back for rework when issues are found.",
-  prompt: CODE_REVIEWER_PROMPT,
-  tools: ["read", "grep", "glob", "code"],
-  allowedTools: [] as string[],
-  toolsSettings: {},
-  resources: [] as string[],
-  kind: "inspector" as const,
-  claimState: "developed",
-  workingState: "in-code-review",
-  resolveState: "reviewed",
-  tabIds: [VCH_TAB_ID],
-};
+const QA_IMPROVEMENT_PROMPT = `You are a QA agent. You perform quality assurance on pull requests that have already passed code review, looking for functional defects, missed edge cases, and regressions that a code review alone wouldn't catch.
+
+## Context
+
+You are working on an already-checked-out branch for a specific task that has an open pull request which has already passed code review. The task information (ID, title, description, branch, PR URL) is provided in the prompt above.
+
+## Workflow
+
+1. **Understand the change:** Run \`git diff origin/develop...HEAD\` (or the appropriate base branch) to see exactly what changed. Read the task description to understand the intended behavior.
+
+2. **Read the affected code paths:** Don't just look at the diff — follow the call chain. Read the files that import or interact with the changed code. Understand what the change is supposed to accomplish end-to-end.
+
+3. **QA the change** — verify the described behavior actually works as intended by checking for:
+   - **Functional defects:** Does the code actually do what the task description says it should? Are there logical paths where it would fail silently or produce wrong results?
+   - **Missed edge cases:** Empty inputs, null/undefined values, concurrent access, boundary conditions, very large inputs, special characters.
+   - **Regressions:** Does this change break existing functionality? Are there callers of modified functions that now receive unexpected return values or types?
+   - **Integration issues:** Does this change interact correctly with the rest of the system? Are there database schema mismatches, API contract violations, or missing migrations?
+   - **Error handling gaps:** What happens when this code fails? Are errors surfaced to the user, or silently swallowed?
+   - **Data consistency:** Could this change leave data in an inconsistent state if interrupted (e.g. partial writes, missing rollbacks)?
+
+4. **Post comments:** For EVERY defect found, call the \`post_review_comment\` tool exactly once per issue with:
+   - \`path\`: the file path relative to the repo root
+   - \`line\`: the specific line number where the defect manifests (or is most relevant)
+   - \`body\`: a clear description of the defect, why it's a problem, and how to verify/reproduce it
+
+5. **Report verdict:**
+   - If you found **zero defects**: call \`report_verdict\` with verdict \`"no_action_needed"\` and reason confirming the change works as intended.
+   - If you posted **one or more comments**: call \`report_verdict\` with verdict \`"changes_requested"\` and reason summarizing the defects found.
+
+## Rules
+
+- Focus on FUNCTIONAL correctness, not style. Style issues were handled in code review.
+- Think like a tester, not a reviewer: "will this actually work in production?" not "is this code pretty?"
+- Be concrete: describe what would go wrong, under what conditions, and what the user/system would experience.
+- Never edit files. Never run git commands. Never run build or test commands.
+- Never create or modify any files in the repository.`;
+
+interface PipelineAgent {
+  name: string;
+  description: string;
+  prompt: string;
+  tools: string[];
+  allowedTools: string[];
+  toolsSettings: Record<string, unknown>;
+  resources: string[];
+  kind: "editor" | "inspector";
+  claimState: string;
+  workingState: string;
+  resolveState: string;
+  tabIds: number[];
+}
+
+const PIPELINE_AGENTS: PipelineAgent[] = [
+  {
+    name: "code-reviewer-agent",
+    description:
+      "Inspector agent that reviews pull requests for bugs, security issues, and convention violations. Posts inline PR comments and sends tasks back for rework when issues are found.",
+    prompt: CODE_REVIEWER_PROMPT,
+    tools: ["read", "grep", "glob", "code"],
+    allowedTools: [],
+    toolsSettings: {},
+    resources: [],
+    kind: "inspector",
+    claimState: "developed",
+    workingState: "in-code-review",
+    resolveState: "reviewed",
+    tabIds: [VCH_TAB_ID],
+  },
+  {
+    name: "qa-improvement-agent",
+    description:
+      "Inspector agent that performs QA on pull requests after code review. Verifies functional correctness, checks for regressions and edge cases, and posts inline PR comments for any defects found.",
+    prompt: QA_IMPROVEMENT_PROMPT,
+    tools: ["read", "grep", "glob", "code"],
+    allowedTools: [],
+    toolsSettings: {},
+    resources: [],
+    kind: "inspector",
+    claimState: "reviewed",
+    workingState: "in-qa",
+    resolveState: "done",
+    tabIds: [VCH_TAB_ID],
+  },
+];
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
 
 async function main(): Promise<void> {
   console.log("[seed-pipeline-agents] Starting pipeline agent seed...");
@@ -95,58 +172,67 @@ async function main(): Promise<void> {
   const userId = userResult.recordset[0].id as number;
   console.log(`[seed-pipeline-agents] Found user "${TARGET_EMAIL}" with id=${userId}`);
 
-  // Check if the agent already exists
-  const existing = await getAgentByName(CODE_REVIEWER_AGENT.name);
+  let created = 0;
+  let updated = 0;
 
-  if (existing) {
-    // Update in place — replace prompt, tools, kind, and stage states
-    console.log(
-      `[seed-pipeline-agents] Agent "${CODE_REVIEWER_AGENT.name}" already exists (id=${existing.id}) — updating...`
-    );
+  for (const agent of PIPELINE_AGENTS) {
+    const existing = await getAgentByName(agent.name);
 
-    const input: UpdateAgentInput = {
-      description: CODE_REVIEWER_AGENT.description,
-      prompt: CODE_REVIEWER_AGENT.prompt,
-      tools: CODE_REVIEWER_AGENT.tools,
-      allowedTools: CODE_REVIEWER_AGENT.allowedTools,
-      toolsSettings: CODE_REVIEWER_AGENT.toolsSettings,
-      resources: CODE_REVIEWER_AGENT.resources,
-      kind: CODE_REVIEWER_AGENT.kind,
-      claimState: CODE_REVIEWER_AGENT.claimState,
-      workingState: CODE_REVIEWER_AGENT.workingState,
-      resolveState: CODE_REVIEWER_AGENT.resolveState,
-      tabIds: CODE_REVIEWER_AGENT.tabIds,
-    };
+    if (existing) {
+      // Update in place — replace prompt, tools, kind, and stage states
+      console.log(
+        `[seed-pipeline-agents] Agent "${agent.name}" already exists (id=${existing.id}) — updating...`
+      );
 
-    const updated = await updateAgent(existing.id, input);
-    if (updated) {
-      console.log(`[seed-pipeline-agents] ✓ Updated agent "${CODE_REVIEWER_AGENT.name}"`);
+      const input: UpdateAgentInput = {
+        description: agent.description,
+        prompt: agent.prompt,
+        tools: agent.tools,
+        allowedTools: agent.allowedTools,
+        toolsSettings: agent.toolsSettings,
+        resources: agent.resources,
+        kind: agent.kind,
+        claimState: agent.claimState,
+        workingState: agent.workingState,
+        resolveState: agent.resolveState,
+        tabIds: agent.tabIds,
+      };
+
+      const result = await updateAgent(existing.id, input);
+      if (result) {
+        console.log(`[seed-pipeline-agents] ✓ Updated agent "${agent.name}"`);
+        updated++;
+      } else {
+        console.error(`[seed-pipeline-agents] ✗ Failed to update agent "${agent.name}"`);
+      }
     } else {
-      console.error(`[seed-pipeline-agents] ✗ Failed to update agent "${CODE_REVIEWER_AGENT.name}"`);
-    }
-  } else {
-    // Create new
-    const input: CreateAgentInput = {
-      name: CODE_REVIEWER_AGENT.name,
-      userId,
-      description: CODE_REVIEWER_AGENT.description,
-      prompt: CODE_REVIEWER_AGENT.prompt,
-      tools: CODE_REVIEWER_AGENT.tools,
-      allowedTools: CODE_REVIEWER_AGENT.allowedTools,
-      toolsSettings: CODE_REVIEWER_AGENT.toolsSettings,
-      resources: CODE_REVIEWER_AGENT.resources,
-      kind: CODE_REVIEWER_AGENT.kind,
-      claimState: CODE_REVIEWER_AGENT.claimState,
-      workingState: CODE_REVIEWER_AGENT.workingState,
-      resolveState: CODE_REVIEWER_AGENT.resolveState,
-      tabIds: CODE_REVIEWER_AGENT.tabIds,
-    };
+      // Create new
+      const input: CreateAgentInput = {
+        name: agent.name,
+        userId,
+        description: agent.description,
+        prompt: agent.prompt,
+        tools: agent.tools,
+        allowedTools: agent.allowedTools,
+        toolsSettings: agent.toolsSettings,
+        resources: agent.resources,
+        kind: agent.kind,
+        claimState: agent.claimState,
+        workingState: agent.workingState,
+        resolveState: agent.resolveState,
+        tabIds: agent.tabIds,
+      };
 
-    await createAgent(input);
-    console.log(`[seed-pipeline-agents] ✓ Created agent "${CODE_REVIEWER_AGENT.name}"`);
+      await createAgent(input);
+      console.log(`[seed-pipeline-agents] ✓ Created agent "${agent.name}"`);
+      created++;
+    }
   }
 
-  console.log("[seed-pipeline-agents] Done.");
+  console.log(
+    `[seed-pipeline-agents] Done. Created: ${created}, Updated: ${updated}`
+  );
+
   await closePool();
 }
 
