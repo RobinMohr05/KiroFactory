@@ -346,35 +346,38 @@ async function runOnce(config: AgentConfig): Promise<boolean> {
   if (!agentSuccess) {
     log(`Agent failed or timed out for task ${task.id}.`, "red");
 
-    // Best-effort: try to commit & push whatever exists so the work isn't lost
+    // Best-effort: try to commit & push whatever the agent produced
     let failBranch: string | null = null;
     let failPrUrl: string | null = null;
     try {
-      const hasChanges = await commitChanges(workspacePath, task.id, task.title, task.type, task.priority, task.description);
-      if (hasChanges) {
+      const hasFailChanges = await commitChanges(
+        workspacePath, task.id, task.title, task.type, task.priority, task.description
+      );
+      if (hasFailChanges) {
         await pushBranch(workspacePath, branchName);
         failBranch = branchName;
         log(`Best-effort push to "${branchName}" succeeded.`, "yellow");
-
-        // Attempt PR creation too
-        const prTitle = `[WIP] ${task.title} [Vibecode Heaven #${task.id}]`;
-        const prBody = buildPrBody(task.id, task.title, task.type, task.priority, task.description);
-        const prResult = await createPullRequest({
-          owner: repoInfo.owner,
-          repo: repoInfo.repo,
-          pat: githubPat,
-          head: branchName,
-          base: baseBranch,
-          title: prTitle,
-          body: prBody,
-        });
-        if (prResult.success) {
-          failPrUrl = prResult.prUrl!;
-          log(`Best-effort PR created: ${failPrUrl}`, "yellow");
-        }
+        // Attempt PR creation too (best-effort)
+        try {
+          const prTitle = `[WIP] ${task.title} [Vibecode Heaven #${task.id}]`;
+          const prBody = buildPrBody(task.id, task.title, task.type, task.priority, task.description);
+          const failPrResult = await createPullRequest({
+            owner: repoInfo.owner,
+            repo: repoInfo.repo,
+            pat: githubPat,
+            head: branchName,
+            base: baseBranch,
+            title: prTitle,
+            body: prBody,
+          });
+          if (failPrResult.success) {
+            failPrUrl = failPrResult.prUrl ?? null;
+            log(`Best-effort PR created: ${failPrUrl}`, "yellow");
+          }
+        } catch { /* best effort — ignore PR creation failure */ }
       }
     } catch {
-      // Best effort — ignore failures
+      // Best effort — push failed or nothing to push
     }
 
     await resetTaskToTodo(task.id, failBranch, failPrUrl);

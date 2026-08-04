@@ -1770,10 +1770,8 @@ async function runLoopModeAca(
       // Clear failure counter on success
       taskFailures.delete(task.id);
     } else {
-      // On failure, preserve branch/PR info if the worker managed to push (best-effort)
-      const failBranch = promptResult.branchName ?? null;
-      const failPrUrl = promptResult.prUrl ?? null;
-      await resetTaskToTodo(task.id, failBranch, failPrUrl);
+      // On failure, pass branch/PR info if the worker managed a best-effort push
+      await resetTaskToTodo(task.id, promptResult.branchName ?? null, promptResult.prUrl ?? null);
 
       // A delivery failure is an environment problem, not a task problem —
       // block immediately instead of spending the whole retry budget
