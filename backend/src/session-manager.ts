@@ -1781,7 +1781,7 @@ async function runLoopModeAca(
 
     // Skip tasks that have already exceeded failure limit in this session
     if (blockedTasks.has(task.id)) {
-      await resetTask(task.id, stages.claimState);
+      await resetTask(task.id, stages.claimState, undefined, undefined, stages.kind === "inspector");
       appendOutput(managed, {
         timestamp: now(),
         stream: "system",
@@ -1834,7 +1834,7 @@ async function runLoopModeAca(
     }
 
     if (signal.aborted) {
-      await resetTask(task.id, stages.claimState);
+      await resetTask(task.id, stages.claimState, undefined, undefined, stages.kind === "inspector");
       appendOutput(managed, {
         timestamp: now(),
         stream: "system",
@@ -1971,7 +1971,15 @@ async function runLoopModeAca(
       } else if (promptResult.verdict === "changes_requested") {
         // Reviewer/QA agent found issues — send back to "todo" for rework,
         // preserving the existing branch and PR so the developer agent can resume.
-        await resetTask(task.id, "todo", promptResult.branchName ?? null, promptResult.prUrl ?? null);
+        // Inspector agents never push, so pass their branchName/prUrl if available,
+        // but fall back to preserving whatever is already in the DB (preserveBranchInfo).
+        const hasWorkerBranchInfo = !!(promptResult.branchName || promptResult.prUrl);
+        await resetTask(
+          task.id, "todo",
+          promptResult.branchName ?? null,
+          promptResult.prUrl ?? null,
+          stages.kind === "inspector" && !hasWorkerBranchInfo
+        );
         appendOutput(managed, {
           timestamp: now(),
           stream: "system",
@@ -1988,8 +1996,16 @@ async function runLoopModeAca(
       // Clear failure counter on success
       taskFailures.delete(task.id);
     } else {
-      // On failure, pass branch/PR info if the worker managed a best-effort push
-      await resetTask(task.id, stages.claimState, promptResult.branchName ?? null, promptResult.prUrl ?? null);
+      // On failure, pass branch/PR info if the worker managed a best-effort push.
+      // Inspector agents never push — preserve whatever branch/PR the previous stage
+      // stored rather than overwriting it with null.
+      const inspectorFailure = stages.kind === "inspector";
+      await resetTask(
+        task.id, stages.claimState,
+        promptResult.branchName ?? null,
+        promptResult.prUrl ?? null,
+        inspectorFailure && !promptResult.branchName && !promptResult.prUrl
+      );
 
       // A delivery failure is an environment problem, not a task problem —
       // block immediately instead of spending the whole retry budget

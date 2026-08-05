@@ -242,32 +242,50 @@ export async function markTaskDeveloped(
  * Each agent stage resets to its own claim state on failure — e.g. a failed
  * review resets to "developed" (the reviewer's claimState), not to "todo".
  *
- * Optionally persists branch/PR info if a best-effort push succeeded before the reset,
- * or explicitly nulls them out to clear stale links from a previous attempt.
+ * Optionally persists branch/PR info if a best-effort push succeeded before the reset.
+ * Set `preserveBranchInfo: true` when the caller has no branch/PR info to contribute
+ * (e.g. an inspector agent that never pushes) — this leaves existing DB values intact
+ * instead of overwriting them with null and losing the branch from a previous stage.
  *
  * @param taskId The task to reset
  * @param resetState The state to reset TO (default: "todo")
- * @param branch Optional branch name (or null to clear)
- * @param pullRequestUrl Optional PR URL (or null to clear)
+ * @param branch Optional branch name (or null to clear). Ignored when preserveBranchInfo is true.
+ * @param pullRequestUrl Optional PR URL (or null to clear). Ignored when preserveBranchInfo is true.
+ * @param preserveBranchInfo When true, skip updating branch/pull_request_url columns entirely.
  */
 export async function resetTask(
   taskId: number,
   resetState: string,
   branch?: string | null,
-  pullRequestUrl?: string | null
+  pullRequestUrl?: string | null,
+  preserveBranchInfo = false
 ): Promise<void> {
   const pool = await getPool();
-  await pool
-    .request()
-    .input("id", sql.Int, taskId)
-    .input("resetState", sql.VarChar(50), resetState)
-    .input("branch", sql.NVarChar(250), branch !== undefined ? branch : null)
-    .input("pullRequestUrl", sql.NVarChar(500), pullRequestUrl !== undefined ? pullRequestUrl : null)
-    .query(`
-      UPDATE tasks
-      SET state = @resetState, branch = @branch, pull_request_url = @pullRequestUrl, updated_at = GETUTCDATE()
-      WHERE id = @id
-    `);
+
+  if (preserveBranchInfo) {
+    // Don't touch branch/pull_request_url — preserve whatever the previous stage stored.
+    await pool
+      .request()
+      .input("id", sql.Int, taskId)
+      .input("resetState", sql.VarChar(50), resetState)
+      .query(`
+        UPDATE tasks
+        SET state = @resetState, updated_at = GETUTCDATE()
+        WHERE id = @id
+      `);
+  } else {
+    await pool
+      .request()
+      .input("id", sql.Int, taskId)
+      .input("resetState", sql.VarChar(50), resetState)
+      .input("branch", sql.NVarChar(250), branch !== undefined ? branch : null)
+      .input("pullRequestUrl", sql.NVarChar(500), pullRequestUrl !== undefined ? pullRequestUrl : null)
+      .query(`
+        UPDATE tasks
+        SET state = @resetState, branch = @branch, pull_request_url = @pullRequestUrl, updated_at = GETUTCDATE()
+        WHERE id = @id
+      `);
+  }
 }
 
 /**
