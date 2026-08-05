@@ -1163,8 +1163,11 @@ function processUpdate(managed: ManagedSession, update: SessionUpdateChunk): voi
           stream: "system",
           text: `${icon} ${label}${update.title && label !== update.title ? ` — ${update.title}` : ""}`,
         });
-        // Track report_verdict tool calls so we can capture the verdict from the update
-        if (rawName === "report_verdict") {
+        // Track report_verdict tool calls so we can capture the verdict from the update.
+        // kiro-cli reports MCP tool titles as "Running: @<server>/<tool>" (e.g.
+        // "Running: @verdict/report_verdict"), never the bare tool name — an exact
+        // match against "report_verdict" never fires. Match by substring instead.
+        if (rawName.includes("report_verdict")) {
           managed.verdictToolCallId = (update as { toolCallId?: string }).toolCallId ?? null;
         }
         break;

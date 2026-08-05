@@ -1157,8 +1157,14 @@ function logSessionUpdate(update) {
         kind: update.kind ?? null,
         status: update.status ?? null,
       });
-      // Track if this is a report_verdict call so we can capture the verdict from the update
-      if (update.title === "report_verdict" || update.kind === "report_verdict") {
+      // Track if this is a report_verdict call so we can capture the verdict from the update.
+      // kiro-cli reports MCP tool titles as "Running: @<server>/<tool>" (e.g.
+      // "Running: @verdict/report_verdict"), never the bare tool name — an exact
+      // match against "report_verdict" never fires. Match by substring instead.
+      if (
+        (typeof update.title === "string" && update.title.includes("report_verdict")) ||
+        (typeof update.kind === "string" && update.kind.includes("report_verdict"))
+      ) {
         verdictToolCallId = update.toolCallId ?? null;
       }
       break;
