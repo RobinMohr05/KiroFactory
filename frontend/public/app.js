@@ -1962,8 +1962,8 @@ async function createAndStartSession() {
   const boardsSelect = document.getElementById('sessionBoards');
   const boardIds = Array.from(boardsSelect.selectedOptions).map(opt => Number(opt.value));
 
-  // If no boards explicitly selected, default to the current board
-  if (boardIds.length === 0 && currentBoardId) {
+  // Always include the currently open tab — this is a hard assignment, not optional
+  if (currentBoardId && !boardIds.includes(Number(currentBoardId))) {
     boardIds.push(Number(currentBoardId));
   }
 
