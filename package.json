@@ -1,13 +1,19 @@
 {
   "name": "vibecode-heaven",
   "private": true,
-  "workspaces": ["backend", "frontend"],
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
   "scripts": {
     "dev": "concurrently \"npm run dev -w backend\" \"npm run dev -w frontend\"",
     "build": "npm run build -w backend && npm run build -w frontend",
     "start": "npm run start -w backend"
   },
   "devDependencies": {
-    "concurrently": "^9.1.0"
+    "@types/supertest": "^7.2.1",
+    "concurrently": "^9.1.0",
+    "supertest": "^7.2.2",
+    "vitest": "^4.1.10"
   }
 }

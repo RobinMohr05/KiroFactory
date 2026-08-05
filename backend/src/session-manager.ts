@@ -521,6 +521,35 @@ export function updateSessionTabs(id: number, tabIds: number[]): boolean {
   return true;
 }
 
+/**
+ * Update editable session fields (everything except `agent` and internal/lifecycle fields).
+ * Must only be called when session is NOT running (caller checks status).
+ */
+export function updateSessionFields(id: number, fields: import("./types.js").UpdateSessionInput): boolean {
+  const session = sessions.get(id);
+  if (!session) return false;
+
+  // Merge allowed fields into the in-memory session meta
+  if (fields.name !== undefined) session.meta.name = fields.name;
+  if (fields.prompt !== undefined) session.meta.prompt = fields.prompt;
+  if (fields.cwd !== undefined) session.meta.cwd = fields.cwd;
+  if (fields.model !== undefined) session.meta.model = fields.model || undefined;
+  if (fields.timeoutSeconds !== undefined) session.meta.timeoutSeconds = fields.timeoutSeconds;
+  if (fields.interactive !== undefined) session.meta.interactive = fields.interactive;
+  if (fields.loop !== undefined) session.meta.loop = fields.loop;
+  if (fields.runs !== undefined) session.meta.runs = fields.runs;
+  if (fields.intervalSeconds !== undefined) session.meta.intervalSeconds = fields.intervalSeconds;
+  if (fields.mcpServers !== undefined) session.meta.mcpServers = fields.mcpServers;
+  if (fields.mcpConfigOverride !== undefined) session.meta.mcpConfigOverride = fields.mcpConfigOverride ?? undefined;
+  if (fields.tabIds !== undefined) session.meta.tabIds = fields.tabIds.length > 0 ? fields.tabIds : undefined;
+
+  broadcastToUser(session.meta.userId, { type: "session-updated", session: session.meta });
+  persistSession(id);
+
+  logSessionEvent("session-fields-updated", id, { fields: Object.keys(fields) });
+  return true;
+}
+
 export async function startSession(id: number): Promise<boolean> {
   const session = sessions.get(id);
   if (!session) return false;

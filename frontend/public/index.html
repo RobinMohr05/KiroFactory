@@ -170,6 +170,7 @@
             <div class="session-controls">
               <button class="btn btn-success btn-sm" id="sessionStartBtn" title="Start agent">Start</button>
               <button class="btn btn-danger btn-sm" id="sessionStopBtn" title="Stop agent" disabled>Stop</button>
+              <button class="btn btn-secondary btn-sm" id="sessionEditBtn" title="Edit session settings">Edit</button>
               <button class="btn btn-secondary btn-sm" id="sessionClearBtn" title="Clear visible output">Clear</button>
               <button class="btn btn-secondary btn-sm" id="sessionDeleteBtn" title="Delete session">Delete</button>
             </div>
@@ -400,6 +401,48 @@
           </div>
         </div>
         <div class="form-actions"><button type="button" class="btn btn-secondary" id="cancelSessionBtn">Cancel</button><button type="submit" class="btn btn-primary" id="submitSessionBtn">Create & Start</button></div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Edit Session Modal -->
+  <div class="modal-backdrop" id="editSessionModal" hidden>
+    <div class="modal" role="dialog" aria-labelledby="editSessionModalTitle">
+      <h2 id="editSessionModalTitle">Edit Session Settings</h2>
+      <form id="editSessionForm">
+        <div class="form-group"><label for="editSessionName">Session Name</label><input type="text" id="editSessionName" required placeholder="e.g. Feature Builder" /></div>
+        <div class="form-group"><label for="editSessionAgent">Agent</label><input type="text" id="editSessionAgent" disabled /><small class="form-hint">Agent cannot be changed after creation.</small></div>
+        <div class="form-group"><label for="editSessionPrompt">Task <small>(optional)</small></label><textarea id="editSessionPrompt" rows="4" placeholder="Leave empty for default prompt, or describe a task..."></textarea></div>
+        <div class="form-group"><label class="checkbox-label"><input type="checkbox" id="editSessionInteractive" /><span>Interactive — allow follow-up prompts</span></label></div>
+        <div class="form-row"><div class="form-group"><label for="editSessionRuns">Runs <small>(0 = endless)</small></label><input type="number" id="editSessionRuns" min="0" value="0" /></div><div class="form-group"><label for="editSessionInterval">Interval (seconds)</label><input type="number" id="editSessionInterval" min="0" value="10" /></div></div>
+        <div class="form-row"><div class="form-group"><label for="editSessionCwd">Working Directory</label><input type="text" id="editSessionCwd" placeholder="Defaults to project root" /></div><div class="form-group"><label for="editSessionModel">Model</label><input type="text" id="editSessionModel" placeholder="e.g. claude-sonnet-4" /></div></div>
+        <div class="form-group"><label for="editSessionTimeout">Timeout (seconds) <small>(0 = no timeout)</small></label><input type="number" id="editSessionTimeout" min="0" value="0" /></div>
+        <div class="form-group"><label for="editSessionBoards">Assign to Tabs <small>(select one or more)</small></label><select id="editSessionBoards" multiple size="3"></select><small class="form-hint">Hold Ctrl/Cmd to select multiple. In loop mode, claims tasks from these tabs.</small></div>
+        <div class="form-group mcp-config-group">
+          <label class="agent-section-toggle" id="editSessionMcpToggle" aria-expanded="false">
+            <span class="toggle-icon">▶</span> MCP Servers <small>(override tab defaults)</small>
+          </label>
+          <div class="agent-collapsible" id="editSessionMcpSection">
+            <small class="form-hint">Toggle MCP servers for this session.</small>
+            <div class="mcp-toggles">
+              <label class="mcp-toggle-item"><input type="checkbox" id="editSessionMcpAtlassian" /><span class="mcp-toggle-label">Atlassian</span></label>
+              <label class="mcp-toggle-item"><input type="checkbox" id="editSessionMcpAzureDevops" /><span class="mcp-toggle-label">Azure DevOps</span></label>
+              <label class="mcp-toggle-item"><input type="checkbox" id="editSessionMcpAwsApi" /><span class="mcp-toggle-label">AWS API</span></label>
+              <label class="mcp-toggle-item"><input type="checkbox" id="editSessionMcpAwsDocs" /><span class="mcp-toggle-label">AWS Docs</span></label>
+            </div>
+          </div>
+        </div>
+        <div class="form-group mcp-config-group">
+          <label class="agent-section-toggle" id="editSessionCustomMcpToggle" aria-expanded="false">
+            <span class="toggle-icon">▶</span> Custom MCP Servers
+          </label>
+          <div class="agent-collapsible" id="editSessionCustomMcpSection">
+            <small class="form-hint">These run only for this session, in addition to the tab-level servers above.</small>
+            <div id="editSessionCustomMcpList" class="custom-mcp-list"></div>
+            <button type="button" class="btn btn-secondary btn-sm" id="editSessionCustomMcpAddBtn">+ Add MCP server</button>
+          </div>
+        </div>
+        <div class="form-actions"><button type="button" class="btn btn-secondary" id="cancelEditSessionBtn">Cancel</button><button type="submit" class="btn btn-primary" id="submitEditSessionBtn">Save Changes</button></div>
       </form>
     </div>
   </div>

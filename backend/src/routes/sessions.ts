@@ -9,9 +9,10 @@ import {
   stopSession,
   sendPrompt,
   updateSessionTabs,
+  updateSessionFields,
 } from "../session-manager.js";
 import { requireAuth, getUserId } from "../middleware/auth.js";
-import type { CreateSessionInput } from "../types.js";
+import type { CreateSessionInput, UpdateSessionInput } from "../types.js";
 import { log, toErrorFields } from "../logger.js";
 
 const router = Router();
@@ -225,6 +226,61 @@ router.post("/:id/prompt", async (req: Request, res: Response) => {
       msg: "Failed to send prompt",
     });
     res.status(500).json({ error: "Failed to send prompt" });
+  }
+});
+
+// PATCH /api/sessions/:id — edit session fields (must belong to authenticated user, must not be running)
+router.patch("/:id", (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const id = paramId(req);
+    if (id === null) {
+      res.status(400).json({ error: "Invalid session id" });
+      return;
+    }
+    const session = getSession(id);
+    if (!session || session.userId !== userId) {
+      res.status(404).json({ error: "Session not found" });
+      return;
+    }
+    if (session.status === "running") {
+      res.status(409).json({ error: "Cannot edit session while it is running. Stop the session first." });
+      return;
+    }
+
+    // Whitelist editable fields — strip everything else
+    const EDITABLE_FIELDS: (keyof UpdateSessionInput)[] = [
+      "name", "prompt", "cwd", "model", "timeoutSeconds",
+      "interactive", "loop", "runs", "intervalSeconds",
+      "mcpServers", "mcpConfigOverride", "tabIds",
+    ];
+    const fields: Record<string, unknown> = {};
+    for (const key of EDITABLE_FIELDS) {
+      if (key in req.body) {
+        fields[key] = req.body[key];
+      }
+    }
+
+    if (Object.keys(fields).length === 0) {
+      res.status(400).json({ error: "No editable fields provided" });
+      return;
+    }
+
+    const ok = updateSessionFields(id, fields as UpdateSessionInput);
+    if (!ok) {
+      res.status(404).json({ error: "Session not found" });
+      return;
+    }
+    res.json({ success: true });
+  } catch (err) {
+    log.error("route-error", {
+      component: "sessions",
+      method: "PATCH",
+      path: "/api/sessions/:id",
+      ...toErrorFields(err),
+      msg: "Failed to update session",
+    });
+    res.status(500).json({ error: "Failed to update session" });
   }
 });
 

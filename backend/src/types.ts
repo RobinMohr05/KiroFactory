@@ -342,6 +342,27 @@ export interface CreateSessionInput {
   pinned?: boolean;
 }
 
+/**
+ * Whitelist of fields that can be edited after session creation.
+ * `agent` is intentionally excluded — it is fixed once the session is created.
+ * Internal/lifecycle fields (id, status, userId, createdAt, startedAt, currentTaskId,
+ * currentActivity, pinned, output) are also excluded.
+ */
+export interface UpdateSessionInput {
+  name?: string;
+  prompt?: string;
+  cwd?: string;
+  model?: string;
+  timeoutSeconds?: number;
+  interactive?: boolean;
+  loop?: boolean;
+  runs?: number;
+  intervalSeconds?: number;
+  mcpServers?: McpServerConfig[];
+  mcpConfigOverride?: TabMcpConfig | null;
+  tabIds?: number[];
+}
+
 // ─── WebSocket Messages ──────────────────────────────────────────────────────
 
 export type WsServerMessage =
