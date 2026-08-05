@@ -25,4 +25,4 @@ export type { SessionUpdateChunk, KiroRunnerOptions, McpServerEntry } from "./ki
 export { claimTask, markTaskDeveloped, markTaskDone, resolveTask, resetTaskToTodo, resetTask, getAvailableTaskCount } from "./task-claimer.js";
 export type { ClaimedTask } from "./task-claimer.js";
 
-export { buildDevPrompt, buildVerifyPrompt } from "./prompt-builder.js";
+export { buildDevPrompt, buildReviewPrompt, buildVerifyPrompt } from "./prompt-builder.js";

@@ -14,7 +14,8 @@ import { KiroRunner } from "./agent/kiro-runner.js";
 import type { SessionUpdateChunk } from "./agent/kiro-runner.js";
 import { broadcastToUser } from "./websocket-handler.js";
 import { claimTask, resolveTask, resetTask, getAvailableTaskCount, markTaskDone } from "./agent/task-claimer.js";
-import { buildDevPrompt } from "./agent/prompt-builder.js";
+import type { ClaimedTask } from "./agent/task-claimer.js";
+import { buildDevPrompt, buildReviewPrompt } from "./agent/prompt-builder.js";
 import { TabMcpConfig, DEFAULT_MCP_CONFIG, resolveGitProvider, type GitProvider } from "./types.js";
 import {
   getAllSessionsFromDb,
@@ -783,16 +784,19 @@ interface AgentStageStates {
   claimState: string;
   workingState: string;
   resolveState: string;
+  /** "editor" (implements changes) or "inspector" (reviews/QAs, never edits). Determines which turn prompt is built. */
+  kind: "editor" | "inspector";
 }
 
 const DEFAULT_STAGE_STATES: AgentStageStates = {
   claimState: "todo",
   workingState: "in-progress",
   resolveState: "developed",
+  kind: "editor",
 };
 
 /**
- * Look up the agent's configured stage states from the DB.
+ * Look up the agent's configured stage states (and kind) from the DB.
  * Falls back to the default developer pipeline if the agent is not found
  * or has no stage states configured.
  */
@@ -805,10 +809,23 @@ async function getAgentStageStates(agentName: string): Promise<AgentStageStates>
       claimState: agent.claimState,
       workingState: agent.workingState,
       resolveState: agent.resolveState,
+      kind: agent.kind,
     };
   } catch {
     return DEFAULT_STAGE_STATES;
   }
+}
+
+/**
+ * Build the correct turn prompt for the given task, based on the agent's kind.
+ * Inspector agents (code-reviewer-agent, qa-improvement-agent, ...) get a
+ * read-only review/QA prompt; editor agents (developer-agent, ...) get the
+ * implementation prompt. Without this branch, every agent received the
+ * implementation prompt regardless of kind — see buildReviewPrompt's doc
+ * comment for the bug this fixes.
+ */
+function buildTurnPrompt(kind: "editor" | "inspector", task: ClaimedTask, cwd: string): string {
+  return kind === "inspector" ? buildReviewPrompt(task, cwd) : buildDevPrompt(task, cwd);
 }
 
 async function runLoopMode(
@@ -899,8 +916,8 @@ async function runLoopMode(
       detail: `Working on: ${task.title}`,
     });
 
-    // Build and send the prompt
-    const prompt = buildDevPrompt(task, meta.cwd);
+    // Build and send the prompt (review prompt for inspector agents, dev prompt otherwise)
+    const prompt = buildTurnPrompt(stages.kind, task, meta.cwd);
     let success = true;
 
     // Reset per-turn verdict tracking before each prompt
@@ -1783,7 +1800,7 @@ async function runLoopModeAca(
 
     setActivity(managed, { type: "working", detail: `Working on: ${task.title}` });
 
-    const prompt = buildDevPrompt(task, ACA_WORKSPACE_PATH);
+    const prompt = buildTurnPrompt(stages.kind, task, ACA_WORKSPACE_PATH);
     let success = true;
     let promptResult: WorkerPromptResult = {};
     let failureReason = "";

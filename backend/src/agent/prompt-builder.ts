@@ -146,6 +146,67 @@ This is the checked-out repository where your task should be implemented. All fi
 }
 
 /**
+ * Build the per-turn prompt for inspector-kind agents (e.g. code-reviewer-agent,
+ * qa-improvement-agent).
+ *
+ * Unlike `buildDevPrompt`, this does NOT instruct the agent to implement or
+ * change anything — inspector agents only read the diff, post PR comments,
+ * and report a verdict. The domain-specific review/QA criteria live in the
+ * agent's own DB-configured system prompt; this turn prompt just supplies the
+ * task/PR context and the hard rules that apply to every inspector agent
+ * regardless of what it's specifically looking for.
+ *
+ * Bug this fixes: previously every loop-mode session sent `buildDevPrompt`
+ * (the "implement this" prompt) as the turn prompt no matter which agent was
+ * configured, so inspector agents were told to implement the very feature
+ * they were supposed to be reviewing — contradicting their own system prompt.
+ */
+export function buildReviewPrompt(task: ClaimedTask, cwd: string): string {
+  const filesList =
+    task.files.length > 0
+      ? task.files.map((f) => `  - ${f}`).join("\n")
+      : "  (no specific files listed — investigate based on the diff)";
+
+  return `You have been ASSIGNED a task to inspect. Follow the review/QA workflow and criteria described in your system prompt.
+
+## TASK BEING REVIEWED
+
+**Task ID:** ${task.id}
+**Title:** ${task.title}
+**Priority:** ${task.priority} (${getPriorityLabel(task.priority)})
+**Type:** ${task.type}
+**Description:** ${task.description || "(no description provided)"}
+**Branch:** ${task.branch || "(unknown — run git status/git branch to confirm)"}
+**Pull Request:** ${task.pullRequestUrl || "(no PR URL provided — check git remote or your PR tooling if needed)"}
+
+**Files likely touched:**
+${filesList}
+
+## INSTRUCTIONS
+
+1. Identify what changed for this task (e.g. \`git diff origin/develop...HEAD\` or the appropriate base branch — fall back to \`git log --oneline -1\` / \`git diff HEAD~1\` if that fails).
+2. Review the diff following the workflow and criteria described in your system prompt.
+3. For every issue found, call \`post_review_comment\` exactly once per issue.
+4. Call \`report_verdict\` exactly once when finished: \`"no_action_needed"\` if you found zero issues, \`"changes_requested"\` if you posted one or more comments.
+
+## CRITICAL RULES
+
+- Do NOT edit, create, or delete any file in the repository.
+- Do NOT run \`npm run build\`, tests, installs, or any command that changes the working tree.
+- Do NOT run any git command that changes repository state (commit, push, branch, checkout). Read-only git commands (diff, log, status, show) are fine.
+- Do NOT pick another task. Only inspect the task assigned above.
+- You MUST call \`report_verdict\` exactly once before finishing.
+- STOP once you've reported your verdict.
+
+## WORKING DIRECTORY
+
+${cwd}
+
+This is the checked-out repository, already on the correct branch for this task.
+`;
+}
+
+/**
  * Build a verification prompt to check if the agent's work was successful.
  * This can be sent as a follow-up if needed.
  */
