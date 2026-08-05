@@ -951,7 +951,7 @@ async function runLoopMode(
     // Update task state
     if (signal.aborted) {
       // Session was stopped mid-task — reset to claim state
-      await resetTask(task.id, stages.claimState);
+      await resetTask(task.id, stages.claimState, undefined, undefined, stages.kind === "inspector");
       appendOutput(managed, {
         timestamp: now(),
         stream: "system",
@@ -974,7 +974,7 @@ async function runLoopMode(
       } else if (managed.turnVerdict === "changes_requested") {
         // Reviewer/QA agent found issues — send back to "todo" for rework,
         // preserving branch/PR so the developer agent can resume.
-        await resetTask(task.id, "todo");
+        await resetTask(task.id, "todo", undefined, undefined, true); // always preserve — inspector never pushes
         appendOutput(managed, {
           timestamp: now(),
           stream: "system",
@@ -989,7 +989,7 @@ async function runLoopMode(
         });
       }
     } else {
-      await resetTask(task.id, stages.claimState);
+      await resetTask(task.id, stages.claimState, undefined, undefined, stages.kind === "inspector");
       appendOutput(managed, {
         timestamp: now(),
         stream: "system",

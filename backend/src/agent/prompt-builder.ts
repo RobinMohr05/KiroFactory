@@ -22,9 +22,23 @@ export function buildDevPrompt(task: ClaimedTask, cwd: string): string {
       ? task.files.map((f) => `  - ${f}`).join("\n")
       : "  (no specific files listed — investigate based on description)";
 
+  // If a PR already exists, this is a rework pass — surface that prominently.
+  const reworkSection = task.pullRequestUrl
+    ? `
+## REWORK PASS — PR REVIEW COMMENTS
+
+This task already has an open pull request: **${task.pullRequestUrl}**
+You are resuming work on branch \`${task.branch || "see git status"}\` to address reviewer feedback.
+
+**FIRST ACTION:** Call the \`get_pr_review_comments\` tool to fetch all open review comments on the PR.
+Address every comment — treat each one as a required fix. Do NOT skip any.
+Once all comments are addressed, the implementation will be re-reviewed.
+`
+    : "";
+
   return `You are the Developer Implementation Agent. You have been ASSIGNED a specific task.
 Do NOT pick a task yourself — this task has already been selected and claimed for you.
-
+${reworkSection}
 ## YOUR ASSIGNED TASK
 
 **Task ID:** ${task.id}
@@ -32,17 +46,18 @@ Do NOT pick a task yourself — this task has already been selected and claimed 
 **Priority:** ${task.priority} (${getPriorityLabel(task.priority)})
 **Type:** ${task.type}
 **Description:** ${task.description || "(no description provided)"}
+${task.branch ? `**Branch:** \`${task.branch}\`` : ""}
+${task.pullRequestUrl ? `**Pull Request:** ${task.pullRequestUrl}` : ""}
 
 **Relevant files:**
 ${filesList}
 
 ## INSTRUCTIONS
 
-1. If this task already has an associated pull request (you are resuming on an existing branch, not starting fresh), call the \`get_pr_review_comments\` tool first. Treat every comment it returns as a required fix and address ALL of them.
-2. Read the relevant source files to understand the current state of the code.
-3. Implement the change described above. Follow the existing code style and conventions.
-4. After implementing, verify your changes compile correctly (run \`npm run build\` if applicable).
-5. STOP after completing this single task. Do not pick another task.
+${task.pullRequestUrl
+  ? "1. Call `get_pr_review_comments` first to fetch all open PR review comments. Address every comment before doing anything else.\n2. After fixing all comments, verify your changes compile correctly (run `npm run build` if applicable)."
+  : "1. Read the relevant source files to understand the current state of the code.\n2. Implement the change described above. Follow the existing code style and conventions.\n3. After implementing, verify your changes compile correctly (run `npm run build` if applicable)."}
+${task.pullRequestUrl ? "3." : "4."} STOP after completing this single task. Do not pick another task.
 
 ## CRITICAL RULES
 
