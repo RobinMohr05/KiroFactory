@@ -1948,14 +1948,26 @@ async function runLoopModeAca(
 
     if (success) {
       // If the agent reported "no_action_needed" and no file changes exist
-      // (cross-check passed in the worker), skip remaining stages → resolve to "done".
+      // (cross-check passed in the worker):
+      // - Editor agents: task is already implemented → skip all remaining stages, resolve to "done"
+      // - Inspector agents: code looks good / no issues found → advance to their resolveState
+      //   (e.g. "reviewed" for code-reviewer-agent), NOT straight to "done" — QA still needs to run
       if (promptResult.verdict === "no_action_needed" && !promptResult.hasChanges) {
-        await markTaskDone(task.id, promptResult.branchName ?? null, promptResult.prUrl ?? null);
-        appendOutput(managed, {
-          timestamp: now(),
-          stream: "system",
-          text: `Task ${task.id} → "done" (agent verdict: no_action_needed, no changes) ✓`,
-        });
+        if (stages.kind === "inspector") {
+          await resolveTask(task.id, stages.resolveState, promptResult.branchName ?? null, promptResult.prUrl ?? null);
+          appendOutput(managed, {
+            timestamp: now(),
+            stream: "system",
+            text: `Task ${task.id} marked as "${stages.resolveState}" (no issues found) ✓`,
+          });
+        } else {
+          await markTaskDone(task.id, promptResult.branchName ?? null, promptResult.prUrl ?? null);
+          appendOutput(managed, {
+            timestamp: now(),
+            stream: "system",
+            text: `Task ${task.id} → "done" (agent verdict: no_action_needed, no changes) ✓`,
+          });
+        }
       } else if (promptResult.verdict === "changes_requested") {
         // Reviewer/QA agent found issues — send back to "todo" for rework,
         // preserving the existing branch and PR so the developer agent can resume.

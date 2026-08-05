@@ -1178,13 +1178,24 @@ function logSessionUpdate(update) {
         // (e.g. a command that "succeeds" but prints warnings) isn't lost either.
         output: outputText,
       });
-      // Capture verdict from the report_verdict tool's completed output
-      if (
-        verdictToolCallId &&
-        update.toolCallId === verdictToolCallId &&
-        update.status === "completed" &&
-        outputText
-      ) {
+      // Capture verdict from the report_verdict tool's completed output.
+      //
+      // Two detection strategies, tried in order:
+      //
+      // 1. toolCallId-matched: we saw the tool_call announcement first, stored
+      //    its toolCallId in verdictToolCallId, and can now match the update.
+      //
+      // 2. Content-based fallback: kiro-cli sometimes sends tool_call_update
+      //    before tool_call (or the title match above missed it). Scan every
+      //    completed tool_call_update output for the verdict JSON shape
+      //    {"verdict": "..."} regardless of which tool produced it. The
+      //    verdict-mcp-server is the only tool that emits this shape, so false
+      //    positives are not a real concern.
+      const isVerdictUpdate =
+        (verdictToolCallId && update.toolCallId === verdictToolCallId && update.status === "completed") ||
+        (update.status === "completed" && outputText && outputText.includes('"verdict"'));
+
+      if (isVerdictUpdate && outputText) {
         try {
           const parsed = JSON.parse(outputText);
           if (parsed && parsed.verdict) {
@@ -1192,15 +1203,14 @@ function logSessionUpdate(update) {
             logInfo("verdict-captured", { verdict: turnVerdict.verdict, reason: turnVerdict.reason });
           }
         } catch {
-          // Output wasn't valid JSON — may be a multi-line response, try extracting
-          // the JSON portion
-          const jsonMatch = outputText.match(/\{[^}]*"verdict"\s*:\s*"[^"]+"/);
+          // Output wasn't plain JSON — try to extract the embedded verdict object
+          const jsonMatch = outputText.match(/\{[^{}]*"verdict"\s*:\s*"[^"]+[^{}]*\}/);
           if (jsonMatch) {
             try {
-              const parsed = JSON.parse(jsonMatch[0] + "}");
+              const parsed = JSON.parse(jsonMatch[0]);
               if (parsed && parsed.verdict) {
                 turnVerdict = { verdict: parsed.verdict, reason: parsed.reason || "" };
-                logInfo("verdict-captured", { verdict: turnVerdict.verdict, reason: turnVerdict.reason });
+                logInfo("verdict-captured-fallback", { verdict: turnVerdict.verdict, reason: turnVerdict.reason });
               }
             } catch { /* give up */ }
           }
