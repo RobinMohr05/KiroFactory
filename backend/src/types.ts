@@ -193,6 +193,12 @@ export interface Agent {
    * Defaults to "developed" if the column is not yet populated.
    */
   resolveState: string;
+  /**
+   * Whether this agent requires a task from the queue to run.
+   * When false, the agent loops on its own prompt without claiming tasks.
+   * Defaults to true (existing behavior for all pre-existing agents).
+   */
+  requiresTask: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -210,6 +216,7 @@ export interface CreateAgentInput {
   claimState?: string;
   workingState?: string;
   resolveState?: string;
+  requiresTask?: boolean;
   tabIds?: number[];
 }
 
@@ -225,6 +232,7 @@ export interface UpdateAgentInput {
   claimState?: string;
   workingState?: string;
   resolveState?: string;
+  requiresTask?: boolean;
   tabIds?: number[];
 }
 

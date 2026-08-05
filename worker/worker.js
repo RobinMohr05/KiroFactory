@@ -46,6 +46,12 @@ const AGENT_CONFIG_JSON_B64 = process.env.AGENT_CONFIG_JSON_B64;
 const REPO_URL = process.env.REPO_URL;
 const DEV_BRANCH_CANDIDATES = (process.env.DEV_BRANCH || "develop").split(",").map(b => b.trim());
 let DEV_BRANCH = DEV_BRANCH_CANDIDATES[0];
+/**
+ * Persistent branch name for standalone (requiresTask=false) agents.
+ * When set, this branch is used for all commits instead of per-task branches.
+ * No PR is created — the branch is a continuously updated deliverable.
+ */
+const PERSISTENT_BRANCH_NAME = process.env.PERSISTENT_BRANCH_NAME || "";
 const KIRO_API_KEY = process.env.KIRO_API_KEY;
 const GIT_USER_NAME = process.env.GIT_USER_NAME || "Vibecode Heaven Agent";
 const GIT_USER_EMAIL = process.env.GIT_USER_EMAIL || "agent@vibecode-heaven.dev";
@@ -586,6 +592,43 @@ function setupRepo() {
   }
 
   sendOutput(`Workspace ready on branch ${DEV_BRANCH}`, "system");
+
+  // ─── Persistent branch mode: checkout or create the persistent branch ───
+  if (PERSISTENT_BRANCH_NAME) {
+    try {
+      // Fetch to see if the branch already exists on remote
+      try {
+        execFileArgs("git", ["fetch", "origin", PERSISTENT_BRANCH_NAME], { cwd: WORKSPACE });
+      } catch {
+        // Branch doesn't exist remotely — that's fine, we'll create it fresh
+      }
+
+      // Check if the remote branch exists
+      let remoteBranchExists = false;
+      try {
+        execFileArgs("git", ["rev-parse", "--verify", `origin/${PERSISTENT_BRANCH_NAME}`], { cwd: WORKSPACE });
+        remoteBranchExists = true;
+      } catch {
+        remoteBranchExists = false;
+      }
+
+      if (remoteBranchExists) {
+        // Branch exists on remote — check it out (crash-recovery: pick up where we left off)
+        execFileArgs("git", ["checkout", "-B", PERSISTENT_BRANCH_NAME, `origin/${PERSISTENT_BRANCH_NAME}`], { cwd: WORKSPACE });
+        sendOutput(`Checked out existing persistent branch: ${PERSISTENT_BRANCH_NAME}`, "system");
+      } else {
+        // Branch doesn't exist yet — create it from DEV_BRANCH
+        execFileArgs("git", ["checkout", "-B", PERSISTENT_BRANCH_NAME, DEV_BRANCH], { cwd: WORKSPACE });
+        sendOutput(`Created persistent branch: ${PERSISTENT_BRANCH_NAME} (from ${DEV_BRANCH})`, "system");
+      }
+
+      // Set currentBranchName so commitAndPush uses it
+      currentBranchName = PERSISTENT_BRANCH_NAME;
+    } catch (err) {
+      sendOutput(`Warning: could not set up persistent branch "${PERSISTENT_BRANCH_NAME}": ${err?.message || err}`, "stderr");
+      logError("Persistent branch setup failed", { branch: PERSISTENT_BRANCH_NAME, error: err?.message || String(err) });
+    }
+  }
 }
 
 /**
@@ -1439,7 +1482,8 @@ function finishPromptTurn(msg) {
         hasChanges = gitResult.hasChanges;
         committed = !!gitResult.committed;
         if (gitResult.pushError) gitError = gitResult.pushError;
-        if (gitResult.pushed && gitResult.branchName) {
+        if (gitResult.pushed && gitResult.branchName && !PERSISTENT_BRANCH_NAME) {
+          // Only create PRs in task mode — persistent branch mode pushes directly
           prUrl = await createPullRequest(gitResult.branchName);
         }
       } catch (err) {
@@ -1790,6 +1834,18 @@ function handlePrompt(text, taskMeta) {
         logError("Fallback branch checkout failed", { error: fallbackErr?.message || String(fallbackErr) });
       }
     }
+  } else if (PERSISTENT_BRANCH_NAME && REPO_URL && !taskMeta) {
+    // Persistent branch mode: pull latest before each prompt so we always
+    // start on the latest pushed state.
+    try {
+      execFileArgs("git", ["fetch", "origin", PERSISTENT_BRANCH_NAME], { cwd: WORKSPACE });
+      // Reset to remote state (consistent with the resetWorkingTree hard-reset style)
+      execFileArgs("git", ["reset", "--hard", `origin/${PERSISTENT_BRANCH_NAME}`], { cwd: WORKSPACE });
+      execFileArgs("git", ["clean", "-fd"], { cwd: WORKSPACE });
+    } catch {
+      // Remote branch may not exist yet (first run) — that's fine, working tree is already correct
+    }
+    currentBranchName = PERSISTENT_BRANCH_NAME;
   }
 
   if (!kiroReady || !kiroProc) {

@@ -783,12 +783,14 @@ interface AgentStageStates {
   claimState: string;
   workingState: string;
   resolveState: string;
+  requiresTask: boolean;
 }
 
 const DEFAULT_STAGE_STATES: AgentStageStates = {
   claimState: "todo",
   workingState: "in-progress",
   resolveState: "developed",
+  requiresTask: true,
 };
 
 /**
@@ -805,6 +807,7 @@ async function getAgentStageStates(agentName: string): Promise<AgentStageStates>
       claimState: agent.claimState,
       workingState: agent.workingState,
       resolveState: agent.resolveState,
+      requiresTask: agent.requiresTask,
     };
   } catch {
     return DEFAULT_STAGE_STATES;
@@ -821,6 +824,12 @@ async function runLoopMode(
 
   // Look up the agent's stage states once per loop start
   const stages = await getAgentStageStates(meta.agent);
+
+  // If the agent doesn't require tasks, use the standalone prompt loop instead
+  if (!stages.requiresTask) {
+    await runStandaloneLoopLocal(managed, signal);
+    return;
+  }
 
   // Task-claiming tab filter: a session with no tabs assigned claims from
   // ANY tab. A session assigned to specific tabs only claims from those.
@@ -990,6 +999,76 @@ async function runLoopMode(
         type: "idle",
         detail: `Next run in ${meta.intervalSeconds}s...`,
       });
+      await interruptibleSleep(meta.intervalSeconds * 1000, signal);
+    }
+  }
+}
+
+/**
+ * Standalone loop for agents with requiresTask=false (local mode).
+ * Simply repeats the session's prompt every intervalSeconds, up to maxRuns.
+ * No task queue interaction, no git operations.
+ */
+async function runStandaloneLoopLocal(
+  managed: ManagedSession,
+  signal: AbortSignal
+): Promise<void> {
+  const { meta } = managed;
+  let iteration = 0;
+  const maxRuns = meta.runs;
+
+  const runsLabel = maxRuns === 0 ? "endless" : `${maxRuns} run(s)`;
+  appendOutput(managed, {
+    timestamp: now(),
+    stream: "system",
+    text: `Standalone loop started — no task queue (${runsLabel}, interval: ${meta.intervalSeconds}s)`,
+  });
+
+  while (!signal.aborted && managed.runner?.isAlive) {
+    if (maxRuns > 0 && iteration >= maxRuns) {
+      appendOutput(managed, {
+        timestamp: now(),
+        stream: "system",
+        text: `All ${maxRuns} run(s) completed. Stopping.`,
+      });
+      setStatus(managed, "completed");
+      setActivity(managed, { type: "completed", detail: `${maxRuns} run(s) finished` });
+      return;
+    }
+
+    iteration++;
+    const progressLabel = maxRuns > 0 ? `${iteration}/${maxRuns}` : `#${iteration}`;
+    appendOutput(managed, {
+      timestamp: now(),
+      stream: "system",
+      text: `── Standalone run ${progressLabel} ──`,
+    });
+
+    setActivity(managed, { type: "working", detail: `Run ${progressLabel}` });
+
+    if (!meta.prompt.trim()) {
+      appendOutput(managed, {
+        timestamp: now(),
+        stream: "stderr",
+        text: "No prompt configured — nothing to send. Waiting...",
+      });
+    } else {
+      try {
+        await streamPrompt(managed, meta.prompt);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        appendOutput(managed, {
+          timestamp: now(),
+          stream: "stderr",
+          text: `Prompt error: ${msg}`,
+        });
+      }
+    }
+
+    if (signal.aborted) break;
+
+    if (meta.intervalSeconds > 0) {
+      setActivity(managed, { type: "idle", detail: `Next run in ${meta.intervalSeconds}s...` });
       await interruptibleSleep(meta.intervalSeconds * 1000, signal);
     }
   }
@@ -1257,6 +1336,7 @@ async function runSessionAca(managed: ManagedSession): Promise<void> {
       gitProvider?: GitProvider;
       githubPat?: string;
       azureDevOpsPat?: string;
+      persistentBranchName?: string;
     } | null = null;
     if (meta.tabIds && meta.tabIds.length > 0) {
       for (const tabId of meta.tabIds) {
@@ -1401,6 +1481,17 @@ async function runSessionAca(managed: ManagedSession): Promise<void> {
         if (agentRecord) {
           agentKind = agentRecord.kind;
           agentConfigBase64 = encodeAgentConfigBase64(agentRecord);
+
+          // For standalone agents (requiresTask=false), compute a persistent branch name
+          if (!agentRecord.requiresTask && gitOptions) {
+            const { buildPersistentBranchName } = await import("./agent/repo-url-parser.js");
+            gitOptions.persistentBranchName = buildPersistentBranchName(meta.id, meta.name);
+            appendOutput(managed, {
+              timestamp: now(),
+              stream: "system",
+              text: `Persistent branch: ${gitOptions.persistentBranchName}`,
+            });
+          }
         }
       } catch {
         // Agent lookup failed — default to editor (safe: existing behavior)
@@ -1683,6 +1774,94 @@ async function streamPromptAca(managed: ManagedSession, text: string, taskMeta?:
 }
 
 /**
+ * Standalone loop for agents with requiresTask=false (ACA worker mode).
+ * Repeats the session's prompt every intervalSeconds, up to maxRuns.
+ * Each iteration: pull latest from persistent branch, send prompt, commit+push if changes.
+ * No task queue, no PR creation.
+ */
+async function runStandaloneLoopAca(
+  managed: ManagedSession,
+  signal: AbortSignal
+): Promise<void> {
+  const { meta } = managed;
+  let iteration = 0;
+  const maxRuns = meta.runs;
+
+  const runsLabel = maxRuns === 0 ? "endless" : `${maxRuns} run(s)`;
+  appendOutput(managed, {
+    timestamp: now(),
+    stream: "system",
+    text: `Standalone loop started — no task queue (${runsLabel}, interval: ${meta.intervalSeconds}s)`,
+  });
+
+  while (!signal.aborted && isWorkerConnected(meta.id)) {
+    if (maxRuns > 0 && iteration >= maxRuns) {
+      appendOutput(managed, {
+        timestamp: now(),
+        stream: "system",
+        text: `All ${maxRuns} run(s) completed. Stopping.`,
+      });
+      setStatus(managed, "completed");
+      setActivity(managed, { type: "completed", detail: `${maxRuns} run(s) finished` });
+      return;
+    }
+
+    iteration++;
+    const progressLabel = maxRuns > 0 ? `${iteration}/${maxRuns}` : `#${iteration}`;
+    appendOutput(managed, {
+      timestamp: now(),
+      stream: "system",
+      text: `── Standalone run ${progressLabel} ──`,
+    });
+
+    setActivity(managed, { type: "working", detail: `Run ${progressLabel}` });
+
+    if (!meta.prompt.trim()) {
+      appendOutput(managed, {
+        timestamp: now(),
+        stream: "stderr",
+        text: "No prompt configured — nothing to send. Waiting...",
+      });
+    } else {
+      try {
+        // No taskMeta — standalone mode doesn't use task metadata
+        const promptResult = await streamPromptAca(managed, meta.prompt);
+
+        if (promptResult.error) {
+          appendOutput(managed, {
+            timestamp: now(),
+            stream: "stderr",
+            text: `Prompt error: ${promptResult.error}`,
+          });
+        }
+
+        if (promptResult.hasChanges) {
+          appendOutput(managed, {
+            timestamp: now(),
+            stream: "system",
+            text: `Changes committed and pushed to persistent branch.`,
+          });
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        appendOutput(managed, {
+          timestamp: now(),
+          stream: "stderr",
+          text: `Prompt error: ${msg}`,
+        });
+      }
+    }
+
+    if (signal.aborted) break;
+
+    if (meta.intervalSeconds > 0) {
+      setActivity(managed, { type: "idle", detail: `Next run in ${meta.intervalSeconds}s...` });
+      await interruptibleSleep(meta.intervalSeconds * 1000, signal);
+    }
+  }
+}
+
+/**
  * Autonomous loop mode using ACA worker.
  * Same logic as runLoopMode but uses streamPromptAca instead of streamPrompt.
  */
@@ -1696,6 +1875,12 @@ async function runLoopModeAca(
 
   // Look up the agent's stage states once per loop start
   const stages = await getAgentStageStates(meta.agent);
+
+  // If the agent doesn't require tasks, use the standalone prompt loop instead
+  if (!stages.requiresTask) {
+    await runStandaloneLoopAca(managed, signal);
+    return;
+  }
 
   // Track consecutive failures per task ID to prevent infinite retry loops.
   // After MAX_TASK_FAILURES consecutive failures on the same task, it is left

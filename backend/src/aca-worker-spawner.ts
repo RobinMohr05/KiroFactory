@@ -191,6 +191,13 @@ export interface WorkerGitOptions {
    * self-hosted hosts the worker cannot recognise.
    */
   gitProvider?: string;
+  /**
+   * Persistent branch name for standalone (requiresTask=false) agents.
+   * When set, the worker uses this branch for all commits instead of creating
+   * per-task branches. No PR is created — the branch is a continuously updated
+   * deliverable.
+   */
+  persistentBranchName?: string;
 }
 
 /**
@@ -274,6 +281,9 @@ export async function startWorkerJob(
     );
     if (gitOptions.gitProvider) {
       envVars.push({ name: "GIT_PROVIDER", value: gitOptions.gitProvider });
+    }
+    if (gitOptions.persistentBranchName) {
+      envVars.push({ name: "PERSISTENT_BRANCH_NAME", value: gitOptions.persistentBranchName });
     }
     // Per-user credential wins; the orchestrator-wide PAT is a fallback for
     // deployments that use a single service account for all Azure DevOps access.

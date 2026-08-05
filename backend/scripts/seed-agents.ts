@@ -143,6 +143,7 @@ CRITICAL RULES:
     allowedTools: [] as string[],
     toolsSettings: {},
     resources: [] as string[],
+    requiresTask: false,
   },
   {
     name: "qa-improvement-agent",
@@ -369,6 +370,7 @@ async function main(): Promise<void> {
       allowedTools: agent.allowedTools,
       toolsSettings: agent.toolsSettings,
       resources: agent.resources,
+      requiresTask: (agent as any).requiresTask,
     });
 
     console.log(`[seed-agents] ✓ Created agent "${agent.name}"`);

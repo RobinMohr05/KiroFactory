@@ -2618,6 +2618,7 @@ function exportAgentAsJson(agent) {
     allowedTools: agent.allowedTools || [],
     toolsSettings: agent.toolsSettings || {},
     resources: agent.resources || [],
+    requiresTask: agent.requiresTask !== false,
   };
 
   const json = JSON.stringify(exportData, null, 2);
@@ -2660,6 +2661,7 @@ function showAgentModal(agent = null) {
       ? JSON.stringify(agent.toolsSettings, null, 2)
       : '';
     document.getElementById('agentFormKind').value = agent.kind || 'editor';
+    document.getElementById('agentFormRequiresTask').checked = agent.requiresTask !== false;
     document.getElementById('agentFormClaimState').value = agent.claimState || '';
     document.getElementById('agentFormWorkingState').value = agent.workingState || '';
     document.getElementById('agentFormResolveState').value = agent.resolveState || '';
@@ -2692,6 +2694,7 @@ async function submitAgentGuided() {
   const resourcesStr = document.getElementById('agentFormResources').value.trim();
   const settingsStr = document.getElementById('agentFormSettings').value.trim();
   const kind = document.getElementById('agentFormKind').value;
+  const requiresTask = document.getElementById('agentFormRequiresTask').checked;
   const claimState = document.getElementById('agentFormClaimState').value.trim() || null;
   const workingState = document.getElementById('agentFormWorkingState').value.trim() || null;
   const resolveState = document.getElementById('agentFormResolveState').value.trim() || null;
@@ -2712,7 +2715,7 @@ async function submitAgentGuided() {
     }
   }
 
-  const data = { name, description, prompt, tools, allowedTools, toolsSettings, resources, kind, claimState, workingState, resolveState };
+  const data = { name, description, prompt, tools, allowedTools, toolsSettings, resources, kind, requiresTask, claimState, workingState, resolveState };
 
   try {
     if (originalId) {
@@ -2795,11 +2798,13 @@ function selectAgent(id) {
   const pipelineEl = document.getElementById('agentDetailPipeline');
   if (pipelineEl) {
     const kindLabel = agent.kind === 'inspector' ? 'Inspector (reviews only)' : 'Editor (changes code)';
+    const requiresTaskLabel = agent.requiresTask === false ? 'No (standalone loop)' : 'Yes';
     const claim = agent.claimState || '—';
     const working = agent.workingState || '—';
     const resolve = agent.resolveState || '—';
     pipelineEl.innerHTML = `
       <div class="agent-pipeline-row"><span class="agent-pipeline-label">Kind:</span> <span class="agent-tag">${escapeHtml(kindLabel)}</span></div>
+      <div class="agent-pipeline-row"><span class="agent-pipeline-label">Requires task:</span> <span class="agent-tag">${escapeHtml(requiresTaskLabel)}</span></div>
       <div class="agent-pipeline-row"><span class="agent-pipeline-label">Claim from:</span> <span class="agent-tag">${escapeHtml(claim)}</span></div>
       <div class="agent-pipeline-row"><span class="agent-pipeline-label">Working state:</span> <span class="agent-tag">${escapeHtml(working)}</span></div>
       <div class="agent-pipeline-row"><span class="agent-pipeline-label">Resolve to:</span> <span class="agent-tag">${escapeHtml(resolve)}</span></div>
