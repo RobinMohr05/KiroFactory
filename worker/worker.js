@@ -1095,6 +1095,8 @@ function truncate(text, limit = LOG_TEXT_LIMIT) {
  *   - { type: "text", text: "..." }               (flattened form)
  *   - { type: "diff", path, oldText, newText }
  *   - { type: "terminal", terminalId }             (no output here — display-only)
+ *   - { Json: { content: [{ type: "text", text: "..." }] } } (MCP tool results)
+ *   - { Json: { exit_status: "...", stdout: "...", stderr: "..." } } (shell results)
  * This handles all of them defensively rather than assuming one shape.
  */
 function extractToolOutputText(update) {
@@ -1103,10 +1105,36 @@ function extractToolOutputText(update) {
   const content = Array.isArray(update?.content) ? update.content : [];
   for (const block of content) {
     if (!block || typeof block !== "object") continue;
-    const text = block.text ?? block.content?.text;
-    if (typeof text === "string" && text) {
-      parts.push(text);
-    } else if (block.type === "diff" && block.path) {
+
+    // Direct text block: { type: "text", text: "..." } or { content: { text: "..." } }
+    const directText = block.text ?? block.content?.text;
+    if (typeof directText === "string" && directText) {
+      parts.push(directText);
+      continue;
+    }
+
+    // MCP tool result block: { Json: { content: [{ type: "text", text: "..." }] } }
+    if (block.Json && typeof block.Json === "object") {
+      const jsonBlock = block.Json;
+      // MCP text content array
+      if (Array.isArray(jsonBlock.content)) {
+        for (const inner of jsonBlock.content) {
+          if (inner?.type === "text" && typeof inner.text === "string" && inner.text) {
+            parts.push(inner.text);
+          }
+        }
+      }
+      // Shell-style result: { exit_status, stdout, stderr }
+      if (typeof jsonBlock.stdout === "string" && jsonBlock.stdout) {
+        parts.push(jsonBlock.stdout);
+      }
+      if (typeof jsonBlock.stderr === "string" && jsonBlock.stderr) {
+        parts.push(jsonBlock.stderr);
+      }
+      continue;
+    }
+
+    if (block.type === "diff" && block.path) {
       parts.push(`[diff] ${block.path}`);
     }
   }
