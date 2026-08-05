@@ -1224,24 +1224,45 @@ function logSessionUpdate(update) {
         (update.status === "completed" && outputText && outputText.includes('"verdict"'));
 
       if (isVerdictUpdate && outputText) {
-        try {
-          const parsed = JSON.parse(outputText);
-          if (parsed && parsed.verdict) {
-            turnVerdict = { verdict: parsed.verdict, reason: parsed.reason || "" };
-            logInfo("verdict-captured", { verdict: turnVerdict.verdict, reason: turnVerdict.reason });
-          }
-        } catch {
-          // Output wasn't plain JSON — try to extract the embedded verdict object
-          const jsonMatch = outputText.match(/\{[^{}]*"verdict"\s*:\s*"[^"]+[^{}]*\}/);
-          if (jsonMatch) {
-            try {
-              const parsed = JSON.parse(jsonMatch[0]);
-              if (parsed && parsed.verdict) {
-                turnVerdict = { verdict: parsed.verdict, reason: parsed.reason || "" };
-                logInfo("verdict-captured-fallback", { verdict: turnVerdict.verdict, reason: turnVerdict.reason });
+        // The verdict JSON is always {"verdict":"...","reason":"..."}.
+        // It may arrive:
+        //  a) as the direct outputText (already extracted from content[].text)
+        //  b) wrapped in an ACP items envelope: {"items":[{"Json":{"content":[{"type":"text","text":"{...}"}]}}]}
+        //     — this happens for MCP tool results where rawOutput carries the full envelope
+        //     and extractToolOutputText returns it verbatim because content[] is empty.
+        // Try direct parse first, then unwrap the envelope.
+        function tryParseVerdict(str) {
+          if (!str || typeof str !== "string") return null;
+          try {
+            const parsed = JSON.parse(str);
+            if (parsed && typeof parsed.verdict === "string") return parsed;
+            // Unwrap ACP items envelope: {items:[{Json:{content:[{type:"text",text:"..."}]}}]}
+            if (Array.isArray(parsed.items)) {
+              for (const item of parsed.items) {
+                const inner = item?.Json?.content;
+                if (Array.isArray(inner)) {
+                  for (const block of inner) {
+                    if (block?.type === "text" && typeof block.text === "string") {
+                      const inner2 = tryParseVerdict(block.text);
+                      if (inner2) return inner2;
+                    }
+                  }
+                }
               }
-            } catch { /* give up */ }
-          }
+            }
+          } catch { /* not JSON */ }
+          return null;
+        }
+
+        let captured = tryParseVerdict(outputText);
+        if (!captured) {
+          // Last-resort regex: find {"verdict":"...",...} anywhere in the string
+          const jsonMatch = outputText.match(/\{"verdict"\s*:\s*"[^"]+[^}]*\}/);
+          if (jsonMatch) captured = tryParseVerdict(jsonMatch[0]);
+        }
+        if (captured) {
+          turnVerdict = { verdict: captured.verdict, reason: captured.reason || "" };
+          logInfo("verdict-captured", { verdict: turnVerdict.verdict, reason: turnVerdict.reason });
         }
         verdictToolCallId = null;
       }
