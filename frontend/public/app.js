@@ -1783,6 +1783,42 @@ function setupSessions() {
     }
     document.getElementById('sessionName').focus();
   });
+
+  // Allow dropping sessions on the pinned list container (for pin via drag)
+  sessionListPinned.addEventListener('dragover', (e) => {
+    if (!e.dataTransfer.types.includes('application/x-session-id')) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  });
+
+  sessionListPinned.addEventListener('drop', (e) => {
+    if (!e.dataTransfer.types.includes('application/x-session-id')) return;
+    e.preventDefault();
+    const draggedId = Number(e.dataTransfer.getData('application/x-session-id'));
+    if (!draggedId) return;
+    const draggedSession = sessions.find(s => s.id === draggedId);
+    if (!draggedSession || draggedSession.pinned) return;
+    // Pin the session (drop on pinned container)
+    toggleSessionPin(draggedId, true);
+  });
+
+  // Allow dropping sessions on the unpinned list container (for unpin via drag)
+  sessionList.addEventListener('dragover', (e) => {
+    if (!e.dataTransfer.types.includes('application/x-session-id')) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  });
+
+  sessionList.addEventListener('drop', (e) => {
+    if (!e.dataTransfer.types.includes('application/x-session-id')) return;
+    e.preventDefault();
+    const draggedId = Number(e.dataTransfer.getData('application/x-session-id'));
+    if (!draggedId) return;
+    const draggedSession = sessions.find(s => s.id === draggedId);
+    if (!draggedSession || !draggedSession.pinned) return;
+    // Unpin the session (drop on unpinned container)
+    toggleSessionPin(draggedId, false);
+  });
 }
 
 async function populateQuickStartAgentDropdown() {
@@ -2226,11 +2262,16 @@ function renderSessionList() {
     ? sessions.filter(s => !s.agent || (s.tabIds && s.tabIds.includes(Number(currentBoardId))))
     : sessions;
 
-  // Sort: pinned session always first, then agentless (interactive) sessions,
-  // then everything else. Order within each group is preserved.
+  // Sort: pinned sessions first (by sortOrder), then unpinned (by sortOrder).
   visibleSessions = [...visibleSessions].sort((a, b) => {
-    const aRank = a.pinned ? 0 : (!a.agent ? 1 : 2);
-    const bRank = b.pinned ? 0 : (!b.agent ? 1 : 2);
+    if (a.pinned && !b.pinned) return -1;
+    if (!a.pinned && b.pinned) return 1;
+    const aOrder = a.sortOrder ?? 0;
+    const bOrder = b.sortOrder ?? 0;
+    if (aOrder !== bOrder) return aOrder - bOrder;
+    // Fallback: agentless sessions before agent sessions within same sort_order
+    const aRank = !a.agent ? 0 : 1;
+    const bRank = !b.agent ? 0 : 1;
     return aRank - bRank;
   });
 
@@ -2243,6 +2284,7 @@ function renderSessionList() {
     const li = document.createElement('li');
     li.className = 'session-item' + (session.id === activeSessionId ? ' active' : '') + (session.pinned ? ' session-item-pinned' : '');
     li.dataset.sessionId = session.id;
+    li.draggable = true;
 
     const statusClass = 'status-dot-sm status-' + session.status;
     const activity = session.currentActivity;
@@ -2279,6 +2321,102 @@ function renderSessionList() {
 
     li.addEventListener('click', () => selectSession(session.id));
 
+    // Right-click context menu
+    li.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      showSessionContextMenu(e, session);
+    });
+
+    // Drag-and-drop for reordering
+    li.addEventListener('dragstart', (e) => {
+      li.classList.add('session-dragging');
+      e.dataTransfer.setData('application/x-session-id', String(session.id));
+      e.dataTransfer.setData('application/x-session-pinned', session.pinned ? '1' : '0');
+      e.dataTransfer.effectAllowed = 'move';
+    });
+
+    li.addEventListener('dragend', () => {
+      li.classList.remove('session-dragging');
+      document.querySelectorAll('.session-drop-before, .session-drop-after').forEach(el => {
+        el.classList.remove('session-drop-before', 'session-drop-after');
+      });
+    });
+
+    li.addEventListener('dragover', (e) => {
+      if (!e.dataTransfer.types.includes('application/x-session-id')) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      const rect = li.getBoundingClientRect();
+      const midY = rect.top + rect.height / 2;
+      li.classList.remove('session-drop-before', 'session-drop-after');
+      if (e.clientY < midY) {
+        li.classList.add('session-drop-before');
+      } else {
+        li.classList.add('session-drop-after');
+      }
+    });
+
+    li.addEventListener('dragleave', () => {
+      li.classList.remove('session-drop-before', 'session-drop-after');
+    });
+
+    li.addEventListener('drop', (e) => {
+      e.preventDefault();
+      li.classList.remove('session-drop-before', 'session-drop-after');
+      const draggedId = Number(e.dataTransfer.getData('application/x-session-id'));
+      if (!draggedId || draggedId === session.id) return;
+
+      // Determine drop position
+      const rect = li.getBoundingClientRect();
+      const midY = rect.top + rect.height / 2;
+      const insertBefore = e.clientY < midY;
+
+      // Determine target section (pinned or unpinned)
+      const targetPinned = session.pinned;
+      const draggedSession = sessions.find(s => s.id === draggedId);
+      if (!draggedSession) return;
+
+      // If dragging between sections, toggle pin state
+      if (draggedSession.pinned !== targetPinned) {
+        toggleSessionPin(draggedId, targetPinned);
+      }
+
+      // Update the pinned state on the dragged session locally for reorder calculation
+      draggedSession.pinned = targetPinned;
+
+      // Get the ordered list for this section (pinned or unpinned)
+      const sectionSessions = sessions
+        .filter(s => s.pinned === targetPinned)
+        .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+
+      // Remove dragged from the list
+      const filteredSection = sectionSessions.filter(s => s.id !== draggedId);
+
+      // Find the target index
+      let targetIdx = filteredSection.findIndex(s => s.id === session.id);
+      if (!insertBefore) targetIdx++;
+
+      // Insert at target position
+      filteredSection.splice(targetIdx, 0, draggedSession);
+
+      // Update sortOrder locally
+      filteredSection.forEach((s, idx) => { s.sortOrder = idx; });
+
+      // Re-render immediately (optimistic)
+      renderSessionList();
+
+      // Persist the full order (pinned first, then unpinned)
+      const allOrdered = sessions
+        .filter(s => s.pinned)
+        .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
+        .concat(
+          sessions
+            .filter(s => !s.pinned)
+            .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
+        );
+      reorderSessionsOnServer(allOrdered.map(s => s.id));
+    });
+
     // Render pinned sessions in the pinned (non-scrolling) section
     if (session.pinned) {
       sessionListPinned.appendChild(li);
@@ -2286,6 +2424,105 @@ function renderSessionList() {
       sessionList.appendChild(li);
     }
   });
+}
+
+
+/** Show a context menu for session pin/unpin */
+function showSessionContextMenu(event, session) {
+  // Remove any existing context menu
+  const existing = document.querySelector('.session-context-menu');
+  if (existing) existing.remove();
+
+  const menu = document.createElement('div');
+  menu.className = 'session-context-menu';
+  const pinLabel = session.pinned ? '📌 Unpin' : '📌 Pin to top';
+  menu.innerHTML = `
+    <button class="session-context-item" data-action="pin">${pinLabel}</button>
+  `;
+  menu.style.left = event.clientX + 'px';
+  menu.style.top = event.clientY + 'px';
+  document.body.appendChild(menu);
+
+  menu.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-action]');
+    if (!btn) return;
+    menu.remove();
+    if (btn.dataset.action === 'pin') {
+      toggleSessionPin(session.id, !session.pinned);
+    }
+  });
+
+  // Close on click outside or Escape
+  const closeMenu = (e) => {
+    if (!menu.contains(e.target)) {
+      menu.remove();
+      document.removeEventListener('click', closeMenu);
+      document.removeEventListener('keydown', closeMenuEsc);
+    }
+  };
+  const closeMenuEsc = (e) => {
+    if (e.key === 'Escape') {
+      menu.remove();
+      document.removeEventListener('click', closeMenu);
+      document.removeEventListener('keydown', closeMenuEsc);
+    }
+  };
+  setTimeout(() => {
+    document.addEventListener('click', closeMenu);
+    document.addEventListener('keydown', closeMenuEsc);
+  }, 0);
+}
+
+/** Toggle pin state of a session via API */
+async function toggleSessionPin(sessionId, pinned) {
+  // Optimistic update
+  const session = sessions.find(s => s.id === sessionId);
+  if (session) {
+    session.pinned = pinned;
+    renderSessionList();
+  }
+
+  try {
+    const res = await fetch(`/api/sessions/${sessionId}/pin`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pinned }),
+    });
+    if (!res.ok) {
+      // Revert on failure
+      if (session) {
+        session.pinned = !pinned;
+        renderSessionList();
+      }
+      console.error('Failed to toggle pin:', res.status);
+    }
+  } catch (e) {
+    // Revert on failure
+    if (session) {
+      session.pinned = !pinned;
+      renderSessionList();
+    }
+    console.error('Failed to toggle pin:', e);
+  }
+}
+
+/** Persist session order to server */
+async function reorderSessionsOnServer(sessionIds) {
+  try {
+    const res = await fetch('/api/sessions/reorder', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionIds }),
+    });
+    if (!res.ok) {
+      console.error('Failed to reorder sessions:', res.status);
+      // Refetch to restore server order
+      await fetchSessions();
+    }
+  } catch (e) {
+    console.error('Failed to reorder sessions:', e);
+    await fetchSessions();
+  }
 }
 
 function appendOutputEntry(entry) {

@@ -24,6 +24,8 @@ import {
   updateSessionMeta,
   deleteSessionFromDb,
   isSessionOwnedByUser,
+  reorderSessionsInDb,
+  updateSessionPinInDb,
 } from "./db/sessions.js";
 import { getUserKiroApiKey, getUserById } from "./db/users.js";
 import { getAllDecryptedCredentials, getDecryptedCredential } from "./db/credentials.js";
@@ -419,6 +421,7 @@ export async function createSession(input: CreateSessionInput): Promise<Session>
     createdAt: now(),
     output: [],
     pinned: input.pinned === true,
+    sortOrder: 0,
   };
 
   // The session id is assigned by the database (IDENTITY column), so it must
@@ -518,6 +521,83 @@ export function updateSessionTabs(id: number, tabIds: number[]): boolean {
   persistSession(id);
 
   logSessionEvent("session-tabs-updated", id, { tabIds });
+  return true;
+}
+
+/**
+ * Reorder sessions — sets sort_order based on array position.
+ * Both pinned and unpinned sessions should be included in sessionIds,
+ * in the order: all pinned first, then all unpinned.
+ */
+export async function reorderSessions(sessionIds: number[], userId: number): Promise<boolean> {
+  // Update in-memory sort_order for each session
+  for (let i = 0; i < sessionIds.length; i++) {
+    const session = sessions.get(sessionIds[i]);
+    if (session && session.meta.userId === userId) {
+      session.meta.sortOrder = i;
+    }
+  }
+
+  // Persist to DB
+  if (isDbAvailable()) {
+    try {
+      await reorderSessionsInDb(sessionIds, userId);
+    } catch {
+      // DB write failed silently — in-memory state is still correct
+    }
+  }
+
+  // Broadcast updated sessions to the user
+  for (const id of sessionIds) {
+    const session = sessions.get(id);
+    if (session && session.meta.userId === userId) {
+      broadcastToUser(userId, { type: "session-updated", session: session.meta });
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Pin or unpin a session. When pinning, the session moves to the bottom of
+ * the pinned group. When unpinning, it moves to the top of the unpinned group.
+ */
+export async function pinSession(id: number, pinned: boolean): Promise<boolean> {
+  const session = sessions.get(id);
+  if (!session) return false;
+
+  const userId = session.meta.userId;
+
+  // Calculate the new sort_order
+  const allUserSessions = Array.from(sessions.values())
+    .filter((s) => s.meta.userId === userId);
+
+  let newSortOrder: number;
+  if (pinned) {
+    // Move to the bottom of the pinned group (highest pinned sort_order + 1)
+    const pinnedSessions = allUserSessions.filter((s) => s.meta.pinned);
+    const maxPinnedOrder = pinnedSessions.reduce((max, s) => Math.max(max, s.meta.sortOrder), -1);
+    newSortOrder = maxPinnedOrder + 1;
+  } else {
+    // Move to the top of the unpinned group (lowest unpinned sort_order - 1, min 0)
+    const unpinnedSessions = allUserSessions.filter((s) => !s.meta.pinned && s.meta.id !== id);
+    const minUnpinnedOrder = unpinnedSessions.reduce((min, s) => Math.min(min, s.meta.sortOrder), 0);
+    newSortOrder = Math.max(0, minUnpinnedOrder - 1);
+  }
+
+  session.meta.pinned = pinned;
+  session.meta.sortOrder = newSortOrder;
+
+  // Persist to DB
+  if (isDbAvailable()) {
+    try {
+      await updateSessionPinInDb(id, pinned, newSortOrder);
+    } catch {
+      // DB write failed silently — in-memory state is still correct
+    }
+  }
+
+  broadcastToUser(userId, { type: "session-updated", session: session.meta });
   return true;
 }
 

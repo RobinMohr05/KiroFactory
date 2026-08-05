@@ -161,5 +161,6 @@ CREATE TABLE sessions (
     mcp_config_override NVARCHAR(MAX)   NULL,
     -- Permanent, agentless "Chat" session every user gets on registration.
     -- Pinned sessions are always sorted first in the UI and cannot be deleted.
-    pinned              BIT             NOT NULL DEFAULT 0
+    pinned              BIT             NOT NULL DEFAULT 0,
+    sort_order          INT             NOT NULL DEFAULT 0
 );

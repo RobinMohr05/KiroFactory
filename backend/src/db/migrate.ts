@@ -1029,6 +1029,21 @@ async function runUpgrades(pool: sql.ConnectionPool): Promise<void> {
 
     console.log("[migrate] Upgrade complete: agent kind + stage state columns added.");
   }
+
+  // Upgrade 23: Add sort_order column to sessions table for user-defined session ordering
+  const sessionSortOrderExists = await pool.request().query(`
+    SELECT COUNT(*) AS cnt
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_NAME = 'sessions' AND COLUMN_NAME = 'sort_order'
+  `);
+
+  if (sessionSortOrderExists.recordset[0].cnt === 0) {
+    console.log("[migrate] Upgrading: adding sort_order to sessions table...");
+    await pool.request().query(`
+      ALTER TABLE sessions ADD sort_order INT NOT NULL DEFAULT 0
+    `);
+    console.log("[migrate] Upgrade complete: sort_order added to sessions.");
+  }
 }
 
 /**

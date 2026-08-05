@@ -310,6 +310,8 @@ export interface Session {
    * code (registration / startup backfill) may set this.
    */
   pinned: boolean;
+  /** Display order within pinned/unpinned groups. Lower = higher in list. */
+  sortOrder: number;
   /**
    * Cumulative Kiro credits consumed across all prompt turns since this
    * session was last started. Reset to 0 on each start.
