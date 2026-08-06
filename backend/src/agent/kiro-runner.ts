@@ -78,6 +78,9 @@ export class KiroRunner {
   private updateQueue: SessionUpdateChunk[] = [];
   private updateResolve: (() => void) | null = null;
   private turnDone = false;
+  /** cwd/mcpServers the session was created with — reused by newSession(). */
+  private sessionCwd!: string;
+  private sessionMcpServers: McpServerEntry[] = [];
 
   /**
    * Credits consumed by the most recently completed prompt turn.
@@ -308,29 +311,61 @@ export class KiroRunner {
       clientCapabilities: {},
     });
 
+    client.sessionCwd = cwd;
+    client.sessionMcpServers = opts.mcpServers ?? [];
+
     const result = await client.conn.newSession({
       cwd,
-      mcpServers: [
-        // Always include the verdict MCP server so agents can report "no_action_needed".
-        // `env` is required by kiro-cli's ACP schema (untagged enum match fails silently
-        // without it — the whole session/new request gets rejected as a parse error).
-        {
-          name: "verdict",
-          command: "node",
-          args: [resolve(import.meta.dirname, "../../../worker/verdict-mcp-server.js")],
-          env: [],
-        },
-        ...((opts.mcpServers ?? []) as any[]),
-      ],
+      mcpServers: client.buildMcpServersPayload(),
     });
     client.sessionId = result.sessionId;
 
     return client;
   }
 
+  /**
+   * Always include the verdict MCP server so agents can report "no_action_needed".
+   * `env` is required by kiro-cli's ACP schema (untagged enum match fails silently
+   * without it — the whole session/new request gets rejected as a parse error).
+   */
+  private buildMcpServersPayload(): unknown[] {
+    return [
+      {
+        name: "verdict",
+        command: "node",
+        args: [resolve(import.meta.dirname, "../../../worker/verdict-mcp-server.js")],
+        env: [],
+      },
+      ...(this.sessionMcpServers as any[]),
+    ];
+  }
+
   // -------------------------------------------------------------------------
   // Public API
   // -------------------------------------------------------------------------
+
+  /**
+   * Start a brand-new ACP session on the same already-running kiro-cli
+   * subprocess, discarding all prior conversation history.
+   *
+   * Used between tasks in loop mode so each task gets a fresh context
+   * instead of inheriting everything the previous task's turn accumulated —
+   * see session-manager.ts's runLoopMode. Reuses the same cwd/mcpServers the
+   * runner was created with, unless overridden.
+   *
+   * This does NOT respawn the kiro-cli process or redo `initialize` — only
+   * `session/new` is re-issued, which is all that's needed since kiro-cli
+   * scopes conversation state to sessionId.
+   */
+  async newSession(overrideCwd?: string): Promise<void> {
+    const cwd = overrideCwd ? getShortPath(resolve(overrideCwd)) : this.sessionCwd;
+    const result = await this.conn.newSession({
+      cwd,
+      mcpServers: this.buildMcpServersPayload(),
+    });
+    this.sessionId = result.sessionId;
+    this.sessionCwd = cwd;
+  }
 
   /** Send a prompt and yield streaming updates as they arrive. */
   async *prompt(text: string): AsyncGenerator<SessionUpdateChunk> {

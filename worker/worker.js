@@ -403,6 +403,38 @@ function resetWorkingTree() {
 }
 
 /**
+ * Fetch the latest `DEV_BRANCH` from origin and fast-forward the local ref to
+ * match it.
+ *
+ * Runs before every task's branch decision so a new task branch — or the
+ * "does this deterministic branch already exist" probe, or an inspector's
+ * `git diff origin/DEV_BRANCH...HEAD` — is always based on the current state
+ * of develop, not whatever commit happened to be on develop when the
+ * container was cloned at job startup. Without this, a long-running loop that
+ * processes many tasks back to back would keep branching new tasks off an
+ * increasingly stale snapshot of develop.
+ */
+function refreshDevBranch() {
+  try {
+    execFileArgs("git", ["fetch", "origin", DEV_BRANCH], { cwd: WORKSPACE });
+    resetWorkingTree();
+    execFileArgs("git", ["checkout", DEV_BRANCH], { cwd: WORKSPACE });
+    execFileArgs("git", ["reset", "--hard", `origin/${DEV_BRANCH}`], { cwd: WORKSPACE });
+    logInfo("Refreshed DEV_BRANCH from origin", { branch: DEV_BRANCH });
+    sendOutput(`Refreshed ${DEV_BRANCH} from origin before starting next task.`, "system");
+  } catch (err) {
+    logError("Failed to refresh DEV_BRANCH from origin — continuing with existing local ref", {
+      branch: DEV_BRANCH,
+      error: err?.message || String(err),
+    });
+    sendOutput(
+      `Warning: could not refresh ${DEV_BRANCH} from origin (${err?.message || err}) — using existing local state.`,
+      "stderr"
+    );
+  }
+}
+
+/**
  * Create a task-specific branch from a clean DEV_BRANCH state.
  *
  * Uses `checkout -B` (create-or-reset) instead of `-b`: when a task is retried
@@ -1084,6 +1116,13 @@ const TOOL_OUTPUT_LOG_LIMIT = 4000;
 
 /** The ACP session id returned by session/new. Null until the handshake finishes. */
 let acpSessionId = null;
+/**
+ * Resolver/rejecter for an in-flight session/new request. Used both for the
+ * initial handshake (right after initialize) and for every later per-task
+ * session refresh — see createNewAcpSession().
+ */
+let sessionNewResolve = null;
+let sessionNewReject = null;
 /** Handle for the readiness timeout (module scope so message handlers can clear it). */
 let readyTimeout = null;
 /** Handle for the in-flight prompt timeout. */
@@ -1110,6 +1149,66 @@ function clearPromptTimer() {
     clearTimeout(promptTimer);
     promptTimer = null;
   }
+}
+
+/**
+ * Issue a fresh session/new against the already-running kiro-cli process.
+ *
+ * Used both for the initial handshake (right after initialize) and — this is
+ * the important part — again before every claimed task, so each task starts
+ * with zero conversation history instead of inheriting whatever the previous
+ * task's turn accumulated. kiro-cli scopes all state to sessionId, so a new
+ * session/new on the same process is enough to get a clean context; no
+ * process respawn (and no re-running `initialize`) is needed.
+ *
+ * buildMcpServers() is called fresh each time too, which means a session
+ * created for an inspector task picks up that task's current TASK_PR_URL —
+ * so a rework pass reads the PR's actual review comments through the
+ * pr-review MCP tool instead of relying on anything from a prior turn.
+ *
+ * Resolves with the new sessionId, or rejects if kiro-cli returns an error
+ * or the request times out.
+ */
+function createNewAcpSession() {
+  return new Promise((resolve, reject) => {
+    if (sessionNewResolve || sessionNewReject) {
+      reject(new Error("A session/new request is already in flight"));
+      return;
+    }
+
+    clearReadyTimeout();
+    readyTimeout = setTimeout(() => {
+      sessionNewResolve = null;
+      sessionNewReject = null;
+      reject(new Error(`session/new timed out after ${KIRO_READY_TIMEOUT_MS / 1000}s`));
+    }, KIRO_READY_TIMEOUT_MS);
+
+    sessionNewResolve = (sessionId) => {
+      clearReadyTimeout();
+      resolve(sessionId);
+    };
+    sessionNewReject = (err) => {
+      clearReadyTimeout();
+      reject(err);
+    };
+
+    const sent = writeToKiro({
+      jsonrpc: "2.0",
+      method: "session/new",
+      id: NEW_SESSION_REQUEST_ID,
+      params: {
+        cwd: WORKSPACE,
+        mcpServers: buildMcpServers(),
+      },
+    });
+
+    if (!sent) {
+      clearReadyTimeout();
+      sessionNewResolve = null;
+      sessionNewReject = null;
+      reject(new Error("Could not write session/new to kiro-cli stdin"));
+    }
+  });
 }
 
 /** Write a JSON-RPC message to kiro-cli stdin. Returns false if not writable. */
@@ -1719,47 +1818,63 @@ function handleAcpMessage(msg) {
     });
     sendOutput("kiro-cli ACP initialized — creating session...", "system");
 
-    // Now create the session. Its id is required by session/prompt.
-    readyTimeout = setTimeout(() => {
-      if (!kiroReady) {
-        logError("kiro-cli did not answer session/new within timeout", { timeoutMs: KIRO_READY_TIMEOUT_MS });
-        sendOutput(`kiro-cli session/new timed out after ${KIRO_READY_TIMEOUT_MS / 1000}s — killing process`, "stderr");
+    // Create the initial session. Its id is required by session/prompt.
+    // Later, each claimed task gets its own fresh session via the same
+    // createNewAcpSession() helper — see handlePrompt().
+    createNewAcpSession().then(
+      () => drainPromptQueue(),
+      (err) => {
+        const message = err?.message || String(err);
+        logError("Initial session/new failed", { error: message });
+        sendOutput(`kiro-cli session/new failed: ${message} — killing process`, "stderr");
         try { kiroProc?.kill("SIGTERM"); } catch { /* noop */ }
       }
-    }, KIRO_READY_TIMEOUT_MS);
-
-    writeToKiro({
-      jsonrpc: "2.0",
-      method: "session/new",
-      id: NEW_SESSION_REQUEST_ID,
-      params: {
-        cwd: WORKSPACE,
-        mcpServers: buildMcpServers(),
-      },
-    });
+    );
     return true;
   }
 
   if (msg.id === NEW_SESSION_REQUEST_ID) {
     clearReadyTimeout();
+    const resolve = sessionNewResolve;
+    const reject = sessionNewReject;
+    sessionNewResolve = null;
+    sessionNewReject = null;
+
     if (msg.error || !msg.result?.sessionId) {
+      const errMsg = msg.error ? JSON.stringify(msg.error) : "no sessionId returned";
       logError("ACP session/new failed", { error: msg.error ?? "no sessionId in response", result: msg.result });
-      sendOutput(
-        `kiro-cli session/new failed: ${msg.error ? JSON.stringify(msg.error) : "no sessionId returned"}`,
-        "stderr"
-      );
-      try { kiroProc?.kill("SIGTERM"); } catch { /* noop */ }
+      sendOutput(`kiro-cli session/new failed: ${errMsg}`, "stderr");
+      if (reject) {
+        reject(new Error(`session/new failed: ${errMsg}`));
+      } else {
+        // Only the very first (startup) session/new has no rejecter attached —
+        // there's nothing recoverable to do without a session, so give up.
+        try { kiroProc?.kill("SIGTERM"); } catch { /* noop */ }
+      }
       return true;
     }
+
+    const isFirstSession = acpSessionId === null;
     acpSessionId = msg.result.sessionId;
     kiroReady = true;
-    logInfo("ACP session created — kiro-cli is ready", {
+    logInfo(isFirstSession ? "ACP session created — kiro-cli is ready" : "ACP session refreshed for new task", {
       acpSessionId,
       cwd: WORKSPACE,
       currentModeId: msg.result.modes?.currentModeId ?? null,
     });
-    sendOutput(`kiro-cli ACP session ready (session: ${acpSessionId})`, "system");
-    drainPromptQueue();
+    sendOutput(
+      isFirstSession
+        ? `kiro-cli ACP session ready (session: ${acpSessionId})`
+        : `Fresh ACP session started for next task (session: ${acpSessionId})`,
+      "system"
+    );
+
+    if (resolve) {
+      resolve(acpSessionId);
+    } else {
+      // Startup path — no caller awaiting a promise, just drain anything queued.
+      drainPromptQueue();
+    }
     return true;
   }
 
@@ -1889,6 +2004,11 @@ function handlePrompt(text, taskMeta) {
       process.env.TASK_PR_URL = taskMeta.pullRequestUrl;
     }
 
+    // Always re-fetch DEV_BRANCH from origin before deciding what to branch
+    // from — every task should see the current state of develop, not the
+    // snapshot that was cloned when this container started.
+    refreshDevBranch();
+
     try {
       // If the task already has a branch from a previous pipeline stage,
       // fetch and check it out instead of creating a new one.
@@ -1969,6 +2089,34 @@ function handlePrompt(text, taskMeta) {
     promptQueue.push(text);
     return;
   }
+
+  // Every claimed task (taskMeta present) gets its own fresh ACP session —
+  // zero conversation history carried over from whatever the previous task's
+  // turn accumulated. This applies uniformly to first-time tasks, rework
+  // passes on an existing branch/PR, and inspector review passes: in every
+  // case the agent should read the current code/PR state fresh rather than
+  // rely on memory of a previous turn. Interactive follow-ups (no taskMeta,
+  // the user typing into an already-running session) intentionally skip this
+  // and keep accumulating context, since that's the whole point of that mode.
+  if (taskMeta) {
+    createNewAcpSession().then(
+      () => deliverPrompt(text),
+      (err) => {
+        const message = err?.message || String(err);
+        logError("Failed to start fresh session for task — delivering on existing session instead", {
+          taskId: taskMeta.id,
+          error: message,
+        });
+        sendOutput(
+          `Warning: could not start a fresh session for this task (${message}) — continuing on the existing session.`,
+          "stderr"
+        );
+        deliverPrompt(text);
+      }
+    );
+    return;
+  }
+
   deliverPrompt(text);
 }
 

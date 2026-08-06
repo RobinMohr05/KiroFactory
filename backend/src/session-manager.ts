@@ -918,9 +918,25 @@ async function runLoopMode(
       detail: `Working on: ${task.title}`,
     });
 
+    // Start a fresh ACP session for this task — no conversation history from
+    // whatever the previous task's turn accumulated. Applies to every claimed
+    // task (first attempt, rework pass on an existing branch, inspector
+    // review), so the agent always reads the current code/PR state fresh
+    // instead of relying on memory of a prior turn.
+    let success = true;
+    try {
+      await managed.runner?.newSession();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      appendOutput(managed, {
+        timestamp: now(),
+        stream: "stderr",
+        text: `Warning: could not start a fresh session for this task (${msg}) — continuing on the existing session.`,
+      });
+    }
+
     // Build and send the prompt (review prompt for inspector agents, dev prompt otherwise)
     const prompt = buildTurnPrompt(stages.kind, task, meta.cwd);
-    let success = true;
 
     // Reset per-turn verdict tracking before each prompt
     managed.turnVerdict = null;
