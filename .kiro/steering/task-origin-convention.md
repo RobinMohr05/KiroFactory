@@ -34,10 +34,9 @@ So a `CreateTaskInput` for a task on this repo should include `tabIds: [2]`
 (and, if calling the DB layer directly instead of the authenticated API,
 `userId: 1` for ownership checks that rely on it).
 
-These IDs were looked up directly against the `TecFactory` database
-(`REDACTED_DB_SERVER`) and confirmed on 2026-08-03. If tabs get
-renumbered or the user's account changes, re-verify with a query against
-`users`/`tabs` rather than trusting this note blindly.
+These IDs were confirmed on 2026-08-03. If tabs get renumbered or the user's
+account changes, re-verify with a query against `users`/`tabs` rather than
+trusting this note blindly.
 
 For any *other* repo/tab (there are several other tabs for other projects),
 don't hardcode a mapping here — just query `tabs` (name, repository_url,
