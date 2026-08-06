@@ -965,7 +965,9 @@ async function runLoopMode(
       // resolve to stages.resolveState, never skip straight to "done".
       // The developer-agent saying "already implemented" still needs code review.
       if (managed.turnVerdict === "no_action_needed") {
-        await resolveTask(task.id, stages.resolveState);
+        // Preserve existing branch/PR — the agent found nothing to do so it
+        // never pushed anything, and we must not wipe what a prior stage stored.
+        await resolveTask(task.id, stages.resolveState, undefined, undefined, true);
         appendOutput(managed, {
           timestamp: now(),
           stream: "system",
@@ -1955,7 +1957,10 @@ async function runLoopModeAca(
       //   so QA can run. Only markTaskDone() is called when ALL pipeline stages are
       //   already satisfied, which never applies here.
       if (promptResult.verdict === "no_action_needed" && !promptResult.hasChanges) {
-        await resolveTask(task.id, stages.resolveState, promptResult.branchName ?? null, promptResult.prUrl ?? null);
+        // When the agent found nothing to do it never touched the repo, so
+        // branchName/prUrl in promptResult are null. Preserve whatever the
+        // previous pipeline stage already stored rather than overwriting with null.
+        await resolveTask(task.id, stages.resolveState, undefined, undefined, true);
         appendOutput(managed, {
           timestamp: now(),
           stream: "system",

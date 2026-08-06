@@ -841,6 +841,27 @@ async function createPullRequest(branchName) {
   }
 }
 
+/** Fetch an existing open GitHub PR for the given branch, or null if none. */
+async function fetchExistingGitHubPullRequest(owner, repo, branchName) {
+  try {
+    // GitHub expects head in "owner:branch" form for cross-fork queries;
+    // for same-repo PRs either form works but the colon form is unambiguous.
+    const url = `https://api.github.com/repos/${owner}/${repo}/pulls?state=open&head=${owner}:${encodeURIComponent(branchName)}&per_page=1`;
+    const response = await fetch(url, {
+      headers: {
+        "Authorization": `Bearer ${GITHUB_PAT}`,
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    return Array.isArray(data) && data.length > 0 ? data[0].html_url : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Create a Pull Request via the GitHub REST API. */
 async function createGitHubPullRequest(branchName) {
   const match = REPO_URL.match(/github\.com[/:]([^/]+)\/([^/.]+)/);
@@ -876,6 +897,20 @@ async function createGitHubPullRequest(branchName) {
 
     const errorData = await response.json().catch(() => ({}));
     const errorMsg = errorData.message || `HTTP ${response.status}`;
+
+    // GitHub returns 422 "Validation Failed" when a PR for this branch already
+    // exists. Rather than failing and leaving prUrl null in the DB (which causes
+    // the code-reviewer to get no PR link and report changes_requested, sending
+    // the task back to todo in an infinite loop), fetch the existing PR URL.
+    if (response.status === 422) {
+      const existingUrl = await fetchExistingGitHubPullRequest(owner, repo, branchName);
+      if (existingUrl) {
+        sendOutput(`PR already exists: ${existingUrl}`, "system");
+        logInfo("Using existing GitHub PR", { url: existingUrl, branch: branchName });
+        return existingUrl;
+      }
+    }
+
     sendOutput(`PR creation failed: ${errorMsg}`, "stderr");
     logError("GitHub PR creation failed", { status: response.status, error: errorMsg });
     return null;

@@ -200,29 +200,48 @@ export async function claimTask(
  * Resolve a task to the given target state (agent completed successfully).
  * Optionally persists the branch name and pull request URL in the same UPDATE.
  *
+ * Set `preserveBranchInfo: true` when the caller has no branch/PR info to contribute
+ * (e.g. an editor that found the work already done and never touched the repo) — this
+ * leaves existing DB values intact instead of overwriting them with null.
+ *
  * @param taskId The task to resolve
  * @param resolveState The target state (e.g. "developed", "reviewed", "done")
  * @param branch Optional branch name
  * @param pullRequestUrl Optional pull request URL
+ * @param preserveBranchInfo When true, skip updating branch/pull_request_url columns entirely.
  */
 export async function resolveTask(
   taskId: number,
   resolveState: string,
   branch?: string | null,
-  pullRequestUrl?: string | null
+  pullRequestUrl?: string | null,
+  preserveBranchInfo = false
 ): Promise<void> {
   const pool = await getPool();
-  await pool
-    .request()
-    .input("id", sql.Int, taskId)
-    .input("resolveState", sql.VarChar(50), resolveState)
-    .input("branch", sql.NVarChar(250), branch ?? null)
-    .input("pullRequestUrl", sql.NVarChar(500), pullRequestUrl ?? null)
-    .query(`
-      UPDATE tasks
-      SET state = @resolveState, branch = @branch, pull_request_url = @pullRequestUrl, updated_at = GETUTCDATE()
-      WHERE id = @id
-    `);
+
+  if (preserveBranchInfo) {
+    await pool
+      .request()
+      .input("id", sql.Int, taskId)
+      .input("resolveState", sql.VarChar(50), resolveState)
+      .query(`
+        UPDATE tasks
+        SET state = @resolveState, updated_at = GETUTCDATE()
+        WHERE id = @id
+      `);
+  } else {
+    await pool
+      .request()
+      .input("id", sql.Int, taskId)
+      .input("resolveState", sql.VarChar(50), resolveState)
+      .input("branch", sql.NVarChar(250), branch ?? null)
+      .input("pullRequestUrl", sql.NVarChar(500), pullRequestUrl ?? null)
+      .query(`
+        UPDATE tasks
+        SET state = @resolveState, branch = @branch, pull_request_url = @pullRequestUrl, updated_at = GETUTCDATE()
+        WHERE id = @id
+      `);
+  }
 }
 
 /**
