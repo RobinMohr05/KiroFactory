@@ -78,6 +78,9 @@ export class KiroRunner {
   private updateQueue: SessionUpdateChunk[] = [];
   private updateResolve: (() => void) | null = null;
   private turnDone = false;
+  /** cwd/mcpServers the session was created with — reused by newSession(). */
+  private sessionCwd!: string;
+  private sessionMcpServers: McpServerEntry[] = [];
 
   /**
    * Credits consumed by the most recently completed prompt turn.
@@ -86,6 +89,15 @@ export class KiroRunner {
    * turn; read after the `prompt()` async generator completes.
    */
   private _lastTurnCredits = 0;
+  /**
+   * MCP servers that failed to initialize for the current session (one entry
+   * per `_kiro.dev/mcp/server_init_failure` notification). Mirrors the same
+   * tracking in worker/worker.js's ACA path — this notification used to be
+   * silently dropped here too (any `_kiro.dev/*` method other than
+   * session/update or metadata fell through unhandled), so a local session
+   * losing a tool mid-run had no visible signal at all. Reset on newSession().
+   */
+  private _mcpServerInitFailures: Array<{ name: string | null }> = [];
 
   private constructor(proc: ChildProcess) {
     this.proc = proc;
@@ -246,6 +258,12 @@ export class KiroRunner {
             client._lastTurnCredits = credits;
           }
         }
+        // Record MCP server startup failures — see _mcpServerInitFailures doc.
+        if (msg.method === "_kiro.dev/mcp/server_init_failure") {
+          const params = (msg.params ?? {}) as Record<string, unknown>;
+          const name = (params.name ?? params.server ?? params.serverName ?? null) as string | null;
+          client._mcpServerInitFailures.push({ name });
+        }
         return;
       }
       // Standard ACP message — forward to SDK
@@ -308,29 +326,62 @@ export class KiroRunner {
       clientCapabilities: {},
     });
 
+    client.sessionCwd = cwd;
+    client.sessionMcpServers = opts.mcpServers ?? [];
+
     const result = await client.conn.newSession({
       cwd,
-      mcpServers: [
-        // Always include the verdict MCP server so agents can report "no_action_needed".
-        // `env` is required by kiro-cli's ACP schema (untagged enum match fails silently
-        // without it — the whole session/new request gets rejected as a parse error).
-        {
-          name: "verdict",
-          command: "node",
-          args: [resolve(import.meta.dirname, "../../../worker/verdict-mcp-server.js")],
-          env: [],
-        },
-        ...((opts.mcpServers ?? []) as any[]),
-      ],
+      mcpServers: client.buildMcpServersPayload(),
     });
     client.sessionId = result.sessionId;
 
     return client;
   }
 
+  /**
+   * Always include the verdict MCP server so agents can report "no_action_needed".
+   * `env` is required by kiro-cli's ACP schema (untagged enum match fails silently
+   * without it — the whole session/new request gets rejected as a parse error).
+   */
+  private buildMcpServersPayload(): unknown[] {
+    return [
+      {
+        name: "verdict",
+        command: "node",
+        args: [resolve(import.meta.dirname, "../../../worker/verdict-mcp-server.js")],
+        env: [],
+      },
+      ...(this.sessionMcpServers as any[]),
+    ];
+  }
+
   // -------------------------------------------------------------------------
   // Public API
   // -------------------------------------------------------------------------
+
+  /**
+   * Start a brand-new ACP session on the same already-running kiro-cli
+   * subprocess, discarding all prior conversation history.
+   *
+   * Used between tasks in loop mode so each task gets a fresh context
+   * instead of inheriting everything the previous task's turn accumulated —
+   * see session-manager.ts's runLoopMode. Reuses the same cwd/mcpServers the
+   * runner was created with, unless overridden.
+   *
+   * This does NOT respawn the kiro-cli process or redo `initialize` — only
+   * `session/new` is re-issued, which is all that's needed since kiro-cli
+   * scopes conversation state to sessionId.
+   */
+  async newSession(overrideCwd?: string): Promise<void> {
+    const cwd = overrideCwd ? getShortPath(resolve(overrideCwd)) : this.sessionCwd;
+    this._mcpServerInitFailures = [];
+    const result = await this.conn.newSession({
+      cwd,
+      mcpServers: this.buildMcpServersPayload(),
+    });
+    this.sessionId = result.sessionId;
+    this.sessionCwd = cwd;
+  }
 
   /** Send a prompt and yield streaming updates as they arrive. */
   async *prompt(text: string): AsyncGenerator<SessionUpdateChunk> {
@@ -422,5 +473,13 @@ export class KiroRunner {
    */
   get lastTurnCredits(): number {
     return this._lastTurnCredits;
+  }
+
+  /**
+   * MCP servers that failed to start for the current session.
+   * Empty array means no failures were reported. See _mcpServerInitFailures doc.
+   */
+  get mcpServerInitFailures(): Array<{ name: string | null }> {
+    return this._mcpServerInitFailures;
   }
 }
