@@ -1136,6 +1136,18 @@ let turnStats = { toolCalls: 0, messageChars: 0, thoughtChars: 0, startedAt: 0, 
 let turnVerdict = null; // { verdict: "resolved"|"no_action_needed", reason: string } | null
 /** Tracks toolCallId → tool name for verdict detection across tool_call/tool_call_update. */
 let verdictToolCallId = null;
+/**
+ * MCP servers that kiro-cli reported as failing to initialize for the current
+ * ACP session (one entry per `_kiro.dev/mcp/server_init_failure` notification).
+ * Reset on every fresh session/new (see createNewAcpSession()) — a session is
+ * created fresh per claimed task, so this always reflects the current turn.
+ *
+ * Populated with whatever kiro-cli sends us (server name if present, raw
+ * params otherwise) — the exact shape of this notification isn't part of the
+ * public ACP schema, so we don't assume specific field names beyond a
+ * best-effort attempt at a name.
+ */
+let mcpServerInitFailures = [];
 
 function clearReadyTimeout() {
   if (readyTimeout) {
@@ -1175,6 +1187,11 @@ function createNewAcpSession() {
       reject(new Error("A session/new request is already in flight"));
       return;
     }
+
+    // Reset per-session MCP failure tracking — this session's server_init_*
+    // notifications (fired shortly after session/new resolves) should only
+    // ever reflect servers spawned for THIS session, not a stale one.
+    mcpServerInitFailures = [];
 
     clearReadyTimeout();
     readyTimeout = setTimeout(() => {
@@ -1473,19 +1490,37 @@ function buildMcpServers() {
     },
   ];
 
-  // Include the pr-review MCP server for inspector-kind agents (code review
-  // pipeline stage). The server reads REPO_URL, GIT_PROVIDER, credentials,
-  // TASK_PR_URL, and DEV_BRANCH from its environment. All except TASK_PR_URL
-  // are inherited from the worker's process.env; TASK_PR_URL is set in
-  // handlePrompt() when the task's pullRequestUrl is received from the
-  // orchestrator. The MCP server should read it at tool-call time, not at
-  // module load, because the PR URL is only known after a task is claimed.
-  if (AGENT_KIND === "inspector") {
+  // Include the pr-review MCP server for EVERY session that has a repo to
+  // work against, not just inspector-kind agents.
+  //
+  // This used to be inspector-only, which silently broke the developer
+  // agent's rework passes: buildDevPrompt/buildTddDevPrompt explicitly
+  // instruct it to call `get_pr_review_comments` as its first action when
+  // resuming a task with an open PR (see prompt-builder.ts), and
+  // developer-agent.json lists that tool in its `tools` array — but the tool
+  // was never actually registered for editor-kind (AGENT_KIND=editor)
+  // sessions. In production this meant the agent tried to improvise with
+  // shell commands instead (`gh pr view`, `gh api ...`), which always failed
+  // because the `gh` CLI isn't installed in this container — so no rework
+  // pass ever actually saw its reviewer's feedback.
+  //
+  // Editor-kind sessions get ALLOW_POST_COMMENT=false: they may read PR
+  // comments to fix them, but only inspector-kind agents (code review, QA)
+  // are allowed to post comments — see pr-review-mcp-server.js.
+  //
+  // The server reads REPO_URL, GIT_PROVIDER, credentials, TASK_PR_URL, and
+  // DEV_BRANCH from its environment. All except TASK_PR_URL are inherited
+  // from the worker's process.env; TASK_PR_URL is set in handlePrompt() when
+  // the task's pullRequestUrl is received from the orchestrator. The MCP
+  // server should read it at tool-call time, not at module load, because the
+  // PR URL is only known after a task is claimed.
+  if (REPO_URL) {
     const prReviewEnv = [
       { name: "REPO_URL", value: REPO_URL || "" },
       { name: "GIT_PROVIDER", value: GIT_PROVIDER },
       { name: "DEV_BRANCH", value: DEV_BRANCH || "" },
       { name: "REVIEW_MARKER_PATH", value: REVIEW_MARKER_PATH },
+      { name: "ALLOW_POST_COMMENT", value: AGENT_KIND === "inspector" ? "true" : "false" },
     ];
     if (process.env.GITHUB_PAT) {
       prReviewEnv.push({ name: "GITHUB_PAT", value: process.env.GITHUB_PAT });
@@ -1505,7 +1540,10 @@ function buildMcpServers() {
       args: ["/app/pr-review-mcp-server.js"],
       env: prReviewEnv,
     });
-    logInfo("Including pr-review MCP server for inspector agent");
+    logInfo("Including pr-review MCP server", {
+      agentKind: AGENT_KIND,
+      allowPostComment: AGENT_KIND === "inspector",
+    });
   }
 
   for (const name of MCP_SIDECAR_SERVER_NAMES) {
@@ -1684,6 +1722,10 @@ function finishPromptTurn(msg) {
       branchName: currentBranchName,
       credits: turnStats.credits || undefined,
       verdict: effectiveVerdict ? effectiveVerdict.verdict : undefined,
+      // Surface any MCP server that failed to init this turn so the
+      // orchestrator can distrust a verdict that depended on a tool the agent
+      // never actually had (see mcpServerInitFailures declaration above).
+      mcpServerInitFailures: mcpServerInitFailures.length > 0 ? mcpServerInitFailures : undefined,
     });
   })();
 }
@@ -1757,6 +1799,33 @@ function handleAcpMessage(msg) {
           `kiro-cli fell back to its built-in default agent.`,
         "stderr"
       );
+      return true;
+    }
+
+    // kiro-cli failed to start one of the MCP servers we requested in
+    // session/new (see buildMcpServers()). Previously this was silently
+    // dropped into the generic "Unhandled ACP notification" logger *without*
+    // its params, so a failure here was completely undiagnosable — all the
+    // log ever showed was the bare method name. Log params in full and record
+    // the failure so finishPromptTurn() can flag it in the prompt-done result
+    // instead of letting the agent silently lose access to that server's
+    // tools (e.g. an inspector losing post_review_comment and falling back to
+    // a false "no_action_needed" — see the code-reviewer-agent 403 incidents).
+    if (method === "_kiro.dev/mcp/server_init_failure") {
+      const params = msg.params ?? {};
+      const serverName = params.name || params.server || params.serverName || null;
+      logError("MCP server failed to initialize", { params });
+      sendOutput(
+        `⚠ MCP server${serverName ? ` "${serverName}"` : ""} failed to initialize — ` +
+          `its tools will be unavailable this turn. Details: ${JSON.stringify(params)}`,
+        "stderr"
+      );
+      mcpServerInitFailures.push({ name: serverName, params });
+      return true;
+    }
+
+    if (method === "_kiro.dev/mcp/server_initialized") {
+      logInfo("MCP server initialized", { params: msg.params ?? null });
       return true;
     }
 

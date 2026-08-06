@@ -966,6 +966,31 @@ async function runLoopMode(
       });
     }
 
+    // If a required MCP server (verdict, pr-review) failed to initialize this
+    // turn, the agent was missing tools it expected to have — see the same
+    // check in runLoopModeAca for the full rationale. Fail the turn instead
+    // of trusting whatever verdict came back.
+    if (success && managed.runner?.mcpServerInitFailures.length) {
+      success = false;
+      const failedNames = managed.runner.mcpServerInitFailures.map((f) => f.name || "unknown").join(", ");
+      appendOutput(managed, {
+        timestamp: now(),
+        stream: "stderr",
+        text: `✖ MCP server(s) [${failedNames}] failed to start — the agent was missing tools it needed. ` +
+          `Task reset to "${stages.claimState}" for retry instead of trusting this turn's result.`,
+      });
+      recordError({
+        sessionId: meta.id,
+        sessionName: meta.name,
+        agent: meta.agent,
+        message: `Required MCP server(s) failed to initialize this turn: ${failedNames} — any verdict/result reported is unreliable`,
+        context: `Task "${task.title}" (ID: ${task.id}) ran with ${failedNames} unavailable.`,
+        taskId: task.id,
+        taskTitle: task.title,
+        userId: meta.userId,
+      });
+    }
+
     // Update task state
     if (signal.aborted) {
       // Session was stopped mid-task — reset to claim state
@@ -1688,6 +1713,14 @@ interface WorkerPromptResult {
   credits?: number;
   /** Agent-reported verdict via the report_verdict MCP tool. Cross-checked against git diff by the worker. */
   verdict?: "resolved" | "no_action_needed" | "changes_requested";
+  /**
+   * MCP servers that failed to initialize this turn (see worker.js's
+   * `_kiro.dev/mcp/server_init_failure` handling). Non-empty means the agent
+   * was missing tools it expected to have — e.g. an inspector without
+   * post_review_comment, or an editor without get_pr_review_comments — so
+   * whatever verdict/result it reported should not be trusted at face value.
+   */
+  mcpServerInitFailures?: Array<{ name: string | null }>;
 }
 
 /**
@@ -1936,6 +1969,42 @@ async function runLoopModeAca(
         context:
           `Task "${task.title}" (ID: ${task.id}, type: ${task.type}, priority: P${task.priority}) was cancelled ` +
           `before the agent reached end_turn. Any pushed branch/PR reflects unverified, possibly incomplete work.`,
+        taskId: task.id,
+        taskTitle: task.title,
+        userId: meta.userId,
+      });
+    }
+
+    // If a required MCP server (verdict, pr-review) failed to initialize this
+    // turn, the agent was missing tools it expected to have and may have
+    // silently degraded — e.g. an inspector losing post_review_comment and
+    // reporting "no_action_needed" instead of a real finding, or an editor
+    // losing get_pr_review_comments and never reading reviewer feedback at
+    // all (see the code-reviewer-agent / developer-agent incidents this
+    // check was added for). Whatever verdict/result came back cannot be
+    // trusted at face value, so treat this exactly like a cancelled turn:
+    // fail the turn and let it retry against a fresh session (a new
+    // session/new call gives the MCP server another chance to start cleanly).
+    if (success && promptResult.mcpServerInitFailures?.length) {
+      success = false;
+      const failedNames = promptResult.mcpServerInitFailures
+        .map((f) => f.name || "unknown")
+        .join(", ");
+      failureReason = `Required MCP server(s) failed to initialize this turn: ${failedNames} — any verdict/result reported is unreliable`;
+      appendOutput(managed, {
+        timestamp: now(),
+        stream: "stderr",
+        text: `✖ MCP server(s) [${failedNames}] failed to start — the agent was missing tools it needed. ` +
+          `Task reset to "${stages.claimState}" for retry instead of trusting this turn's result.`,
+      });
+      recordError({
+        sessionId: meta.id,
+        sessionName: meta.name,
+        agent: meta.agent,
+        message: failureReason,
+        context:
+          `Task "${task.title}" (ID: ${task.id}, type: ${task.type}, priority: P${task.priority}) ran with ` +
+          `${failedNames} unavailable. Any verdict this turn reported (${promptResult.verdict ?? "none"}) is not trustworthy.`,
         taskId: task.id,
         taskTitle: task.title,
         userId: meta.userId,

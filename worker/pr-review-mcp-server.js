@@ -13,6 +13,13 @@
  *   AZURE_DEVOPS_PAT  — Personal Access Token for Azure DevOps
  *   TASK_PR_URL       — Full URL to the pull request (html_url)
  *   DEV_BRANCH        — Target/base branch name (for reference)
+ *   ALLOW_POST_COMMENT — "false" to expose get_pr_review_comments only, hiding
+ *                         post_review_comment. Used for editor-kind sessions
+ *                         (developer-agent), which need to READ reviewer
+ *                         feedback on a rework pass but must never post
+ *                         comments themselves — that's the reviewer's job.
+ *                         Defaults to "true" (both tools available), which
+ *                         matches the original inspector-only behavior.
  *
  * Protocol: JSON-RPC 2.0 over stdin/stdout (MCP stdio transport).
  */
@@ -30,6 +37,9 @@ const SERVER_VERSION = "1.0.0";
  * "changes_requested" verdict when zero comments were posted this turn.
  */
 const REVIEW_MARKER_PATH = process.env.REVIEW_MARKER_PATH || "";
+
+/** See ALLOW_POST_COMMENT in the header comment above. */
+const ALLOW_POST_COMMENT = process.env.ALLOW_POST_COMMENT !== "false";
 
 /** Increment the shared comment counter. Best-effort — never throws. */
 function incrementReviewCommentCount() {
@@ -325,7 +335,7 @@ async function adoPostReviewComment(org, project, repo, prId, { path, line, body
 // Tool definitions
 // ---------------------------------------------------------------------------
 
-const TOOLS = [
+const ALL_TOOLS = [
   {
     name: "get_pr_review_comments",
     description:
@@ -370,6 +380,16 @@ const TOOLS = [
     },
   },
 ];
+
+/**
+ * Tools actually advertised to the agent this session. Editor-kind sessions
+ * (ALLOW_POST_COMMENT=false) only see get_pr_review_comments — they need to
+ * read reviewer feedback on a rework pass, but posting comments is the
+ * reviewer's job, not theirs.
+ */
+const TOOLS = ALLOW_POST_COMMENT
+  ? ALL_TOOLS
+  : ALL_TOOLS.filter((t) => t.name !== "post_review_comment");
 
 // ---------------------------------------------------------------------------
 // JSON-RPC helpers
@@ -436,6 +456,21 @@ async function handleToolCall(id, params) {
       await handleGetComments(id);
       break;
     case "post_review_comment":
+      if (!ALLOW_POST_COMMENT) {
+        respond(id, {
+          content: [
+            {
+              type: "text",
+              text:
+                'Error: "post_review_comment" is not available to this agent. Only inspector ' +
+                "agents (code review, QA) post PR comments — an editor agent resuming a rework " +
+                "pass should read comments with get_pr_review_comments and fix them in code.",
+            },
+          ],
+          isError: true,
+        });
+        return;
+      }
       await handlePostComment(id, args);
       break;
     default:

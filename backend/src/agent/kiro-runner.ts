@@ -89,6 +89,15 @@ export class KiroRunner {
    * turn; read after the `prompt()` async generator completes.
    */
   private _lastTurnCredits = 0;
+  /**
+   * MCP servers that failed to initialize for the current session (one entry
+   * per `_kiro.dev/mcp/server_init_failure` notification). Mirrors the same
+   * tracking in worker/worker.js's ACA path — this notification used to be
+   * silently dropped here too (any `_kiro.dev/*` method other than
+   * session/update or metadata fell through unhandled), so a local session
+   * losing a tool mid-run had no visible signal at all. Reset on newSession().
+   */
+  private _mcpServerInitFailures: Array<{ name: string | null }> = [];
 
   private constructor(proc: ChildProcess) {
     this.proc = proc;
@@ -249,6 +258,12 @@ export class KiroRunner {
             client._lastTurnCredits = credits;
           }
         }
+        // Record MCP server startup failures — see _mcpServerInitFailures doc.
+        if (msg.method === "_kiro.dev/mcp/server_init_failure") {
+          const params = (msg.params ?? {}) as Record<string, unknown>;
+          const name = (params.name ?? params.server ?? params.serverName ?? null) as string | null;
+          client._mcpServerInitFailures.push({ name });
+        }
         return;
       }
       // Standard ACP message — forward to SDK
@@ -359,6 +374,7 @@ export class KiroRunner {
    */
   async newSession(overrideCwd?: string): Promise<void> {
     const cwd = overrideCwd ? getShortPath(resolve(overrideCwd)) : this.sessionCwd;
+    this._mcpServerInitFailures = [];
     const result = await this.conn.newSession({
       cwd,
       mcpServers: this.buildMcpServersPayload(),
@@ -457,5 +473,13 @@ export class KiroRunner {
    */
   get lastTurnCredits(): number {
     return this._lastTurnCredits;
+  }
+
+  /**
+   * MCP servers that failed to start for the current session.
+   * Empty array means no failures were reported. See _mcpServerInitFailures doc.
+   */
+  get mcpServerInitFailures(): Array<{ name: string | null }> {
+    return this._mcpServerInitFailures;
   }
 }
