@@ -13,7 +13,7 @@ import { resolve } from "node:path";
 import { KiroRunner } from "./agent/kiro-runner.js";
 import type { SessionUpdateChunk } from "./agent/kiro-runner.js";
 import { broadcastToUser } from "./websocket-handler.js";
-import { claimTask, resolveTask, resetTask, getAvailableTaskCount, markTaskDone } from "./agent/task-claimer.js";
+import { claimTask, resolveTask, resetTask, getAvailableTaskCount, waitForTaskAvailable, markTaskDone } from "./agent/task-claimer.js";
 import type { ClaimedTask } from "./agent/task-claimer.js";
 import { buildDevPrompt, buildReviewPrompt } from "./agent/prompt-builder.js";
 import { TabMcpConfig, DEFAULT_MCP_CONFIG, resolveGitProvider, type GitProvider } from "./types.js";
@@ -863,17 +863,19 @@ async function runLoopMode(
       return;
     }
 
-    // Check for available tasks (filtered by effective tab assignments + agent's claim state)
+    // Wait until a task is available (event-driven — no DB poll while idle)
     const todoCount = await getAvailableTaskCount(effectiveTabIds, stages.claimState);
 
     if (todoCount === 0) {
       setActivity(managed, {
         type: "idle",
-        detail: `No tasks available. Polling every ${meta.intervalSeconds}s...`,
+        detail: "No tasks available. Waiting for new tasks...",
       });
 
-      // Wait before polling again
-      await interruptibleSleep(meta.intervalSeconds * 1000, signal);
+      // Park here until a task is created/reset or the session is stopped.
+      // waitForTaskAvailable does a single DB check, then suspends on an
+      // in-process event — zero DB queries during the wait.
+      await waitForTaskAvailable(effectiveTabIds, stages.claimState, signal);
       continue;
     }
 
@@ -951,7 +953,8 @@ async function runLoopMode(
     // Update task state
     if (signal.aborted) {
       // Session was stopped mid-task — reset to claim state
-      await resetTask(task.id, stages.claimState, undefined, undefined, stages.kind === "inspector");
+      // No new git info at all — omit branch/PR so the existing values are preserved.
+      await resetTask(task.id, stages.claimState);
       appendOutput(managed, {
         timestamp: now(),
         stream: "system",
@@ -967,7 +970,7 @@ async function runLoopMode(
       if (managed.turnVerdict === "no_action_needed") {
         // Preserve existing branch/PR — the agent found nothing to do so it
         // never pushed anything, and we must not wipe what a prior stage stored.
-        await resolveTask(task.id, stages.resolveState, undefined, undefined, true);
+        await resolveTask(task.id, stages.resolveState);
         appendOutput(managed, {
           timestamp: now(),
           stream: "system",
@@ -975,8 +978,9 @@ async function runLoopMode(
         });
       } else if (managed.turnVerdict === "changes_requested") {
         // Reviewer/QA agent found issues — send back to "todo" for rework,
-        // preserving branch/PR so the developer agent can resume.
-        await resetTask(task.id, "todo", undefined, undefined, true); // always preserve — inspector never pushes
+        // preserving branch/PR so the developer agent can resume (local mode
+        // never tracks git branch/PR info, so there is nothing new to report here).
+        await resetTask(task.id, "todo");
         appendOutput(managed, {
           timestamp: now(),
           stream: "system",
@@ -991,7 +995,8 @@ async function runLoopMode(
         });
       }
     } else {
-      await resetTask(task.id, stages.claimState, undefined, undefined, stages.kind === "inspector");
+      // No new git info at all — omit branch/PR so the existing values are preserved.
+      await resetTask(task.id, stages.claimState);
       appendOutput(managed, {
         timestamp: now(),
         stream: "system",
@@ -1754,9 +1759,13 @@ async function runLoopModeAca(
     if (todoCount === 0) {
       setActivity(managed, {
         type: "idle",
-        detail: `No tasks available. Polling every ${meta.intervalSeconds}s...`,
+        detail: "No tasks available. Waiting for new tasks...",
       });
-      await interruptibleSleep(meta.intervalSeconds * 1000, signal);
+
+      // Park here until a task is created/reset or the session is stopped.
+      // waitForTaskAvailable does a single DB check, then suspends on an
+      // in-process event — zero DB queries during the wait.
+      await waitForTaskAvailable(effectiveTabIds, stages.claimState, signal);
       continue;
     }
 
@@ -1783,7 +1792,8 @@ async function runLoopModeAca(
 
     // Skip tasks that have already exceeded failure limit in this session
     if (blockedTasks.has(task.id)) {
-      await resetTask(task.id, stages.claimState, undefined, undefined, stages.kind === "inspector");
+      // No git activity happened here at all — preserve existing branch/PR.
+      await resetTask(task.id, stages.claimState);
       appendOutput(managed, {
         timestamp: now(),
         stream: "system",
@@ -1836,7 +1846,10 @@ async function runLoopModeAca(
     }
 
     if (signal.aborted) {
-      await resetTask(task.id, stages.claimState, undefined, undefined, stages.kind === "inspector");
+      // `|| undefined` preserves the existing DB value whenever the worker
+      // never got far enough to report real git info (or sent an explicit
+      // null) — never force branch/PR to null just because the session stopped.
+      await resetTask(task.id, stages.claimState, promptResult.branchName || undefined, promptResult.prUrl || undefined);
       appendOutput(managed, {
         timestamp: now(),
         stream: "system",
@@ -1958,33 +1971,29 @@ async function runLoopModeAca(
       //   already satisfied, which never applies here.
       if (promptResult.verdict === "no_action_needed" && !promptResult.hasChanges) {
         // When the agent found nothing to do it never touched the repo, so
-        // branchName/prUrl in promptResult are null. Preserve whatever the
+        // branchName/prUrl in promptResult are empty. Preserve whatever the
         // previous pipeline stage already stored rather than overwriting with null.
-        await resolveTask(task.id, stages.resolveState, undefined, undefined, true);
+        await resolveTask(task.id, stages.resolveState);
         appendOutput(managed, {
           timestamp: now(),
           stream: "system",
           text: `Task ${task.id} marked as "${stages.resolveState}" (${stages.kind === "inspector" ? "no issues found" : "already implemented"}) ✓`,
         });
       } else if (promptResult.verdict === "changes_requested") {
-        // Reviewer/QA agent found issues — send back to "todo" for rework,
-        // preserving the existing branch and PR so the developer agent can resume.
-        // Inspector agents never push, so pass their branchName/prUrl if available,
-        // but fall back to preserving whatever is already in the DB (preserveBranchInfo).
-        const hasWorkerBranchInfo = !!(promptResult.branchName || promptResult.prUrl);
-        await resetTask(
-          task.id, "todo",
-          promptResult.branchName ?? null,
-          promptResult.prUrl ?? null,
-          stages.kind === "inspector" && !hasWorkerBranchInfo
-        );
+        // Reviewer/QA agent found issues — send back to "todo" for rework.
+        // The worker always sends an explicit `null` (never omits the key) when
+        // it has nothing to report, so `|| undefined` is required here — passing
+        // the raw value straight through would still overwrite an existing PR
+        // link with null on every inspector turn (inspectors never have a PR to
+        // report, but DO have a real branch name from checking it out to review).
+        await resetTask(task.id, "todo", promptResult.branchName || undefined, promptResult.prUrl || undefined);
         appendOutput(managed, {
           timestamp: now(),
           stream: "system",
           text: `Task ${task.id} sent back to "todo" — reviewer/QA requested changes (see PR comments).`,
         });
       } else {
-        await resolveTask(task.id, stages.resolveState, promptResult.branchName ?? null, promptResult.prUrl ?? null);
+        await resolveTask(task.id, stages.resolveState, promptResult.branchName || undefined, promptResult.prUrl || undefined);
         appendOutput(managed, {
           timestamp: now(),
           stream: "system",
@@ -1995,15 +2004,10 @@ async function runLoopModeAca(
       taskFailures.delete(task.id);
     } else {
       // On failure, pass branch/PR info if the worker managed a best-effort push.
-      // Inspector agents never push — preserve whatever branch/PR the previous stage
-      // stored rather than overwriting it with null.
-      const inspectorFailure = stages.kind === "inspector";
-      await resetTask(
-        task.id, stages.claimState,
-        promptResult.branchName ?? null,
-        promptResult.prUrl ?? null,
-        inspectorFailure && !promptResult.branchName && !promptResult.prUrl
-      );
+      // `|| undefined` ensures a worker that never got that far (or that has no
+      // PR to report, e.g. an inspector) preserves the existing DB value instead
+      // of overwriting it with the worker's default `null`.
+      await resetTask(task.id, stages.claimState, promptResult.branchName || undefined, promptResult.prUrl || undefined);
 
       // A delivery failure is an environment problem, not a task problem —
       // block immediately instead of spending the whole retry budget
