@@ -6,3 +6,8 @@ dist/
 .temp/
 workspaces/
 planner-workspaces/
+
+# Kiro IDE files — contain infra notes, internal tooling context, and credentials.
+# Keep agents and hooks (those are part of the project), but exclude everything else.
+.kiro/steering/
+.kiro/skills/
