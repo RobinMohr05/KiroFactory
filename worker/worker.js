@@ -64,6 +64,24 @@ const MCP_SIDECAR_SERVER_NAMES = (process.env.MCP_SIDECAR_SERVER_NAMES || "")
   .map((s) => s.trim())
   .filter(Boolean);
 
+/**
+ * Path to a small counter file shared between the verdict and pr-review MCP
+ * servers (each spawned as its own child process by kiro-cli, so they can't
+ * share in-memory state with each other or with this worker process).
+ *
+ * pr-review-mcp-server.js increments the file on every successful
+ * `post_review_comment` call. verdict-mcp-server.js reads it to refuse a
+ * "changes_requested" verdict when zero comments were posted this turn —
+ * otherwise a reviewer can report issues that exist nowhere except its own
+ * chat transcript, and the task bounces back to "todo" with no way for the
+ * next agent to see what needs fixing (see steering notes on task 155).
+ *
+ * Reset to "0" at the start of every prompt turn in deliverPrompt() — the MCP
+ * servers themselves are spawned once per session, not per turn, so nothing
+ * else clears it between turns.
+ */
+const REVIEW_MARKER_PATH = `/tmp/kirofactory-review-comments-${SESSION_ID || "local"}.count`;
+
 const WORKSPACE = "/workspace";
 
 // Connection retry: 30 attempts × 5s ≈ 150s, comfortably inside the
@@ -1348,7 +1366,11 @@ function buildMcpServers() {
       name: "verdict",
       command: "node",
       args: ["/app/verdict-mcp-server.js"],
-      env: [],
+      // REVIEW_MARKER_PATH lets the verdict server refuse a "changes_requested"
+      // verdict when no post_review_comment call happened this turn (see
+      // pr-review-mcp-server.js and the comment on REVIEW_MARKER_PATH above).
+      // Harmless for editor-kind sessions, which never report that verdict.
+      env: [{ name: "REVIEW_MARKER_PATH", value: REVIEW_MARKER_PATH }],
     },
   ];
 
@@ -1364,6 +1386,7 @@ function buildMcpServers() {
       { name: "REPO_URL", value: REPO_URL || "" },
       { name: "GIT_PROVIDER", value: GIT_PROVIDER },
       { name: "DEV_BRANCH", value: DEV_BRANCH || "" },
+      { name: "REVIEW_MARKER_PATH", value: REVIEW_MARKER_PATH },
     ];
     if (process.env.GITHUB_PAT) {
       prReviewEnv.push({ name: "GITHUB_PAT", value: process.env.GITHUB_PAT });
@@ -1970,6 +1993,11 @@ function deliverPrompt(text) {
   turnStats = { toolCalls: 0, messageChars: 0, thoughtChars: 0, startedAt: Date.now(), credits: 0 };
   turnVerdict = null;
   verdictToolCallId = null;
+  try {
+    writeFileSync(REVIEW_MARKER_PATH, "0");
+  } catch (err) {
+    logError("Failed to reset review-comment marker file", { error: err?.message || String(err) });
+  }
 
   const sent = writeToKiro({
     jsonrpc: "2.0",

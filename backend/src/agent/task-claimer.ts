@@ -293,50 +293,47 @@ export async function claimTask(
 
 /**
  * Resolve a task to the given target state (agent completed successfully).
- * Optionally persists the branch name and pull request URL in the same UPDATE.
  *
- * Set `preserveBranchInfo: true` when the caller has no branch/PR info to contribute
- * (e.g. an editor that found the work already done and never touched the repo) — this
- * leaves existing DB values intact instead of overwriting them with null.
+ * `branch` and `pullRequestUrl` use independent tri-state semantics:
+ * - omitted / `undefined`: the column is left untouched, preserving whatever
+ *   a previous pipeline stage already stored. Use this when the caller has no
+ *   new info for that specific field (e.g. an inspector agent never has a PR
+ *   URL to contribute, but may still have a real branch name to record).
+ * - `null`: the column is explicitly cleared.
+ * - a string: the column is set to that value.
+ *
+ * Each field is controlled independently — e.g. you can update `branch` while
+ * preserving the existing `pullRequestUrl`, or vice versa.
  *
  * @param taskId The task to resolve
  * @param resolveState The target state (e.g. "developed", "reviewed", "done")
- * @param branch Optional branch name
- * @param pullRequestUrl Optional pull request URL
- * @param preserveBranchInfo When true, skip updating branch/pull_request_url columns entirely.
+ * @param branch Branch name, `null` to clear, or omit to preserve the existing value.
+ * @param pullRequestUrl PR URL, `null` to clear, or omit to preserve the existing value.
  */
 export async function resolveTask(
   taskId: number,
   resolveState: string,
   branch?: string | null,
-  pullRequestUrl?: string | null,
-  preserveBranchInfo = false
+  pullRequestUrl?: string | null
 ): Promise<void> {
   const pool = await getPool();
+  const request = pool
+    .request()
+    .input("id", sql.Int, taskId)
+    .input("resolveState", sql.VarChar(50), resolveState);
 
-  if (preserveBranchInfo) {
-    await pool
-      .request()
-      .input("id", sql.Int, taskId)
-      .input("resolveState", sql.VarChar(50), resolveState)
-      .query(`
-        UPDATE tasks
-        SET state = @resolveState, updated_at = GETUTCDATE()
-        WHERE id = @id
-      `);
-  } else {
-    await pool
-      .request()
-      .input("id", sql.Int, taskId)
-      .input("resolveState", sql.VarChar(50), resolveState)
-      .input("branch", sql.NVarChar(250), branch ?? null)
-      .input("pullRequestUrl", sql.NVarChar(500), pullRequestUrl ?? null)
-      .query(`
-        UPDATE tasks
-        SET state = @resolveState, branch = @branch, pull_request_url = @pullRequestUrl, updated_at = GETUTCDATE()
-        WHERE id = @id
-      `);
+  const setClauses = ["state = @resolveState", "updated_at = GETUTCDATE()"];
+
+  if (branch !== undefined) {
+    request.input("branch", sql.NVarChar(250), branch);
+    setClauses.push("branch = @branch");
   }
+  if (pullRequestUrl !== undefined) {
+    request.input("pullRequestUrl", sql.NVarChar(500), pullRequestUrl);
+    setClauses.push("pull_request_url = @pullRequestUrl");
+  }
+
+  await request.query(`UPDATE tasks SET ${setClauses.join(", ")} WHERE id = @id`);
 
   broadcastTaskUpdate(taskId);
 }
@@ -358,50 +355,45 @@ export async function markTaskDeveloped(
  * Each agent stage resets to its own claim state on failure — e.g. a failed
  * review resets to "developed" (the reviewer's claimState), not to "todo".
  *
- * Optionally persists branch/PR info if a best-effort push succeeded before the reset.
- * Set `preserveBranchInfo: true` when the caller has no branch/PR info to contribute
- * (e.g. an inspector agent that never pushes) — this leaves existing DB values intact
- * instead of overwriting them with null and losing the branch from a previous stage.
+ * `branch` and `pullRequestUrl` use independent tri-state semantics — see
+ * {@link resolveTask} for the full rules. In particular: inspector agents
+ * (code review, QA) never push and so never have a PR URL to contribute, but
+ * they DO check out the task's existing branch, so callers should pass the
+ * inspector's real branch name while omitting `pullRequestUrl` (not passing
+ * `null`) so an existing PR link from a prior editor stage survives. A worker
+ * crash mid-turn, where neither value is known, should omit both rather than
+ * passing `null` for either — otherwise a task that already has an open PR
+ * loses that link the moment its worker disconnects.
  *
  * @param taskId The task to reset
  * @param resetState The state to reset TO (default: "todo")
- * @param branch Optional branch name (or null to clear). Ignored when preserveBranchInfo is true.
- * @param pullRequestUrl Optional PR URL (or null to clear). Ignored when preserveBranchInfo is true.
- * @param preserveBranchInfo When true, skip updating branch/pull_request_url columns entirely.
+ * @param branch Branch name, `null` to clear, or omit to preserve the existing value.
+ * @param pullRequestUrl PR URL, `null` to clear, or omit to preserve the existing value.
  */
 export async function resetTask(
   taskId: number,
   resetState: string,
   branch?: string | null,
-  pullRequestUrl?: string | null,
-  preserveBranchInfo = false
+  pullRequestUrl?: string | null
 ): Promise<void> {
   const pool = await getPool();
+  const request = pool
+    .request()
+    .input("id", sql.Int, taskId)
+    .input("resetState", sql.VarChar(50), resetState);
 
-  if (preserveBranchInfo) {
-    // Don't touch branch/pull_request_url — preserve whatever the previous stage stored.
-    await pool
-      .request()
-      .input("id", sql.Int, taskId)
-      .input("resetState", sql.VarChar(50), resetState)
-      .query(`
-        UPDATE tasks
-        SET state = @resetState, updated_at = GETUTCDATE()
-        WHERE id = @id
-      `);
-  } else {
-    await pool
-      .request()
-      .input("id", sql.Int, taskId)
-      .input("resetState", sql.VarChar(50), resetState)
-      .input("branch", sql.NVarChar(250), branch !== undefined ? branch : null)
-      .input("pullRequestUrl", sql.NVarChar(500), pullRequestUrl !== undefined ? pullRequestUrl : null)
-      .query(`
-        UPDATE tasks
-        SET state = @resetState, branch = @branch, pull_request_url = @pullRequestUrl, updated_at = GETUTCDATE()
-        WHERE id = @id
-      `);
+  const setClauses = ["state = @resetState", "updated_at = GETUTCDATE()"];
+
+  if (branch !== undefined) {
+    request.input("branch", sql.NVarChar(250), branch);
+    setClauses.push("branch = @branch");
   }
+  if (pullRequestUrl !== undefined) {
+    request.input("pullRequestUrl", sql.NVarChar(500), pullRequestUrl);
+    setClauses.push("pull_request_url = @pullRequestUrl");
+  }
+
+  await request.query(`UPDATE tasks SET ${setClauses.join(", ")} WHERE id = @id`);
 
   broadcastTaskUpdate(taskId);
   // A reset puts the task back into a claimable state — wake any waiting loops.

@@ -11,11 +11,37 @@
  */
 
 import { createInterface } from "node:readline";
+import { readFileSync } from "node:fs";
 
 const SERVER_NAME = "verdict-mcp-server";
 const SERVER_VERSION = "1.0.0";
 
 const VALID_VERDICTS = ["resolved", "no_action_needed", "changes_requested"];
+
+/**
+ * Path to the review-comment counter file shared with pr-review-mcp-server.js
+ * (set by worker.js's buildMcpServers(), reset to "0" at the start of every
+ * turn in deliverPrompt()). Absent for editor-kind sessions, which never need
+ * this check since they never report "changes_requested".
+ */
+const REVIEW_MARKER_PATH = process.env.REVIEW_MARKER_PATH || "";
+
+/**
+ * Read how many review comments were posted so far this turn.
+ * Fails open (returns null, meaning "unknown, don't block") on any read
+ * error — a missing/corrupt counter file must never make a legitimate
+ * verdict call fail.
+ */
+function getReviewCommentCount() {
+  if (!REVIEW_MARKER_PATH) return null;
+  try {
+    const raw = readFileSync(REVIEW_MARKER_PATH, "utf-8").trim();
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
 
 const TOOL_DEFINITION = {
   name: "report_verdict",
@@ -138,6 +164,32 @@ function handleToolCall(id, params) {
       isError: true,
     });
     return;
+  }
+
+  // Hard guard: "changes_requested" claims issues were found AND posted as PR
+  // comments (see the tool description). Without this check, an agent could
+  // describe findings only in its own chat transcript, report
+  // "changes_requested", and send the task back to "todo" with feedback that
+  // literally does not exist anywhere the next agent can read it — the task
+  // then bounces forever since get_pr_review_comments returns nothing to fix.
+  if (verdict === "changes_requested") {
+    const commentCount = getReviewCommentCount();
+    if (commentCount === 0) {
+      respond(id, {
+        content: [
+          {
+            type: "text",
+            text:
+              'Error: verdict "changes_requested" requires at least one post_review_comment ' +
+              "call this turn, but none were made. Post a comment for each issue you found " +
+              "using the post_review_comment tool, THEN call report_verdict again. If you " +
+              'found no issues, use verdict "no_action_needed" instead.',
+          },
+        ],
+        isError: true,
+      });
+      return;
+    }
   }
 
   // Echo the verdict back as structured JSON so the orchestrator can parse it

@@ -201,7 +201,7 @@ ${filesList}
 
 1. Identify what changed for this task (e.g. \`git diff origin/develop...HEAD\` or the appropriate base branch — fall back to \`git log --oneline -1\` / \`git diff HEAD~1\` if that fails).
 2. Review the diff following the workflow and criteria described in your system prompt.
-3. For every issue found, call \`post_review_comment\` exactly once per issue.
+3. For every issue found, call \`post_review_comment\` exactly once per issue. This is the ONLY place your findings are recorded — if you don't call it, your findings exist nowhere the next agent can see them.
 4. Call \`report_verdict\` exactly once when finished: \`"no_action_needed"\` if you found zero issues, \`"changes_requested"\` if you posted one or more comments.
 
 ## CRITICAL RULES
@@ -210,6 +210,8 @@ ${filesList}
 - Do NOT run \`npm run build\`, tests, installs, or any command that changes the working tree.
 - Do NOT run any git command that changes repository state (commit, push, branch, checkout). Read-only git commands (diff, log, status, show) are fine.
 - Do NOT pick another task. Only inspect the task assigned above.
+- Never describe an issue only in your own response text and skip \`post_review_comment\` — a finding that isn't posted as a PR comment is invisible to everyone else and accomplishes nothing.
+- \`report_verdict\` will REJECT verdict \`"changes_requested"\` if you have not called \`post_review_comment\` at least once this turn. If you get this error, go back and post a comment for every issue first, then call \`report_verdict\` again.
 - You MUST call \`report_verdict\` exactly once before finishing.
 - STOP once you've reported your verdict.
 

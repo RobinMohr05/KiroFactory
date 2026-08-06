@@ -18,9 +18,32 @@
  */
 
 import { createInterface } from "node:readline";
+import { readFileSync, writeFileSync } from "node:fs";
 
 const SERVER_NAME = "pr-review-mcp-server";
 const SERVER_VERSION = "1.0.0";
+
+/**
+ * Path to the review-comment counter file shared with verdict-mcp-server.js
+ * (set by worker.js's buildMcpServers(), reset to "0" at the start of every
+ * turn in deliverPrompt()). The verdict server reads this to refuse a
+ * "changes_requested" verdict when zero comments were posted this turn.
+ */
+const REVIEW_MARKER_PATH = process.env.REVIEW_MARKER_PATH || "";
+
+/** Increment the shared comment counter. Best-effort — never throws. */
+function incrementReviewCommentCount() {
+  if (!REVIEW_MARKER_PATH) return;
+  try {
+    const raw = readFileSync(REVIEW_MARKER_PATH, "utf-8").trim();
+    const current = Number(raw);
+    const next = (Number.isFinite(current) ? current : 0) + 1;
+    writeFileSync(REVIEW_MARKER_PATH, String(next));
+  } catch (err) {
+    // Non-fatal — worst case the verdict guard fails open and doesn't block.
+    process.stderr.write(`[pr-review-mcp-server] Failed to update comment counter: ${err?.message || err}\n`);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Environment
@@ -578,6 +601,10 @@ async function handlePostComment(id, args) {
       });
       return;
     }
+
+    // A comment was actually posted (inline or as a general-comment fallback) —
+    // count it so verdict-mcp-server.js can allow a "changes_requested" verdict.
+    incrementReviewCommentCount();
 
     respond(id, {
       content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
