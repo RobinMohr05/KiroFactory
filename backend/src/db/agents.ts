@@ -18,6 +18,9 @@ function mapRowToAgent(row: Record<string, unknown>): Agent {
     claimState: (row.claim_state as string) || "todo",
     workingState: (row.working_state as string) || "in-progress",
     resolveState: (row.resolve_state as string) || "developed",
+    requiresTask: row.requires_task !== undefined && row.requires_task !== null
+      ? !!(row.requires_task as number | boolean)
+      : true,
     userId: (row.user_id as number) ?? 0,
     createdAt: (row.created_at as Date).toISOString(),
     updatedAt: (row.updated_at as Date).toISOString(),
@@ -128,11 +131,12 @@ export async function createAgent(input: CreateAgentInput): Promise<Agent> {
     .input("claimState", sql.VarChar(50), input.claimState || "todo")
     .input("workingState", sql.VarChar(50), input.workingState || "in-progress")
     .input("resolveState", sql.VarChar(50), input.resolveState || "developed")
+    .input("requiresTask", sql.Bit, input.requiresTask !== false ? 1 : 0)
     .input("userId", sql.Int, input.userId)
     .query(`
-      INSERT INTO agents (name, description, prompt, tools, allowed_tools, tools_settings, resources, kind, claim_state, working_state, resolve_state, user_id)
+      INSERT INTO agents (name, description, prompt, tools, allowed_tools, tools_settings, resources, kind, claim_state, working_state, resolve_state, requires_task, user_id)
       OUTPUT INSERTED.*
-      VALUES (@name, @description, @prompt, @tools, @allowedTools, @toolsSettings, @resources, @kind, @claimState, @workingState, @resolveState, @userId)
+      VALUES (@name, @description, @prompt, @tools, @allowedTools, @toolsSettings, @resources, @kind, @claimState, @workingState, @resolveState, @requiresTask, @userId)
     `);
 
   const agent = mapRowToAgent(result.recordset[0]);
@@ -177,6 +181,7 @@ export async function updateAgent(
     .input("claimState", sql.VarChar(50), input.claimState ?? existing.claimState)
     .input("workingState", sql.VarChar(50), input.workingState ?? existing.workingState)
     .input("resolveState", sql.VarChar(50), input.resolveState ?? existing.resolveState)
+    .input("requiresTask", sql.Bit, (input.requiresTask ?? existing.requiresTask) ? 1 : 0)
     .query(`
       UPDATE agents
       SET name = @name,
@@ -190,6 +195,7 @@ export async function updateAgent(
           claim_state = @claimState,
           working_state = @workingState,
           resolve_state = @resolveState,
+          requires_task = @requiresTask,
           updated_at = GETUTCDATE()
       OUTPUT INSERTED.*
       WHERE id = @id

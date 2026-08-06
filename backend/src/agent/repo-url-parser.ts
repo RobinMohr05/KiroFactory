@@ -92,3 +92,23 @@ export function buildBranchName(
   const slug = slugifyTitle(taskTitle);
   return `${taskType}/#${taskId}_${slug}`;
 }
+
+/**
+ * Build a persistent branch name for a standalone (no-task) session.
+ *
+ * Format: [session_name_slug]-s[session_id]
+ * Example: my-research-session-s42
+ *
+ * The session ID suffix guarantees uniqueness even when multiple sessions
+ * share the same name.
+ */
+export function buildPersistentBranchName(
+  sessionId: number,
+  sessionName: string
+): string {
+  const slug = slugifyTitle(sessionName);
+  if (slug) {
+    return `${slug}-s${sessionId}`;
+  }
+  return `s${sessionId}`;
+}
