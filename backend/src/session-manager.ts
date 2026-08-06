@@ -961,15 +961,15 @@ async function runLoopMode(
     }
 
     if (success) {
-      // If the agent reported "no_action_needed" via the report_verdict tool,
-      // resolve straight to "done" (skip remaining pipeline stages).
-      // Local mode has no git ops so no diff cross-check needed.
+      // "no_action_needed" means already implemented / no issues found — always
+      // resolve to stages.resolveState, never skip straight to "done".
+      // The developer-agent saying "already implemented" still needs code review.
       if (managed.turnVerdict === "no_action_needed") {
-        await markTaskDone(task.id);
+        await resolveTask(task.id, stages.resolveState);
         appendOutput(managed, {
           timestamp: now(),
           stream: "system",
-          text: `Task ${task.id} → "done" (agent verdict: no_action_needed) ✓`,
+          text: `Task ${task.id} marked as "${stages.resolveState}" (${stages.kind === "inspector" ? "no issues found" : "already implemented"}) ✓`,
         });
       } else if (managed.turnVerdict === "changes_requested") {
         // Reviewer/QA agent found issues — send back to "todo" for rework,
@@ -1948,26 +1948,19 @@ async function runLoopModeAca(
 
     if (success) {
       // If the agent reported "no_action_needed" and no file changes exist
-      // (cross-check passed in the worker):
-      // - Editor agents: task is already implemented → skip all remaining stages, resolve to "done"
-      // - Inspector agents: code looks good / no issues found → advance to their resolveState
-      //   (e.g. "reviewed" for code-reviewer-agent), NOT straight to "done" — QA still needs to run
+      // "no_action_needed" means the agent found the work already done / no issues:
+      // - Both editor AND inspector agents advance to their own resolveState.
+      //   An editor saying "already implemented" still goes to "developed" so code
+      //   review and QA can run. An inspector saying "looks good" goes to "reviewed"
+      //   so QA can run. Only markTaskDone() is called when ALL pipeline stages are
+      //   already satisfied, which never applies here.
       if (promptResult.verdict === "no_action_needed" && !promptResult.hasChanges) {
-        if (stages.kind === "inspector") {
-          await resolveTask(task.id, stages.resolveState, promptResult.branchName ?? null, promptResult.prUrl ?? null);
-          appendOutput(managed, {
-            timestamp: now(),
-            stream: "system",
-            text: `Task ${task.id} marked as "${stages.resolveState}" (no issues found) ✓`,
-          });
-        } else {
-          await markTaskDone(task.id, promptResult.branchName ?? null, promptResult.prUrl ?? null);
-          appendOutput(managed, {
-            timestamp: now(),
-            stream: "system",
-            text: `Task ${task.id} → "done" (agent verdict: no_action_needed, no changes) ✓`,
-          });
-        }
+        await resolveTask(task.id, stages.resolveState, promptResult.branchName ?? null, promptResult.prUrl ?? null);
+        appendOutput(managed, {
+          timestamp: now(),
+          stream: "system",
+          text: `Task ${task.id} marked as "${stages.resolveState}" (${stages.kind === "inspector" ? "no issues found" : "already implemented"}) ✓`,
+        });
       } else if (promptResult.verdict === "changes_requested") {
         // Reviewer/QA agent found issues — send back to "todo" for rework,
         // preserving the existing branch and PR so the developer agent can resume.
