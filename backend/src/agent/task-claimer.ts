@@ -5,8 +5,98 @@
  * highest-priority todo task without conflicts between concurrent agents.
  */
 
+import { EventEmitter } from "node:events";
 import { getPool, sql } from "../db/connection.js";
 import type { Task } from "../types.js";
+import { getTaskById } from "../db/tasks.js";
+
+// ---------------------------------------------------------------------------
+// Task-available event bus
+//
+// Emitted whenever a task transitions INTO a claimable state (created, reset,
+// or moved back to a claim state after failure). Loop sessions subscribe to
+// this instead of polling the DB every intervalSeconds when the queue is empty.
+// ---------------------------------------------------------------------------
+
+const taskBus = new EventEmitter();
+taskBus.setMaxListeners(50); // one per active loop session, allow headroom
+
+/**
+ * Wait until at least one task in `claimState` is available for `tabIds`,
+ * or until the AbortSignal fires.
+ *
+ * Returns immediately if tasks are already available (checked via DB COUNT).
+ * Otherwise parks the caller until a "task-available" event is emitted by
+ * any write path (createTask broadcast, resetTask, resolveTask that rolls
+ * back, etc.) — no polling involved.
+ */
+export async function waitForTaskAvailable(
+  tabIds: number[] | undefined,
+  claimState: string,
+  signal: AbortSignal
+): Promise<void> {
+  // Fast path: tasks already present, no need to wait.
+  const count = await getAvailableTaskCount(tabIds, claimState);
+  if (count > 0 || signal.aborted) return;
+
+  return new Promise<void>((resolve) => {
+    const onTask = () => { cleanup(); resolve(); };
+    const onAbort = () => { cleanup(); resolve(); };
+
+    function cleanup() {
+      taskBus.off("task-available", onTask);
+      signal.removeEventListener("abort", onAbort);
+    }
+
+    taskBus.on("task-available", onTask);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/**
+ * Notify waiting loop sessions that a task may now be available.
+ * Call this after any write that moves a task INTO a claimable state.
+ * Also called by the REST task-creation route so new tasks wake idle loops.
+ */
+export function notifyTaskAvailable(): void {
+  taskBus.emit("task-available");
+}
+
+// ---------------------------------------------------------------------------
+// Broadcast helper — lazily imported to avoid circular dependency
+// (websocket-handler → session-manager → task-claimer → websocket-handler)
+// ---------------------------------------------------------------------------
+
+import type { WsServerMessage } from "../types.js";
+
+type BroadcastFn = (userId: number, msg: WsServerMessage) => void;
+
+let _broadcastToUser: BroadcastFn | null = null;
+
+async function getBroadcast(): Promise<BroadcastFn> {
+  if (!_broadcastToUser) {
+    const mod = await import("../websocket-handler.js");
+    _broadcastToUser = mod.broadcastToUser;
+  }
+  // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+  return _broadcastToUser!;
+}
+
+/** Push a task-updated event to the owning user, fire-and-forget. */
+async function broadcastTaskUpdate(taskId: number): Promise<void> {
+  try {
+    const task = await getTaskById(taskId);
+    if (!task) return;
+    const broadcast = await getBroadcast();
+    const ownerIds = new Set((task.tabs ?? []).map((t) => t.userId));
+    for (const ownerId of ownerIds) {
+      broadcast(ownerId, { type: "task-updated", task });
+    }
+  } catch {
+    // Best-effort — if the DB or broadcast fails, the client will catch up
+    // on its next explicit refresh. Don't let this crash the agent loop.
+  }
+}
 
 export interface ClaimedTask {
   id: number;
@@ -177,7 +267,7 @@ export async function claimTask(
 
     const tabRow = tabResult.recordset.length > 0 ? tabResult.recordset[0] : null;
 
-    return {
+    const claimed: ClaimedTask = {
       id: row.id,
       title: row.title,
       priority: row.priority,
@@ -190,6 +280,11 @@ export async function claimTask(
       repositoryUrl: tabRow?.repository_url || null,
       userId: tabRow?.user_id || null,
     };
+
+    // Push the state change to the UI immediately — no poll loop needed.
+    broadcastTaskUpdate(claimed.id);
+
+    return claimed;
   } catch (err) {
     await transaction.rollback();
     throw err;
@@ -242,6 +337,8 @@ export async function resolveTask(
         WHERE id = @id
       `);
   }
+
+  broadcastTaskUpdate(taskId);
 }
 
 /**
@@ -305,6 +402,10 @@ export async function resetTask(
         WHERE id = @id
       `);
   }
+
+  broadcastTaskUpdate(taskId);
+  // A reset puts the task back into a claimable state — wake any waiting loops.
+  notifyTaskAvailable();
 }
 
 /**
@@ -421,4 +522,6 @@ export async function markTaskDone(
       SET state = 'done', branch = @branch, pull_request_url = @pullRequestUrl, updated_at = GETUTCDATE()
       WHERE id = @id
     `);
+
+  broadcastTaskUpdate(taskId);
 }

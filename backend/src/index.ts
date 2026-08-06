@@ -8,7 +8,7 @@ import { createServer } from "http";
 import path from "path";
 import { fileURLToPath } from "url";
 
-import { setupWebSocket, broadcastToUser, getConnectedClientCount } from "./websocket-handler.js";
+import { setupWebSocket } from "./websocket-handler.js";
 import { setupWorkerWebSocket } from "./worker-ws-handler.js";
 import { isAcaModeEnabled, loadAcaConfig, verifyAcaAccess } from "./aca-worker-spawner.js";
 import { requireAuth, isPublicPath } from "./middleware/auth.js";
@@ -24,8 +24,6 @@ import taskPlannerRouter from "./routes/task-planner.js";
 import { runMigration } from "./db/migrate.js";
 import { tryConnect, isDbAvailable, closePool, getPoolStats } from "./db/connection.js";
 import { shutdownAllSessions, initSessions } from "./session-manager.js";
-import { getChangedTasksSince } from "./db/tasks.js";
-import { wasRecentlyBroadcast } from "./broadcast-tracker.js";
 import { apiErrorLogger, uncaughtErrorLogger } from "./middleware/error-logger.js";
 import { log, logPoolMetrics } from "./logger.js";
 
@@ -135,84 +133,9 @@ server.on("upgrade", (req, socket, head) => {
   }
 });
 
-// ─── DB Change Detector (adaptive poll loop) ─────────────────────────────────
-//
-// Interval adapts based on activity to reduce unnecessary DB queries:
-//   - After a change is found: reset to POLL_MIN_MS (fast catch-up)
-//   - After an idle cycle: back off by POLL_BACKOFF_FACTOR, capped at POLL_MAX_MS
-//
-// With no active sessions the DB can auto-pause; with a running agent we stay
-// at 5s so the board updates promptly. Typical idle cost: ~2 queries/min vs ~12.
-
-const POLL_MIN_MS = 5_000;   // Minimum interval — used right after a change
-const POLL_MAX_MS = 30_000;  // Maximum interval — reached after ~4 idle cycles
-const POLL_BACKOFF_FACTOR = 2;
-
-let lastPollTime = new Date().toISOString();
-let pollInterval: ReturnType<typeof setTimeout> | null = null;
-let poolMetricsInterval: ReturnType<typeof setInterval> | null = null;
-let currentPollMs = POLL_MIN_MS;
-
-async function pollForChanges(): Promise<void> {
-  let nextInterval = Math.min(currentPollMs * POLL_BACKOFF_FACTOR, POLL_MAX_MS);
-
-  if (!isDbAvailable() || getConnectedClientCount() === 0) {
-    // No DB or no clients — back off fully, nothing to do
-    currentPollMs = nextInterval;
-    schedulePoll(nextInterval);
-    return;
-  }
-
-  try {
-    const changedTasks = await getChangedTasksSince(lastPollTime);
-    const now = new Date().toISOString();
-    if (changedTasks.length > 0) {
-      // Changes found — reset to fast interval so subsequent updates land quickly
-      nextInterval = POLL_MIN_MS;
-      for (const task of changedTasks) {
-        // Skip tasks that were recently broadcast by REST routes (avoid duplicates)
-        if (wasRecentlyBroadcast(task.id)) {
-          continue;
-        }
-        // Tasks are only ever assigned to tabs owned by a single user, so
-        // notify each distinct owner (normally exactly one) instead of
-        // broadcasting to every connected client regardless of account.
-        const ownerIds = new Set((task.tabs ?? []).map((t) => t.userId));
-        for (const ownerId of ownerIds) {
-          broadcastToUser(ownerId, { type: "task-updated", task });
-        }
-      }
-    }
-    lastPollTime = now;
-  } catch (err) {
-    // Connection may have dropped mid-session — will retry on next interval.
-    log.warn("poll-failed", {
-      component: "poll",
-      msg: "Task change poll cycle failed; will retry on next interval",
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-
-  currentPollMs = nextInterval;
-  schedulePoll(nextInterval);
-}
-
-function schedulePoll(delayMs: number): void {
-  if (pollInterval !== null) return; // already scheduled
-  pollInterval = setTimeout(() => {
-    pollInterval = null;
-    pollForChanges();
-  }, delayMs);
-}
-
-function cancelPoll(): void {
-  if (pollInterval !== null) {
-    clearTimeout(pollInterval);
-    pollInterval = null;
-  }
-}
-
 // ─── Startup ─────────────────────────────────────────────────────────────────
+
+let poolMetricsInterval: ReturnType<typeof setInterval> | null = null;
 
 const PORT = Number(process.env.PORT) || 3500;
 
@@ -263,11 +186,6 @@ async function start(): Promise<void> {
         });
     }
   }
-
-  // Start the adaptive change-detector poll loop.
-  // Begins at POLL_MIN_MS (5s), backs off to POLL_MAX_MS (30s) when idle,
-  // resets to fast on activity — see schedulePoll / pollForChanges above.
-  schedulePoll(POLL_MIN_MS);
 
   // Start pool metrics sampling. Rather than emit an identical "all is well"
   // snapshot every minute (pure noise), we only log when the numbers carry
@@ -320,7 +238,6 @@ function samplePoolMetrics(): void {
 
 async function shutdown(): Promise<void> {
   log.info("shutdown", { component: "startup", msg: "Shutting down..." });
-  cancelPoll();
   if (poolMetricsInterval) {
     clearInterval(poolMetricsInterval);
   }

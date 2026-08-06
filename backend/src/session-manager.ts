@@ -13,7 +13,7 @@ import { resolve } from "node:path";
 import { KiroRunner } from "./agent/kiro-runner.js";
 import type { SessionUpdateChunk } from "./agent/kiro-runner.js";
 import { broadcastToUser } from "./websocket-handler.js";
-import { claimTask, resolveTask, resetTask, getAvailableTaskCount, markTaskDone } from "./agent/task-claimer.js";
+import { claimTask, resolveTask, resetTask, getAvailableTaskCount, waitForTaskAvailable, markTaskDone } from "./agent/task-claimer.js";
 import type { ClaimedTask } from "./agent/task-claimer.js";
 import { buildDevPrompt, buildReviewPrompt } from "./agent/prompt-builder.js";
 import { TabMcpConfig, DEFAULT_MCP_CONFIG, resolveGitProvider, type GitProvider } from "./types.js";
@@ -863,17 +863,19 @@ async function runLoopMode(
       return;
     }
 
-    // Check for available tasks (filtered by effective tab assignments + agent's claim state)
+    // Wait until a task is available (event-driven — no DB poll while idle)
     const todoCount = await getAvailableTaskCount(effectiveTabIds, stages.claimState);
 
     if (todoCount === 0) {
       setActivity(managed, {
         type: "idle",
-        detail: `No tasks available. Polling every ${meta.intervalSeconds}s...`,
+        detail: "No tasks available. Waiting for new tasks...",
       });
 
-      // Wait before polling again
-      await interruptibleSleep(meta.intervalSeconds * 1000, signal);
+      // Park here until a task is created/reset or the session is stopped.
+      // waitForTaskAvailable does a single DB check, then suspends on an
+      // in-process event — zero DB queries during the wait.
+      await waitForTaskAvailable(effectiveTabIds, stages.claimState, signal);
       continue;
     }
 
@@ -1754,9 +1756,13 @@ async function runLoopModeAca(
     if (todoCount === 0) {
       setActivity(managed, {
         type: "idle",
-        detail: `No tasks available. Polling every ${meta.intervalSeconds}s...`,
+        detail: "No tasks available. Waiting for new tasks...",
       });
-      await interruptibleSleep(meta.intervalSeconds * 1000, signal);
+
+      // Park here until a task is created/reset or the session is stopped.
+      // waitForTaskAvailable does a single DB check, then suspends on an
+      // in-process event — zero DB queries during the wait.
+      await waitForTaskAvailable(effectiveTabIds, stages.claimState, signal);
       continue;
     }
 
