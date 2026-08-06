@@ -30,7 +30,18 @@ const REPO_URL = process.env.REPO_URL || "";
 const GIT_PROVIDER = process.env.GIT_PROVIDER || "";
 const GITHUB_PAT = process.env.GITHUB_PAT || "";
 const AZURE_DEVOPS_PAT = process.env.AZURE_DEVOPS_PAT || "";
-const TASK_PR_URL = process.env.TASK_PR_URL || "";
+
+/**
+ * TASK_PR_URL is read at tool-call time, not at module load.
+ *
+ * The pr-review MCP server is spawned by kiro-cli at session/new time, before
+ * any prompt arrives. The worker only knows the PR URL once it receives the
+ * task metadata in handlePrompt() — at which point it sets process.env.TASK_PR_URL.
+ * Reading this as a module-level constant would capture an empty string every time.
+ */
+function getTaskPrUrl() {
+  return process.env.TASK_PR_URL || "";
+}
 
 // ---------------------------------------------------------------------------
 // Provider detection
@@ -412,6 +423,7 @@ async function handleToolCall(id, params) {
 
 async function handleGetComments(id) {
   const provider = detectProvider();
+  const TASK_PR_URL = getTaskPrUrl();
   const prNumber = parsePrNumber(TASK_PR_URL);
 
   if (!prNumber) {
@@ -503,6 +515,7 @@ async function handlePostComment(id, args) {
   }
 
   const provider = detectProvider();
+  const TASK_PR_URL = getTaskPrUrl();
   const prNumber = parsePrNumber(TASK_PR_URL);
 
   if (!prNumber) {
