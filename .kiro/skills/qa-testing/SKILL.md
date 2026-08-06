@@ -14,16 +14,18 @@ When using Puppeteer to test the deployed Vibecode Heaven application, use this 
 
 ## Credentials
 
-| Field    | Value                            |
-|----------|----------------------------------|
-| Email    | kiro-qa@kirofactory.dev          |
-| Password | KiroQA-28040d45acebc341          |
+Credentials are injected as environment variables at runtime — never stored in this file.
+
+| Field    | Environment variable |
+|----------|----------------------|
+| Email    | `QA_EMAIL`           |
+| Password | `QA_PASSWORD`        |
 
 ## Login Flow
 
 1. Navigate to the login page
-2. Fill `#loginEmail` with the email above
-3. Fill `#loginPassword` with the password above
+2. Fill `#loginEmail` with the value of `process.env.QA_EMAIL`
+3. Fill `#loginPassword` with the value of `process.env.QA_PASSWORD`
 4. Click the login submit button
 5. After redirect, you're on the main dashboard
 
