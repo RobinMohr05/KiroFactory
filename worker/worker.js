@@ -623,12 +623,23 @@ function setupRepo() {
   ensureAgentConfig();
 
   // Install dependencies so the agent can run tests, builds, etc.
+  //
+  // --include=dev is explicit, not decorative: npm's `omit` config defaults
+  // to 'dev' whenever NODE_ENV=production (or omit=dev is set some other
+  // way), which silently skips writing devDependencies to node_modules even
+  // though the install exits 0 — they still get resolved into
+  // package-lock.json, just never installed. That exact bug (via this
+  // Dockerfile's now-removed `ENV NODE_ENV=production`) made vitest and
+  // typescript disappear from every agent session's node_modules while every
+  // install step reported success. Keep this flag even though the Dockerfile
+  // no longer sets NODE_ENV, so a future reintroduction of that env var
+  // doesn't silently reopen the same hole.
   sendOutput("Installing dependencies...", "system");
   try {
     if (existsSync(`${WORKSPACE}/package-lock.json`)) {
-      exec("npm ci", { cwd: WORKSPACE, timeout: 300_000 });
+      exec("npm ci --include=dev", { cwd: WORKSPACE, timeout: 300_000 });
     } else if (existsSync(`${WORKSPACE}/package.json`)) {
-      exec("npm install", { cwd: WORKSPACE, timeout: 300_000 });
+      exec("npm install --include=dev", { cwd: WORKSPACE, timeout: 300_000 });
     }
   } catch (err) {
     sendOutput(`Warning: npm install failed: ${err?.message || err}`, "stderr");
