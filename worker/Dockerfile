@@ -19,6 +19,7 @@ RUN npm install --omit=dev
 # Copy worker script
 COPY worker.js ./
 COPY verdict-mcp-server.js ./
+COPY pr-review-mcp-server.js ./
 COPY ta-mcp-connect ./
 RUN chmod +x ./ta-mcp-connect
 
