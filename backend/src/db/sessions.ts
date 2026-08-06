@@ -44,6 +44,7 @@ function mapRowToSession(row: Record<string, unknown>): Session {
       ? JSON.parse(row.current_activity as string)
       : undefined,
     pinned: !!row.pinned,
+    sortOrder: (row.sort_order as number) ?? 0,
     output: [], // Output is in-memory only
   };
 }
@@ -66,12 +67,12 @@ export async function getAllSessionsFromDb(
       .request()
       .input("userId", sql.Int, userId)
       .query(
-        "SELECT * FROM sessions WHERE user_id = @userId ORDER BY created_at DESC"
+        "SELECT * FROM sessions WHERE user_id = @userId ORDER BY pinned DESC, sort_order ASC"
       );
   } else {
     result = await pool
       .request()
-      .query("SELECT * FROM sessions ORDER BY created_at DESC");
+      .query("SELECT * FROM sessions ORDER BY pinned DESC, sort_order ASC");
   }
 
   return result.recordset.map(mapRowToSession);
@@ -156,19 +157,20 @@ export async function insertSession(session: Session): Promise<number> {
         : null
     )
     .input("pinned", sql.Bit, session.pinned ? 1 : 0)
+    .input("sortOrder", sql.Int, session.sortOrder ?? 0)
     .query(`
       INSERT INTO sessions (
         name, agent, status, prompt, interactive, loop, runs,
         interval_seconds, cwd, timeout_seconds, model, mcp_servers,
         tab_ids, user_id, created_at, started_at, current_task_id, current_activity,
-        mcp_config_override, pinned
+        mcp_config_override, pinned, sort_order
       )
       OUTPUT INSERTED.id
       VALUES (
         @name, @agent, @status, @prompt, @interactive, @loop, @runs,
         @intervalSeconds, @cwd, @timeoutSeconds, @model, @mcpServers,
         @tabIds, @userId, @createdAt, @startedAt, @currentTaskId, @currentActivity,
-        @mcpConfigOverride, @pinned
+        @mcpConfigOverride, @pinned, @sortOrder
       )
     `);
 
@@ -262,6 +264,7 @@ export async function updateSessionMeta(session: Session): Promise<void> {
         : null
     )
     .input("pinned", sql.Bit, session.pinned ? 1 : 0)
+    .input("sortOrder", sql.Int, session.sortOrder ?? 0)
     .query(`
       UPDATE sessions
       SET name = @name,
@@ -281,7 +284,8 @@ export async function updateSessionMeta(session: Session): Promise<void> {
           current_task_id = @currentTaskId,
           current_activity = @currentActivity,
           mcp_config_override = @mcpConfigOverride,
-          pinned = @pinned
+          pinned = @pinned,
+          sort_order = @sortOrder
       WHERE id = @id
     `);
 }
@@ -314,4 +318,44 @@ export async function isSessionOwnedByUser(
     .query("SELECT 1 FROM sessions WHERE id = @id AND user_id = @userId");
 
   return result.recordset.length > 0;
+}
+
+/**
+ * Bulk-update sort_order for a list of session IDs.
+ * The array position determines the sort_order value.
+ */
+export async function reorderSessionsInDb(
+  sessionIds: number[],
+  userId: number
+): Promise<void> {
+  const pool = await getPool();
+  for (let i = 0; i < sessionIds.length; i++) {
+    await pool
+      .request()
+      .input("id", sql.Int, sessionIds[i])
+      .input("sortOrder", sql.Int, i)
+      .input("userId", sql.Int, userId)
+      .query(
+        "UPDATE sessions SET sort_order = @sortOrder WHERE id = @id AND user_id = @userId"
+      );
+  }
+}
+
+/**
+ * Update the pinned state and sort_order of a session.
+ */
+export async function updateSessionPinInDb(
+  sessionId: number,
+  pinned: boolean,
+  sortOrder: number
+): Promise<void> {
+  const pool = await getPool();
+  await pool
+    .request()
+    .input("id", sql.Int, sessionId)
+    .input("pinned", sql.Bit, pinned ? 1 : 0)
+    .input("sortOrder", sql.Int, sortOrder)
+    .query(
+      "UPDATE sessions SET pinned = @pinned, sort_order = @sortOrder WHERE id = @id"
+    );
 }

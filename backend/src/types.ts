@@ -310,6 +310,8 @@ export interface Session {
    * code (registration / startup backfill) may set this.
    */
   pinned: boolean;
+  /** Sort order within the session list (pinned DESC, sortOrder ASC). */
+  sortOrder: number;
   /**
    * Cumulative Kiro credits consumed across all prompt turns since this
    * session was last started. Reset to 0 on each start.
@@ -358,6 +360,7 @@ export type WsServerMessage =
   | { type: "session-created"; session: Session }
   | { type: "session-updated"; session: Session }
   | { type: "session-deleted"; sessionId: number }
+  | { type: "sessions-reordered"; sessions: Session[] }
   | { type: "session-output"; sessionId: number; entry: OutputEntry }
   | { type: "session-activity"; sessionId: number; activity: Activity }
   | { type: "error-created"; error: AgentError }

@@ -9,6 +9,8 @@ import {
   stopSession,
   sendPrompt,
   updateSessionTabs,
+  reorderSessions,
+  pinSession,
 } from "../session-manager.js";
 import { requireAuth, getUserId } from "../middleware/auth.js";
 import type { CreateSessionInput } from "../types.js";
@@ -69,6 +71,33 @@ router.post("/", async (req: Request, res: Response) => {
       msg: "Failed to create session",
     });
     res.status(500).json({ error: "Failed to create session" });
+  }
+});
+
+// PUT /api/sessions/reorder — reorder sessions by setting sort_order based on array position
+router.put("/reorder", (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const { sessionIds } = req.body;
+    if (!Array.isArray(sessionIds) || sessionIds.some((id: unknown) => !Number.isInteger(id))) {
+      res.status(400).json({ error: "sessionIds must be an array of integers" });
+      return;
+    }
+    const ok = reorderSessions(sessionIds, userId);
+    if (!ok) {
+      res.status(400).json({ error: "One or more sessions not found or not owned by user" });
+      return;
+    }
+    res.json({ success: true });
+  } catch (err) {
+    log.error("route-error", {
+      component: "sessions",
+      method: "PUT",
+      path: "/api/sessions/reorder",
+      ...toErrorFields(err),
+      msg: "Failed to reorder sessions",
+    });
+    res.status(500).json({ error: "Failed to reorder sessions" });
   }
 });
 
@@ -262,6 +291,43 @@ router.put("/:id/tabs", (req: Request, res: Response) => {
       msg: "Failed to update session tabs",
     });
     res.status(500).json({ error: "Failed to update session tabs" });
+  }
+});
+
+// PATCH /api/sessions/:id/pin — toggle pin state (must belong to authenticated user)
+router.patch("/:id/pin", (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const id = paramId(req);
+    if (id === null) {
+      res.status(400).json({ error: "Invalid session id" });
+      return;
+    }
+    const session = getSession(id);
+    if (!session || session.userId !== userId) {
+      res.status(404).json({ error: "Session not found" });
+      return;
+    }
+    const { pinned } = req.body;
+    if (typeof pinned !== "boolean") {
+      res.status(400).json({ error: "pinned must be a boolean" });
+      return;
+    }
+    const ok = pinSession(id, pinned);
+    if (!ok) {
+      res.status(404).json({ error: "Session not found" });
+      return;
+    }
+    res.json({ success: true });
+  } catch (err) {
+    log.error("route-error", {
+      component: "sessions",
+      method: "PATCH",
+      path: "/api/sessions/:id/pin",
+      ...toErrorFields(err),
+      msg: "Failed to update session pin state",
+    });
+    res.status(500).json({ error: "Failed to update session pin state" });
   }
 });
 
