@@ -1185,7 +1185,6 @@ function renderTaskCard(task) {
       <span class="card-priority">P${priority}</span>
       <span class="card-origin" title="${task.origin || 'user'}">${originIcon}</span>
     </div>
-    ${task.pullRequestUrl ? `<div class="card-git-info"><a href="${escapeHtml(task.pullRequestUrl)}" target="_blank" rel="noopener noreferrer" class="card-pr-link" title="Pull Request" onclick="event.stopPropagation()">\u{1F517} PR</a></div>` : task.branch ? `<div class="card-git-info"><span class="card-branch" title="${escapeHtml(task.branch)}">\u{1F33F} ${escapeHtml(task.branch)}</span></div>` : ''}
   `;
 
   // Drag events
@@ -1282,8 +1281,11 @@ function showTaskForm(task = null) {
     document.getElementById('taskPriority').value = task.priority || 4;
     document.getElementById('taskState').value = task.state || 'todo';
     document.getElementById('taskOrigin').value = task.origin || 'user';
+    document.getElementById('taskBranch').value = task.branch || '';
+    document.getElementById('taskPullRequestUrl').value = task.pullRequestUrl || '';
     document.getElementById('taskStateGroup').hidden = false;
     document.getElementById('taskOrigin').closest('.form-group').hidden = false;
+    document.getElementById('taskGitInfoGroup').hidden = false;
   } else {
     modalTitle.textContent = 'New Task';
     submitTaskBtn.textContent = 'Create Task';
@@ -1293,6 +1295,7 @@ function showTaskForm(task = null) {
     document.getElementById('taskId').value = '';
     document.getElementById('taskStateGroup').hidden = true;
     document.getElementById('taskOrigin').closest('.form-group').hidden = true;
+    document.getElementById('taskGitInfoGroup').hidden = true;
   }
 
   document.getElementById('taskTitle').focus();
@@ -1444,6 +1447,8 @@ function setupEventListeners() {
     const type = document.getElementById('taskType').value;
     const priority = parseInt(document.getElementById('taskPriority').value, 10);
     const state = document.getElementById('taskState').value;
+    const branch = document.getElementById('taskBranch').value.trim();
+    const pullRequestUrl = document.getElementById('taskPullRequestUrl').value.trim();
 
     if (!title) {
       document.getElementById('taskTitle').focus();
@@ -1451,8 +1456,16 @@ function setupEventListeners() {
     }
 
     if (id) {
-      // Update existing task
-      await updateTask(id, { title, description, type, priority, state });
+      // Update existing task — branch/PR are only editable here, never on create
+      await updateTask(id, {
+        title,
+        description,
+        type,
+        priority,
+        state,
+        branch: branch || null,
+        pullRequestUrl: pullRequestUrl || null
+      });
     } else {
       // Create new task — origin defaults to 'user' on server
       await createTask({
