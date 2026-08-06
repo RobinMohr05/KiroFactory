@@ -1876,7 +1876,56 @@ function handlePrompt(text, taskMeta) {
         currentBranchName = taskMeta.branch;
         sendOutput(`Checked out existing branch: ${taskMeta.branch}`, "system");
       } else {
-        currentBranchName = createTaskBranch(taskMeta);
+        // taskMeta.branch is empty — this normally means no prior stage has
+        // pushed anything yet. But the DB's branch column can also be lost
+        // independently of the actual git history (e.g. an editor's
+        // no_action_needed resolution wiping it — see task-claimer.ts
+        // resolveTask's preserveBranchInfo). createTaskBranch() does
+        // `checkout -B <name> DEV_BRANCH`, which — if a branch with that
+        // deterministic name already exists on the remote — silently
+        // discards its real commits and leaves an empty diff. An inspector
+        // would then "review" that empty diff and wrongly report
+        // no_action_needed / no issues found on code it never saw.
+        //
+        // So: probe the remote for the deterministic branch name first. If
+        // it exists, treat it exactly like the taskMeta.branch-provided path
+        // above instead of fabricating a fresh one from DEV_BRANCH.
+        const deterministicBranch = buildBranchName(taskMeta.type || "task", taskMeta.id, taskMeta.title);
+        const remoteRef = execFileArgs(
+          "git",
+          ["ls-remote", "--heads", authRemoteUrl || "origin", deterministicBranch],
+          { cwd: WORKSPACE }
+        );
+
+        if (remoteRef) {
+          resetWorkingTree();
+          execFileArgs("git", ["fetch", "origin", deterministicBranch], { cwd: WORKSPACE });
+          execFileArgs("git", ["checkout", deterministicBranch], { cwd: WORKSPACE });
+          currentBranchName = deterministicBranch;
+          sendOutput(
+            `Task had no branch on record, but ${deterministicBranch} already exists on the remote — ` +
+            `checked it out instead of creating a fresh one (recovered from a stale/lost DB branch pointer).`,
+            "system"
+          );
+          logInfo("Recovered existing remote branch for task with no DB branch pointer", {
+            branch: deterministicBranch,
+            taskId: taskMeta.id,
+          });
+        } else if (AGENT_KIND === "inspector") {
+          // An inspector with no branch to review and no recoverable remote
+          // branch has nothing to inspect. Do NOT fabricate one — that would
+          // manufacture an empty diff for the agent to "approve". Surface
+          // this as an explicit condition instead.
+          sendOutput(
+            `No branch found for task ${taskMeta.id} (checked DB and remote ${deterministicBranch}) — ` +
+            "nothing to review yet.",
+            "stderr"
+          );
+          logError("Inspector agent has no branch to review", { taskId: taskMeta.id, deterministicBranch });
+          currentBranchName = null;
+        } else {
+          currentBranchName = createTaskBranch(taskMeta);
+        }
       }
     } catch (err) {
       sendOutput(`Warning: could not create task branch: ${err?.message || err}`, "stderr");
