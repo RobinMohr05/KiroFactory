@@ -57,6 +57,7 @@ import type {
   OutputEntry,
   Activity,
   CreateSessionInput,
+  UpdateSessionInput,
   McpServerConfig,
 } from "./types.js";
 
@@ -520,6 +521,43 @@ export function updateSessionTabs(id: number, tabIds: number[]): boolean {
 
   logSessionEvent("session-tabs-updated", id, { tabIds });
   return true;
+}
+
+/**
+ * Update editable session fields. `agent` and internal/lifecycle fields are excluded.
+ * Returns `{ success: true }` on success, `{ success: false, reason: "running" }` if the
+ * session is currently running, or `null` if the session doesn't exist.
+ */
+export function updateSessionFields(
+  id: number,
+  updates: UpdateSessionInput
+): { success: true } | { success: false; reason: string } | null {
+  const session = sessions.get(id);
+  if (!session) return null;
+
+  if (session.meta.status === "running") {
+    return { success: false, reason: "running" };
+  }
+
+  // Whitelist of allowed fields — ignore anything else (including `agent`)
+  if (updates.name !== undefined) session.meta.name = updates.name;
+  if (updates.prompt !== undefined) session.meta.prompt = updates.prompt;
+  if (updates.cwd !== undefined) session.meta.cwd = updates.cwd;
+  if (updates.model !== undefined) session.meta.model = updates.model || undefined;
+  if (updates.timeoutSeconds !== undefined) session.meta.timeoutSeconds = updates.timeoutSeconds;
+  if (updates.interactive !== undefined) session.meta.interactive = updates.interactive;
+  if (updates.loop !== undefined) session.meta.loop = updates.loop;
+  if (updates.runs !== undefined) session.meta.runs = updates.runs;
+  if (updates.intervalSeconds !== undefined) session.meta.intervalSeconds = updates.intervalSeconds;
+  if (updates.mcpServers !== undefined) session.meta.mcpServers = updates.mcpServers;
+  if (updates.mcpConfigOverride !== undefined) session.meta.mcpConfigOverride = updates.mcpConfigOverride;
+  if (updates.tabIds !== undefined) session.meta.tabIds = updates.tabIds.length > 0 ? updates.tabIds : undefined;
+
+  broadcastToUser(session.meta.userId, { type: "session-updated", session: session.meta });
+  persistSession(id);
+
+  logSessionEvent("session-fields-updated", id, { updatedKeys: Object.keys(updates) });
+  return { success: true };
 }
 
 export async function startSession(id: number): Promise<boolean> {
