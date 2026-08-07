@@ -542,14 +542,14 @@ export function updateSessionFields(
   // Whitelist of allowed fields — ignore anything else (including `agent`)
   if (updates.name !== undefined) session.meta.name = updates.name;
   if (updates.prompt !== undefined) session.meta.prompt = updates.prompt;
-  if (updates.cwd !== undefined) session.meta.cwd = updates.cwd;
+  if (updates.cwd !== undefined) session.meta.cwd = updates.cwd || DEFAULT_CWD;
   if (updates.model !== undefined) session.meta.model = updates.model || undefined;
   if (updates.timeoutSeconds !== undefined) session.meta.timeoutSeconds = updates.timeoutSeconds;
   if (updates.interactive !== undefined) session.meta.interactive = updates.interactive;
   if (updates.loop !== undefined) session.meta.loop = updates.loop;
   if (updates.runs !== undefined) session.meta.runs = updates.runs;
   if (updates.intervalSeconds !== undefined) session.meta.intervalSeconds = updates.intervalSeconds;
-  if (updates.mcpServers !== undefined) session.meta.mcpServers = updates.mcpServers;
+  if (updates.mcpServers !== undefined) session.meta.mcpServers = updates.mcpServers?.length ? updates.mcpServers : undefined;
   if (updates.mcpConfigOverride !== undefined) session.meta.mcpConfigOverride = updates.mcpConfigOverride;
   if (updates.tabIds !== undefined) session.meta.tabIds = updates.tabIds.length > 0 ? updates.tabIds : undefined;
 

@@ -234,4 +234,66 @@ describe("updateSessionFields", () => {
     expect(session!.prompt).toBe("Original prompt"); // unchanged
     expect(session!.cwd).toBe("/workspace"); // unchanged
   });
+
+  it("should reset 'cwd' to default when null is provided", () => {
+    // Set to a custom path first
+    updateSessionFields(sessionId, { cwd: "/custom/path" });
+    const before = getSession(sessionId);
+    expect(before!.cwd).toBe("/custom/path");
+
+    // Clearing with null resets to the project root default
+    const result = updateSessionFields(sessionId, { cwd: null });
+    expect(result).toEqual({ success: true });
+
+    const session = getSession(sessionId);
+    // cwd is required — clears to project root default, not undefined
+    expect(session!.cwd).toBeDefined();
+    expect(typeof session!.cwd).toBe("string");
+    expect(session!.cwd.length).toBeGreaterThan(0);
+    expect(session!.cwd).not.toBe("/custom/path"); // no longer the custom value
+  });
+
+  it("should clear 'model' when null is provided", () => {
+    // Verify the field is set initially
+    const before = getSession(sessionId);
+    expect(before!.model).toBe("claude-sonnet-4");
+
+    const result = updateSessionFields(sessionId, { model: null });
+    expect(result).toEqual({ success: true });
+
+    const session = getSession(sessionId);
+    expect(session!.model).toBeUndefined();
+  });
+
+  it("should clear 'mcpServers' when null is provided", () => {
+    // First set mcpServers
+    updateSessionFields(sessionId, {
+      mcpServers: [{ name: "test", command: "node", args: ["test.js"], env: [] }],
+    });
+    const before = getSession(sessionId);
+    expect(before!.mcpServers).toHaveLength(1);
+
+    // Now clear it
+    const result = updateSessionFields(sessionId, { mcpServers: null });
+    expect(result).toEqual({ success: true });
+
+    const session = getSession(sessionId);
+    expect(session!.mcpServers).toBeUndefined();
+  });
+
+  it("should clear 'mcpServers' when empty array is provided", () => {
+    // First set mcpServers
+    updateSessionFields(sessionId, {
+      mcpServers: [{ name: "test", command: "node", args: ["test.js"], env: [] }],
+    });
+    const before = getSession(sessionId);
+    expect(before!.mcpServers).toHaveLength(1);
+
+    // Now clear with empty array
+    const result = updateSessionFields(sessionId, { mcpServers: [] });
+    expect(result).toEqual({ success: true });
+
+    const session = getSession(sessionId);
+    expect(session!.mcpServers).toBeUndefined();
+  });
 });

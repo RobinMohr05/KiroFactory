@@ -351,14 +351,14 @@ export interface CreateSessionInput {
 export interface UpdateSessionInput {
   name?: string;
   prompt?: string;
-  cwd?: string;
-  model?: string;
+  cwd?: string | null;
+  model?: string | null;
   timeoutSeconds?: number;
   interactive?: boolean;
   loop?: boolean;
   runs?: number;
   intervalSeconds?: number;
-  mcpServers?: McpServerConfig[];
+  mcpServers?: McpServerConfig[] | null;
   mcpConfigOverride?: TabMcpConfig | null;
   tabIds?: number[];
 }

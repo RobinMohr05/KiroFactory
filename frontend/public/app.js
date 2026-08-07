@@ -2304,10 +2304,10 @@ function addEditCustomMcpEntry(server) {
   row.className = 'custom-mcp-entry';
   const envStr = server?.env ? server.env.map(e => `${e.name}=${e.value}`).join(', ') : '';
   row.innerHTML = `
-    <input type="text" class="custom-mcp-name" placeholder="Name" value="${server?.name || ''}" />
-    <input type="text" class="custom-mcp-command" placeholder="Command" value="${server?.command || ''}" />
-    <input type="text" class="custom-mcp-args" placeholder="Args (space-separated)" value="${server?.args ? server.args.join(' ') : ''}" />
-    <input type="text" class="custom-mcp-env" placeholder="Env (KEY=VAL, ...)" value="${envStr}" />
+    <input type="text" class="custom-mcp-name" placeholder="Name" value="${escapeHtml(server?.name || '')}" />
+    <input type="text" class="custom-mcp-command" placeholder="Command" value="${escapeHtml(server?.command || '')}" />
+    <input type="text" class="custom-mcp-args" placeholder="Args (space-separated)" value="${escapeHtml(server?.args ? server.args.join(' ') : '')}" />
+    <input type="text" class="custom-mcp-env" placeholder="Env (KEY=VAL, ...)" value="${escapeHtml(envStr)}" />
     <button type="button" class="btn btn-danger btn-sm custom-mcp-remove">×</button>
   `;
   row.querySelector('.custom-mcp-remove').addEventListener('click', () => row.remove());
@@ -2362,8 +2362,8 @@ async function saveSessionSettings() {
   const updates = {
     name: editSessionName.value.trim(),
     prompt: editSessionPrompt.value.trim(),
-    cwd: editSessionCwd.value.trim() || undefined,
-    model: editSessionModel.value.trim() || undefined,
+    cwd: editSessionCwd.value.trim() || null,
+    model: editSessionModel.value.trim() || null,
     timeoutSeconds: parseInt(editSessionTimeout.value, 10) || 0,
     interactive: editSessionInteractive.checked,
     loop: editSessionLoop.checked,
@@ -2371,7 +2371,7 @@ async function saveSessionSettings() {
     intervalSeconds: parseInt(editSessionInterval.value, 10) || 10,
     tabIds,
     mcpConfigOverride,
-    mcpServers: mcpServers.length > 0 ? mcpServers : undefined,
+    mcpServers: mcpServers.length > 0 ? mcpServers : null,
   };
 
   try {
@@ -2388,6 +2388,9 @@ async function saveSessionSettings() {
 
     // Update local state
     Object.assign(session, updates);
+    // Clear nullable fields properly (backend stores them as absent, not null)
+    if (!session.cwd) delete session.cwd;
+    if (!session.model) delete session.model;
     if (tabIds.length > 0) session.tabIds = tabIds;
     else delete session.tabIds;
     if (mcpServers.length > 0) session.mcpServers = mcpServers;
