@@ -539,6 +539,11 @@ export function updateSessionFields(
     return { success: false, reason: "running" };
   }
 
+  // Validate name is non-empty if provided
+  if (updates.name !== undefined && !updates.name.trim()) {
+    return { success: false, reason: "name cannot be empty" };
+  }
+
   // Whitelist of allowed fields — ignore anything else (including `agent`)
   if (updates.name !== undefined) session.meta.name = updates.name;
   if (updates.prompt !== undefined) session.meta.prompt = updates.prompt;

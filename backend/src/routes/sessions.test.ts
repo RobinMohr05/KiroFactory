@@ -324,4 +324,22 @@ describe("updateSessionFields", () => {
     const session = getSession(sessionId);
     expect(session!.tabIds).toBeUndefined();
   });
+
+  it("should reject empty string name", () => {
+    const result = updateSessionFields(sessionId, { name: "" });
+    expect(result).toEqual({ success: false, reason: "name cannot be empty" });
+
+    // Name should NOT have changed
+    const session = getSession(sessionId);
+    expect(session!.name).toBe("Test Session");
+  });
+
+  it("should reject whitespace-only name", () => {
+    const result = updateSessionFields(sessionId, { name: "   " });
+    expect(result).toEqual({ success: false, reason: "name cannot be empty" });
+
+    // Name should NOT have changed
+    const session = getSession(sessionId);
+    expect(session!.name).toBe("Test Session");
+  });
 });

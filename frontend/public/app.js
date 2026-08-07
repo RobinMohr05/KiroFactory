@@ -1805,14 +1805,14 @@ function setupSessions() {
   editSessionMcpToggle.addEventListener('click', () => {
     const expanded = editSessionMcpToggle.getAttribute('aria-expanded') === 'true';
     editSessionMcpToggle.setAttribute('aria-expanded', String(!expanded));
-    editSessionMcpSection.hidden = expanded;
+    editSessionMcpSection.classList.toggle('expanded', !expanded);
     editSessionMcpToggle.querySelector('.toggle-icon').textContent = expanded ? '▶' : '▼';
   });
 
   editSessionCustomMcpToggle.addEventListener('click', () => {
     const expanded = editSessionCustomMcpToggle.getAttribute('aria-expanded') === 'true';
     editSessionCustomMcpToggle.setAttribute('aria-expanded', String(!expanded));
-    editSessionCustomMcpSection.hidden = expanded;
+    editSessionCustomMcpSection.classList.toggle('expanded', !expanded);
     editSessionCustomMcpToggle.querySelector('.toggle-icon').textContent = expanded ? '▶' : '▼';
   });
 
@@ -2290,10 +2290,10 @@ function openSessionSettingsEditor() {
 
   // Collapse MCP sections by default
   editSessionMcpToggle.setAttribute('aria-expanded', 'false');
-  editSessionMcpSection.hidden = true;
+  editSessionMcpSection.classList.remove('expanded');
   editSessionMcpToggle.querySelector('.toggle-icon').textContent = '▶';
   editSessionCustomMcpToggle.setAttribute('aria-expanded', 'false');
-  editSessionCustomMcpSection.hidden = true;
+  editSessionCustomMcpSection.classList.remove('expanded');
   editSessionCustomMcpToggle.querySelector('.toggle-icon').textContent = '▶';
 
   sessionSettingsEditor.hidden = false;
