@@ -1532,6 +1532,11 @@ function buildMcpServers() {
       { name: "DEV_BRANCH", value: DEV_BRANCH || "" },
       { name: "REVIEW_MARKER_PATH", value: REVIEW_MARKER_PATH },
       { name: "ALLOW_POST_COMMENT", value: AGENT_KIND === "inspector" ? "true" : "false" },
+      // Inverse of ALLOW_POST_COMMENT: the developer (editor-kind) resolves
+      // comments once it has actually fixed the underlying issue in code;
+      // the reviewer (inspector-kind) only posts findings, it never resolves
+      // its own or anyone else's.
+      { name: "ALLOW_RESOLVE_COMMENT", value: AGENT_KIND === "inspector" ? "false" : "true" },
     ];
     if (process.env.GITHUB_PAT) {
       prReviewEnv.push({ name: "GITHUB_PAT", value: process.env.GITHUB_PAT });
@@ -2094,10 +2099,20 @@ function handlePrompt(text, taskMeta) {
       // fetch and check it out instead of creating a new one.
       if (taskMeta.branch) {
         resetWorkingTree();
-        execFileArgs("git", ["fetch", "origin", taskMeta.branch], { cwd: WORKSPACE });
-        execFileArgs("git", ["checkout", taskMeta.branch], { cwd: WORKSPACE });
+        execFileArgs("git", ["fetch", authRemoteUrl || "origin", taskMeta.branch], { cwd: WORKSPACE });
+        // checkout -B <branch> origin/<branch> — not a plain `checkout <branch>` —
+        // because this worker container is reused across many claimed tasks in a
+        // loop (see refreshDevBranch()'s doc comment for the same rationale). If
+        // this exact branch was already checked out locally earlier in the
+        // container's lifetime (e.g. the code-reviewer-agent reviewing the same
+        // task twice across a review → rework → re-review cycle), a plain
+        // `checkout` is a no-op on content: it switches to the existing local
+        // ref as-is and never picks up commits the developer pushed in between.
+        // `-B` force-resets the local branch to match the freshly fetched
+        // remote tip every time, so the reviewer always sees the latest state.
+        execFileArgs("git", ["checkout", "-B", taskMeta.branch, `origin/${taskMeta.branch}`], { cwd: WORKSPACE });
         currentBranchName = taskMeta.branch;
-        sendOutput(`Checked out existing branch: ${taskMeta.branch}`, "system");
+        sendOutput(`Checked out existing branch: ${taskMeta.branch} (reset to origin's latest)`, "system");
       } else {
         // taskMeta.branch is empty — this normally means no prior stage has
         // pushed anything yet. But the DB's branch column can also be lost
@@ -2122,8 +2137,11 @@ function handlePrompt(text, taskMeta) {
 
         if (remoteRef) {
           resetWorkingTree();
-          execFileArgs("git", ["fetch", "origin", deterministicBranch], { cwd: WORKSPACE });
-          execFileArgs("git", ["checkout", deterministicBranch], { cwd: WORKSPACE });
+          execFileArgs("git", ["fetch", authRemoteUrl || "origin", deterministicBranch], { cwd: WORKSPACE });
+          // -B against origin/<branch>, same reasoning as the taskMeta.branch
+          // path above: force the local ref to match the fetched remote tip
+          // rather than reusing whatever was checked out locally before.
+          execFileArgs("git", ["checkout", "-B", deterministicBranch, `origin/${deterministicBranch}`], { cwd: WORKSPACE });
           currentBranchName = deterministicBranch;
           sendOutput(
             `Task had no branch on record, but ${deterministicBranch} already exists on the remote — ` +
