@@ -1368,6 +1368,7 @@ async function runSessionAca(managed: ManagedSession): Promise<void> {
       gitProvider?: GitProvider;
       githubPat?: string;
       azureDevOpsPat?: string;
+      persistentBranchName?: string;
     } | null = null;
     if (meta.tabIds && meta.tabIds.length > 0) {
       for (const tabId of meta.tabIds) {
@@ -1523,7 +1524,7 @@ async function runSessionAca(managed: ManagedSession): Promise<void> {
     // For standalone (requiresTask=false) agents, compute and attach a persistent
     // branch name so the worker continuously commits to one branch.
     if (!agentRequiresTask && gitOptions) {
-      (gitOptions as { persistentBranchName?: string }).persistentBranchName =
+      gitOptions.persistentBranchName =
         buildPersistentBranchName(meta.id, meta.name);
     }
 
