@@ -1621,6 +1621,10 @@ function collectCustomMcpServers() {
 function setupSessions() {
   fetchSessions();
 
+  // Setup drop zones once (not per-render) to prevent event listener accumulation
+  setupSessionListDropZone(sessionListPinned, true);
+  setupSessionListDropZone(sessionList, false);
+
   newSessionBtn.addEventListener('click', async () => {
     sessionModal.hidden = false;
     await populateAgentDropdown();
@@ -2367,9 +2371,6 @@ function renderSessionList() {
     }
   });
 
-  // Make the pinned and unpinned lists accept drops (for dropping into empty sections)
-  setupSessionListDropZone(sessionListPinned, true);
-  setupSessionListDropZone(sessionList, false);
 }
 
 /** Setup a session list container as a drop zone (for empty sections) */

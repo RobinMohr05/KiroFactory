@@ -191,3 +191,80 @@ describe("reorderSessionsOnServer - pendingOps cleanup on failure", () => {
     expect(pendingOps.has("sessions-reordered")).toBe(true);
   });
 });
+
+// ============================================================================
+// Test 4: setupSessionListDropZone must NOT be called inside renderSessionList
+// ============================================================================
+describe("setupSessionListDropZone - no event listener leak", () => {
+  it("should NOT be called inside renderSessionList (prevents listener accumulation)", async () => {
+    // Structural verification: renderSessionList() must NOT contain calls to setupSessionListDropZone.
+    // The drop zone setup should be done once during initialization (in setupSessions), not on every render.
+    const fs = await import("node:fs");
+    const source = fs.readFileSync(
+      new URL("../../../frontend/public/app.js", import.meta.url),
+      "utf-8"
+    );
+
+    // Extract the renderSessionList function body
+    const funcStart = source.indexOf("function renderSessionList()");
+    expect(funcStart).toBeGreaterThan(-1);
+
+    // Find the function's closing brace by tracking brace depth
+    let braceDepth = 0;
+    let funcBodyStart = -1;
+    let funcEnd = -1;
+    for (let i = funcStart; i < source.length; i++) {
+      if (source[i] === "{") {
+        if (funcBodyStart === -1) funcBodyStart = i;
+        braceDepth++;
+      } else if (source[i] === "}") {
+        braceDepth--;
+        if (braceDepth === 0) {
+          funcEnd = i + 1;
+          break;
+        }
+      }
+    }
+    expect(funcEnd).toBeGreaterThan(funcStart);
+
+    const renderSessionListBody = source.slice(funcStart, funcEnd);
+
+    // The function body must NOT call setupSessionListDropZone
+    expect(renderSessionListBody).not.toContain("setupSessionListDropZone");
+  });
+
+  it("setupSessionListDropZone should be called in setupSessions (initialization)", async () => {
+    const fs = await import("node:fs");
+    const source = fs.readFileSync(
+      new URL("../../../frontend/public/app.js", import.meta.url),
+      "utf-8"
+    );
+
+    // Extract the setupSessions function body
+    const funcStart = source.indexOf("function setupSessions()");
+    expect(funcStart).toBeGreaterThan(-1);
+
+    let braceDepth = 0;
+    let funcBodyStart = -1;
+    let funcEnd = -1;
+    for (let i = funcStart; i < source.length; i++) {
+      if (source[i] === "{") {
+        if (funcBodyStart === -1) funcBodyStart = i;
+        braceDepth++;
+      } else if (source[i] === "}") {
+        braceDepth--;
+        if (braceDepth === 0) {
+          funcEnd = i + 1;
+          break;
+        }
+      }
+    }
+    expect(funcEnd).toBeGreaterThan(funcStart);
+
+    const setupSessionsBody = source.slice(funcStart, funcEnd);
+
+    // The function body MUST call setupSessionListDropZone for both containers
+    expect(setupSessionsBody).toContain("setupSessionListDropZone(sessionListPinned");
+    expect(setupSessionsBody).toContain("setupSessionListDropZone(sessionList");
+  });
+});
