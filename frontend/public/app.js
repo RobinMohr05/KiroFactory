@@ -1559,6 +1559,33 @@ const sessionTabsSelect = document.getElementById('sessionTabsSelect');
 const sessionTabsSaveBtn = document.getElementById('sessionTabsSaveBtn');
 const sessionTabsCancelBtn = document.getElementById('sessionTabsCancelBtn');
 
+// Session settings editor DOM refs
+const sessionEditBtn = document.getElementById('sessionEditBtn');
+const sessionSettingsEditor = document.getElementById('sessionSettingsEditor');
+const sessionSettingsForm = document.getElementById('sessionSettingsForm');
+const editSessionName = document.getElementById('editSessionName');
+const editSessionPrompt = document.getElementById('editSessionPrompt');
+const editSessionCwd = document.getElementById('editSessionCwd');
+const editSessionModel = document.getElementById('editSessionModel');
+const editSessionTimeout = document.getElementById('editSessionTimeout');
+const editSessionInteractive = document.getElementById('editSessionInteractive');
+const editSessionLoop = document.getElementById('editSessionLoop');
+const editSessionRuns = document.getElementById('editSessionRuns');
+const editSessionInterval = document.getElementById('editSessionInterval');
+const editSessionBoards = document.getElementById('editSessionBoards');
+const editSessionMcpAtlassian = document.getElementById('editSessionMcpAtlassian');
+const editSessionMcpAzureDevops = document.getElementById('editSessionMcpAzureDevops');
+const editSessionMcpAwsApi = document.getElementById('editSessionMcpAwsApi');
+const editSessionMcpAwsDocs = document.getElementById('editSessionMcpAwsDocs');
+const editSessionMcpToggle = document.getElementById('editSessionMcpToggle');
+const editSessionMcpSection = document.getElementById('editSessionMcpSection');
+const editSessionCustomMcpToggle = document.getElementById('editSessionCustomMcpToggle');
+const editSessionCustomMcpSection = document.getElementById('editSessionCustomMcpSection');
+const editSessionCustomMcpList = document.getElementById('editSessionCustomMcpList');
+const editSessionCustomMcpAddBtn = document.getElementById('editSessionCustomMcpAddBtn');
+const editSessionCancelBtn = document.getElementById('editSessionCancelBtn');
+const editSessionSaveBtn = document.getElementById('editSessionSaveBtn');
+
 // MCP override elements in session modal
 const sessionMcpToggle = document.getElementById('sessionMcpToggle');
 const sessionMcpSection = document.getElementById('sessionMcpSection');
@@ -1771,6 +1798,39 @@ function setupSessions() {
 
   sessionTabsCancelBtn.addEventListener('click', () => {
     sessionTabsEditor.hidden = true;
+  });
+
+  // Session settings editor
+  sessionEditBtn.addEventListener('click', () => {
+    openSessionSettingsEditor();
+  });
+
+  editSessionCancelBtn.addEventListener('click', () => {
+    sessionSettingsEditor.hidden = true;
+  });
+
+  sessionSettingsForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    await saveSessionSettings();
+  });
+
+  // Collapsible toggles in edit form
+  editSessionMcpToggle.addEventListener('click', () => {
+    const expanded = editSessionMcpToggle.getAttribute('aria-expanded') === 'true';
+    editSessionMcpToggle.setAttribute('aria-expanded', String(!expanded));
+    editSessionMcpSection.classList.toggle('expanded', !expanded);
+    editSessionMcpToggle.querySelector('.toggle-icon').textContent = expanded ? '▶' : '▼';
+  });
+
+  editSessionCustomMcpToggle.addEventListener('click', () => {
+    const expanded = editSessionCustomMcpToggle.getAttribute('aria-expanded') === 'true';
+    editSessionCustomMcpToggle.setAttribute('aria-expanded', String(!expanded));
+    editSessionCustomMcpSection.classList.toggle('expanded', !expanded);
+    editSessionCustomMcpToggle.querySelector('.toggle-icon').textContent = expanded ? '▶' : '▼';
+  });
+
+  editSessionCustomMcpAddBtn.addEventListener('click', () => {
+    addEditCustomMcpEntry();
   });
 
   // Quick-start form (shown in the empty state)
@@ -2116,6 +2176,8 @@ function selectSession(id) {
 
   // Hide tabs editor when switching sessions
   sessionTabsEditor.hidden = true;
+  // Hide settings editor when switching sessions
+  sessionSettingsEditor.hidden = true;
 
   loadSessionOutput(id);
 }
@@ -2185,6 +2247,181 @@ async function saveSessionTabs() {
   }
 }
 
+// --- Session Settings Editor ---
+
+function openSessionSettingsEditor() {
+  const session = sessions.find(s => s.id === activeSessionId);
+  if (!session) return;
+
+  if (session.status === 'running') {
+    alert('Stop the session to edit its settings.');
+    return;
+  }
+
+  // Populate form fields from current session state
+  editSessionName.value = session.name || '';
+  editSessionPrompt.value = session.prompt || '';
+  editSessionCwd.value = session.cwd || '';
+  editSessionModel.value = session.model || '';
+  editSessionTimeout.value = session.timeoutSeconds || 0;
+  editSessionInteractive.checked = session.interactive !== false;
+  editSessionLoop.checked = session.loop === true;
+  editSessionRuns.value = session.runs || 0;
+  editSessionInterval.value = session.intervalSeconds || 10;
+
+  // Populate boards multi-select
+  editSessionBoards.innerHTML = '';
+  boards.forEach(board => {
+    const opt = document.createElement('option');
+    opt.value = board.id;
+    opt.textContent = board.name;
+    if (session.tabIds && session.tabIds.includes(board.id)) {
+      opt.selected = true;
+    }
+    editSessionBoards.appendChild(opt);
+  });
+
+  // MCP override toggles
+  const mcpOverride = session.mcpConfigOverride;
+  if (mcpOverride) {
+    editSessionMcpAtlassian.checked = !!mcpOverride.atlassian;
+    editSessionMcpAzureDevops.checked = !!mcpOverride.azureDevops;
+    editSessionMcpAwsApi.checked = !!mcpOverride.awsApi;
+    editSessionMcpAwsDocs.checked = !!mcpOverride.awsDocs;
+  } else {
+    editSessionMcpAtlassian.checked = true;
+    editSessionMcpAzureDevops.checked = true;
+    editSessionMcpAwsApi.checked = false;
+    editSessionMcpAwsDocs.checked = true;
+  }
+
+  // Custom MCP servers
+  editSessionCustomMcpList.innerHTML = '';
+  if (session.mcpServers && session.mcpServers.length > 0) {
+    session.mcpServers.forEach(server => addEditCustomMcpEntry(server));
+  }
+
+  // Collapse MCP sections by default
+  editSessionMcpToggle.setAttribute('aria-expanded', 'false');
+  editSessionMcpSection.classList.remove('expanded');
+  editSessionMcpToggle.querySelector('.toggle-icon').textContent = '▶';
+  editSessionCustomMcpToggle.setAttribute('aria-expanded', 'false');
+  editSessionCustomMcpSection.classList.remove('expanded');
+  editSessionCustomMcpToggle.querySelector('.toggle-icon').textContent = '▶';
+
+  sessionSettingsEditor.hidden = false;
+}
+
+function addEditCustomMcpEntry(server) {
+  const row = document.createElement('div');
+  row.className = 'custom-mcp-entry';
+  const envStr = server?.env ? server.env.map(e => `${e.name}=${e.value}`).join(', ') : '';
+  row.innerHTML = `
+    <input type="text" class="custom-mcp-name" placeholder="Name" value="${escapeHtml(server?.name || '')}" />
+    <input type="text" class="custom-mcp-command" placeholder="Command" value="${escapeHtml(server?.command || '')}" />
+    <input type="text" class="custom-mcp-args" placeholder="Args (space-separated)" value="${escapeHtml(server?.args ? server.args.join(' ') : '')}" />
+    <input type="text" class="custom-mcp-env" placeholder="Env (KEY=VAL, ...)" value="${escapeHtml(envStr)}" />
+    <button type="button" class="btn btn-danger btn-sm custom-mcp-remove">×</button>
+  `;
+  row.querySelector('.custom-mcp-remove').addEventListener('click', () => row.remove());
+  editSessionCustomMcpList.appendChild(row);
+}
+
+function collectEditCustomMcpServers() {
+  const entries = editSessionCustomMcpList.querySelectorAll('.custom-mcp-entry');
+  const servers = [];
+  entries.forEach(entry => {
+    const name = entry.querySelector('.custom-mcp-name').value.trim();
+    const command = entry.querySelector('.custom-mcp-command').value.trim();
+    const argsRaw = entry.querySelector('.custom-mcp-args').value.trim();
+    const envRaw = entry.querySelector('.custom-mcp-env').value.trim();
+    if (!name || !command) return;
+
+    const args = argsRaw ? argsRaw.split(/\s+/) : [];
+    const env = envRaw
+      ? envRaw.split(',').map(l => l.trim()).filter(Boolean).map(pair => {
+          const idx = pair.indexOf('=');
+          return idx === -1
+            ? { name: pair, value: '' }
+            : { name: pair.slice(0, idx).trim(), value: pair.slice(idx + 1).trim() };
+        })
+      : [];
+
+    servers.push({ name, command, args, env });
+  });
+  return servers;
+}
+
+async function saveSessionSettings() {
+  if (!activeSessionId) return;
+
+  const session = sessions.find(s => s.id === activeSessionId);
+  if (!session) return;
+
+  if (session.status === 'running') {
+    alert('Stop the session to edit its settings.');
+    return;
+  }
+
+  const tabIds = Array.from(editSessionBoards.selectedOptions).map(opt => Number(opt.value));
+  const mcpConfigOverride = {
+    atlassian: editSessionMcpAtlassian.checked,
+    azureDevops: editSessionMcpAzureDevops.checked,
+    awsApi: editSessionMcpAwsApi.checked,
+    awsDocs: editSessionMcpAwsDocs.checked,
+  };
+  const mcpServers = collectEditCustomMcpServers();
+
+  const updates = {
+    name: editSessionName.value.trim(),
+    prompt: editSessionPrompt.value.trim(),
+    cwd: editSessionCwd.value.trim() || null,
+    model: editSessionModel.value.trim() || null,
+    timeoutSeconds: parseInt(editSessionTimeout.value, 10) || 0,
+    interactive: editSessionInteractive.checked,
+    loop: editSessionLoop.checked,
+    runs: parseInt(editSessionRuns.value, 10) || 0,
+    intervalSeconds: parseInt(editSessionInterval.value, 10) || 10,
+    tabIds,
+    mcpConfigOverride,
+    mcpServers: mcpServers.length > 0 ? mcpServers : null,
+  };
+
+  try {
+    const res = await fetch(`/api/sessions/${activeSessionId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates),
+    });
+    if (res.status === 409) {
+      alert('Cannot edit a running session. Stop the session first.');
+      return;
+    }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+    // Update local state
+    Object.assign(session, updates);
+    // Clear nullable fields properly (backend stores them as absent, not null)
+    if (!session.cwd) delete session.cwd;
+    if (!session.model) delete session.model;
+    if (tabIds.length > 0) session.tabIds = tabIds;
+    else delete session.tabIds;
+    if (mcpServers.length > 0) session.mcpServers = mcpServers;
+    else delete session.mcpServers;
+    session.mcpConfigOverride = mcpConfigOverride;
+
+    // Re-render
+    sessionDetailName.textContent = session.name;
+    updateSessionTabsDisplay(session);
+    renderSessionList();
+
+    sessionSettingsEditor.hidden = true;
+  } catch (e) {
+    console.error('Failed to update session settings:', e);
+    alert('Failed to save session settings: ' + e.message);
+  }
+}
+
 function showSessionEmpty() {
   sessionEmptyState.hidden = false;
   sessionDetail.hidden = true;
@@ -2208,6 +2445,12 @@ function updateSessionStatusUI(status) {
   sessionStopBtn.disabled = !isRunning;
   sessionPromptInput.disabled = !(isRunning && isInteractive && !isLoop);
   sessionPromptSendBtn.disabled = !(isRunning && isInteractive && !isLoop);
+
+  // Disable edit when running
+  sessionEditBtn.disabled = isRunning;
+  sessionEditBtn.title = isRunning ? 'Stop the session to edit its settings' : 'Edit session settings';
+  // Close the settings editor if the session starts running
+  if (isRunning) sessionSettingsEditor.hidden = true;
 
   if (isLoop) {
     const runsLabel = session.runs === 0 ? 'endless' : `${session.runs} run(s)`;
