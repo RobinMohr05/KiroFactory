@@ -315,7 +315,7 @@ router.patch("/:id/pin", (req: Request, res: Response) => {
     }
     const ok = pinSession(id, pinned);
     if (!ok) {
-      res.status(404).json({ error: "Session not found" });
+      res.status(403).json({ error: "Cannot unpin the permanent Chat session" });
       return;
     }
     res.json({ success: true });

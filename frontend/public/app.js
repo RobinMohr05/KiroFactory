@@ -2417,6 +2417,9 @@ function showSessionContextMenu(event, session) {
   const existing = document.querySelector('.session-context-menu');
   if (existing) existing.remove();
 
+  // Don't show context menu for the permanent Chat session (cannot be unpinned)
+  if (session.pinned && session.name === 'Chat') return;
+
   const menu = document.createElement('div');
   menu.className = 'session-context-menu';
   const pinLabel = session.pinned ? '📌 Unpin' : '📌 Pin to top';

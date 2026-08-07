@@ -570,6 +570,9 @@ export function pinSession(id: number, pinned: boolean): boolean {
   const session = sessions.get(id);
   if (!session) return false;
 
+  // Prevent unpinning the permanent Chat session
+  if (!pinned && session.meta.name === "Chat") return false;
+
   const userId = session.meta.userId;
   const allUserSessions = Array.from(sessions.values())
     .filter((s) => s.meta.userId === userId)

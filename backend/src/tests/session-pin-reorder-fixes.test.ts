@@ -193,9 +193,72 @@ describe("reorderSessionsOnServer - pendingOps cleanup on failure", () => {
 });
 
 // ============================================================================
-// Test 4: setupSessionListDropZone must NOT be called inside renderSessionList
+// Test 4: Chat session cannot be unpinned (protection)
 // ============================================================================
-describe("setupSessionListDropZone - no event listener leak", () => {
+describe("pinSession - Chat session protection", () => {
+  it("pinSession function should reject unpinning a session named 'Chat'", async () => {
+    // Structural verification: the pinSession function should contain a guard
+    // that prevents unpinning the Chat session.
+    const fs = await import("node:fs");
+    const source = fs.readFileSync(
+      new URL("../session-manager.ts", import.meta.url),
+      "utf-8"
+    );
+
+    // Extract the pinSession function body
+    const pinSessionMatch = source.match(
+      /export function pinSession[\s\S]*?^}/m
+    );
+    expect(pinSessionMatch).not.toBeNull();
+    const pinSessionBody = pinSessionMatch![0];
+
+    // Must contain a guard that checks for "Chat" session name and prevents unpin
+    // The guard should return false when trying to unpin a Chat session
+    expect(pinSessionBody).toMatch(/["']Chat["']/);
+    expect(pinSessionBody).toContain("return false");
+  });
+
+  it("frontend showSessionContextMenu should not show Unpin for Chat session", async () => {
+    // Structural verification: the frontend should prevent showing "Unpin" for Chat sessions
+    const fs = await import("node:fs");
+    const source = fs.readFileSync(
+      new URL("../../../frontend/public/app.js", import.meta.url),
+      "utf-8"
+    );
+
+    // The showSessionContextMenu function should have a guard for Chat sessions
+    const funcStart = source.indexOf("function showSessionContextMenu(");
+    expect(funcStart).toBeGreaterThan(-1);
+
+    // Find the function's closing brace by tracking brace depth
+    let braceDepth = 0;
+    let funcBodyStart = -1;
+    let funcEnd = -1;
+    for (let i = funcStart; i < source.length; i++) {
+      if (source[i] === "{") {
+        if (funcBodyStart === -1) funcBodyStart = i;
+        braceDepth++;
+      } else if (source[i] === "}") {
+        braceDepth--;
+        if (braceDepth === 0) {
+          funcEnd = i + 1;
+          break;
+        }
+      }
+    }
+    expect(funcEnd).toBeGreaterThan(funcStart);
+
+    const contextMenuBody = source.slice(funcStart, funcEnd);
+
+    // Should contain a check for Chat session name that prevents showing unpin
+    expect(contextMenuBody).toMatch(/["']Chat["']/);
+  });
+});
+
+// ============================================================================
+// Test 5: setupSessionListDropZone must NOT be called inside renderSessionList
+// ============================================================================
+describe("setupSessionListDropZone - no event listener leak (comment #4)", () => {
   it("should NOT be called inside renderSessionList (prevents listener accumulation)", async () => {
     // Structural verification: renderSessionList() must NOT contain calls to setupSessionListDropZone.
     // The drop zone setup should be done once during initialization (in setupSessions), not on every render.
