@@ -296,4 +296,32 @@ describe("updateSessionFields", () => {
     const session = getSession(sessionId);
     expect(session!.mcpServers).toBeUndefined();
   });
+
+  it("should not crash when tabIds is null", () => {
+    // First set tabIds to something
+    updateSessionFields(sessionId, { tabIds: [1, 2] });
+    const before = getSession(sessionId);
+    expect(before!.tabIds).toEqual([1, 2]);
+
+    // Sending null should clear tabIds without throwing TypeError
+    const result = updateSessionFields(sessionId, { tabIds: null } as any);
+    expect(result).toEqual({ success: true });
+
+    const session = getSession(sessionId);
+    expect(session!.tabIds).toBeUndefined();
+  });
+
+  it("should clear tabIds when empty array is provided", () => {
+    // First set tabIds
+    updateSessionFields(sessionId, { tabIds: [1, 2, 3] });
+    const before = getSession(sessionId);
+    expect(before!.tabIds).toEqual([1, 2, 3]);
+
+    // Now clear with empty array
+    const result = updateSessionFields(sessionId, { tabIds: [] });
+    expect(result).toEqual({ success: true });
+
+    const session = getSession(sessionId);
+    expect(session!.tabIds).toBeUndefined();
+  });
 });

@@ -551,7 +551,7 @@ export function updateSessionFields(
   if (updates.intervalSeconds !== undefined) session.meta.intervalSeconds = updates.intervalSeconds;
   if (updates.mcpServers !== undefined) session.meta.mcpServers = updates.mcpServers?.length ? updates.mcpServers : undefined;
   if (updates.mcpConfigOverride !== undefined) session.meta.mcpConfigOverride = updates.mcpConfigOverride;
-  if (updates.tabIds !== undefined) session.meta.tabIds = updates.tabIds.length > 0 ? updates.tabIds : undefined;
+  if (updates.tabIds !== undefined) session.meta.tabIds = updates.tabIds?.length ? updates.tabIds : undefined;
 
   broadcastToUser(session.meta.userId, { type: "session-updated", session: session.meta });
   persistSession(id);
