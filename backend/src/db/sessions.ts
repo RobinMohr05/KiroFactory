@@ -329,15 +329,23 @@ export async function reorderSessionsInDb(
   userId: number
 ): Promise<void> {
   const pool = await getPool();
-  for (let i = 0; i < sessionIds.length; i++) {
-    await pool
-      .request()
-      .input("id", sql.Int, sessionIds[i])
-      .input("sortOrder", sql.Int, i)
-      .input("userId", sql.Int, userId)
-      .query(
-        "UPDATE sessions SET sort_order = @sortOrder WHERE id = @id AND user_id = @userId"
-      );
+  const transaction = new sql.Transaction(pool);
+  await transaction.begin();
+  try {
+    for (let i = 0; i < sessionIds.length; i++) {
+      await transaction
+        .request()
+        .input("id", sql.Int, sessionIds[i])
+        .input("sortOrder", sql.Int, i)
+        .input("userId", sql.Int, userId)
+        .query(
+          "UPDATE sessions SET sort_order = @sortOrder WHERE id = @id AND user_id = @userId"
+        );
+    }
+    await transaction.commit();
+  } catch (err) {
+    await transaction.rollback();
+    throw err;
   }
 }
 

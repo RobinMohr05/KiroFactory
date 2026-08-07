@@ -2503,9 +2503,11 @@ async function reorderSessionsOnServer() {
     });
     if (!res.ok) {
       console.error('Failed to reorder sessions:', res.status);
+      pendingOps.delete('sessions-reordered');
     }
   } catch (e) {
     console.error('Failed to reorder sessions:', e);
+    pendingOps.delete('sessions-reordered');
   }
 }
 

@@ -615,7 +615,8 @@ export function pinSession(id: number, pinned: boolean): boolean {
     }
   }
 
-  broadcastToUser(userId, { type: "session-updated", session: session.meta });
+  // Broadcast a full session list refresh so all clients get updated sort orders
+  broadcastToUser(userId, { type: "sessions-reordered", sessions: getAllSessions(userId) });
   logSessionEvent("session-pin-changed", id, { pinned });
   return true;
 }
