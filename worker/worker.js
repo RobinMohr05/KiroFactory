@@ -426,7 +426,7 @@ function setupPersistentBranch() {
     );
     if (remoteRef) {
       // Branch exists remotely — fetch and check it out (crash-recovery path)
-      execFileArgs("git", ["fetch", "origin", PERSISTENT_BRANCH_NAME], { cwd: WORKSPACE });
+      execFileArgs("git", ["fetch", authRemoteUrl || "origin", PERSISTENT_BRANCH_NAME], { cwd: WORKSPACE });
       execFileArgs("git", ["checkout", "-B", PERSISTENT_BRANCH_NAME, `origin/${PERSISTENT_BRANCH_NAME}`], { cwd: WORKSPACE });
       sendOutput(`Checked out existing persistent branch: ${PERSISTENT_BRANCH_NAME}`, "system");
     } else {
@@ -449,7 +449,7 @@ function setupPersistentBranch() {
 function syncPersistentBranch() {
   if (!PERSISTENT_BRANCH_NAME) return;
   try {
-    execFileArgs("git", ["fetch", "origin", PERSISTENT_BRANCH_NAME], { cwd: WORKSPACE });
+    execFileArgs("git", ["fetch", authRemoteUrl || "origin", PERSISTENT_BRANCH_NAME], { cwd: WORKSPACE });
     // Reset to remote state (same as how resetWorkingTree uses hard reset)
     execFileArgs("git", ["reset", "--hard", `origin/${PERSISTENT_BRANCH_NAME}`], { cwd: WORKSPACE });
   } catch {
