@@ -2321,7 +2321,7 @@ function renderSessionList() {
       li.classList.remove('session-drop-before', 'session-drop-after');
     });
 
-    li.addEventListener('drop', (e) => {
+    li.addEventListener('drop', async (e) => {
       e.preventDefault();
       li.classList.remove('session-drop-before', 'session-drop-after');
       const draggedId = Number(e.dataTransfer.getData('application/x-session-id'));
@@ -2355,10 +2355,10 @@ function renderSessionList() {
       // Re-render immediately (optimistic)
       renderSessionList();
 
-      // Persist: send full ordered list for the section to the server
-      // If pin state changed, also call pin endpoint
+      // Persist: if pin state changed, await pin endpoint first to avoid race condition
+      // where reorder and pin both mutate sort_order concurrently
       if (draggedWasPinned !== targetPinned) {
-        pinSessionOnServer(draggedId, targetPinned);
+        await pinSessionOnServer(draggedId, targetPinned);
       }
       reorderSessionsOnServer();
     });
@@ -2383,7 +2383,7 @@ function setupSessionListDropZone(container, isPinnedSection) {
     e.dataTransfer.dropEffect = 'move';
   });
 
-  container.addEventListener('drop', (e) => {
+  container.addEventListener('drop', async (e) => {
     if (!e.dataTransfer.types.includes('application/x-session-id')) return;
     if (e.target !== container) return;
     e.preventDefault();
@@ -2398,7 +2398,7 @@ function setupSessionListDropZone(container, isPinnedSection) {
     // Pin/unpin if moving between sections
     if (draggedWasPinned !== isPinnedSection) {
       draggedSession.pinned = isPinnedSection;
-      pinSessionOnServer(draggedId, isPinnedSection);
+      await pinSessionOnServer(draggedId, isPinnedSection);
     }
 
     // Move to end of section

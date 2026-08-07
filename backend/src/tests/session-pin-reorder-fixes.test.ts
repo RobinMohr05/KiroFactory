@@ -331,3 +331,86 @@ describe("setupSessionListDropZone - no event listener leak (comment #4)", () =>
     expect(setupSessionsBody).toContain("setupSessionListDropZone(sessionList");
   });
 });
+
+// ============================================================================
+// Test 6: Cross-section drag must await pinSessionOnServer before reorderSessionsOnServer
+// ============================================================================
+describe("cross-section drag - race condition fix (comment #6)", () => {
+  it("li drop handler must be async and await pinSessionOnServer before calling reorderSessionsOnServer", async () => {
+    // Structural verification: The drop handler on each session li that handles cross-section
+    // drags must await pinSessionOnServer() before calling reorderSessionsOnServer().
+    // This prevents a race condition where both calls fire concurrently and the pin endpoint
+    // overwrites the correct sort_order set by the reorder endpoint.
+    const fs = await import("node:fs");
+    const source = fs.readFileSync(
+      new URL("../../../frontend/public/app.js", import.meta.url),
+      "utf-8"
+    );
+
+    // Find the renderSessionList function which contains the li drop handler
+    const funcStart = source.indexOf("function renderSessionList()");
+    expect(funcStart).toBeGreaterThan(-1);
+
+    let braceDepth = 0;
+    let funcBodyStart = -1;
+    let funcEnd = -1;
+    for (let i = funcStart; i < source.length; i++) {
+      if (source[i] === "{") {
+        if (funcBodyStart === -1) funcBodyStart = i;
+        braceDepth++;
+      } else if (source[i] === "}") {
+        braceDepth--;
+        if (braceDepth === 0) {
+          funcEnd = i + 1;
+          break;
+        }
+      }
+    }
+    expect(funcEnd).toBeGreaterThan(funcStart);
+
+    const renderBody = source.slice(funcStart, funcEnd);
+
+    // The drop handler should use "await pinSessionOnServer" (not fire-and-forget)
+    expect(renderBody).toContain("await pinSessionOnServer");
+    // And the handler must be async
+    expect(renderBody).toMatch(/li\.addEventListener\(['"]drop['"],\s*async/);
+  });
+
+  it("setupSessionListDropZone drop handler must be async and await pinSessionOnServer", async () => {
+    // The container-level drop handler (for dropping into empty sections) must also
+    // await pinSessionOnServer before calling reorderSessionsOnServer.
+    const fs = await import("node:fs");
+    const source = fs.readFileSync(
+      new URL("../../../frontend/public/app.js", import.meta.url),
+      "utf-8"
+    );
+
+    // Find the setupSessionListDropZone function
+    const funcStart = source.indexOf("function setupSessionListDropZone(");
+    expect(funcStart).toBeGreaterThan(-1);
+
+    let braceDepth = 0;
+    let funcBodyStart = -1;
+    let funcEnd = -1;
+    for (let i = funcStart; i < source.length; i++) {
+      if (source[i] === "{") {
+        if (funcBodyStart === -1) funcBodyStart = i;
+        braceDepth++;
+      } else if (source[i] === "}") {
+        braceDepth--;
+        if (braceDepth === 0) {
+          funcEnd = i + 1;
+          break;
+        }
+      }
+    }
+    expect(funcEnd).toBeGreaterThan(funcStart);
+
+    const funcBody = source.slice(funcStart, funcEnd);
+
+    // The container drop handler should use "await pinSessionOnServer" (not fire-and-forget)
+    expect(funcBody).toContain("await pinSessionOnServer");
+    // And the handler must be async
+    expect(funcBody).toMatch(/addEventListener\(['"]drop['"],\s*async/);
+  });
+});
