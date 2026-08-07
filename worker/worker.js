@@ -427,7 +427,9 @@ function setupPersistentBranch() {
     if (remoteRef) {
       // Branch exists remotely — fetch and check it out (crash-recovery path)
       execFileArgs("git", ["fetch", authRemoteUrl || "origin", PERSISTENT_BRANCH_NAME], { cwd: WORKSPACE });
-      execFileArgs("git", ["checkout", "-B", PERSISTENT_BRANCH_NAME, `origin/${PERSISTENT_BRANCH_NAME}`], { cwd: WORKSPACE });
+      // Use FETCH_HEAD — when fetching from a raw URL (not a remote name),
+      // git only updates FETCH_HEAD, not refs/remotes/origin/<branch>.
+      execFileArgs("git", ["checkout", "-B", PERSISTENT_BRANCH_NAME, "FETCH_HEAD"], { cwd: WORKSPACE });
       sendOutput(`Checked out existing persistent branch: ${PERSISTENT_BRANCH_NAME}`, "system");
     } else {
       // Branch doesn't exist yet — create fresh from DEV_BRANCH
@@ -450,8 +452,9 @@ function syncPersistentBranch() {
   if (!PERSISTENT_BRANCH_NAME) return;
   try {
     execFileArgs("git", ["fetch", authRemoteUrl || "origin", PERSISTENT_BRANCH_NAME], { cwd: WORKSPACE });
-    // Reset to remote state (same as how resetWorkingTree uses hard reset)
-    execFileArgs("git", ["reset", "--hard", `origin/${PERSISTENT_BRANCH_NAME}`], { cwd: WORKSPACE });
+    // Reset to FETCH_HEAD — when fetching from a raw URL (not a remote name),
+    // git only updates FETCH_HEAD, not refs/remotes/origin/<branch>.
+    execFileArgs("git", ["reset", "--hard", "FETCH_HEAD"], { cwd: WORKSPACE });
   } catch {
     // If the remote branch doesn't exist yet (first turn), this is expected
     // — nothing to sync against. Fall through silently.
