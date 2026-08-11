@@ -422,6 +422,7 @@ export async function createSession(input: CreateSessionInput): Promise<Session>
     createdAt: now(),
     output: [],
     pinned: input.pinned === true,
+    isPermanent: input.isPermanent === true,
     sortOrder: 0,
   };
 
@@ -494,7 +495,7 @@ export function getSessionOutput(id: number): OutputEntry[] {
 export function deleteSession(id: number): boolean {
   const session = sessions.get(id);
   if (!session) return false;
-  if (session.meta.pinned) return false; // pinned Chat session is permanent
+  if (session.meta.isPermanent) return false; // permanent sessions cannot be deleted
 
   // Stop first if running
   if (session.meta.status === "running") {
@@ -570,8 +571,8 @@ export function pinSession(id: number, pinned: boolean): boolean {
   const session = sessions.get(id);
   if (!session) return false;
 
-  // Prevent unpinning the permanent Chat session
-  if (!pinned && session.meta.name === "Chat") return false;
+  // Prevent unpinning a permanent session (e.g., the auto-created Chat session)
+  if (!pinned && session.meta.isPermanent) return false;
 
   const userId = session.meta.userId;
   const allUserSessions = Array.from(sessions.values())

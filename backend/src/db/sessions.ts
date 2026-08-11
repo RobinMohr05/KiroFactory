@@ -44,6 +44,7 @@ function mapRowToSession(row: Record<string, unknown>): Session {
       ? JSON.parse(row.current_activity as string)
       : undefined,
     pinned: !!row.pinned,
+    isPermanent: !!row.is_permanent,
     sortOrder: (row.sort_order as number) ?? 0,
     output: [], // Output is in-memory only
   };
@@ -157,20 +158,21 @@ export async function insertSession(session: Session): Promise<number> {
         : null
     )
     .input("pinned", sql.Bit, session.pinned ? 1 : 0)
+    .input("isPermanent", sql.Bit, session.isPermanent ? 1 : 0)
     .input("sortOrder", sql.Int, session.sortOrder ?? 0)
     .query(`
       INSERT INTO sessions (
         name, agent, status, prompt, interactive, loop, runs,
         interval_seconds, cwd, timeout_seconds, model, mcp_servers,
         tab_ids, user_id, created_at, started_at, current_task_id, current_activity,
-        mcp_config_override, pinned, sort_order
+        mcp_config_override, pinned, is_permanent, sort_order
       )
       OUTPUT INSERTED.id
       VALUES (
         @name, @agent, @status, @prompt, @interactive, @loop, @runs,
         @intervalSeconds, @cwd, @timeoutSeconds, @model, @mcpServers,
         @tabIds, @userId, @createdAt, @startedAt, @currentTaskId, @currentActivity,
-        @mcpConfigOverride, @pinned, @sortOrder
+        @mcpConfigOverride, @pinned, @isPermanent, @sortOrder
       )
     `);
 

@@ -196,9 +196,9 @@ describe("reorderSessionsOnServer - pendingOps cleanup on failure", () => {
 // Test 4: Chat session cannot be unpinned (protection)
 // ============================================================================
 describe("pinSession - Chat session protection", () => {
-  it("pinSession function should reject unpinning a session named 'Chat'", async () => {
+  it("pinSession function should reject unpinning a permanent session", async () => {
     // Structural verification: the pinSession function should contain a guard
-    // that prevents unpinning the Chat session.
+    // that prevents unpinning permanent sessions using isPermanent.
     const fs = await import("node:fs");
     const source = fs.readFileSync(
       new URL("../session-manager.ts", import.meta.url),
@@ -212,21 +212,20 @@ describe("pinSession - Chat session protection", () => {
     expect(pinSessionMatch).not.toBeNull();
     const pinSessionBody = pinSessionMatch![0];
 
-    // Must contain a guard that checks for "Chat" session name and prevents unpin
-    // The guard should return false when trying to unpin a Chat session
-    expect(pinSessionBody).toMatch(/["']Chat["']/);
+    // Must use isPermanent for the guard and return false
+    expect(pinSessionBody).toContain("isPermanent");
     expect(pinSessionBody).toContain("return false");
   });
 
-  it("frontend showSessionContextMenu should not show Unpin for Chat session", async () => {
-    // Structural verification: the frontend should prevent showing "Unpin" for Chat sessions
+  it("frontend showSessionContextMenu should not show context menu for permanent sessions", async () => {
+    // Structural verification: the frontend should prevent showing context menu for permanent sessions
     const fs = await import("node:fs");
     const source = fs.readFileSync(
       new URL("../../../frontend/public/app.js", import.meta.url),
       "utf-8"
     );
 
-    // The showSessionContextMenu function should have a guard for Chat sessions
+    // The showSessionContextMenu function should have a guard for permanent sessions
     const funcStart = source.indexOf("function showSessionContextMenu(");
     expect(funcStart).toBeGreaterThan(-1);
 
@@ -250,8 +249,8 @@ describe("pinSession - Chat session protection", () => {
 
     const contextMenuBody = source.slice(funcStart, funcEnd);
 
-    // Should contain a check for Chat session name that prevents showing unpin
-    expect(contextMenuBody).toMatch(/["']Chat["']/);
+    // Should use isPermanent instead of name === 'Chat'
+    expect(contextMenuBody).toContain("isPermanent");
   });
 });
 
@@ -412,5 +411,113 @@ describe("cross-section drag - race condition fix (comment #6)", () => {
     expect(funcBody).toContain("await pinSessionOnServer");
     // And the handler must be async
     expect(funcBody).toMatch(/addEventListener\(['"]drop['"],\s*async/);
+  });
+});
+
+// ============================================================================
+// Test 7: isPermanent field protects the permanent Chat session (comment #7 fix)
+// The guard should use isPermanent instead of name === "Chat" to prevent
+// user-created sessions named "Chat" from being incorrectly protected.
+// ============================================================================
+describe("isPermanent - robust permanent session identification (comment #7)", () => {
+  it("Session interface should have an isPermanent boolean field", async () => {
+    const fs = await import("node:fs");
+    const source = fs.readFileSync(
+      new URL("../types.ts", import.meta.url),
+      "utf-8"
+    );
+
+    // The Session interface should contain an isPermanent field
+    const sessionInterface = source.match(
+      /export interface Session \{[\s\S]*?\n\}/
+    );
+    expect(sessionInterface).not.toBeNull();
+    expect(sessionInterface![0]).toMatch(/isPermanent.*?boolean/);
+  });
+
+  it("pinSession guard should check isPermanent (not name === 'Chat')", async () => {
+    const fs = await import("node:fs");
+    const source = fs.readFileSync(
+      new URL("../session-manager.ts", import.meta.url),
+      "utf-8"
+    );
+
+    // Extract the pinSession function body
+    const pinSessionMatch = source.match(
+      /export function pinSession[\s\S]*?^}/m
+    );
+    expect(pinSessionMatch).not.toBeNull();
+    const pinSessionBody = pinSessionMatch![0];
+
+    // Must use isPermanent for the guard, NOT name === "Chat"
+    expect(pinSessionBody).toContain("isPermanent");
+    // The fragile name-based check should be removed
+    expect(pinSessionBody).not.toMatch(/\.name\s*===\s*["']Chat["']/);
+  });
+
+  it("deleteSession guard should check isPermanent (not just pinned)", async () => {
+    const fs = await import("node:fs");
+    const source = fs.readFileSync(
+      new URL("../session-manager.ts", import.meta.url),
+      "utf-8"
+    );
+
+    // Extract the deleteSession function body
+    const deleteSessionMatch = source.match(
+      /export function deleteSession[\s\S]*?^}/m
+    );
+    expect(deleteSessionMatch).not.toBeNull();
+    const deleteSessionBody = deleteSessionMatch![0];
+
+    // Must check isPermanent (not just pinned, since user-pinned sessions should be deletable)
+    expect(deleteSessionBody).toContain("isPermanent");
+  });
+
+  it("frontend showSessionContextMenu should use isPermanent instead of name === 'Chat'", async () => {
+    const fs = await import("node:fs");
+    const source = fs.readFileSync(
+      new URL("../../../frontend/public/app.js", import.meta.url),
+      "utf-8"
+    );
+
+    const funcStart = source.indexOf("function showSessionContextMenu(");
+    expect(funcStart).toBeGreaterThan(-1);
+
+    let braceDepth = 0;
+    let funcBodyStart = -1;
+    let funcEnd = -1;
+    for (let i = funcStart; i < source.length; i++) {
+      if (source[i] === "{") {
+        if (funcBodyStart === -1) funcBodyStart = i;
+        braceDepth++;
+      } else if (source[i] === "}") {
+        braceDepth--;
+        if (braceDepth === 0) {
+          funcEnd = i + 1;
+          break;
+        }
+      }
+    }
+    expect(funcEnd).toBeGreaterThan(funcStart);
+    const contextMenuBody = source.slice(funcStart, funcEnd);
+
+    // Should use isPermanent instead of name === 'Chat'
+    expect(contextMenuBody).toContain("isPermanent");
+    expect(contextMenuBody).not.toMatch(/\.name\s*===\s*['"]Chat['"]/);
+  });
+
+  it("CreateSessionInput should have isPermanent as optional internal-only field", async () => {
+    const fs = await import("node:fs");
+    const source = fs.readFileSync(
+      new URL("../types.ts", import.meta.url),
+      "utf-8"
+    );
+
+    // The CreateSessionInput should contain isPermanent as optional
+    const createInputInterface = source.match(
+      /export interface CreateSessionInput \{[\s\S]*?\n\}/
+    );
+    expect(createInputInterface).not.toBeNull();
+    expect(createInputInterface![0]).toMatch(/isPermanent\?.*?boolean/);
   });
 });

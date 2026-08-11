@@ -56,10 +56,11 @@ router.post("/", async (req: Request, res: Response) => {
       return;
     }
     // Force userId from auth context (ignore any userId in the body).
-    // `pinned` is internal-only (set for the one permanent Chat session
-    // created at registration) — never honor it from a public request body.
+    // `pinned` and `isPermanent` are internal-only (set for the one permanent
+    // Chat session created at registration) — never honor from a public request body.
     input.userId = userId;
     input.pinned = false;
+    input.isPermanent = false;
     const session = await createSession(input);
     res.status(201).json(session);
   } catch (err) {
@@ -315,7 +316,7 @@ router.patch("/:id/pin", (req: Request, res: Response) => {
     }
     const ok = pinSession(id, pinned);
     if (!ok) {
-      res.status(403).json({ error: "Cannot unpin the permanent Chat session" });
+      res.status(403).json({ error: "Cannot unpin a permanent session" });
       return;
     }
     res.json({ success: true });
@@ -345,8 +346,8 @@ router.delete("/:id", async (req: Request, res: Response) => {
       res.status(404).json({ error: "Session not found" });
       return;
     }
-    if (session.pinned) {
-      res.status(403).json({ error: "The pinned Chat session cannot be deleted" });
+    if (session.isPermanent) {
+      res.status(403).json({ error: "Permanent sessions cannot be deleted" });
       return;
     }
     const ok = deleteSession(id);

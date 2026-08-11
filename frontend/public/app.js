@@ -2215,8 +2215,8 @@ function updateSessionStatusUI(status) {
  * next to its name in the detail header.
  */
 function updateSessionPinnedUI(session) {
-  sessionDeleteBtn.disabled = !!session.pinned;
-  sessionDeleteBtn.title = session.pinned ? 'The pinned Chat session cannot be deleted' : 'Delete session';
+  sessionDeleteBtn.disabled = !!session.isPermanent;
+  sessionDeleteBtn.title = session.isPermanent ? 'This permanent session cannot be deleted' : 'Delete session';
   sessionDetailName.classList.toggle('session-detail-name-pinned', !!session.pinned);
 }
 
@@ -2417,8 +2417,8 @@ function showSessionContextMenu(event, session) {
   const existing = document.querySelector('.session-context-menu');
   if (existing) existing.remove();
 
-  // Don't show context menu for the permanent Chat session (cannot be unpinned)
-  if (session.pinned && session.name === 'Chat') return;
+  // Don't show context menu for permanent sessions (cannot be unpinned)
+  if (session.isPermanent) return;
 
   const menu = document.createElement('div');
   menu.className = 'session-context-menu';
