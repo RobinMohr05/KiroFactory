@@ -423,8 +423,17 @@ export async function createSession(input: CreateSessionInput): Promise<Session>
     output: [],
     pinned: input.pinned === true,
     isPermanent: input.isPermanent === true,
-    sortOrder: 0,
+    sortOrder: 0, // placeholder — calculated below
   };
+
+  // Calculate sortOrder: place new session at end of appropriate group
+  const isPinned = meta.pinned;
+  const userSessions = Array.from(sessions.values())
+    .filter((s) => s.meta.userId === meta.userId && s.meta.pinned === isPinned);
+  const maxOrder = userSessions.length > 0
+    ? Math.max(...userSessions.map((s) => s.meta.sortOrder ?? 0))
+    : -1;
+  meta.sortOrder = maxOrder + 1;
 
   // The session id is assigned by the database (IDENTITY column), so it must
   // be known before the session can be registered anywhere.

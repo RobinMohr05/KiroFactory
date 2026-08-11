@@ -521,3 +521,94 @@ describe("isPermanent - robust permanent session identification (comment #7)", (
     expect(createInputInterface![0]).toMatch(/isPermanent\?.*?boolean/);
   });
 });
+
+// ============================================================================
+// Test 8: Context menu pin handler must add pendingOps before pinSessionOnServer (comment #10)
+// ============================================================================
+describe("context menu pin handler - pendingOps suppression (comment #10)", () => {
+  it("should add pendingOps.add('sessions-reordered') before pinSessionOnServer in context menu", async () => {
+    const fs = await import("node:fs");
+    const source = fs.readFileSync(
+      new URL("../../../frontend/public/app.js", import.meta.url),
+      "utf-8"
+    );
+
+    // Find the showSessionContextMenu function
+    const funcStart = source.indexOf("function showSessionContextMenu(");
+    expect(funcStart).toBeGreaterThan(-1);
+
+    let braceDepth = 0;
+    let funcBodyStart = -1;
+    let funcEnd = -1;
+    for (let i = funcStart; i < source.length; i++) {
+      if (source[i] === "{") {
+        if (funcBodyStart === -1) funcBodyStart = i;
+        braceDepth++;
+      } else if (source[i] === "}") {
+        braceDepth--;
+        if (braceDepth === 0) {
+          funcEnd = i + 1;
+          break;
+        }
+      }
+    }
+    expect(funcEnd).toBeGreaterThan(funcStart);
+    const contextMenuBody = source.slice(funcStart, funcEnd);
+
+    // Must contain pendingOps.add('sessions-reordered') BEFORE pinSessionOnServer
+    // This suppresses the WS broadcast from the pin endpoint on this client
+    expect(contextMenuBody).toContain("pendingOps.add('sessions-reordered')");
+
+    // Verify the order: pendingOps.add must come before pinSessionOnServer
+    const pendingOpsIdx = contextMenuBody.indexOf("pendingOps.add('sessions-reordered')");
+    const pinServerIdx = contextMenuBody.indexOf("pinSessionOnServer(session.id");
+    expect(pendingOpsIdx).toBeGreaterThan(-1);
+    expect(pinServerIdx).toBeGreaterThan(-1);
+    expect(pendingOpsIdx).toBeLessThan(pinServerIdx);
+  });
+});
+
+// ============================================================================
+// Test 9: New sessions should get sortOrder at end of group (comment #11)
+// ============================================================================
+describe("createSession - sortOrder calculation (comment #11)", () => {
+  it("should calculate sortOrder based on existing sessions instead of hardcoding 0", async () => {
+    // Structural verification: the createSession function should compute sortOrder
+    // based on existing sessions for the user, not use a fixed value of 0 that would
+    // cause collisions with existing sessions.
+    const fs = await import("node:fs");
+    const source = fs.readFileSync(
+      new URL("../session-manager.ts", import.meta.url),
+      "utf-8"
+    );
+
+    // Find the createSession function body
+    const funcStart = source.indexOf("export async function createSession(");
+    expect(funcStart).toBeGreaterThan(-1);
+
+    let braceDepth = 0;
+    let funcBodyStart = -1;
+    let funcEnd = -1;
+    for (let i = funcStart; i < source.length; i++) {
+      if (source[i] === "{") {
+        if (funcBodyStart === -1) funcBodyStart = i;
+        braceDepth++;
+      } else if (source[i] === "}") {
+        braceDepth--;
+        if (braceDepth === 0) {
+          funcEnd = i + 1;
+          break;
+        }
+      }
+    }
+    expect(funcEnd).toBeGreaterThan(funcStart);
+    const createSessionBody = source.slice(funcStart, funcEnd);
+
+    // Should contain logic to calculate maxOrder from existing sessions
+    expect(createSessionBody).toContain("maxOrder");
+    // Should use Math.max to find the highest existing sortOrder
+    expect(createSessionBody).toContain("Math.max");
+    // Should set sortOrder to maxOrder + 1 (at end of group)
+    expect(createSessionBody).toContain("maxOrder + 1");
+  });
+});

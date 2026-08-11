@@ -2453,6 +2453,7 @@ function showSessionContextMenu(event, session) {
         session.sortOrder = 0;
       }
       renderSessionList();
+      pendingOps.add('sessions-reordered');
       pinSessionOnServer(session.id, newPinned);
     }
   });
