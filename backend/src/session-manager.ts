@@ -1852,7 +1852,31 @@ async function runStandaloneLoopAca(
 
     try {
       // No taskMeta — standalone sessions don't have tasks
-      await streamPromptAca(managed, meta.prompt);
+      const promptResult = await streamPromptAca(managed, meta.prompt);
+
+      // Surface worker-reported errors (ACP failure, git push failure, timeout)
+      if (promptResult.error) {
+        appendOutput(managed, {
+          timestamp: now(),
+          stream: "stderr",
+          text: `⚠ Turn error: ${promptResult.error}`,
+        });
+        recordError({
+          sessionId: meta.id,
+          sessionName: meta.name,
+          agent: meta.agent,
+          message: promptResult.error,
+          context: `Standalone loop iteration ${iteration} reported error. stopReason: ${promptResult.stopReason ?? "none"}, tool calls: ${promptResult.toolCalls ?? 0}, duration: ${Math.round((promptResult.durationMs ?? 0) / 1000)}s.`,
+          userId: meta.userId,
+        });
+      }
+      if (promptResult.stopReason === "cancelled") {
+        appendOutput(managed, {
+          timestamp: now(),
+          stream: "stderr",
+          text: `⚠ Turn was cancelled (likely timeout) before completing.`,
+        });
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       appendOutput(managed, {

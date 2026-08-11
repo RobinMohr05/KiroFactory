@@ -785,8 +785,8 @@ function commitAndPush() {
   // breaks the command with a syntax error. execFileArgs() invokes git
   // directly with an argv array, so the commit message is never re-parsed
   // by a shell no matter what it contains.
-  const taskId = currentTaskMeta?.id || TASK_ID || "unknown";
-  const taskTitle = currentTaskMeta?.title || `task ${taskId}`;
+  const taskId = currentTaskMeta?.id || TASK_ID || (PERSISTENT_BRANCH_NAME ? AGENT_NAME : "unknown");
+  const taskTitle = currentTaskMeta?.title || (PERSISTENT_BRANCH_NAME ? `${AGENT_NAME} update` : `task ${taskId}`);
   const commitTitle = `${taskTitle} [Vibecode Heaven #${taskId}]`;
   const commitBody = currentTaskMeta
     ? `\nType: ${currentTaskMeta.type || "unknown"}\nID: ${taskId}\n\n${currentTaskMeta.description || ""}`
