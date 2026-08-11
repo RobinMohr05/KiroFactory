@@ -73,6 +73,27 @@ const GITHUB_PAT = process.env.GITHUB_PAT || "";
 const AZURE_DEVOPS_PAT = process.env.AZURE_DEVOPS_PAT || "";
 
 /**
+ * Marker prepended to every comment that githubPostReviewComment falls back
+ * to posting as a general (non-inline) PR comment when GitHub rejects the
+ * inline attempt (e.g. 422 — line outside the diff for the current head
+ * commit). githubGetFallbackIssueComments() looks for this marker to find
+ * and re-surface those comments — GitHub's reviewThreads API has no
+ * knowledge of them at all, so without this a comment that fails to post
+ * inline is invisible to every future get_pr_review_comments call, and the
+ * same finding gets reported over and over on every review pass.
+ */
+const FALLBACK_COMMENT_MARKER = "**Code Review Comment**";
+
+/**
+ * Prefix used to build a synthetic `threadId` for fallback comments, so
+ * resolve_review_comment can tell them apart from real review-thread node
+ * IDs and dispatch to the right GraphQL mutation (minimizeComment instead
+ * of resolveReviewThread) without the agent needing to know the
+ * difference — it just passes back whatever `threadId` it was given.
+ */
+const ISSUE_COMMENT_PREFIX = "issuecomment:";
+
+/**
  * TASK_PR_URL is read at tool-call time, not at module load.
  *
  * The pr-review MCP server is spawned by kiro-cli at session/new time, before
@@ -205,10 +226,96 @@ const REVIEW_THREADS_QUERY = `
 `;
 
 /**
+ * General (non-inline) PR comments, paged separately from review threads.
+ * Only needed to recover FALLBACK_COMMENT_MARKER comments — see
+ * githubGetFallbackIssueComments — since real conversation comments never
+ * carry that marker and are filtered out there.
+ */
+const ISSUE_COMMENTS_QUERY = `
+  query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+    repository(owner: $owner, name: $name) {
+      pullRequest(number: $number) {
+        comments(first: 100, after: $cursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes {
+            id
+            databaseId
+            body
+            isMinimized
+            author { login }
+            createdAt
+          }
+        }
+      }
+    }
+  }
+`;
+
+/**
+ * Recovers the "📁 `path` (line N)" header githubPostReviewComment prepends
+ * to a comment's body when falling back to a general PR comment, so a
+ * recovered fallback comment carries the same path/line the caller would
+ * have gotten had the inline post succeeded.
+ */
+const FALLBACK_LOCATION_RE = /📁 `([^`]+)` \(line (\d+)\)/;
+
+/**
+ * Fetch unresolved general PR comments that githubPostReviewComment fell
+ * back to posting when GitHub rejected an inline attempt (see
+ * FALLBACK_COMMENT_MARKER). The reviewThreads GraphQL connection queried by
+ * githubGetPrComments has no knowledge of these at all — they are plain
+ * IssueComments on the PR's conversation tab, not review-thread comments —
+ * so without this a fallback finding would never resurface to
+ * get_pr_review_comments, and the same issue gets reported (and falls back)
+ * again on every subsequent review pass.
+ *
+ * "Resolved" for these has no thread-resolution equivalent, so
+ * resolve_review_comment maps to GitHub's `minimizeComment` mutation
+ * instead (see githubMinimizeComment) — a minimized comment is filtered out
+ * here via `isMinimized`, mirroring how real threads filter on
+ * `isResolved`.
+ */
+async function githubGetFallbackIssueComments(owner, repo, prNumber) {
+  const results = [];
+  let cursor = null;
+  // Defensive page cap, same rationale as githubGetPrComments.
+  for (let page = 0; page < 20; page++) {
+    const data = await githubGraphQL(ISSUE_COMMENTS_QUERY, { owner, name: repo, number: prNumber, cursor });
+    const comments = data?.repository?.pullRequest?.comments;
+    if (!comments) break;
+
+    for (const comment of comments.nodes || []) {
+      if (comment.isMinimized) continue;
+      if (!comment.body || !comment.body.includes(FALLBACK_COMMENT_MARKER)) continue;
+      const location = comment.body.match(FALLBACK_LOCATION_RE);
+      results.push({
+        id: comment.databaseId,
+        // Prefixed so resolve_review_comment can tell this apart from a
+        // real reviewThread node ID and route to minimizeComment instead
+        // of resolveReviewThread — see ISSUE_COMMENT_PREFIX.
+        threadId: `${ISSUE_COMMENT_PREFIX}${comment.id}`,
+        path: location ? location[1] : null,
+        line: location ? parseInt(location[2], 10) : null,
+        side: null,
+        body: comment.body,
+        user: comment.author?.login || null,
+        createdAt: comment.createdAt,
+      });
+    }
+
+    if (!comments.pageInfo?.hasNextPage) break;
+    cursor = comments.pageInfo.endCursor;
+  }
+  return results;
+}
+
+/**
  * List unresolved review threads on the PR (one entry per thread, using its
- * first comment as the representative body/path/line). Resolved threads are
- * filtered out here so a comment the developer already resolved never
- * resurfaces on a later get_pr_review_comments call.
+ * first comment as the representative body/path/line), plus any unresolved
+ * fallback general comments (see githubGetFallbackIssueComments). Resolved/
+ * minimized entries are filtered out on both sides so a comment the
+ * developer already resolved never resurfaces on a later
+ * get_pr_review_comments call.
  */
 async function githubGetPrComments(owner, repo, prNumber) {
   const results = [];
@@ -239,6 +346,9 @@ async function githubGetPrComments(owner, repo, prNumber) {
     if (!threads.pageInfo?.hasNextPage) break;
     cursor = threads.pageInfo.endCursor;
   }
+
+  results.push(...(await githubGetFallbackIssueComments(owner, repo, prNumber)));
+
   return results;
 }
 
@@ -258,6 +368,28 @@ async function githubResolveReviewThread(threadId) {
   const thread = data?.resolveReviewThread?.thread;
   if (!thread) throw new Error("resolveReviewThread mutation returned no thread data");
   return { success: true, id: thread.id, isResolved: thread.isResolved };
+}
+
+/**
+ * "Resolve" a fallback general comment (see githubGetFallbackIssueComments)
+ * by minimizing it — GitHub has no thread-resolution concept for plain
+ * IssueComments, so `minimizeComment` with classifier RESOLVED is the
+ * closest equivalent, and is what the web UI itself uses for "Resolve
+ * conversation" on a non-review comment. `nodeId` is the raw GraphQL node
+ * ID recovered from the `threadId` after stripping ISSUE_COMMENT_PREFIX.
+ */
+async function githubMinimizeComment(nodeId) {
+  const mutation = `
+    mutation($id: ID!) {
+      minimizeComment(input: { subjectId: $id, classifier: RESOLVED }) {
+        minimizedComment { isMinimized minimizedReason }
+      }
+    }
+  `;
+  const data = await githubGraphQL(mutation, { id: nodeId });
+  const minimized = data?.minimizeComment?.minimizedComment;
+  if (!minimized) throw new Error("minimizeComment mutation returned no data");
+  return { success: true, isMinimized: minimized.isMinimized, reason: minimized.minimizedReason };
 }
 
 async function githubGetPrHeadSha(owner, repo, prNumber) {
@@ -851,7 +983,17 @@ async function handleResolveComment(id, args) {
         });
         return;
       }
-      result = await githubResolveReviewThread(threadId);
+      // A threadId prefixed with ISSUE_COMMENT_PREFIX identifies a fallback
+      // general comment (see githubGetFallbackIssueComments), which has no
+      // review-thread node behind it — resolveReviewThread would fail with
+      // "could not resolve to a node" if we tried it here. Route to the
+      // comment-minimizing mutation instead.
+      if (threadId.startsWith(ISSUE_COMMENT_PREFIX)) {
+        const nodeId = threadId.slice(ISSUE_COMMENT_PREFIX.length);
+        result = await githubMinimizeComment(nodeId);
+      } else {
+        result = await githubResolveReviewThread(threadId);
+      }
     } else if (provider === "azure-devops") {
       if (!AZURE_DEVOPS_PAT) {
         respond(id, {
