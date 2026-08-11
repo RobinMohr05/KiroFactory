@@ -2358,6 +2358,7 @@ function renderSessionList() {
       // Persist: if pin state changed, await pin endpoint first to avoid race condition
       // where reorder and pin both mutate sort_order concurrently
       if (draggedWasPinned !== targetPinned) {
+        pendingOps.add('sessions-reordered'); // suppress WS broadcast from pin endpoint
         await pinSessionOnServer(draggedId, targetPinned);
       }
       reorderSessionsOnServer();
@@ -2398,6 +2399,7 @@ function setupSessionListDropZone(container, isPinnedSection) {
     // Pin/unpin if moving between sections
     if (draggedWasPinned !== isPinnedSection) {
       draggedSession.pinned = isPinnedSection;
+      pendingOps.add('sessions-reordered'); // suppress WS broadcast from pin endpoint
       await pinSessionOnServer(draggedId, isPinnedSection);
     }
 
