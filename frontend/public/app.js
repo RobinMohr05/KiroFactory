@@ -1482,12 +1482,18 @@ function setupEventListeners() {
 }
 
 // ===== Periodic Reconciliation =====
+// Safety net for missed WebSocket messages — NOT the primary update path
+// (that's the 'task-updated' WS push). Deliberately much longer than the
+// Azure SQL serverless autoPauseDelay (15 min) so this timer doesn't itself
+// keep the database "online" 24/7 and defeat auto-pause billing savings.
+const RECONCILE_INTERVAL_MS = 20 * 60 * 1000; // 20 minutes
+
 function startReconciliation() {
   reconcileTimer = setInterval(() => {
     if (currentBoardId) {
       fetchBoardTasks(currentBoardId);
     }
-  }, 30000);
+  }, RECONCILE_INTERVAL_MS);
 }
 
 // ===== Init =====
