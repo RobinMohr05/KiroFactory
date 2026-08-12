@@ -403,6 +403,38 @@ function resetWorkingTree() {
 }
 
 /**
+ * Fetch the latest `DEV_BRANCH` from origin and fast-forward the local ref to
+ * match it.
+ *
+ * Runs before every task's branch decision so a new task branch — or the
+ * "does this deterministic branch already exist" probe, or an inspector's
+ * `git diff origin/DEV_BRANCH...HEAD` — is always based on the current state
+ * of develop, not whatever commit happened to be on develop when the
+ * container was cloned at job startup. Without this, a long-running loop that
+ * processes many tasks back to back would keep branching new tasks off an
+ * increasingly stale snapshot of develop.
+ */
+function refreshDevBranch() {
+  try {
+    execFileArgs("git", ["fetch", "origin", DEV_BRANCH], { cwd: WORKSPACE });
+    resetWorkingTree();
+    execFileArgs("git", ["checkout", DEV_BRANCH], { cwd: WORKSPACE });
+    execFileArgs("git", ["reset", "--hard", `origin/${DEV_BRANCH}`], { cwd: WORKSPACE });
+    logInfo("Refreshed DEV_BRANCH from origin", { branch: DEV_BRANCH });
+    sendOutput(`Refreshed ${DEV_BRANCH} from origin before starting next task.`, "system");
+  } catch (err) {
+    logError("Failed to refresh DEV_BRANCH from origin — continuing with existing local ref", {
+      branch: DEV_BRANCH,
+      error: err?.message || String(err),
+    });
+    sendOutput(
+      `Warning: could not refresh ${DEV_BRANCH} from origin (${err?.message || err}) — using existing local state.`,
+      "stderr"
+    );
+  }
+}
+
+/**
  * Create a task-specific branch from a clean DEV_BRANCH state.
  *
  * Uses `checkout -B` (create-or-reset) instead of `-b`: when a task is retried
@@ -591,12 +623,23 @@ function setupRepo() {
   ensureAgentConfig();
 
   // Install dependencies so the agent can run tests, builds, etc.
+  //
+  // --include=dev is explicit, not decorative: npm's `omit` config defaults
+  // to 'dev' whenever NODE_ENV=production (or omit=dev is set some other
+  // way), which silently skips writing devDependencies to node_modules even
+  // though the install exits 0 — they still get resolved into
+  // package-lock.json, just never installed. That exact bug (via this
+  // Dockerfile's now-removed `ENV NODE_ENV=production`) made vitest and
+  // typescript disappear from every agent session's node_modules while every
+  // install step reported success. Keep this flag even though the Dockerfile
+  // no longer sets NODE_ENV, so a future reintroduction of that env var
+  // doesn't silently reopen the same hole.
   sendOutput("Installing dependencies...", "system");
   try {
     if (existsSync(`${WORKSPACE}/package-lock.json`)) {
-      exec("npm ci", { cwd: WORKSPACE, timeout: 300_000 });
+      exec("npm ci --include=dev", { cwd: WORKSPACE, timeout: 300_000 });
     } else if (existsSync(`${WORKSPACE}/package.json`)) {
-      exec("npm install", { cwd: WORKSPACE, timeout: 300_000 });
+      exec("npm install --include=dev", { cwd: WORKSPACE, timeout: 300_000 });
     }
   } catch (err) {
     sendOutput(`Warning: npm install failed: ${err?.message || err}`, "stderr");
@@ -1084,6 +1127,13 @@ const TOOL_OUTPUT_LOG_LIMIT = 4000;
 
 /** The ACP session id returned by session/new. Null until the handshake finishes. */
 let acpSessionId = null;
+/**
+ * Resolver/rejecter for an in-flight session/new request. Used both for the
+ * initial handshake (right after initialize) and for every later per-task
+ * session refresh — see createNewAcpSession().
+ */
+let sessionNewResolve = null;
+let sessionNewReject = null;
 /** Handle for the readiness timeout (module scope so message handlers can clear it). */
 let readyTimeout = null;
 /** Handle for the in-flight prompt timeout. */
@@ -1097,6 +1147,18 @@ let turnStats = { toolCalls: 0, messageChars: 0, thoughtChars: 0, startedAt: 0, 
 let turnVerdict = null; // { verdict: "resolved"|"no_action_needed", reason: string } | null
 /** Tracks toolCallId → tool name for verdict detection across tool_call/tool_call_update. */
 let verdictToolCallId = null;
+/**
+ * MCP servers that kiro-cli reported as failing to initialize for the current
+ * ACP session (one entry per `_kiro.dev/mcp/server_init_failure` notification).
+ * Reset on every fresh session/new (see createNewAcpSession()) — a session is
+ * created fresh per claimed task, so this always reflects the current turn.
+ *
+ * Populated with whatever kiro-cli sends us (server name if present, raw
+ * params otherwise) — the exact shape of this notification isn't part of the
+ * public ACP schema, so we don't assume specific field names beyond a
+ * best-effort attempt at a name.
+ */
+let mcpServerInitFailures = [];
 
 function clearReadyTimeout() {
   if (readyTimeout) {
@@ -1110,6 +1172,71 @@ function clearPromptTimer() {
     clearTimeout(promptTimer);
     promptTimer = null;
   }
+}
+
+/**
+ * Issue a fresh session/new against the already-running kiro-cli process.
+ *
+ * Used both for the initial handshake (right after initialize) and — this is
+ * the important part — again before every claimed task, so each task starts
+ * with zero conversation history instead of inheriting whatever the previous
+ * task's turn accumulated. kiro-cli scopes all state to sessionId, so a new
+ * session/new on the same process is enough to get a clean context; no
+ * process respawn (and no re-running `initialize`) is needed.
+ *
+ * buildMcpServers() is called fresh each time too, which means a session
+ * created for an inspector task picks up that task's current TASK_PR_URL —
+ * so a rework pass reads the PR's actual review comments through the
+ * pr-review MCP tool instead of relying on anything from a prior turn.
+ *
+ * Resolves with the new sessionId, or rejects if kiro-cli returns an error
+ * or the request times out.
+ */
+function createNewAcpSession() {
+  return new Promise((resolve, reject) => {
+    if (sessionNewResolve || sessionNewReject) {
+      reject(new Error("A session/new request is already in flight"));
+      return;
+    }
+
+    // Reset per-session MCP failure tracking — this session's server_init_*
+    // notifications (fired shortly after session/new resolves) should only
+    // ever reflect servers spawned for THIS session, not a stale one.
+    mcpServerInitFailures = [];
+
+    clearReadyTimeout();
+    readyTimeout = setTimeout(() => {
+      sessionNewResolve = null;
+      sessionNewReject = null;
+      reject(new Error(`session/new timed out after ${KIRO_READY_TIMEOUT_MS / 1000}s`));
+    }, KIRO_READY_TIMEOUT_MS);
+
+    sessionNewResolve = (sessionId) => {
+      clearReadyTimeout();
+      resolve(sessionId);
+    };
+    sessionNewReject = (err) => {
+      clearReadyTimeout();
+      reject(err);
+    };
+
+    const sent = writeToKiro({
+      jsonrpc: "2.0",
+      method: "session/new",
+      id: NEW_SESSION_REQUEST_ID,
+      params: {
+        cwd: WORKSPACE,
+        mcpServers: buildMcpServers(),
+      },
+    });
+
+    if (!sent) {
+      clearReadyTimeout();
+      sessionNewResolve = null;
+      sessionNewReject = null;
+      reject(new Error("Could not write session/new to kiro-cli stdin"));
+    }
+  });
 }
 
 /** Write a JSON-RPC message to kiro-cli stdin. Returns false if not writable. */
@@ -1374,19 +1501,42 @@ function buildMcpServers() {
     },
   ];
 
-  // Include the pr-review MCP server for inspector-kind agents (code review
-  // pipeline stage). The server reads REPO_URL, GIT_PROVIDER, credentials,
-  // TASK_PR_URL, and DEV_BRANCH from its environment. All except TASK_PR_URL
-  // are inherited from the worker's process.env; TASK_PR_URL is set in
-  // handlePrompt() when the task's pullRequestUrl is received from the
-  // orchestrator. The MCP server should read it at tool-call time, not at
-  // module load, because the PR URL is only known after a task is claimed.
-  if (AGENT_KIND === "inspector") {
+  // Include the pr-review MCP server for EVERY session that has a repo to
+  // work against, not just inspector-kind agents.
+  //
+  // This used to be inspector-only, which silently broke the developer
+  // agent's rework passes: buildDevPrompt/buildTddDevPrompt explicitly
+  // instruct it to call `get_pr_review_comments` as its first action when
+  // resuming a task with an open PR (see prompt-builder.ts), and
+  // developer-agent.json lists that tool in its `tools` array — but the tool
+  // was never actually registered for editor-kind (AGENT_KIND=editor)
+  // sessions. In production this meant the agent tried to improvise with
+  // shell commands instead (`gh pr view`, `gh api ...`), which always failed
+  // because the `gh` CLI isn't installed in this container — so no rework
+  // pass ever actually saw its reviewer's feedback.
+  //
+  // Editor-kind sessions get ALLOW_POST_COMMENT=false: they may read PR
+  // comments to fix them, but only inspector-kind agents (code review, QA)
+  // are allowed to post comments — see pr-review-mcp-server.js.
+  //
+  // The server reads REPO_URL, GIT_PROVIDER, credentials, TASK_PR_URL, and
+  // DEV_BRANCH from its environment. All except TASK_PR_URL are inherited
+  // from the worker's process.env; TASK_PR_URL is set in handlePrompt() when
+  // the task's pullRequestUrl is received from the orchestrator. The MCP
+  // server should read it at tool-call time, not at module load, because the
+  // PR URL is only known after a task is claimed.
+  if (REPO_URL) {
     const prReviewEnv = [
       { name: "REPO_URL", value: REPO_URL || "" },
       { name: "GIT_PROVIDER", value: GIT_PROVIDER },
       { name: "DEV_BRANCH", value: DEV_BRANCH || "" },
       { name: "REVIEW_MARKER_PATH", value: REVIEW_MARKER_PATH },
+      { name: "ALLOW_POST_COMMENT", value: AGENT_KIND === "inspector" ? "true" : "false" },
+      // Inverse of ALLOW_POST_COMMENT: the developer (editor-kind) resolves
+      // comments once it has actually fixed the underlying issue in code;
+      // the reviewer (inspector-kind) only posts findings, it never resolves
+      // its own or anyone else's.
+      { name: "ALLOW_RESOLVE_COMMENT", value: AGENT_KIND === "inspector" ? "false" : "true" },
     ];
     if (process.env.GITHUB_PAT) {
       prReviewEnv.push({ name: "GITHUB_PAT", value: process.env.GITHUB_PAT });
@@ -1406,7 +1556,10 @@ function buildMcpServers() {
       args: ["/app/pr-review-mcp-server.js"],
       env: prReviewEnv,
     });
-    logInfo("Including pr-review MCP server for inspector agent");
+    logInfo("Including pr-review MCP server", {
+      agentKind: AGENT_KIND,
+      allowPostComment: AGENT_KIND === "inspector",
+    });
   }
 
   for (const name of MCP_SIDECAR_SERVER_NAMES) {
@@ -1585,6 +1738,10 @@ function finishPromptTurn(msg) {
       branchName: currentBranchName,
       credits: turnStats.credits || undefined,
       verdict: effectiveVerdict ? effectiveVerdict.verdict : undefined,
+      // Surface any MCP server that failed to init this turn so the
+      // orchestrator can distrust a verdict that depended on a tool the agent
+      // never actually had (see mcpServerInitFailures declaration above).
+      mcpServerInitFailures: mcpServerInitFailures.length > 0 ? mcpServerInitFailures : undefined,
     });
   })();
 }
@@ -1661,6 +1818,33 @@ function handleAcpMessage(msg) {
       return true;
     }
 
+    // kiro-cli failed to start one of the MCP servers we requested in
+    // session/new (see buildMcpServers()). Previously this was silently
+    // dropped into the generic "Unhandled ACP notification" logger *without*
+    // its params, so a failure here was completely undiagnosable — all the
+    // log ever showed was the bare method name. Log params in full and record
+    // the failure so finishPromptTurn() can flag it in the prompt-done result
+    // instead of letting the agent silently lose access to that server's
+    // tools (e.g. an inspector losing post_review_comment and falling back to
+    // a false "no_action_needed" — see the code-reviewer-agent 403 incidents).
+    if (method === "_kiro.dev/mcp/server_init_failure") {
+      const params = msg.params ?? {};
+      const serverName = params.name || params.server || params.serverName || null;
+      logError("MCP server failed to initialize", { params });
+      sendOutput(
+        `⚠ MCP server${serverName ? ` "${serverName}"` : ""} failed to initialize — ` +
+          `its tools will be unavailable this turn. Details: ${JSON.stringify(params)}`,
+        "stderr"
+      );
+      mcpServerInitFailures.push({ name: serverName, params });
+      return true;
+    }
+
+    if (method === "_kiro.dev/mcp/server_initialized") {
+      logInfo("MCP server initialized", { params: msg.params ?? null });
+      return true;
+    }
+
     // Capture credit/usage data from the end-of-turn metadata notification.
     // kiro-cli emits `_kiro.dev/metadata` with `meteringUsage` after each turn.
     if (method === "_kiro.dev/metadata") {
@@ -1719,47 +1903,63 @@ function handleAcpMessage(msg) {
     });
     sendOutput("kiro-cli ACP initialized — creating session...", "system");
 
-    // Now create the session. Its id is required by session/prompt.
-    readyTimeout = setTimeout(() => {
-      if (!kiroReady) {
-        logError("kiro-cli did not answer session/new within timeout", { timeoutMs: KIRO_READY_TIMEOUT_MS });
-        sendOutput(`kiro-cli session/new timed out after ${KIRO_READY_TIMEOUT_MS / 1000}s — killing process`, "stderr");
+    // Create the initial session. Its id is required by session/prompt.
+    // Later, each claimed task gets its own fresh session via the same
+    // createNewAcpSession() helper — see handlePrompt().
+    createNewAcpSession().then(
+      () => drainPromptQueue(),
+      (err) => {
+        const message = err?.message || String(err);
+        logError("Initial session/new failed", { error: message });
+        sendOutput(`kiro-cli session/new failed: ${message} — killing process`, "stderr");
         try { kiroProc?.kill("SIGTERM"); } catch { /* noop */ }
       }
-    }, KIRO_READY_TIMEOUT_MS);
-
-    writeToKiro({
-      jsonrpc: "2.0",
-      method: "session/new",
-      id: NEW_SESSION_REQUEST_ID,
-      params: {
-        cwd: WORKSPACE,
-        mcpServers: buildMcpServers(),
-      },
-    });
+    );
     return true;
   }
 
   if (msg.id === NEW_SESSION_REQUEST_ID) {
     clearReadyTimeout();
+    const resolve = sessionNewResolve;
+    const reject = sessionNewReject;
+    sessionNewResolve = null;
+    sessionNewReject = null;
+
     if (msg.error || !msg.result?.sessionId) {
+      const errMsg = msg.error ? JSON.stringify(msg.error) : "no sessionId returned";
       logError("ACP session/new failed", { error: msg.error ?? "no sessionId in response", result: msg.result });
-      sendOutput(
-        `kiro-cli session/new failed: ${msg.error ? JSON.stringify(msg.error) : "no sessionId returned"}`,
-        "stderr"
-      );
-      try { kiroProc?.kill("SIGTERM"); } catch { /* noop */ }
+      sendOutput(`kiro-cli session/new failed: ${errMsg}`, "stderr");
+      if (reject) {
+        reject(new Error(`session/new failed: ${errMsg}`));
+      } else {
+        // Only the very first (startup) session/new has no rejecter attached —
+        // there's nothing recoverable to do without a session, so give up.
+        try { kiroProc?.kill("SIGTERM"); } catch { /* noop */ }
+      }
       return true;
     }
+
+    const isFirstSession = acpSessionId === null;
     acpSessionId = msg.result.sessionId;
     kiroReady = true;
-    logInfo("ACP session created — kiro-cli is ready", {
+    logInfo(isFirstSession ? "ACP session created — kiro-cli is ready" : "ACP session refreshed for new task", {
       acpSessionId,
       cwd: WORKSPACE,
       currentModeId: msg.result.modes?.currentModeId ?? null,
     });
-    sendOutput(`kiro-cli ACP session ready (session: ${acpSessionId})`, "system");
-    drainPromptQueue();
+    sendOutput(
+      isFirstSession
+        ? `kiro-cli ACP session ready (session: ${acpSessionId})`
+        : `Fresh ACP session started for next task (session: ${acpSessionId})`,
+      "system"
+    );
+
+    if (resolve) {
+      resolve(acpSessionId);
+    } else {
+      // Startup path — no caller awaiting a promise, just drain anything queued.
+      drainPromptQueue();
+    }
     return true;
   }
 
@@ -1889,15 +2089,30 @@ function handlePrompt(text, taskMeta) {
       process.env.TASK_PR_URL = taskMeta.pullRequestUrl;
     }
 
+    // Always re-fetch DEV_BRANCH from origin before deciding what to branch
+    // from — every task should see the current state of develop, not the
+    // snapshot that was cloned when this container started.
+    refreshDevBranch();
+
     try {
       // If the task already has a branch from a previous pipeline stage,
       // fetch and check it out instead of creating a new one.
       if (taskMeta.branch) {
         resetWorkingTree();
-        execFileArgs("git", ["fetch", "origin", taskMeta.branch], { cwd: WORKSPACE });
-        execFileArgs("git", ["checkout", taskMeta.branch], { cwd: WORKSPACE });
+        execFileArgs("git", ["fetch", authRemoteUrl || "origin", taskMeta.branch], { cwd: WORKSPACE });
+        // checkout -B <branch> origin/<branch> — not a plain `checkout <branch>` —
+        // because this worker container is reused across many claimed tasks in a
+        // loop (see refreshDevBranch()'s doc comment for the same rationale). If
+        // this exact branch was already checked out locally earlier in the
+        // container's lifetime (e.g. the code-reviewer-agent reviewing the same
+        // task twice across a review → rework → re-review cycle), a plain
+        // `checkout` is a no-op on content: it switches to the existing local
+        // ref as-is and never picks up commits the developer pushed in between.
+        // `-B` force-resets the local branch to match the freshly fetched
+        // remote tip every time, so the reviewer always sees the latest state.
+        execFileArgs("git", ["checkout", "-B", taskMeta.branch, `origin/${taskMeta.branch}`], { cwd: WORKSPACE });
         currentBranchName = taskMeta.branch;
-        sendOutput(`Checked out existing branch: ${taskMeta.branch}`, "system");
+        sendOutput(`Checked out existing branch: ${taskMeta.branch} (reset to origin's latest)`, "system");
       } else {
         // taskMeta.branch is empty — this normally means no prior stage has
         // pushed anything yet. But the DB's branch column can also be lost
@@ -1922,8 +2137,11 @@ function handlePrompt(text, taskMeta) {
 
         if (remoteRef) {
           resetWorkingTree();
-          execFileArgs("git", ["fetch", "origin", deterministicBranch], { cwd: WORKSPACE });
-          execFileArgs("git", ["checkout", deterministicBranch], { cwd: WORKSPACE });
+          execFileArgs("git", ["fetch", authRemoteUrl || "origin", deterministicBranch], { cwd: WORKSPACE });
+          // -B against origin/<branch>, same reasoning as the taskMeta.branch
+          // path above: force the local ref to match the fetched remote tip
+          // rather than reusing whatever was checked out locally before.
+          execFileArgs("git", ["checkout", "-B", deterministicBranch, `origin/${deterministicBranch}`], { cwd: WORKSPACE });
           currentBranchName = deterministicBranch;
           sendOutput(
             `Task had no branch on record, but ${deterministicBranch} already exists on the remote — ` +
@@ -1969,6 +2187,34 @@ function handlePrompt(text, taskMeta) {
     promptQueue.push(text);
     return;
   }
+
+  // Every claimed task (taskMeta present) gets its own fresh ACP session —
+  // zero conversation history carried over from whatever the previous task's
+  // turn accumulated. This applies uniformly to first-time tasks, rework
+  // passes on an existing branch/PR, and inspector review passes: in every
+  // case the agent should read the current code/PR state fresh rather than
+  // rely on memory of a previous turn. Interactive follow-ups (no taskMeta,
+  // the user typing into an already-running session) intentionally skip this
+  // and keep accumulating context, since that's the whole point of that mode.
+  if (taskMeta) {
+    createNewAcpSession().then(
+      () => deliverPrompt(text),
+      (err) => {
+        const message = err?.message || String(err);
+        logError("Failed to start fresh session for task — delivering on existing session instead", {
+          taskId: taskMeta.id,
+          error: message,
+        });
+        sendOutput(
+          `Warning: could not start a fresh session for this task (${message}) — continuing on the existing session.`,
+          "stderr"
+        );
+        deliverPrompt(text);
+      }
+    );
+    return;
+  }
+
   deliverPrompt(text);
 }
 

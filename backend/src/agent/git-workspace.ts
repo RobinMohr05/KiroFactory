@@ -168,6 +168,44 @@ export async function prepareWorkspace(
 }
 
 /**
+ * Install the workspace's dependencies so the agent can actually build and
+ * run tests (e.g. `npm test`, `npm run build`).
+ *
+ * Uses `npm ci` when a lockfile is present (deterministic, matches CI),
+ * otherwise `npm install`. Passes `--include=dev` explicitly: this installs a
+ * cloned TARGET repo's dependencies in a long-lived dev-agent process, and if
+ * NODE_ENV happens to be "production" (or npm's `omit` config is set) in this
+ * process's environment, npm's `omit` option defaults to 'dev' — every
+ * devDependency (test runner, compiler, type stubs) then resolves into
+ * package-lock.json but is never actually written to node_modules, even
+ * though the install exits 0. That exact silent-skip bug is what broke
+ * vitest/typescript in the ACA worker container (fixed by removing
+ * `NODE_ENV=production` from worker/Dockerfile) — this flag makes the
+ * workspace immune to the same class of bug regardless of environment.
+ *
+ * Best-effort by design: callers should log a warning and continue on
+ * failure rather than fail the whole task, since some tasks (e.g. doc-only
+ * changes) don't need a successful install.
+ */
+export async function installDependencies(workspacePath: string): Promise<void> {
+  if (!existsSync(join(workspacePath, "package.json"))) return;
+
+  const hasLockfile = existsSync(join(workspacePath, "package-lock.json"));
+  const args = hasLockfile ? ["ci", "--include=dev"] : ["install", "--include=dev"];
+
+  // npm ships as npm.cmd on Windows — child_process.execFile (no shell) can't
+  // launch .cmd files directly and fails with ENOENT unless the .cmd suffix
+  // is given explicitly.
+  const npmBin = process.platform === "win32" ? "npm.cmd" : "npm";
+
+  await execFileAsync(npmBin, args, {
+    cwd: workspacePath,
+    encoding: "utf-8",
+    timeout: 300_000, // 5 min — large monorepos can be slow to install
+  });
+}
+
+/**
  * Create a new feature branch from the current base branch.
  *
  * @returns The branch name that was created.

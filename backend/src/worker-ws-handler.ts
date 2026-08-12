@@ -54,10 +54,13 @@ export interface WorkerPromptDoneMessage extends WorkerMessage {
     durationMs?: number;
     hasChanges?: boolean;
     prUrl?: string | null;
+    branchName?: string | null;
     /** Kiro credits consumed this turn (from _kiro.dev/metadata meteringUsage). */
     credits?: number;
     /** Agent-reported verdict via the report_verdict MCP tool. Cross-checked against git diff. */
-    verdict?: "resolved" | "no_action_needed";
+    verdict?: "resolved" | "no_action_needed" | "changes_requested";
+    /** MCP servers that failed to init this turn — see WorkerPromptResult in session-manager.ts. */
+    mcpServerInitFailures?: Array<{ name: string | null }>;
   };
 }
 
