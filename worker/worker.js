@@ -65,6 +65,13 @@ const MCP_SIDECAR_SERVER_NAMES = (process.env.MCP_SIDECAR_SERVER_NAMES || "")
   .filter(Boolean);
 
 /**
+ * Persistent branch name for standalone (requiresTask=false) sessions.
+ * When set, the worker checks out/creates this branch once on startup and
+ * commits+pushes to it after each prompt — no task branching, no PR creation.
+ */
+const PERSISTENT_BRANCH_NAME = process.env.PERSISTENT_BRANCH_NAME || "";
+
+/**
  * Path to a small counter file shared between the verdict and pr-review MCP
  * servers (each spawned as its own child process by kiro-cli, so they can't
  * share in-memory state with each other or with this worker process).
@@ -454,6 +461,57 @@ function createTaskBranch(taskMeta) {
 }
 
 /**
+ * Set up the persistent branch for standalone (requiresTask=false) sessions.
+ * If the branch already exists on the remote (crash-recovery), check it out.
+ * Otherwise, create it fresh from DEV_BRANCH.
+ */
+function setupPersistentBranch() {
+  if (!PERSISTENT_BRANCH_NAME) return;
+  try {
+    // Check if the branch exists on the remote
+    const remoteRef = execFileArgs(
+      "git",
+      ["ls-remote", "--heads", authRemoteUrl || "origin", PERSISTENT_BRANCH_NAME],
+      { cwd: WORKSPACE }
+    );
+    if (remoteRef) {
+      // Branch exists remotely — fetch and check it out (crash-recovery path)
+      execFileArgs("git", ["fetch", authRemoteUrl || "origin", PERSISTENT_BRANCH_NAME], { cwd: WORKSPACE });
+      // Use FETCH_HEAD — when fetching from a raw URL (not a remote name),
+      // git only updates FETCH_HEAD, not refs/remotes/origin/<branch>.
+      execFileArgs("git", ["checkout", "-B", PERSISTENT_BRANCH_NAME, "FETCH_HEAD"], { cwd: WORKSPACE });
+      sendOutput(`Checked out existing persistent branch: ${PERSISTENT_BRANCH_NAME}`, "system");
+    } else {
+      // Branch doesn't exist yet — create fresh from DEV_BRANCH
+      execFileArgs("git", ["checkout", "-B", PERSISTENT_BRANCH_NAME, DEV_BRANCH], { cwd: WORKSPACE });
+      sendOutput(`Created persistent branch: ${PERSISTENT_BRANCH_NAME} (from ${DEV_BRANCH})`, "system");
+    }
+  } catch (err) {
+    sendOutput(`Warning: persistent branch setup failed: ${err?.message || err}`, "stderr");
+    logError("setupPersistentBranch failed", { error: err?.message || String(err), branch: PERSISTENT_BRANCH_NAME });
+    // Fall back to staying on DEV_BRANCH — prompt will still work, just won't commit to the right branch
+  }
+}
+
+/**
+ * Sync the persistent branch with remote before a new prompt turn.
+ * Fast-forwards the local branch to match the latest remote state so
+ * the workspace is always up-to-date when starting a turn.
+ */
+function syncPersistentBranch() {
+  if (!PERSISTENT_BRANCH_NAME) return;
+  try {
+    execFileArgs("git", ["fetch", authRemoteUrl || "origin", PERSISTENT_BRANCH_NAME], { cwd: WORKSPACE });
+    // Reset to FETCH_HEAD — when fetching from a raw URL (not a remote name),
+    // git only updates FETCH_HEAD, not refs/remotes/origin/<branch>.
+    execFileArgs("git", ["reset", "--hard", "FETCH_HEAD"], { cwd: WORKSPACE });
+  } catch {
+    // If the remote branch doesn't exist yet (first turn), this is expected
+    // — nothing to sync against. Fall through silently.
+  }
+}
+
+/**
  * REPO_URL with the PAT embedded. Used for every network operation (clone,
  * push) because the container has no credential helper and no tty: without
  * inline credentials git tries to prompt for a username and dies with
@@ -646,7 +704,13 @@ function setupRepo() {
     logError("npm install failed", { error: err?.message || String(err) });
   }
 
-  sendOutput(`Workspace ready on branch ${DEV_BRANCH}`, "system");
+  // Persistent branch mode: check out or create the persistent branch.
+  // This replaces per-task branching for standalone (requiresTask=false) sessions.
+  if (PERSISTENT_BRANCH_NAME) {
+    setupPersistentBranch();
+  }
+
+  sendOutput(`Workspace ready on branch ${PERSISTENT_BRANCH_NAME || DEV_BRANCH}`, "system");
 }
 
 /**
@@ -782,8 +846,8 @@ function commitAndPush() {
   // breaks the command with a syntax error. execFileArgs() invokes git
   // directly with an argv array, so the commit message is never re-parsed
   // by a shell no matter what it contains.
-  const taskId = currentTaskMeta?.id || TASK_ID || "unknown";
-  const taskTitle = currentTaskMeta?.title || `task ${taskId}`;
+  const taskId = currentTaskMeta?.id || TASK_ID || (PERSISTENT_BRANCH_NAME ? AGENT_NAME : "unknown");
+  const taskTitle = currentTaskMeta?.title || (PERSISTENT_BRANCH_NAME ? `${AGENT_NAME} update` : `task ${taskId}`);
   const commitTitle = `${taskTitle} [Vibecode Heaven #${taskId}]`;
   const commitBody = currentTaskMeta
     ? `\nType: ${currentTaskMeta.type || "unknown"}\nID: ${taskId}\n\n${currentTaskMeta.description || ""}`
@@ -1715,7 +1779,7 @@ function finishPromptTurn(msg) {
         hasChanges = gitResult.hasChanges;
         committed = !!gitResult.committed;
         if (gitResult.pushError) gitError = gitResult.pushError;
-        if (gitResult.pushed && gitResult.branchName) {
+        if (gitResult.pushed && gitResult.branchName && !PERSISTENT_BRANCH_NAME) {
           prUrl = await createPullRequest(gitResult.branchName);
         }
       } catch (err) {
@@ -2079,8 +2143,13 @@ function handlePrompt(text, taskMeta) {
     kiroReady,
   });
 
-  // If task metadata is provided and we have a git repo, create a task-specific branch
-  if (taskMeta && REPO_URL) {
+  // Persistent branch mode: sync with remote before each prompt, skip task branching
+  if (PERSISTENT_BRANCH_NAME && REPO_URL) {
+    syncPersistentBranch();
+    currentBranchName = PERSISTENT_BRANCH_NAME;
+    currentTaskMeta = null;
+  } else if (taskMeta && REPO_URL) {
+    // If task metadata is provided and we have a git repo, create a task-specific branch
     currentTaskMeta = taskMeta;
 
     // Make the task's PR URL available in process.env for child processes

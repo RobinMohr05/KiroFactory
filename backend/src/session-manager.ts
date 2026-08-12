@@ -16,6 +16,7 @@ import { broadcastToUser } from "./websocket-handler.js";
 import { claimTask, resolveTask, resetTask, getAvailableTaskCount, waitForTaskAvailable, markTaskDone } from "./agent/task-claimer.js";
 import type { ClaimedTask } from "./agent/task-claimer.js";
 import { buildDevPrompt, buildReviewPrompt } from "./agent/prompt-builder.js";
+import { buildPersistentBranchName } from "./agent/repo-url-parser.js";
 import { TabMcpConfig, DEFAULT_MCP_CONFIG, resolveGitProvider, type GitProvider } from "./types.js";
 import {
   getAllSessionsFromDb,
@@ -780,7 +781,13 @@ async function runSession(managed: ManagedSession): Promise<void> {
 
     if (meta.loop) {
       // ─── Autonomous loop mode (like dev-agent.ts) ───
-      await runLoopMode(managed, signal);
+      const stages = await getAgentStageStates(meta.agent);
+      if (!stages.requiresTask) {
+        // Standalone mode: repeat the session prompt, no task queue
+        await runStandaloneLoopLocal(managed, signal);
+      } else {
+        await runLoopMode(managed, signal);
+      }
     } else {
       // ─── Interactive mode (original behavior) ───
       // Send initial prompt
@@ -831,6 +838,8 @@ interface AgentStageStates {
   resolveState: string;
   /** "editor" (implements changes) or "inspector" (reviews/QAs, never edits). Determines which turn prompt is built. */
   kind: "editor" | "inspector";
+  /** Whether this agent requires a task to run (false = standalone prompt loop). */
+  requiresTask: boolean;
 }
 
 const DEFAULT_STAGE_STATES: AgentStageStates = {
@@ -838,6 +847,7 @@ const DEFAULT_STAGE_STATES: AgentStageStates = {
   workingState: "in-progress",
   resolveState: "developed",
   kind: "editor",
+  requiresTask: true,
 };
 
 /**
@@ -855,6 +865,7 @@ async function getAgentStageStates(agentName: string): Promise<AgentStageStates>
       workingState: agent.workingState,
       resolveState: agent.resolveState,
       kind: agent.kind,
+      requiresTask: agent.requiresTask,
     };
   } catch {
     return DEFAULT_STAGE_STATES;
@@ -1117,6 +1128,84 @@ function interruptibleSleep(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
+/**
+ * Standalone loop mode for agents with requiresTask=false (local runner).
+ * Repeatedly sends the session prompt without claiming tasks.
+ * No git operations — local mode has no git integration.
+ */
+async function runStandaloneLoopLocal(
+  managed: ManagedSession,
+  signal: AbortSignal
+): Promise<void> {
+  const { meta } = managed;
+  let iteration = 0;
+  const maxRuns = meta.runs; // 0 = endless
+
+  const runsLabel = maxRuns === 0 ? "endless" : `${maxRuns} run(s)`;
+  appendOutput(managed, {
+    timestamp: now(),
+    stream: "system",
+    text: `Standalone loop started — no task queue (${runsLabel}, interval: ${meta.intervalSeconds}s)`,
+  });
+
+  while (!signal.aborted && managed.runner?.isAlive) {
+    if (maxRuns > 0 && iteration >= maxRuns) {
+      appendOutput(managed, {
+        timestamp: now(),
+        stream: "system",
+        text: `All ${maxRuns} run(s) completed. Stopping.`,
+      });
+      setStatus(managed, "completed");
+      setActivity(managed, { type: "completed", detail: `${maxRuns} run(s) finished` });
+      return;
+    }
+
+    iteration++;
+    const progressLabel = maxRuns > 0 ? `${iteration}/${maxRuns}` : `#${iteration}`;
+    appendOutput(managed, {
+      timestamp: now(),
+      stream: "system",
+      text: `── Standalone run ${progressLabel} ──`,
+    });
+
+    setActivity(managed, { type: "working", detail: `Running prompt (${progressLabel})` });
+
+    // Reset per-turn verdict tracking
+    managed.turnVerdict = null;
+    managed.verdictToolCallId = null;
+
+    try {
+      await streamPrompt(managed, meta.prompt);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      appendOutput(managed, {
+        timestamp: now(),
+        stream: "stderr",
+        text: `Prompt execution error: ${msg}`,
+      });
+      recordError({
+        sessionId: meta.id,
+        sessionName: meta.name,
+        agent: meta.agent,
+        message: msg,
+        context: `Error in standalone loop iteration ${iteration}`,
+        userId: meta.userId,
+      });
+    }
+
+    if (signal.aborted) break;
+
+    // Pause between iterations
+    if (meta.intervalSeconds > 0) {
+      setActivity(managed, {
+        type: "idle",
+        detail: `Next run in ${meta.intervalSeconds}s...`,
+      });
+      await interruptibleSleep(meta.intervalSeconds * 1000, signal);
+    }
+  }
+}
+
 async function streamPrompt(managed: ManagedSession, text: string): Promise<void> {
   if (!managed.runner) return;
 
@@ -1370,6 +1459,7 @@ async function runSessionAca(managed: ManagedSession): Promise<void> {
       gitProvider?: GitProvider;
       githubPat?: string;
       azureDevOpsPat?: string;
+      persistentBranchName?: string;
     } | null = null;
     if (meta.tabIds && meta.tabIds.length > 0) {
       for (const tabId of meta.tabIds) {
@@ -1508,16 +1598,25 @@ async function runSessionAca(managed: ManagedSession): Promise<void> {
     // its own hardcoded default.
     let agentKind: "editor" | "inspector" = "editor";
     let agentConfigBase64: string | undefined;
+    let agentRequiresTask = true;
     if (meta.agent) {
       try {
         const agentRecord = await getAgentByName(meta.agent);
         if (agentRecord) {
           agentKind = agentRecord.kind;
           agentConfigBase64 = encodeAgentConfigBase64(agentRecord);
+          agentRequiresTask = agentRecord.requiresTask;
         }
       } catch {
         // Agent lookup failed — default to editor (safe: existing behavior)
       }
+    }
+
+    // For standalone (requiresTask=false) agents, compute and attach a persistent
+    // branch name so the worker continuously commits to one branch.
+    if (!agentRequiresTask && gitOptions) {
+      gitOptions.persistentBranchName =
+        buildPersistentBranchName(meta.id, meta.name);
     }
 
     const execution = await startWorkerJob(
@@ -1564,7 +1663,11 @@ async function runSessionAca(managed: ManagedSession): Promise<void> {
 
     // Worker is connected — send the initial prompt if configured
     if (meta.loop) {
-      await runLoopModeAca(managed, signal);
+      if (!agentRequiresTask) {
+        await runStandaloneLoopAca(managed, signal);
+      } else {
+        await runLoopModeAca(managed, signal);
+      }
     } else {
       // Interactive mode: send initial prompt, then wait for user follow-ups
       if (meta.prompt.trim()) {
@@ -1801,6 +1904,106 @@ async function streamPromptAca(managed: ManagedSession, text: string, taskMeta?:
   managed.acaPromptRejecter = null;
 
   return (result && typeof result === "object") ? result as WorkerPromptResult : {};
+}
+
+/**
+ * Standalone loop mode for agents with requiresTask=false (ACA worker).
+ * Repeatedly sends the session prompt without claiming tasks.
+ * The worker handles persistent branch checkout/push via PERSISTENT_BRANCH_NAME env.
+ * No PR creation — the branch is a continuously updated deliverable.
+ */
+async function runStandaloneLoopAca(
+  managed: ManagedSession,
+  signal: AbortSignal
+): Promise<void> {
+  const { meta } = managed;
+  let iteration = 0;
+  const maxRuns = meta.runs; // 0 = endless
+
+  const runsLabel = maxRuns === 0 ? "endless" : `${maxRuns} run(s)`;
+  appendOutput(managed, {
+    timestamp: now(),
+    stream: "system",
+    text: `Standalone loop started — no task queue (${runsLabel}, interval: ${meta.intervalSeconds}s)`,
+  });
+
+  while (!signal.aborted && isWorkerConnected(meta.id)) {
+    if (maxRuns > 0 && iteration >= maxRuns) {
+      appendOutput(managed, {
+        timestamp: now(),
+        stream: "system",
+        text: `All ${maxRuns} run(s) completed. Stopping.`,
+      });
+      setStatus(managed, "completed");
+      setActivity(managed, { type: "completed", detail: `${maxRuns} run(s) finished` });
+      return;
+    }
+
+    iteration++;
+    const progressLabel = maxRuns > 0 ? `${iteration}/${maxRuns}` : `#${iteration}`;
+    appendOutput(managed, {
+      timestamp: now(),
+      stream: "system",
+      text: `── Standalone run ${progressLabel} ──`,
+    });
+
+    setActivity(managed, { type: "working", detail: `Running prompt (${progressLabel})` });
+
+    try {
+      // No taskMeta — standalone sessions don't have tasks
+      const promptResult = await streamPromptAca(managed, meta.prompt);
+
+      // Surface worker-reported errors (ACP failure, git push failure, timeout)
+      if (promptResult.error) {
+        appendOutput(managed, {
+          timestamp: now(),
+          stream: "stderr",
+          text: `⚠ Turn error: ${promptResult.error}`,
+        });
+        recordError({
+          sessionId: meta.id,
+          sessionName: meta.name,
+          agent: meta.agent,
+          message: promptResult.error,
+          context: `Standalone loop iteration ${iteration} reported error. stopReason: ${promptResult.stopReason ?? "none"}, tool calls: ${promptResult.toolCalls ?? 0}, duration: ${Math.round((promptResult.durationMs ?? 0) / 1000)}s.`,
+          userId: meta.userId,
+        });
+      }
+      if (promptResult.stopReason === "cancelled") {
+        appendOutput(managed, {
+          timestamp: now(),
+          stream: "stderr",
+          text: `⚠ Turn was cancelled (likely timeout) before completing.`,
+        });
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      appendOutput(managed, {
+        timestamp: now(),
+        stream: "stderr",
+        text: `Prompt execution error: ${msg}`,
+      });
+      recordError({
+        sessionId: meta.id,
+        sessionName: meta.name,
+        agent: meta.agent,
+        message: msg,
+        context: `Error in standalone loop iteration ${iteration}`,
+        userId: meta.userId,
+      });
+    }
+
+    if (signal.aborted) break;
+
+    // Pause between iterations
+    if (meta.intervalSeconds > 0) {
+      setActivity(managed, {
+        type: "idle",
+        detail: `Next run in ${meta.intervalSeconds}s...`,
+      });
+      await interruptibleSleep(meta.intervalSeconds * 1000, signal);
+    }
+  }
 }
 
 /**
