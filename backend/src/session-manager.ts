@@ -539,14 +539,16 @@ export function updateSessionFields(
     return { success: false, reason: "running" };
   }
 
-  // Validate name is non-empty if provided
-  if (updates.name !== undefined && !updates.name.trim()) {
-    return { success: false, reason: "name cannot be empty" };
+  // Validate name is non-empty if provided (guard against null and non-string)
+  if (updates.name !== undefined) {
+    if (typeof updates.name !== "string" || !updates.name.trim()) {
+      return { success: false, reason: "name cannot be empty" };
+    }
   }
 
   // Whitelist of allowed fields — ignore anything else (including `agent`)
   if (updates.name !== undefined) session.meta.name = updates.name;
-  if (updates.prompt !== undefined) session.meta.prompt = updates.prompt;
+  if (updates.prompt !== undefined) session.meta.prompt = updates.prompt || "";
   if (updates.cwd !== undefined) session.meta.cwd = updates.cwd || DEFAULT_CWD;
   if (updates.model !== undefined) session.meta.model = updates.model || undefined;
   if (updates.timeoutSeconds !== undefined) session.meta.timeoutSeconds = updates.timeoutSeconds;

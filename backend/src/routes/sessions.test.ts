@@ -342,4 +342,22 @@ describe("updateSessionFields", () => {
     const session = getSession(sessionId);
     expect(session!.name).toBe("Test Session");
   });
+
+  it("should reject null name without crashing (TypeError)", () => {
+    const result = updateSessionFields(sessionId, { name: null } as any);
+    expect(result).toEqual({ success: false, reason: "name cannot be empty" });
+
+    // Name should NOT have changed
+    const session = getSession(sessionId);
+    expect(session!.name).toBe("Test Session");
+  });
+
+  it("should treat null prompt as empty string (not corrupt session state)", () => {
+    const result = updateSessionFields(sessionId, { prompt: null } as any);
+    expect(result).toEqual({ success: true });
+
+    const session = getSession(sessionId);
+    // Should be an empty string, NOT null (null would crash on .trim() later)
+    expect(session!.prompt).toBe("");
+  });
 });
