@@ -13,14 +13,55 @@
  *   AZURE_DEVOPS_PAT  — Personal Access Token for Azure DevOps
  *   TASK_PR_URL       — Full URL to the pull request (html_url)
  *   DEV_BRANCH        — Target/base branch name (for reference)
+ *   ALLOW_POST_COMMENT — "false" to hide post_review_comment. Used for
+ *                         editor-kind sessions (developer-agent), which need
+ *                         to READ reviewer feedback on a rework pass but must
+ *                         never post comments themselves — that's the
+ *                         reviewer's job. Defaults to "true" (available),
+ *                         which matches the original inspector-only behavior.
+ *   ALLOW_RESOLVE_COMMENT — "false" to hide resolve_review_comment. Mirrors
+ *                         ALLOW_POST_COMMENT in the opposite direction: the
+ *                         developer (editor-kind) closes comments after
+ *                         fixing them; the reviewer (inspector-kind) only
+ *                         posts new ones, it doesn't resolve its own or
+ *                         anyone else's. Defaults to "true".
  *
  * Protocol: JSON-RPC 2.0 over stdin/stdout (MCP stdio transport).
  */
 
 import { createInterface } from "node:readline";
+import { readFileSync, writeFileSync } from "node:fs";
 
 const SERVER_NAME = "pr-review-mcp-server";
 const SERVER_VERSION = "1.0.0";
+
+/**
+ * Path to the review-comment counter file shared with verdict-mcp-server.js
+ * (set by worker.js's buildMcpServers(), reset to "0" at the start of every
+ * turn in deliverPrompt()). The verdict server reads this to refuse a
+ * "changes_requested" verdict when zero comments were posted this turn.
+ */
+const REVIEW_MARKER_PATH = process.env.REVIEW_MARKER_PATH || "";
+
+/** See ALLOW_POST_COMMENT in the header comment above. */
+const ALLOW_POST_COMMENT = process.env.ALLOW_POST_COMMENT !== "false";
+
+/** See ALLOW_RESOLVE_COMMENT in the header comment above. */
+const ALLOW_RESOLVE_COMMENT = process.env.ALLOW_RESOLVE_COMMENT !== "false";
+
+/** Increment the shared comment counter. Best-effort — never throws. */
+function incrementReviewCommentCount() {
+  if (!REVIEW_MARKER_PATH) return;
+  try {
+    const raw = readFileSync(REVIEW_MARKER_PATH, "utf-8").trim();
+    const current = Number(raw);
+    const next = (Number.isFinite(current) ? current : 0) + 1;
+    writeFileSync(REVIEW_MARKER_PATH, String(next));
+  } catch (err) {
+    // Non-fatal — worst case the verdict guard fails open and doesn't block.
+    process.stderr.write(`[pr-review-mcp-server] Failed to update comment counter: ${err?.message || err}\n`);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Environment
@@ -30,6 +71,27 @@ const REPO_URL = process.env.REPO_URL || "";
 const GIT_PROVIDER = process.env.GIT_PROVIDER || "";
 const GITHUB_PAT = process.env.GITHUB_PAT || "";
 const AZURE_DEVOPS_PAT = process.env.AZURE_DEVOPS_PAT || "";
+
+/**
+ * Marker prepended to every comment that githubPostReviewComment falls back
+ * to posting as a general (non-inline) PR comment when GitHub rejects the
+ * inline attempt (e.g. 422 — line outside the diff for the current head
+ * commit). githubGetFallbackIssueComments() looks for this marker to find
+ * and re-surface those comments — GitHub's reviewThreads API has no
+ * knowledge of them at all, so without this a comment that fails to post
+ * inline is invisible to every future get_pr_review_comments call, and the
+ * same finding gets reported over and over on every review pass.
+ */
+const FALLBACK_COMMENT_MARKER = "**Code Review Comment**";
+
+/**
+ * Prefix used to build a synthetic `threadId` for fallback comments, so
+ * resolve_review_comment can tell them apart from real review-thread node
+ * IDs and dispatch to the right GraphQL mutation (minimizeComment instead
+ * of resolveReviewThread) without the agent needing to know the
+ * difference — it just passes back whatever `threadId` it was given.
+ */
+const ISSUE_COMMENT_PREFIX = "issuecomment:";
 
 /**
  * TASK_PR_URL is read at tool-call time, not at module load.
@@ -108,24 +170,226 @@ function githubHeaders() {
   };
 }
 
-async function githubGetPrComments(owner, repo, prNumber) {
-  const url = `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}/comments`;
-  const response = await fetch(url, { headers: githubHeaders() });
-  if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    throw new Error(`GitHub GET comments failed: ${response.status} ${body}`);
+/**
+ * Run a GraphQL query/mutation against GitHub's v4 API.
+ *
+ * Needed for anything involving review-thread resolution: the REST API
+ * (`/pulls/{n}/comments`) has no concept of "resolved" at all — it returns
+ * every review comment ever posted, resolved or not, forever. Thread
+ * resolution (both reading isResolved and the resolveReviewThread mutation)
+ * only exists in the GraphQL API. Without this, a "closed" comment would
+ * keep reappearing in every future get_pr_review_comments call.
+ */
+async function githubGraphQL(query, variables) {
+  const response = await fetch("https://api.github.com/graphql", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${GITHUB_PAT}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ query, variables }),
+  });
+  const json = await response.json().catch(() => null);
+  if (!response.ok || json?.errors) {
+    const errDetail = json?.errors ? JSON.stringify(json.errors) : await response.text().catch(() => "");
+    throw new Error(`GitHub GraphQL request failed: ${response.status} ${errDetail}`);
   }
-  const comments = await response.json();
-  // Return all review comments (line-anchored); filter out resolved/outdated if needed
-  return comments.map((c) => ({
-    id: c.id,
-    path: c.path,
-    line: c.line || c.original_line,
-    side: c.side,
-    body: c.body,
-    user: c.user?.login,
-    createdAt: c.created_at,
-  }));
+  return json.data;
+}
+
+const REVIEW_THREADS_QUERY = `
+  query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+    repository(owner: $owner, name: $name) {
+      pullRequest(number: $number) {
+        reviewThreads(first: 100, after: $cursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes {
+            id
+            isResolved
+            comments(first: 20) {
+              nodes {
+                databaseId
+                path
+                line
+                originalLine
+                diffSide
+                body
+                author { login }
+                createdAt
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
+/**
+ * General (non-inline) PR comments, paged separately from review threads.
+ * Only needed to recover FALLBACK_COMMENT_MARKER comments — see
+ * githubGetFallbackIssueComments — since real conversation comments never
+ * carry that marker and are filtered out there.
+ */
+const ISSUE_COMMENTS_QUERY = `
+  query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+    repository(owner: $owner, name: $name) {
+      pullRequest(number: $number) {
+        comments(first: 100, after: $cursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes {
+            id
+            databaseId
+            body
+            isMinimized
+            author { login }
+            createdAt
+          }
+        }
+      }
+    }
+  }
+`;
+
+/**
+ * Recovers the "📁 `path` (line N)" header githubPostReviewComment prepends
+ * to a comment's body when falling back to a general PR comment, so a
+ * recovered fallback comment carries the same path/line the caller would
+ * have gotten had the inline post succeeded.
+ */
+const FALLBACK_LOCATION_RE = /📁 `([^`]+)` \(line (\d+)\)/;
+
+/**
+ * Fetch unresolved general PR comments that githubPostReviewComment fell
+ * back to posting when GitHub rejected an inline attempt (see
+ * FALLBACK_COMMENT_MARKER). The reviewThreads GraphQL connection queried by
+ * githubGetPrComments has no knowledge of these at all — they are plain
+ * IssueComments on the PR's conversation tab, not review-thread comments —
+ * so without this a fallback finding would never resurface to
+ * get_pr_review_comments, and the same issue gets reported (and falls back)
+ * again on every subsequent review pass.
+ *
+ * "Resolved" for these has no thread-resolution equivalent, so
+ * resolve_review_comment maps to GitHub's `minimizeComment` mutation
+ * instead (see githubMinimizeComment) — a minimized comment is filtered out
+ * here via `isMinimized`, mirroring how real threads filter on
+ * `isResolved`.
+ */
+async function githubGetFallbackIssueComments(owner, repo, prNumber) {
+  const results = [];
+  let cursor = null;
+  // Defensive page cap, same rationale as githubGetPrComments.
+  for (let page = 0; page < 20; page++) {
+    const data = await githubGraphQL(ISSUE_COMMENTS_QUERY, { owner, name: repo, number: prNumber, cursor });
+    const comments = data?.repository?.pullRequest?.comments;
+    if (!comments) break;
+
+    for (const comment of comments.nodes || []) {
+      if (comment.isMinimized) continue;
+      if (!comment.body || !comment.body.includes(FALLBACK_COMMENT_MARKER)) continue;
+      const location = comment.body.match(FALLBACK_LOCATION_RE);
+      results.push({
+        id: comment.databaseId,
+        // Prefixed so resolve_review_comment can tell this apart from a
+        // real reviewThread node ID and route to minimizeComment instead
+        // of resolveReviewThread — see ISSUE_COMMENT_PREFIX.
+        threadId: `${ISSUE_COMMENT_PREFIX}${comment.id}`,
+        path: location ? location[1] : null,
+        line: location ? parseInt(location[2], 10) : null,
+        side: null,
+        body: comment.body,
+        user: comment.author?.login || null,
+        createdAt: comment.createdAt,
+      });
+    }
+
+    if (!comments.pageInfo?.hasNextPage) break;
+    cursor = comments.pageInfo.endCursor;
+  }
+  return results;
+}
+
+/**
+ * List unresolved review threads on the PR (one entry per thread, using its
+ * first comment as the representative body/path/line), plus any unresolved
+ * fallback general comments (see githubGetFallbackIssueComments). Resolved/
+ * minimized entries are filtered out on both sides so a comment the
+ * developer already resolved never resurfaces on a later
+ * get_pr_review_comments call.
+ */
+async function githubGetPrComments(owner, repo, prNumber) {
+  const results = [];
+  let cursor = null;
+  // Defensive page cap so a malformed/looping API response (hasNextPage
+  // stuck true) can't spin this forever — no real PR needs >2000 threads.
+  for (let page = 0; page < 20; page++) {
+    const data = await githubGraphQL(REVIEW_THREADS_QUERY, { owner, name: repo, number: prNumber, cursor });
+    const threads = data?.repository?.pullRequest?.reviewThreads;
+    if (!threads) break;
+
+    for (const thread of threads.nodes || []) {
+      if (thread.isResolved) continue;
+      const firstComment = thread.comments?.nodes?.[0];
+      if (!firstComment) continue;
+      results.push({
+        id: firstComment.databaseId,
+        threadId: thread.id,
+        path: firstComment.path,
+        line: firstComment.line ?? firstComment.originalLine ?? null,
+        side: firstComment.diffSide || null,
+        body: firstComment.body,
+        user: firstComment.author?.login || null,
+        createdAt: firstComment.createdAt,
+      });
+    }
+
+    if (!threads.pageInfo?.hasNextPage) break;
+    cursor = threads.pageInfo.endCursor;
+  }
+
+  results.push(...(await githubGetFallbackIssueComments(owner, repo, prNumber)));
+
+  return results;
+}
+
+/**
+ * Resolve a review thread by its GraphQL node ID (the `threadId` field
+ * returned by get_pr_review_comments).
+ */
+async function githubResolveReviewThread(threadId) {
+  const mutation = `
+    mutation($threadId: ID!) {
+      resolveReviewThread(input: { threadId: $threadId }) {
+        thread { id isResolved }
+      }
+    }
+  `;
+  const data = await githubGraphQL(mutation, { threadId });
+  const thread = data?.resolveReviewThread?.thread;
+  if (!thread) throw new Error("resolveReviewThread mutation returned no thread data");
+  return { success: true, id: thread.id, isResolved: thread.isResolved };
+}
+
+/**
+ * "Resolve" a fallback general comment (see githubGetFallbackIssueComments)
+ * by minimizing it — GitHub has no thread-resolution concept for plain
+ * IssueComments, so `minimizeComment` with classifier RESOLVED is the
+ * closest equivalent, and is what the web UI itself uses for "Resolve
+ * conversation" on a non-review comment. `nodeId` is the raw GraphQL node
+ * ID recovered from the `threadId` after stripping ISSUE_COMMENT_PREFIX.
+ */
+async function githubMinimizeComment(nodeId) {
+  const mutation = `
+    mutation($id: ID!) {
+      minimizeComment(input: { subjectId: $id, classifier: RESOLVED }) {
+        minimizedComment { isMinimized minimizedReason }
+      }
+    }
+  `;
+  const data = await githubGraphQL(mutation, { id: nodeId });
+  const minimized = data?.minimizeComment?.minimizedComment;
+  if (!minimized) throw new Error("minimizeComment mutation returned no data");
+  return { success: true, isMinimized: minimized.isMinimized, reason: minimized.minimizedReason };
 }
 
 async function githubGetPrHeadSha(owner, repo, prNumber) {
@@ -231,6 +495,10 @@ async function adoGetPrComments(org, project, repo, prId) {
     const ctx = thread.threadContext;
     results.push({
       id: thread.id,
+      // Mirrors GitHub's `threadId` field so resolve_review_comment can take
+      // one parameter name regardless of provider — for Azure DevOps the
+      // thread id IS the resolvable unit, so this is just `id` restated.
+      threadId: String(thread.id),
       path: ctx?.filePath || null,
       line: ctx?.rightFileStart?.line || ctx?.leftFileStart?.line || null,
       body: comments[0].content,
@@ -239,6 +507,25 @@ async function adoGetPrComments(org, project, repo, prId) {
     });
   }
   return results;
+}
+
+/**
+ * Resolve (mark "fixed") an Azure DevOps PR comment thread.
+ * https://learn.microsoft.com/rest/api/azure/devops/git/pull-request-threads/update
+ */
+async function adoResolveReviewThread(org, project, repo, prId, threadId) {
+  const url = `${adoBaseUrl(org, project, repo)}/pullrequests/${prId}/threads/${threadId}?api-version=7.1`;
+  const response = await fetch(url, {
+    method: "PATCH",
+    headers: adoHeaders(),
+    body: JSON.stringify({ status: "fixed" }),
+  });
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(`Azure DevOps PATCH thread failed: ${response.status} ${body}`);
+  }
+  const data = await response.json();
+  return { success: true, id: data.id, status: data.status };
 }
 
 async function adoPostReviewComment(org, project, repo, prId, { path, line, body }) {
@@ -302,12 +589,14 @@ async function adoPostReviewComment(org, project, repo, prId, { path, line, body
 // Tool definitions
 // ---------------------------------------------------------------------------
 
-const TOOLS = [
+const ALL_TOOLS = [
   {
     name: "get_pr_review_comments",
     description:
-      "Fetch existing review comments/threads on the task's pull request. " +
-      "Returns unresolved/active inline comments as a list of { path, line, body, user }.",
+      "Fetch existing UNRESOLVED review comments/threads on the task's pull request. " +
+      "Returns each as { id, threadId, path, line, body, user }. Comments already " +
+      "resolved via resolve_review_comment are excluded, so this always reflects what " +
+      "still needs attention. Use the returned `threadId` when calling resolve_review_comment.",
     inputSchema: {
       type: "object",
       properties: {},
@@ -346,7 +635,41 @@ const TOOLS = [
       required: ["path", "line", "body"],
     },
   },
+  {
+    name: "resolve_review_comment",
+    description:
+      "Mark a review comment thread as resolved/fixed, after you have addressed it in code. " +
+      "Call this once per issue you fix, using the `threadId` returned by get_pr_review_comments " +
+      "for that comment. Resolved threads no longer appear in future get_pr_review_comments calls.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        threadId: {
+          type: "string",
+          description:
+            "The thread identifier from get_pr_review_comments' `threadId` field for the comment " +
+            "you just fixed.",
+        },
+      },
+      required: ["threadId"],
+    },
+  },
 ];
+
+/**
+ * Tools actually advertised to the agent this session.
+ * - post_review_comment: hidden when ALLOW_POST_COMMENT=false (editor-kind
+ *   sessions read reviewer feedback but don't post new comments — that's
+ *   the reviewer's job).
+ * - resolve_review_comment: hidden when ALLOW_RESOLVE_COMMENT=false
+ *   (inspector-kind sessions post findings but don't resolve them — that's
+ *   the developer's job, done after actually fixing the issue in code).
+ */
+const TOOLS = ALL_TOOLS.filter((t) => {
+  if (t.name === "post_review_comment") return ALLOW_POST_COMMENT;
+  if (t.name === "resolve_review_comment") return ALLOW_RESOLVE_COMMENT;
+  return true;
+});
 
 // ---------------------------------------------------------------------------
 // JSON-RPC helpers
@@ -413,7 +736,40 @@ async function handleToolCall(id, params) {
       await handleGetComments(id);
       break;
     case "post_review_comment":
+      if (!ALLOW_POST_COMMENT) {
+        respond(id, {
+          content: [
+            {
+              type: "text",
+              text:
+                'Error: "post_review_comment" is not available to this agent. Only inspector ' +
+                "agents (code review, QA) post PR comments — an editor agent resuming a rework " +
+                "pass should read comments with get_pr_review_comments and fix them in code.",
+            },
+          ],
+          isError: true,
+        });
+        return;
+      }
       await handlePostComment(id, args);
+      break;
+    case "resolve_review_comment":
+      if (!ALLOW_RESOLVE_COMMENT) {
+        respond(id, {
+          content: [
+            {
+              type: "text",
+              text:
+                'Error: "resolve_review_comment" is not available to this agent. Only editor ' +
+                "agents (developer) resolve comments, after actually fixing the underlying issue " +
+                "in code — an inspector posts findings but doesn't resolve them.",
+            },
+          ],
+          isError: true,
+        });
+        return;
+      }
+      await handleResolveComment(id, args);
       break;
     default:
       respondError(id, -32602, `Unknown tool: ${toolName}`);
@@ -579,12 +935,96 @@ async function handlePostComment(id, args) {
       return;
     }
 
+    // A comment was actually posted (inline or as a general-comment fallback) —
+    // count it so verdict-mcp-server.js can allow a "changes_requested" verdict.
+    incrementReviewCommentCount();
+
     respond(id, {
       content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
     });
   } catch (err) {
     respond(id, {
       content: [{ type: "text", text: `Error posting review comment: ${err.message || err}` }],
+      isError: true,
+    });
+  }
+}
+
+async function handleResolveComment(id, args) {
+  const { threadId } = args;
+
+  if (!threadId || typeof threadId !== "string") {
+    respond(id, {
+      content: [{ type: "text", text: 'Error: "threadId" is required and must be a non-empty string. Use the `threadId` value returned by get_pr_review_comments.' }],
+      isError: true,
+    });
+    return;
+  }
+
+  const provider = detectProvider();
+  const TASK_PR_URL = getTaskPrUrl();
+  const prNumber = parsePrNumber(TASK_PR_URL);
+
+  if (!prNumber) {
+    respond(id, {
+      content: [{ type: "text", text: `Error: Could not parse PR number from TASK_PR_URL: "${TASK_PR_URL}"` }],
+      isError: true,
+    });
+    return;
+  }
+
+  try {
+    let result;
+    if (provider === "github") {
+      if (!GITHUB_PAT) {
+        respond(id, {
+          content: [{ type: "text", text: "Error: GITHUB_PAT environment variable is not set." }],
+          isError: true,
+        });
+        return;
+      }
+      // A threadId prefixed with ISSUE_COMMENT_PREFIX identifies a fallback
+      // general comment (see githubGetFallbackIssueComments), which has no
+      // review-thread node behind it — resolveReviewThread would fail with
+      // "could not resolve to a node" if we tried it here. Route to the
+      // comment-minimizing mutation instead.
+      if (threadId.startsWith(ISSUE_COMMENT_PREFIX)) {
+        const nodeId = threadId.slice(ISSUE_COMMENT_PREFIX.length);
+        result = await githubMinimizeComment(nodeId);
+      } else {
+        result = await githubResolveReviewThread(threadId);
+      }
+    } else if (provider === "azure-devops") {
+      if (!AZURE_DEVOPS_PAT) {
+        respond(id, {
+          content: [{ type: "text", text: "Error: AZURE_DEVOPS_PAT environment variable is not set." }],
+          isError: true,
+        });
+        return;
+      }
+      const parsed = parseAzureDevOpsRepo(REPO_URL);
+      if (!parsed) {
+        respond(id, {
+          content: [{ type: "text", text: `Error: Cannot parse org/project/repo from REPO_URL: "${REPO_URL}"` }],
+          isError: true,
+        });
+        return;
+      }
+      result = await adoResolveReviewThread(parsed.org, parsed.project, parsed.repo, prNumber, threadId);
+    } else {
+      respond(id, {
+        content: [{ type: "text", text: `Error: Unsupported git provider: "${provider}". Set GIT_PROVIDER or use a GitHub/Azure DevOps REPO_URL.` }],
+        isError: true,
+      });
+      return;
+    }
+
+    respond(id, {
+      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+    });
+  } catch (err) {
+    respond(id, {
+      content: [{ type: "text", text: `Error resolving review comment: ${err.message || err}` }],
       isError: true,
     });
   }

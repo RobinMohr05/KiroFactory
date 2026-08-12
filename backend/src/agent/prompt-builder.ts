@@ -32,7 +32,11 @@ You are resuming work on branch \`${task.branch || "see git status"}\` to addres
 
 **FIRST ACTION:** Call the \`get_pr_review_comments\` tool to fetch all open review comments on the PR.
 Address every comment — treat each one as a required fix. Do NOT skip any.
-Once all comments are addressed, the implementation will be re-reviewed.
+**AFTER fixing each comment:** call \`resolve_review_comment\` with that comment's \`threadId\`
+(returned by \`get_pr_review_comments\`) so it doesn't keep reappearing on the next review pass.
+Resolve comments one at a time, right after fixing the specific issue it describes — don't batch
+all resolves to the end and risk missing one.
+Once all comments are addressed and resolved, the implementation will be re-reviewed.
 `
     : "";
 
@@ -55,9 +59,9 @@ ${filesList}
 ## INSTRUCTIONS
 
 ${task.pullRequestUrl
-  ? "1. Call `get_pr_review_comments` first to fetch all open PR review comments. Address every comment before doing anything else.\n2. After fixing all comments, verify your changes compile correctly (run `npm run build` if applicable)."
+  ? "1. Call `get_pr_review_comments` first to fetch all open PR review comments. Address every comment before doing anything else.\n2. For each comment, fix the issue in code, then immediately call `resolve_review_comment` with that comment's `threadId` before moving to the next one.\n3. After fixing and resolving all comments, verify your changes compile correctly (run `npm run build` if applicable)."
   : "1. Read the relevant source files to understand the current state of the code.\n2. Implement the change described above. Follow the existing code style and conventions.\n3. After implementing, verify your changes compile correctly (run `npm run build` if applicable)."}
-${task.pullRequestUrl ? "3." : "4."} STOP after completing this single task. Do not pick another task.
+4. STOP after completing this single task. Do not pick another task.
 
 ## CRITICAL RULES
 
@@ -111,7 +115,8 @@ ${filesList}
 ### Step 0 — Check for PR review comments (rework pass)
 - If this task already has an associated pull request (you are resuming on an existing branch, not starting fresh), call the \`get_pr_review_comments\` tool first.
 - Treat every comment it returns as a required fix — write a failing test for each one where applicable, then implement the fix, following the same RED-GREEN-REFACTOR flow as any other requirement.
-- Address ALL review comments before considering the task complete.
+- Right after fixing each comment, call \`resolve_review_comment\` with that comment's \`threadId\` (from \`get_pr_review_comments\`) — don't leave it for the end, resolve as you go.
+- Address AND resolve ALL review comments before considering the task complete.
 
 ### Step 1 — Write tests FIRST
 - Identify or create the test file for the module being changed (colocated: \`foo.test.ts\` next to \`foo.ts\`).
@@ -201,7 +206,7 @@ ${filesList}
 
 1. Identify what changed for this task (e.g. \`git diff origin/develop...HEAD\` or the appropriate base branch — fall back to \`git log --oneline -1\` / \`git diff HEAD~1\` if that fails).
 2. Review the diff following the workflow and criteria described in your system prompt.
-3. For every issue found, call \`post_review_comment\` exactly once per issue.
+3. For every issue found, call \`post_review_comment\` exactly once per issue. This is the ONLY place your findings are recorded — if you don't call it, your findings exist nowhere the next agent can see them.
 4. Call \`report_verdict\` exactly once when finished: \`"no_action_needed"\` if you found zero issues, \`"changes_requested"\` if you posted one or more comments.
 
 ## CRITICAL RULES
@@ -210,6 +215,8 @@ ${filesList}
 - Do NOT run \`npm run build\`, tests, installs, or any command that changes the working tree.
 - Do NOT run any git command that changes repository state (commit, push, branch, checkout). Read-only git commands (diff, log, status, show) are fine.
 - Do NOT pick another task. Only inspect the task assigned above.
+- Never describe an issue only in your own response text and skip \`post_review_comment\` — a finding that isn't posted as a PR comment is invisible to everyone else and accomplishes nothing.
+- \`report_verdict\` will REJECT verdict \`"changes_requested"\` if you have not called \`post_review_comment\` at least once this turn. If you get this error, go back and post a comment for every issue first, then call \`report_verdict\` again.
 - You MUST call \`report_verdict\` exactly once before finishing.
 - STOP once you've reported your verdict.
 
