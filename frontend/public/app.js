@@ -2041,9 +2041,12 @@ async function createAndStartSession() {
   const boardsSelect = document.getElementById('sessionBoards');
   const boardIds = Array.from(boardsSelect.selectedOptions).map(opt => Number(opt.value));
 
-  // If no boards explicitly selected, default to the current board
-  if (boardIds.length === 0 && currentBoardId) {
-    boardIds.push(Number(currentBoardId));
+  // Always include the currently open tab — this is a hard assignment
+  if (currentBoardId) {
+    const currentId = Number(currentBoardId);
+    if (!boardIds.includes(currentId)) {
+      boardIds.push(currentId);
+    }
   }
 
   // Collect MCP override if user expanded the section and toggled anything
