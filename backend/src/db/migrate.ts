@@ -1029,6 +1029,55 @@ async function runUpgrades(pool: sql.ConnectionPool): Promise<void> {
 
     console.log("[migrate] Upgrade complete: agent kind + stage state columns added.");
   }
+
+  // Upgrade 23: Add sort_order column to sessions table for user-defined session ordering
+  const sessionSortOrderColExists = await pool.request().query(`
+    SELECT COUNT(*) AS cnt
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_NAME = 'sessions' AND COLUMN_NAME = 'sort_order'
+  `);
+
+  if (sessionSortOrderColExists.recordset[0].cnt === 0) {
+    console.log("[migrate] Upgrading: adding sort_order to sessions table...");
+    await pool.request().query(`
+      ALTER TABLE sessions
+      ADD sort_order INT NOT NULL DEFAULT 0
+    `);
+    // Initialize sort_order: pinned sessions first, then by created_at ASC within each group
+    await pool.request().query(`
+      WITH ordered AS (
+        SELECT id,
+               ROW_NUMBER() OVER (PARTITION BY pinned ORDER BY created_at ASC) - 1 AS rn
+        FROM sessions
+      )
+      UPDATE sessions SET sort_order = ordered.rn
+      FROM sessions INNER JOIN ordered ON sessions.id = ordered.id
+    `);
+    console.log("[migrate] Upgrade complete: sort_order added to sessions.");
+  }
+
+  // Upgrade 24: Add is_permanent column to sessions table.
+  // This provides a robust identifier for permanent sessions (like the auto-created
+  // Chat session) instead of relying on the fragile name === "Chat" check.
+  const isPermanentColExists = await pool.request().query(`
+    SELECT COUNT(*) AS cnt
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_NAME = 'sessions' AND COLUMN_NAME = 'is_permanent'
+  `);
+
+  if (isPermanentColExists.recordset[0].cnt === 0) {
+    console.log("[migrate] Upgrading: adding is_permanent to sessions table...");
+    await pool.request().query(`
+      ALTER TABLE sessions
+      ADD is_permanent BIT NOT NULL DEFAULT 0
+    `);
+    // Backfill: mark existing pinned agentless "Chat" sessions as permanent
+    await pool.request().query(`
+      UPDATE sessions SET is_permanent = 1
+      WHERE pinned = 1 AND agent = '' AND name = 'Chat'
+    `);
+    console.log("[migrate] Upgrade complete: is_permanent added to sessions.");
+  }
 }
 
 /**
@@ -1076,10 +1125,10 @@ async function createPinnedChatSession(pool: sql.ConnectionPool, userId: number)
     .query(`
       INSERT INTO sessions (
         name, agent, status, prompt, interactive, loop, runs,
-        interval_seconds, cwd, timeout_seconds, user_id, created_at, pinned
+        interval_seconds, cwd, timeout_seconds, user_id, created_at, pinned, is_permanent
       ) VALUES (
         @name, '', 'stopped', '', 1, 0, 0,
-        10, @cwd, 0, @userId, GETUTCDATE(), 1
+        10, @cwd, 0, @userId, GETUTCDATE(), 1, 1
       )
     `);
 }

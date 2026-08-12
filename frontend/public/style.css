@@ -1299,6 +1299,55 @@ textarea:focus {
   background: #9CA3AF;
 }
 
+/* Session context menu */
+.session-context-menu {
+  position: fixed;
+  z-index: 9999;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  padding: 0.25rem;
+  min-width: 140px;
+}
+
+.session-context-item {
+  display: block;
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  border: none;
+  background: none;
+  font-size: 0.8rem;
+  font-family: 'Inter', sans-serif;
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+  border-radius: 3px;
+  transition: background 0.15s;
+}
+
+.session-context-item:hover {
+  background: var(--bg-tertiary);
+}
+
+/* Session drag-and-drop */
+.session-item.session-dragging {
+  opacity: 0.4;
+}
+
+.session-item.session-drop-before {
+  border-top: 2px solid var(--ta-mango);
+}
+
+.session-item.session-drop-after {
+  border-bottom: 2px solid var(--ta-mango);
+}
+
+[data-theme="dark"] .session-context-menu {
+  background: var(--bg-secondary);
+  border-color: var(--border-color);
+}
+
 /* ===== Session Detail Panel (right) ===== */
 .session-detail-panel {
   display: flex;

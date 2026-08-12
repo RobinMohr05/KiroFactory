@@ -323,6 +323,15 @@ export interface Session {
    */
   pinned: boolean;
   /**
+   * True for sessions that are permanent and cannot be unpinned or deleted
+   * (e.g., the auto-created "Chat" session). More robust than checking by
+   * name, since users could create sessions with the same name.
+   * Never settable through the public create-session API.
+   */
+  isPermanent: boolean;
+  /** Sort order within the session list (pinned DESC, sortOrder ASC). */
+  sortOrder: number;
+  /**
    * Cumulative Kiro credits consumed across all prompt turns since this
    * session was last started. Reset to 0 on each start.
    */
@@ -352,6 +361,11 @@ export interface CreateSessionInput {
    * Not accepted from the public POST /api/sessions body — the route strips it.
    */
   pinned?: boolean;
+  /**
+   * Internal-only flag marking the session as permanent (cannot be unpinned or deleted).
+   * Not accepted from the public POST /api/sessions body — the route strips it.
+   */
+  isPermanent?: boolean;
 }
 
 /**
@@ -391,6 +405,7 @@ export type WsServerMessage =
   | { type: "session-created"; session: Session }
   | { type: "session-updated"; session: Session }
   | { type: "session-deleted"; sessionId: number }
+  | { type: "sessions-reordered"; sessions: Session[] }
   | { type: "session-output"; sessionId: number; entry: OutputEntry }
   | { type: "session-activity"; sessionId: number; activity: Activity }
   | { type: "error-created"; error: AgentError }

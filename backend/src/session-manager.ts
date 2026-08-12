@@ -26,6 +26,8 @@ import {
   updateSessionMeta,
   deleteSessionFromDb,
   isSessionOwnedByUser,
+  reorderSessionsInDb,
+  updateSessionPinInDb,
 } from "./db/sessions.js";
 import { getUserKiroApiKey, getUserById } from "./db/users.js";
 import { getAllDecryptedCredentials, getDecryptedCredential } from "./db/credentials.js";
@@ -422,7 +424,18 @@ export async function createSession(input: CreateSessionInput): Promise<Session>
     createdAt: now(),
     output: [],
     pinned: input.pinned === true,
+    isPermanent: input.isPermanent === true,
+    sortOrder: 0, // placeholder — calculated below
   };
+
+  // Calculate sortOrder: place new session at end of appropriate group
+  const isPinned = meta.pinned;
+  const userSessions = Array.from(sessions.values())
+    .filter((s) => s.meta.userId === meta.userId && s.meta.pinned === isPinned);
+  const maxOrder = userSessions.length > 0
+    ? Math.max(...userSessions.map((s) => s.meta.sortOrder ?? 0))
+    : -1;
+  meta.sortOrder = maxOrder + 1;
 
   // The session id is assigned by the database (IDENTITY column), so it must
   // be known before the session can be registered anywhere.
@@ -472,6 +485,11 @@ export function getSession(id: number): Session | undefined {
 export function getAllSessions(userId?: number): Session[] {
   return Array.from(sessions.values())
     .filter((s) => userId === undefined || s.meta.userId === userId)
+    .sort((a, b) => {
+      // pinned DESC, then sortOrder ASC
+      if (a.meta.pinned !== b.meta.pinned) return a.meta.pinned ? -1 : 1;
+      return (a.meta.sortOrder ?? 0) - (b.meta.sortOrder ?? 0);
+    })
     .map((s) => ({
     ...s.meta,
     // Don't include full output in list endpoint — too large
@@ -488,7 +506,7 @@ export function getSessionOutput(id: number): OutputEntry[] {
 export function deleteSession(id: number): boolean {
   const session = sessions.get(id);
   if (!session) return false;
-  if (session.meta.pinned) return false; // pinned Chat session is permanent
+  if (session.meta.isPermanent) return false; // permanent sessions cannot be deleted
 
   // Stop first if running
   if (session.meta.status === "running") {
@@ -521,6 +539,100 @@ export function updateSessionTabs(id: number, tabIds: number[]): boolean {
   persistSession(id);
 
   logSessionEvent("session-tabs-updated", id, { tabIds });
+  return true;
+}
+
+/**
+ * Reorder sessions by setting sort_order based on array position.
+ * Persists to DB and broadcasts updates.
+ */
+export function reorderSessions(sessionIds: number[], userId: number): boolean {
+  // Verify all sessions exist and belong to the user
+  for (const id of sessionIds) {
+    const s = sessions.get(id);
+    if (!s || s.meta.userId !== userId) return false;
+  }
+
+  // Update sort_order in memory
+  for (let i = 0; i < sessionIds.length; i++) {
+    const s = sessions.get(sessionIds[i]);
+    if (s) s.meta.sortOrder = i;
+  }
+
+  // Persist to DB
+  if (isDbAvailable()) {
+    reorderSessionsInDb(sessionIds, userId).catch((err) => {
+      log.warn("session-reorder-db-failed", {
+        component: "session-manager",
+        ...toErrorFields(err),
+      });
+    });
+  }
+
+  // Broadcast a full session list refresh to the user
+  broadcastToUser(userId, { type: "sessions-reordered", sessions: getAllSessions(userId) });
+  return true;
+}
+
+/**
+ * Pin or unpin a session. When pinning, move to bottom of pinned group.
+ * When unpinning, move to top of unpinned group.
+ */
+export function pinSession(id: number, pinned: boolean): boolean {
+  const session = sessions.get(id);
+  if (!session) return false;
+
+  // Prevent unpinning a permanent session (e.g., the auto-created Chat session)
+  if (!pinned && session.meta.isPermanent) return false;
+
+  const userId = session.meta.userId;
+  const allUserSessions = Array.from(sessions.values())
+    .filter((s) => s.meta.userId === userId)
+    .sort((a, b) => {
+      if (a.meta.pinned !== b.meta.pinned) return a.meta.pinned ? -1 : 1;
+      return (a.meta.sortOrder ?? 0) - (b.meta.sortOrder ?? 0);
+    });
+
+  session.meta.pinned = pinned;
+
+  if (pinned) {
+    // Move to bottom of pinned group
+    const pinnedSessions = allUserSessions.filter((s) => s.meta.pinned && s.meta.id !== id);
+    const maxPinnedOrder = pinnedSessions.length > 0
+      ? Math.max(...pinnedSessions.map((s) => s.meta.sortOrder ?? 0))
+      : -1;
+    session.meta.sortOrder = maxPinnedOrder + 1;
+  } else {
+    // Move to top of unpinned group (sort_order = 0, shift others up)
+    const unpinnedSessions = allUserSessions.filter((s) => !s.meta.pinned && s.meta.id !== id);
+    session.meta.sortOrder = 0;
+    // Shift existing unpinned sessions down by 1
+    for (const s of unpinnedSessions) {
+      s.meta.sortOrder = (s.meta.sortOrder ?? 0) + 1;
+    }
+  }
+
+  // Persist
+  if (isDbAvailable()) {
+    updateSessionPinInDb(id, pinned, session.meta.sortOrder).catch((err) => {
+      log.warn("session-pin-db-failed", {
+        component: "session-manager",
+        ...toErrorFields(err),
+      });
+    });
+    // Also persist shifted sort orders for unpinned sessions
+    if (!pinned) {
+      const unpinnedSessions = Array.from(sessions.values())
+        .filter((s) => s.meta.userId === userId && !s.meta.pinned && s.meta.id !== id);
+      for (const s of unpinnedSessions) {
+        persistSession(s.meta.id);
+      }
+    }
+  }
+
+  // Broadcast a full session list refresh so all clients get updated sort orders
+  broadcastToUser(userId, { type: "sessions-reordered", sessions: getAllSessions(userId) });
+  logSessionEvent("session-pin-changed", id, { pinned });
   return true;
 }
 

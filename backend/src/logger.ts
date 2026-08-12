@@ -115,7 +115,7 @@ export function toErrorFields(err: unknown): { error: string; stack?: string } {
 
 /** Log a session lifecycle event (start, stop, crash, error, retry). */
 export function logSessionEvent(
-  event: "session-created" | "session-started" | "session-stopped" | "session-error" | "session-deleted" | "session-retry" | "session-tabs-updated" | "session-fields-updated",
+  event: "session-created" | "session-started" | "session-stopped" | "session-error" | "session-deleted" | "session-retry" | "session-tabs-updated" | "session-pin-changed" | "session-reordered" | "session-fields-updated",
   sessionId: number,
   data?: Record<string, unknown>
 ): void {

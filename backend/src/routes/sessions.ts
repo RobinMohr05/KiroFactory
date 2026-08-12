@@ -9,6 +9,8 @@ import {
   stopSession,
   sendPrompt,
   updateSessionTabs,
+  reorderSessions,
+  pinSession,
   updateSessionFields,
 } from "../session-manager.js";
 import { requireAuth, getUserId } from "../middleware/auth.js";
@@ -55,10 +57,11 @@ router.post("/", async (req: Request, res: Response) => {
       return;
     }
     // Force userId from auth context (ignore any userId in the body).
-    // `pinned` is internal-only (set for the one permanent Chat session
-    // created at registration) — never honor it from a public request body.
+    // `pinned` and `isPermanent` are internal-only (set for the one permanent
+    // Chat session created at registration) — never honor from a public request body.
     input.userId = userId;
     input.pinned = false;
+    input.isPermanent = false;
     const session = await createSession(input);
     res.status(201).json(session);
   } catch (err) {
@@ -70,6 +73,33 @@ router.post("/", async (req: Request, res: Response) => {
       msg: "Failed to create session",
     });
     res.status(500).json({ error: "Failed to create session" });
+  }
+});
+
+// PUT /api/sessions/reorder — reorder sessions by setting sort_order based on array position
+router.put("/reorder", (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const { sessionIds } = req.body;
+    if (!Array.isArray(sessionIds) || sessionIds.some((id: unknown) => !Number.isInteger(id))) {
+      res.status(400).json({ error: "sessionIds must be an array of integers" });
+      return;
+    }
+    const ok = reorderSessions(sessionIds, userId);
+    if (!ok) {
+      res.status(400).json({ error: "One or more sessions not found or not owned by user" });
+      return;
+    }
+    res.json({ success: true });
+  } catch (err) {
+    log.error("route-error", {
+      component: "sessions",
+      method: "PUT",
+      path: "/api/sessions/reorder",
+      ...toErrorFields(err),
+      msg: "Failed to reorder sessions",
+    });
+    res.status(500).json({ error: "Failed to reorder sessions" });
   }
 });
 
@@ -266,6 +296,43 @@ router.put("/:id/tabs", (req: Request, res: Response) => {
   }
 });
 
+// PATCH /api/sessions/:id/pin — toggle pin state (must belong to authenticated user)
+router.patch("/:id/pin", (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const id = paramId(req);
+    if (id === null) {
+      res.status(400).json({ error: "Invalid session id" });
+      return;
+    }
+    const session = getSession(id);
+    if (!session || session.userId !== userId) {
+      res.status(404).json({ error: "Session not found" });
+      return;
+    }
+    const { pinned } = req.body;
+    if (typeof pinned !== "boolean") {
+      res.status(400).json({ error: "pinned must be a boolean" });
+      return;
+    }
+    const ok = pinSession(id, pinned);
+    if (!ok) {
+      res.status(403).json({ error: "Cannot unpin a permanent session" });
+      return;
+    }
+    res.json({ success: true });
+  } catch (err) {
+    log.error("route-error", {
+      component: "sessions",
+      method: "PATCH",
+      path: "/api/sessions/:id/pin",
+      ...toErrorFields(err),
+      msg: "Failed to update session pin state",
+    });
+    res.status(500).json({ error: "Failed to update session pin state" });
+  }
+});
+
 // PATCH /api/sessions/:id — update editable session fields (must belong to authenticated user, must not be running)
 router.patch("/:id", (req: Request, res: Response) => {
   try {
@@ -337,8 +404,8 @@ router.delete("/:id", async (req: Request, res: Response) => {
       res.status(404).json({ error: "Session not found" });
       return;
     }
-    if (session.pinned) {
-      res.status(403).json({ error: "The pinned Chat session cannot be deleted" });
+    if (session.isPermanent) {
+      res.status(403).json({ error: "Permanent sessions cannot be deleted" });
       return;
     }
     const ok = deleteSession(id);

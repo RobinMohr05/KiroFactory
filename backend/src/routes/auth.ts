@@ -119,7 +119,7 @@ router.post("/register", async (req: Request, res: Response) => {
     // in the sidebar. Non-fatal if it fails — the migration backfill will
     // catch it on the next server restart.
     try {
-      await createSession({ name: "Chat", userId: user.id, pinned: true });
+      await createSession({ name: "Chat", userId: user.id, pinned: true, isPermanent: true });
     } catch (err) {
       log.warn("pinned-chat-session-create-failed", {
         component: "auth",
