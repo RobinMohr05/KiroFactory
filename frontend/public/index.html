@@ -170,6 +170,7 @@
             <div class="session-controls">
               <button class="btn btn-success btn-sm" id="sessionStartBtn" title="Start agent">Start</button>
               <button class="btn btn-danger btn-sm" id="sessionStopBtn" title="Stop agent" disabled>Stop</button>
+              <button class="btn btn-secondary btn-sm" id="sessionEditBtn" title="Edit session settings">Edit</button>
               <button class="btn btn-secondary btn-sm" id="sessionClearBtn" title="Clear visible output">Clear</button>
               <button class="btn btn-secondary btn-sm" id="sessionDeleteBtn" title="Delete session">Delete</button>
             </div>
@@ -185,6 +186,53 @@
               <button class="btn btn-primary btn-sm" id="sessionTabsSaveBtn">Save</button>
               <button class="btn btn-secondary btn-sm" id="sessionTabsCancelBtn">Cancel</button>
             </div>
+          </div>
+          <!-- Session Settings Editor (shown when Edit is clicked) -->
+          <div class="session-settings-editor" id="sessionSettingsEditor" hidden>
+            <form id="sessionSettingsForm">
+              <div class="form-group"><label for="editSessionName">Session Name</label><input type="text" id="editSessionName" required /></div>
+              <div class="form-group"><label for="editSessionPrompt">Prompt</label><textarea id="editSessionPrompt" rows="3"></textarea></div>
+              <div class="form-row">
+                <div class="form-group"><label for="editSessionCwd">Working Directory</label><input type="text" id="editSessionCwd" placeholder="Defaults to project root" /></div>
+                <div class="form-group"><label for="editSessionModel">Model</label><input type="text" id="editSessionModel" placeholder="e.g. claude-sonnet-4" /></div>
+              </div>
+              <div class="form-row">
+                <div class="form-group"><label for="editSessionTimeout">Timeout (seconds)</label><input type="number" id="editSessionTimeout" min="0" value="0" /></div>
+                <div class="form-group"><label class="checkbox-label"><input type="checkbox" id="editSessionInteractive" /><span>Interactive</span></label></div>
+              </div>
+              <div class="form-row">
+                <div class="form-group"><label class="checkbox-label"><input type="checkbox" id="editSessionLoop" /><span>Loop mode</span></label></div>
+                <div class="form-group"><label for="editSessionRuns">Runs <small>(0 = endless)</small></label><input type="number" id="editSessionRuns" min="0" value="0" /></div>
+                <div class="form-group"><label for="editSessionInterval">Interval (seconds)</label><input type="number" id="editSessionInterval" min="0" value="10" /></div>
+              </div>
+              <div class="form-group"><label for="editSessionBoards">Assign to Tabs</label><select id="editSessionBoards" multiple size="3"></select></div>
+              <div class="form-group mcp-config-group">
+                <label class="agent-section-toggle" id="editSessionMcpToggle" aria-expanded="false">
+                  <span class="toggle-icon">▶</span> MCP Servers <small>(override tab defaults)</small>
+                </label>
+                <div class="agent-collapsible" id="editSessionMcpSection">
+                  <div class="mcp-toggles">
+                    <label class="mcp-toggle-item"><input type="checkbox" id="editSessionMcpAtlassian" /><span class="mcp-toggle-label">Atlassian</span></label>
+                    <label class="mcp-toggle-item"><input type="checkbox" id="editSessionMcpAzureDevops" /><span class="mcp-toggle-label">Azure DevOps</span></label>
+                    <label class="mcp-toggle-item"><input type="checkbox" id="editSessionMcpAwsApi" /><span class="mcp-toggle-label">AWS API</span></label>
+                    <label class="mcp-toggle-item"><input type="checkbox" id="editSessionMcpAwsDocs" /><span class="mcp-toggle-label">AWS Docs</span></label>
+                  </div>
+                </div>
+              </div>
+              <div class="form-group mcp-config-group">
+                <label class="agent-section-toggle" id="editSessionCustomMcpToggle" aria-expanded="false">
+                  <span class="toggle-icon">▶</span> Custom MCP Servers
+                </label>
+                <div class="agent-collapsible" id="editSessionCustomMcpSection">
+                  <div id="editSessionCustomMcpList" class="custom-mcp-list"></div>
+                  <button type="button" class="btn btn-secondary btn-sm" id="editSessionCustomMcpAddBtn">+ Add MCP server</button>
+                </div>
+              </div>
+              <div class="form-actions">
+                <button type="button" class="btn btn-secondary btn-sm" id="editSessionCancelBtn">Cancel</button>
+                <button type="submit" class="btn btn-primary btn-sm" id="editSessionSaveBtn">Save</button>
+              </div>
+            </form>
           </div>
           <div class="session-activity" id="sessionActivityBar">
             <span class="activity-dot" id="activityDot"></span>
@@ -297,7 +345,7 @@
         <div class="form-group"><label for="agentFormPrompt">System Prompt <span class="required">*</span></label><textarea id="agentFormPrompt" rows="8" required placeholder="Instructions for the agent..."></textarea></div>
         <div class="form-row"><div class="form-group"><label for="agentFormTools">Tools <small>(comma-separated)</small></label><input type="text" id="agentFormTools" placeholder="read, write, shell, grep, glob, code" /></div><div class="form-group"><label for="agentFormAllowed">Allowed Tools <small>(comma-separated)</small></label><input type="text" id="agentFormAllowed" placeholder="read, grep, glob, code" /></div></div>
         <div class="form-group"><label for="agentFormResources">Resources <small>(one per line)</small></label><textarea id="agentFormResources" rows="3" placeholder="file://src/**/*.ts&#10;file://README.md"></textarea></div>
-        <div class="form-row"><div class="form-group"><label for="agentFormKind">Kind</label><select id="agentFormKind"><option value="editor">Editor (changes code)</option><option value="inspector">Inspector (reviews only)</option></select></div><div class="form-group"></div></div>
+        <div class="form-row"><div class="form-group"><label for="agentFormKind">Kind</label><select id="agentFormKind"><option value="editor">Editor (changes code)</option><option value="inspector">Inspector (reviews only)</option></select></div><div class="form-group"><label class="checkbox-label"><input type="checkbox" id="agentFormRequiresTask" checked /><span>Requires a task to run</span></label><small class="form-hint">Off = agent loops on its own prompt, ignoring the task queue.</small></div></div>
         <div class="form-row"><div class="form-group"><label for="agentFormClaimState">Claim State</label><input type="text" id="agentFormClaimState" placeholder="e.g. todo" /></div><div class="form-group"><label for="agentFormWorkingState">Working State</label><input type="text" id="agentFormWorkingState" placeholder="e.g. in-progress" /></div></div>
         <div class="form-group"><label for="agentFormResolveState">Resolve State</label><input type="text" id="agentFormResolveState" placeholder="e.g. developed" /></div>
         <div class="form-group"><label for="agentFormSettings">Tools Settings <small>(JSON)</small></label><textarea id="agentFormSettings" rows="4" placeholder='{"shell": {"allowedCommands": ["npm run build"]}}'></textarea></div>

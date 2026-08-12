@@ -11,9 +11,10 @@ import {
   updateSessionTabs,
   reorderSessions,
   pinSession,
+  updateSessionFields,
 } from "../session-manager.js";
 import { requireAuth, getUserId } from "../middleware/auth.js";
-import type { CreateSessionInput } from "../types.js";
+import type { CreateSessionInput, UpdateSessionInput } from "../types.js";
 import { log, toErrorFields } from "../logger.js";
 
 const router = Router();
@@ -329,6 +330,63 @@ router.patch("/:id/pin", (req: Request, res: Response) => {
       msg: "Failed to update session pin state",
     });
     res.status(500).json({ error: "Failed to update session pin state" });
+  }
+});
+
+// PATCH /api/sessions/:id — update editable session fields (must belong to authenticated user, must not be running)
+router.patch("/:id", (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const id = paramId(req);
+    if (id === null) {
+      res.status(400).json({ error: "Invalid session id" });
+      return;
+    }
+    const session = getSession(id);
+    if (!session || session.userId !== userId) {
+      res.status(404).json({ error: "Session not found" });
+      return;
+    }
+
+    // Strip non-editable fields from the request body
+    const { agent, id: _id, status, userId: _userId, createdAt, startedAt, currentTaskId, currentActivity, pinned, output, ...rest } = req.body;
+    const updates: UpdateSessionInput = {};
+    if (rest.name !== undefined) updates.name = rest.name;
+    if (rest.prompt !== undefined) updates.prompt = rest.prompt;
+    if (rest.cwd !== undefined) updates.cwd = rest.cwd;
+    if (rest.model !== undefined) updates.model = rest.model;
+    if (rest.timeoutSeconds !== undefined) updates.timeoutSeconds = rest.timeoutSeconds;
+    if (rest.interactive !== undefined) updates.interactive = rest.interactive;
+    if (rest.loop !== undefined) updates.loop = rest.loop;
+    if (rest.runs !== undefined) updates.runs = rest.runs;
+    if (rest.intervalSeconds !== undefined) updates.intervalSeconds = rest.intervalSeconds;
+    if (rest.mcpServers !== undefined) updates.mcpServers = rest.mcpServers;
+    if (rest.mcpConfigOverride !== undefined) updates.mcpConfigOverride = rest.mcpConfigOverride;
+    if (rest.tabIds !== undefined) updates.tabIds = rest.tabIds;
+
+    const result = updateSessionFields(id, updates);
+    if (!result) {
+      res.status(404).json({ error: "Session not found" });
+      return;
+    }
+    if (!result.success) {
+      if (result.reason === "running") {
+        res.status(409).json({ error: "Cannot edit a running session. Stop the session first." });
+        return;
+      }
+      res.status(400).json({ error: result.reason });
+      return;
+    }
+    res.json({ success: true });
+  } catch (err) {
+    log.error("route-error", {
+      component: "sessions",
+      method: "PATCH",
+      path: "/api/sessions/:id",
+      ...toErrorFields(err),
+      msg: "Failed to update session",
+    });
+    res.status(500).json({ error: "Failed to update session" });
   }
 });
 

@@ -116,6 +116,7 @@ CREATE TABLE agents (
     claim_state     VARCHAR(50)     NOT NULL DEFAULT 'todo',
     working_state   VARCHAR(50)     NOT NULL DEFAULT 'in-progress',
     resolve_state   VARCHAR(50)     NOT NULL DEFAULT 'developed',
+    requires_task   BIT             NOT NULL DEFAULT 1,
     user_id         INT             NULL REFERENCES users(id),
     created_at      DATETIME2       NOT NULL DEFAULT GETUTCDATE(),
     updated_at      DATETIME2       NOT NULL DEFAULT GETUTCDATE(),

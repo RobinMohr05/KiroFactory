@@ -193,6 +193,12 @@ export interface Agent {
    * Defaults to "developed" if the column is not yet populated.
    */
   resolveState: string;
+  /**
+   * Whether this agent requires a task to run. When false, the agent loops on
+   * its own prompt without claiming from the task queue.
+   * Defaults to true (standard task-claiming behavior).
+   */
+  requiresTask: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -210,6 +216,7 @@ export interface CreateAgentInput {
   claimState?: string;
   workingState?: string;
   resolveState?: string;
+  requiresTask?: boolean;
   tabIds?: number[];
 }
 
@@ -225,6 +232,7 @@ export interface UpdateAgentInput {
   claimState?: string;
   workingState?: string;
   resolveState?: string;
+  requiresTask?: boolean;
   tabIds?: number[];
 }
 
@@ -358,6 +366,27 @@ export interface CreateSessionInput {
    * Not accepted from the public POST /api/sessions body — the route strips it.
    */
   isPermanent?: boolean;
+}
+
+/**
+ * Fields that can be updated on an existing session via PATCH /api/sessions/:id.
+ * `agent` is intentionally excluded — it is fixed at creation time.
+ * Internal/lifecycle fields (id, status, userId, createdAt, startedAt, currentTaskId,
+ * currentActivity, pinned, output) are also excluded.
+ */
+export interface UpdateSessionInput {
+  name?: string;
+  prompt?: string;
+  cwd?: string | null;
+  model?: string | null;
+  timeoutSeconds?: number;
+  interactive?: boolean;
+  loop?: boolean;
+  runs?: number;
+  intervalSeconds?: number;
+  mcpServers?: McpServerConfig[] | null;
+  mcpConfigOverride?: TabMcpConfig | null;
+  tabIds?: number[];
 }
 
 // ─── WebSocket Messages ──────────────────────────────────────────────────────
