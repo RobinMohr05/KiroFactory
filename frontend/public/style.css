@@ -1481,6 +1481,76 @@ textarea:focus {
   gap: 0.4rem;
 }
 
+/* ===== Session Settings Editor ===== */
+.session-settings-editor {
+  padding: 0.75rem 1.25rem;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.session-settings-editor .form-group {
+  margin-bottom: 0.5rem;
+}
+
+.session-settings-editor .form-group label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  margin-bottom: 0.15rem;
+  display: block;
+}
+
+.session-settings-editor .form-row {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.session-settings-editor .form-row .form-group {
+  flex: 1;
+}
+
+.session-settings-editor input[type="text"],
+.session-settings-editor input[type="number"],
+.session-settings-editor textarea,
+.session-settings-editor select {
+  width: 100%;
+  font-size: 0.8rem;
+  padding: 0.3rem 0.5rem;
+}
+
+.session-settings-editor textarea {
+  resize: vertical;
+  min-height: 2.5rem;
+}
+
+.session-settings-editor .form-actions {
+  display: flex;
+  gap: 0.4rem;
+  justify-content: flex-end;
+  margin-top: 0.75rem;
+}
+
+.session-settings-editor .checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.8rem;
+}
+
+.session-settings-editor .custom-mcp-entry {
+  display: flex;
+  gap: 0.4rem;
+  margin-bottom: 0.4rem;
+  align-items: center;
+}
+
+.session-settings-editor .custom-mcp-entry input {
+  flex: 1;
+  font-size: 0.75rem;
+  padding: 0.25rem 0.4rem;
+}
+
 /* ===== Activity Bar ===== */
 .session-activity {
   display: flex;
