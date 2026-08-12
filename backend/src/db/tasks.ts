@@ -200,6 +200,14 @@ export async function updateTask(
     request.input("files", sql.NVarChar(sql.MAX), JSON.stringify(input.files));
     setClauses.push("files = @files");
   }
+  if (input.branch !== undefined) {
+    request.input("branch", sql.NVarChar(250), input.branch);
+    setClauses.push("branch = @branch");
+  }
+  if (input.pullRequestUrl !== undefined) {
+    request.input("pullRequestUrl", sql.NVarChar(500), input.pullRequestUrl);
+    setClauses.push("pull_request_url = @pullRequestUrl");
+  }
 
   const result = await request.query(`
     UPDATE tasks

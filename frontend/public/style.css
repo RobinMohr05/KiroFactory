@@ -908,30 +908,6 @@ textarea:focus {
   margin-left: auto;
 }
 
-.card-git-info {
-  margin-top: 0.25rem;
-  font-size: 0.7rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.card-pr-link {
-  color: var(--accent);
-  text-decoration: none;
-  font-weight: 500;
-}
-
-.card-pr-link:hover {
-  text-decoration: underline;
-}
-
-.card-branch {
-  color: var(--text-muted);
-  font-family: monospace;
-  font-size: 0.65rem;
-}
-
 /* ===== Modal ===== */
 .modal-backdrop {
   position: fixed;

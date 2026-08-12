@@ -369,15 +369,24 @@ export async function stopWorkerJob(
 ): Promise<void> {
   const token = await getAzureAccessToken();
   const apiVersion = "2024-03-01";
+  // There is no "delete a job execution" operation in the Container Apps Jobs
+  // API — executions are terminated via a dedicated `stop` action, not a
+  // generic DELETE. A DELETE on this path 403s even for a fully-privileged
+  // identity because `Microsoft.App/jobs/executions/delete` isn't a real
+  // permission (jobs/executions only exposes `read`); the actual permission
+  // this needs is `Microsoft.App/jobs/stop/execution/action`, which IS
+  // covered by the built-in "Container Apps Jobs Operator" role already
+  // assigned to this identity. See:
+  // https://learn.microsoft.com/en-us/rest/api/resource-manager/containerapps/jobs/stop-execution
   const url =
     `https://management.azure.com/subscriptions/${config.subscriptionId}` +
     `/resourceGroups/${config.resourceGroup}` +
     `/providers/Microsoft.App/jobs/${config.jobName}` +
-    `/executions/${executionName}` +
+    `/executions/${executionName}/stop` +
     `?api-version=${apiVersion}`;
 
   const response = await fetch(url, {
-    method: "DELETE",
+    method: "POST",
     headers: {
       Authorization: `Bearer ${token}`,
     },

@@ -13,7 +13,7 @@ import { resolve } from "node:path";
 import { KiroRunner } from "./agent/kiro-runner.js";
 import type { SessionUpdateChunk } from "./agent/kiro-runner.js";
 import { broadcastToUser } from "./websocket-handler.js";
-import { claimTask, resolveTask, resetTask, getAvailableTaskCount, markTaskDone } from "./agent/task-claimer.js";
+import { claimTask, resolveTask, resetTask, getAvailableTaskCount, waitForTaskAvailable, markTaskDone } from "./agent/task-claimer.js";
 import type { ClaimedTask } from "./agent/task-claimer.js";
 import { buildDevPrompt, buildReviewPrompt } from "./agent/prompt-builder.js";
 import { TabMcpConfig, DEFAULT_MCP_CONFIG, resolveGitProvider, type GitProvider } from "./types.js";
@@ -908,17 +908,19 @@ async function runLoopMode(
       return;
     }
 
-    // Check for available tasks (filtered by effective tab assignments + agent's claim state)
+    // Wait until a task is available (event-driven — no DB poll while idle)
     const todoCount = await getAvailableTaskCount(effectiveTabIds, stages.claimState);
 
     if (todoCount === 0) {
       setActivity(managed, {
         type: "idle",
-        detail: `No tasks available. Polling every ${meta.intervalSeconds}s...`,
+        detail: "No tasks available. Waiting for new tasks...",
       });
 
-      // Wait before polling again
-      await interruptibleSleep(meta.intervalSeconds * 1000, signal);
+      // Park here until a task is created/reset or the session is stopped.
+      // waitForTaskAvailable does a single DB check, then suspends on an
+      // in-process event — zero DB queries during the wait.
+      await waitForTaskAvailable(effectiveTabIds, stages.claimState, signal);
       continue;
     }
 
@@ -961,9 +963,25 @@ async function runLoopMode(
       detail: `Working on: ${task.title}`,
     });
 
+    // Start a fresh ACP session for this task — no conversation history from
+    // whatever the previous task's turn accumulated. Applies to every claimed
+    // task (first attempt, rework pass on an existing branch, inspector
+    // review), so the agent always reads the current code/PR state fresh
+    // instead of relying on memory of a prior turn.
+    let success = true;
+    try {
+      await managed.runner?.newSession();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      appendOutput(managed, {
+        timestamp: now(),
+        stream: "stderr",
+        text: `Warning: could not start a fresh session for this task (${msg}) — continuing on the existing session.`,
+      });
+    }
+
     // Build and send the prompt (review prompt for inspector agents, dev prompt otherwise)
     const prompt = buildTurnPrompt(stages.kind, task, meta.cwd);
-    let success = true;
 
     // Reset per-turn verdict tracking before each prompt
     managed.turnVerdict = null;
@@ -993,10 +1011,36 @@ async function runLoopMode(
       });
     }
 
+    // If a required MCP server (verdict, pr-review) failed to initialize this
+    // turn, the agent was missing tools it expected to have — see the same
+    // check in runLoopModeAca for the full rationale. Fail the turn instead
+    // of trusting whatever verdict came back.
+    if (success && managed.runner?.mcpServerInitFailures.length) {
+      success = false;
+      const failedNames = managed.runner.mcpServerInitFailures.map((f) => f.name || "unknown").join(", ");
+      appendOutput(managed, {
+        timestamp: now(),
+        stream: "stderr",
+        text: `✖ MCP server(s) [${failedNames}] failed to start — the agent was missing tools it needed. ` +
+          `Task reset to "${stages.claimState}" for retry instead of trusting this turn's result.`,
+      });
+      recordError({
+        sessionId: meta.id,
+        sessionName: meta.name,
+        agent: meta.agent,
+        message: `Required MCP server(s) failed to initialize this turn: ${failedNames} — any verdict/result reported is unreliable`,
+        context: `Task "${task.title}" (ID: ${task.id}) ran with ${failedNames} unavailable.`,
+        taskId: task.id,
+        taskTitle: task.title,
+        userId: meta.userId,
+      });
+    }
+
     // Update task state
     if (signal.aborted) {
       // Session was stopped mid-task — reset to claim state
-      await resetTask(task.id, stages.claimState, undefined, undefined, stages.kind === "inspector");
+      // No new git info at all — omit branch/PR so the existing values are preserved.
+      await resetTask(task.id, stages.claimState);
       appendOutput(managed, {
         timestamp: now(),
         stream: "system",
@@ -1012,7 +1056,7 @@ async function runLoopMode(
       if (managed.turnVerdict === "no_action_needed") {
         // Preserve existing branch/PR — the agent found nothing to do so it
         // never pushed anything, and we must not wipe what a prior stage stored.
-        await resolveTask(task.id, stages.resolveState, undefined, undefined, true);
+        await resolveTask(task.id, stages.resolveState);
         appendOutput(managed, {
           timestamp: now(),
           stream: "system",
@@ -1020,8 +1064,9 @@ async function runLoopMode(
         });
       } else if (managed.turnVerdict === "changes_requested") {
         // Reviewer/QA agent found issues — send back to "todo" for rework,
-        // preserving branch/PR so the developer agent can resume.
-        await resetTask(task.id, "todo", undefined, undefined, true); // always preserve — inspector never pushes
+        // preserving branch/PR so the developer agent can resume (local mode
+        // never tracks git branch/PR info, so there is nothing new to report here).
+        await resetTask(task.id, "todo");
         appendOutput(managed, {
           timestamp: now(),
           stream: "system",
@@ -1036,7 +1081,8 @@ async function runLoopMode(
         });
       }
     } else {
-      await resetTask(task.id, stages.claimState, undefined, undefined, stages.kind === "inspector");
+      // No new git info at all — omit branch/PR so the existing values are preserved.
+      await resetTask(task.id, stages.claimState);
       appendOutput(managed, {
         timestamp: now(),
         stream: "system",
@@ -1712,6 +1758,14 @@ interface WorkerPromptResult {
   credits?: number;
   /** Agent-reported verdict via the report_verdict MCP tool. Cross-checked against git diff by the worker. */
   verdict?: "resolved" | "no_action_needed" | "changes_requested";
+  /**
+   * MCP servers that failed to initialize this turn (see worker.js's
+   * `_kiro.dev/mcp/server_init_failure` handling). Non-empty means the agent
+   * was missing tools it expected to have — e.g. an inspector without
+   * post_review_comment, or an editor without get_pr_review_comments — so
+   * whatever verdict/result it reported should not be trusted at face value.
+   */
+  mcpServerInitFailures?: Array<{ name: string | null }>;
 }
 
 /**
@@ -1799,9 +1853,13 @@ async function runLoopModeAca(
     if (todoCount === 0) {
       setActivity(managed, {
         type: "idle",
-        detail: `No tasks available. Polling every ${meta.intervalSeconds}s...`,
+        detail: "No tasks available. Waiting for new tasks...",
       });
-      await interruptibleSleep(meta.intervalSeconds * 1000, signal);
+
+      // Park here until a task is created/reset or the session is stopped.
+      // waitForTaskAvailable does a single DB check, then suspends on an
+      // in-process event — zero DB queries during the wait.
+      await waitForTaskAvailable(effectiveTabIds, stages.claimState, signal);
       continue;
     }
 
@@ -1828,7 +1886,8 @@ async function runLoopModeAca(
 
     // Skip tasks that have already exceeded failure limit in this session
     if (blockedTasks.has(task.id)) {
-      await resetTask(task.id, stages.claimState, undefined, undefined, stages.kind === "inspector");
+      // No git activity happened here at all — preserve existing branch/PR.
+      await resetTask(task.id, stages.claimState);
       appendOutput(managed, {
         timestamp: now(),
         stream: "system",
@@ -1881,7 +1940,10 @@ async function runLoopModeAca(
     }
 
     if (signal.aborted) {
-      await resetTask(task.id, stages.claimState, undefined, undefined, stages.kind === "inspector");
+      // `|| undefined` preserves the existing DB value whenever the worker
+      // never got far enough to report real git info (or sent an explicit
+      // null) — never force branch/PR to null just because the session stopped.
+      await resetTask(task.id, stages.claimState, promptResult.branchName || undefined, promptResult.prUrl || undefined);
       appendOutput(managed, {
         timestamp: now(),
         stream: "system",
@@ -1958,6 +2020,42 @@ async function runLoopModeAca(
       });
     }
 
+    // If a required MCP server (verdict, pr-review) failed to initialize this
+    // turn, the agent was missing tools it expected to have and may have
+    // silently degraded — e.g. an inspector losing post_review_comment and
+    // reporting "no_action_needed" instead of a real finding, or an editor
+    // losing get_pr_review_comments and never reading reviewer feedback at
+    // all (see the code-reviewer-agent / developer-agent incidents this
+    // check was added for). Whatever verdict/result came back cannot be
+    // trusted at face value, so treat this exactly like a cancelled turn:
+    // fail the turn and let it retry against a fresh session (a new
+    // session/new call gives the MCP server another chance to start cleanly).
+    if (success && promptResult.mcpServerInitFailures?.length) {
+      success = false;
+      const failedNames = promptResult.mcpServerInitFailures
+        .map((f) => f.name || "unknown")
+        .join(", ");
+      failureReason = `Required MCP server(s) failed to initialize this turn: ${failedNames} — any verdict/result reported is unreliable`;
+      appendOutput(managed, {
+        timestamp: now(),
+        stream: "stderr",
+        text: `✖ MCP server(s) [${failedNames}] failed to start — the agent was missing tools it needed. ` +
+          `Task reset to "${stages.claimState}" for retry instead of trusting this turn's result.`,
+      });
+      recordError({
+        sessionId: meta.id,
+        sessionName: meta.name,
+        agent: meta.agent,
+        message: failureReason,
+        context:
+          `Task "${task.title}" (ID: ${task.id}, type: ${task.type}, priority: P${task.priority}) ran with ` +
+          `${failedNames} unavailable. Any verdict this turn reported (${promptResult.verdict ?? "none"}) is not trustworthy.`,
+        taskId: task.id,
+        taskTitle: task.title,
+        userId: meta.userId,
+      });
+    }
+
     // Check if the worker produced any file changes.
     // Skip this check when the agent reported any verdict — inspector/QA agents
     // legitimately never produce file changes (they only post PR comments).
@@ -2003,33 +2101,29 @@ async function runLoopModeAca(
       //   already satisfied, which never applies here.
       if (promptResult.verdict === "no_action_needed" && !promptResult.hasChanges) {
         // When the agent found nothing to do it never touched the repo, so
-        // branchName/prUrl in promptResult are null. Preserve whatever the
+        // branchName/prUrl in promptResult are empty. Preserve whatever the
         // previous pipeline stage already stored rather than overwriting with null.
-        await resolveTask(task.id, stages.resolveState, undefined, undefined, true);
+        await resolveTask(task.id, stages.resolveState);
         appendOutput(managed, {
           timestamp: now(),
           stream: "system",
           text: `Task ${task.id} marked as "${stages.resolveState}" (${stages.kind === "inspector" ? "no issues found" : "already implemented"}) ✓`,
         });
       } else if (promptResult.verdict === "changes_requested") {
-        // Reviewer/QA agent found issues — send back to "todo" for rework,
-        // preserving the existing branch and PR so the developer agent can resume.
-        // Inspector agents never push, so pass their branchName/prUrl if available,
-        // but fall back to preserving whatever is already in the DB (preserveBranchInfo).
-        const hasWorkerBranchInfo = !!(promptResult.branchName || promptResult.prUrl);
-        await resetTask(
-          task.id, "todo",
-          promptResult.branchName ?? null,
-          promptResult.prUrl ?? null,
-          stages.kind === "inspector" && !hasWorkerBranchInfo
-        );
+        // Reviewer/QA agent found issues — send back to "todo" for rework.
+        // The worker always sends an explicit `null` (never omits the key) when
+        // it has nothing to report, so `|| undefined` is required here — passing
+        // the raw value straight through would still overwrite an existing PR
+        // link with null on every inspector turn (inspectors never have a PR to
+        // report, but DO have a real branch name from checking it out to review).
+        await resetTask(task.id, "todo", promptResult.branchName || undefined, promptResult.prUrl || undefined);
         appendOutput(managed, {
           timestamp: now(),
           stream: "system",
           text: `Task ${task.id} sent back to "todo" — reviewer/QA requested changes (see PR comments).`,
         });
       } else {
-        await resolveTask(task.id, stages.resolveState, promptResult.branchName ?? null, promptResult.prUrl ?? null);
+        await resolveTask(task.id, stages.resolveState, promptResult.branchName || undefined, promptResult.prUrl || undefined);
         appendOutput(managed, {
           timestamp: now(),
           stream: "system",
@@ -2040,15 +2134,10 @@ async function runLoopModeAca(
       taskFailures.delete(task.id);
     } else {
       // On failure, pass branch/PR info if the worker managed a best-effort push.
-      // Inspector agents never push — preserve whatever branch/PR the previous stage
-      // stored rather than overwriting it with null.
-      const inspectorFailure = stages.kind === "inspector";
-      await resetTask(
-        task.id, stages.claimState,
-        promptResult.branchName ?? null,
-        promptResult.prUrl ?? null,
-        inspectorFailure && !promptResult.branchName && !promptResult.prUrl
-      );
+      // `|| undefined` ensures a worker that never got that far (or that has no
+      // PR to report, e.g. an inspector) preserves the existing DB value instead
+      // of overwriting it with the worker's default `null`.
+      await resetTask(task.id, stages.claimState, promptResult.branchName || undefined, promptResult.prUrl || undefined);
 
       // A delivery failure is an environment problem, not a task problem —
       // block immediately instead of spending the whole retry budget
