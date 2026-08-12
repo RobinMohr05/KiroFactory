@@ -11,7 +11,7 @@ import {
 import { createTask } from "../db/tasks.js";
 import { getAllTabs, getTabById } from "../db/tabs.js";
 import { broadcastToUser } from "../websocket-handler.js";
-import { markTaskBroadcast } from "../broadcast-tracker.js";
+import { notifyTaskAvailable } from "../agent/task-claimer.js";
 import { requireAuth, getUserId } from "../middleware/auth.js";
 import { log, toErrorFields } from "../logger.js";
 import { getDecryptedCredential } from "../db/credentials.js";
@@ -300,7 +300,7 @@ router.post("/:sessionId/create-task", async (req: Request, res: Response) => {
 
     const task = await createTask(taskInput);
     broadcastToUser(userId, { type: "task-created", task });
-    markTaskBroadcast(task.id);
+    notifyTaskAvailable(); // wake any idle loop sessions immediately
 
     // Clean up the planner session
     try {

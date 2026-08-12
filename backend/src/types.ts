@@ -255,6 +255,10 @@ export interface UpdateTaskInput {
   state?: string;
   description?: string;
   files?: string[];
+  /** Editable only from the edit-task view — never accepted on task creation. */
+  branch?: string | null;
+  /** Editable only from the edit-task view — never accepted on task creation. */
+  pullRequestUrl?: string | null;
 }
 
 export interface CreateTabInput {

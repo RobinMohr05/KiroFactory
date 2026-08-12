@@ -44,7 +44,6 @@ Runs as part of the npm workspaces monorepo; the lockfile lives at the repo root
 | `crypto.ts` | AES-256-GCM encrypt/decrypt using `ENCRYPTION_KEY`. Used for all stored secrets. |
 | `logger.ts` | Structured JSON logging (session/worker events, pool metrics) for Azure Monitor. |
 | `error-store.ts` | In-memory ring buffer of agent errors surfaced in the UI Errors tab. |
-| `broadcast-tracker.ts` | De-dupes task broadcasts between the REST routes and the DB poll loop. |
 | `types.ts` | Shared TypeScript types (Session, Task, Tab, credentials, WS messages). |
 | `agent/` | Kiro agent integration (see below). |
 | `db/` | Data-access layer (see below). |

@@ -19,12 +19,23 @@ RUN npm install --omit=dev
 # Copy worker script
 COPY worker.js ./
 COPY verdict-mcp-server.js ./
+COPY pr-review-mcp-server.js ./
 COPY ta-mcp-connect ./
 RUN chmod +x ./ta-mcp-connect
 
 # Create workspace directory
 RUN mkdir -p /workspace
 
-ENV NODE_ENV=production
+# Deliberately NOT setting NODE_ENV=production here (unlike the root Dockerfile's
+# orchestrator image). This container's whole job is to `npm ci`/`npm install`
+# inside an arbitrary CLONED target repo (see setupRepo() in worker.js) — and that
+# repo needs its devDependencies (test runner, compiler, type stubs) actually
+# present on disk so the agent can run tests/builds. npm's `omit` config defaults
+# to 'dev' whenever NODE_ENV=production, which silently skips writing
+# devDependencies to node_modules even though the install reports success (they
+# still get resolved into package-lock.json, just never installed). That bug
+# made vitest/typescript disappear from every agent session's node_modules.
+# Nothing in worker.js itself reads process.env.NODE_ENV, so there is no
+# runtime behavior here that depends on it — do not re-add it.
 
 CMD ["node", "worker.js"]

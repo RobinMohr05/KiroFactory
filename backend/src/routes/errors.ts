@@ -3,7 +3,7 @@ import { getErrorsByUserId, getErrorById, markErrorTaskCreated, dismissError, cl
 import { createTask } from "../db/tasks.js";
 import { getAllTabs } from "../db/tabs.js";
 import { broadcastToUser } from "../websocket-handler.js";
-import { markTaskBroadcast } from "../broadcast-tracker.js";
+import { notifyTaskAvailable } from "../agent/task-claimer.js";
 import { isDbAvailable } from "../db/connection.js";
 import { requireAuth, getUserId } from "../middleware/auth.js";
 import { log, toErrorFields } from "../logger.js";
@@ -113,9 +113,9 @@ router.post("/:id/create-task", async (req: Request, res: Response) => {
     // Mark the error as having a task created
     markErrorTaskCreated(errorId, task.id);
 
-    // Broadcast the new task
+    // Broadcast the new task and wake any idle loop sessions
     broadcastToUser(userId, { type: "task-created", task });
-    markTaskBroadcast(task.id);
+    notifyTaskAvailable();
 
     res.status(201).json({ task, errorId });
   } catch (err) {

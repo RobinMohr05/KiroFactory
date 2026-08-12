@@ -28,7 +28,7 @@ import { KiroRunner } from "./kiro-runner.js";
 import { claimTask, markTaskDeveloped, resetTaskToTodo, getAvailableTaskCount } from "./task-claimer.js";
 import { buildDevPrompt, buildTddDevPrompt } from "./prompt-builder.js";
 import { parseGitHubRepoUrl } from "./repo-url-parser.js";
-import { prepareWorkspace, createFeatureBranch, commitChanges, pushBranch } from "./git-workspace.js";
+import { prepareWorkspace, installDependencies, createFeatureBranch, commitChanges, pushBranch } from "./git-workspace.js";
 import { createPullRequest, buildPrBody } from "./github-pr.js";
 import { getDecryptedCredential } from "../db/credentials.js";
 import { closePool } from "../db/connection.js";
@@ -322,6 +322,17 @@ async function runOnce(config: AgentConfig): Promise<boolean> {
     await resetTaskToTodo(task.id);
     log(`Task ${task.id} reset to "todo".`, "red");
     return false;
+  }
+
+  // 4b. Install dependencies so the agent can actually build/test its work.
+  // Best-effort: a failure here shouldn't block the task (e.g. doc-only
+  // changes don't need node_modules), so just warn and continue.
+  try {
+    log(`Installing dependencies...`, "cyan");
+    await installDependencies(workspacePath);
+    log(`Dependencies installed.`, "green");
+  } catch (err: any) {
+    log(`WARNING: dependency install failed: ${err.message}`, "yellow");
   }
 
   // 5. Create feature branch

@@ -11,7 +11,7 @@ import {
 } from "../db/tasks.js";
 import { getAllTabs } from "../db/tabs.js";
 import { broadcastToUser } from "../websocket-handler.js";
-import { markTaskBroadcast } from "../broadcast-tracker.js";
+import { notifyTaskAvailable } from "../agent/task-claimer.js";
 import { requireAuth, getUserId } from "../middleware/auth.js";
 import type { CreateTaskInput, UpdateTaskInput } from "../types.js";
 import { log, toErrorFields } from "../logger.js";
@@ -85,7 +85,7 @@ router.post("/", async (req: Request, res: Response) => {
 
     const task = await createTask(input);
     broadcastToUser(userId, { type: "task-created", task });
-    markTaskBroadcast(task.id);
+    notifyTaskAvailable(); // wake any idle loop sessions immediately
     res.status(201).json(task);
   } catch (err) {
     log.error("route-error", {
@@ -158,7 +158,6 @@ router.put("/:id", async (req: Request, res: Response) => {
       return;
     }
     broadcastToUser(userId, { type: "task-updated", task });
-    markTaskBroadcast(task.id);
     res.json(task);
   } catch (err) {
     log.error("route-error", {
@@ -245,7 +244,6 @@ router.post("/:id/tabs", async (req: Request, res: Response) => {
       return;
     }
     broadcastToUser(userId, { type: "task-updated", task });
-    markTaskBroadcast(task.id);
     res.json(task);
   } catch (err) {
     log.error("route-error", {
@@ -290,7 +288,6 @@ router.delete("/:id/tabs/:tabId", async (req: Request, res: Response) => {
       return;
     }
     broadcastToUser(userId, { type: "task-updated", task });
-    markTaskBroadcast(task.id);
     res.json(task);
   } catch (err) {
     log.error("route-error", {
