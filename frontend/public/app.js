@@ -741,7 +741,7 @@ function renderBoardSelector() {
         const activeSession = sessions.find(s => s.id === activeSessionId);
         if (!activeSession || !activeSession.tabIds || !activeSession.tabIds.includes(Number(currentBoardId))) {
           activeSessionId = null;
-          showSessionEmpty();
+          selectTopSession();
         }
       }
       renderSessionList();
@@ -1337,10 +1337,10 @@ function setupTabs() {
       if (preferred) {
         selectSession(preferred.id);
       } else {
-        showSessionEmpty();
+        selectTopSession();
       }
     } else if (!activeSessionId) {
-      showSessionEmpty();
+      selectTopSession();
     }
   });
   tabAgents.addEventListener('click', () => {
@@ -1550,12 +1550,7 @@ const sessionPromptSendBtn = document.getElementById('sessionPromptSendBtn');
 // Auto-scroll state: when true, new output automatically scrolls to bottom
 let autoScrollEnabled = true;
 
-// Quick-start (empty state) DOM refs
-const quickStartForm = document.getElementById('quickStartForm');
-const quickStartPrompt = document.getElementById('quickStartPrompt');
-const quickStartAgent = document.getElementById('quickStartAgent');
-const quickStartSendBtn = document.getElementById('quickStartSendBtn');
-const quickStartAdvancedBtn = document.getElementById('quickStartAdvancedBtn');
+
 
 // Session tabs editor DOM refs
 const sessionTabsList = document.getElementById('sessionTabsList');
@@ -1843,47 +1838,9 @@ function setupSessions() {
     addEditCustomMcpEntry();
   });
 
-  // Quick-start form (shown in the empty state)
-  quickStartForm.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    await createQuickStartSession();
-  });
-  quickStartPrompt.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      createQuickStartSession();
-    }
-  });
-  quickStartAdvancedBtn.addEventListener('click', async () => {
-    sessionModal.hidden = false;
-    await populateAgentDropdown();
-    populateSessionBoardsSelect();
-    prefillSessionMcpFromBoards();
-    sessionMcpOverrideEnabled = false;
-    // Carry over whatever the user already typed
-    if (quickStartPrompt.value.trim()) {
-      document.getElementById('sessionPrompt').value = quickStartPrompt.value.trim();
-    }
-    document.getElementById('sessionName').focus();
-  });
 }
 
-async function populateQuickStartAgentDropdown() {
-  quickStartAgent.innerHTML = '<option value="">No agent (chat)</option>';
-  try {
-    const res = await fetch('/api/agents');
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const agentsList = await res.json();
-    agentsList.forEach(agent => {
-      const opt = document.createElement('option');
-      opt.value = agent.name;
-      opt.textContent = agent.name;
-      quickStartAgent.appendChild(opt);
-    });
-  } catch (e) {
-    console.error('Failed to fetch agents for quick-start:', e);
-  }
-}
+
 
 function hideSessionForm() {
   sessionModal.hidden = true;
@@ -2071,26 +2028,7 @@ async function createAndStartSession() {
  * Quick-start: create an interactive (or agent-driven) session directly from
  * the sessions empty state, without opening the full "New Session" modal.
  */
-async function createQuickStartSession() {
-  const prompt = quickStartPrompt.value.trim();
-  const agent = quickStartAgent.value.trim();
-  if (!prompt) {
-    quickStartPrompt.focus();
-    return;
-  }
 
-  const boardIds = currentBoardId ? [Number(currentBoardId)] : [];
-  // Derive a short session name from the prompt itself
-  const name = prompt.length > 48 ? prompt.slice(0, 45).trim() + '…' : prompt;
-
-  quickStartSendBtn.disabled = true;
-  try {
-    await createAndStartSessionCore({ name, agent, prompt, interactive: true, boardIds });
-    quickStartForm.reset();
-  } finally {
-    quickStartSendBtn.disabled = false;
-  }
-}
 
 async function startAgentSession(id) {
   try {
@@ -2125,7 +2063,7 @@ async function deleteAgentSession(id) {
       renderSessionList();
       if (activeSessionId === id) {
         activeSessionId = null;
-        showSessionEmpty();
+        selectTopSession();
       }
     }, sessionItem ? 350 : 0);
   } catch (e) {
@@ -2435,14 +2373,28 @@ async function saveSessionSettings() {
   }
 }
 
-function showSessionEmpty() {
-  sessionEmptyState.hidden = false;
-  sessionDetail.hidden = true;
-  outputPre.innerHTML = '';
-  autoScrollEnabled = true;
-  scrollToBottomBtn.hidden = true;
-  populateQuickStartAgentDropdown();
-  quickStartPrompt.focus();
+function selectTopSession() {
+  // Compute visible+sorted session list (same logic as renderSessionList)
+  let visibleSessions = currentBoardId
+    ? sessions.filter(s => !s.agent || (s.tabIds && s.tabIds.includes(Number(currentBoardId))))
+    : sessions;
+
+  visibleSessions = [...visibleSessions].sort((a, b) => {
+    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+    return (a.sortOrder ?? 0) - (b.sortOrder ?? 0);
+  });
+
+  if (visibleSessions.length > 0) {
+    selectSession(visibleSessions[0].id);
+  } else {
+    // Edge case: no sessions available — show minimal empty state
+    activeSessionId = null;
+    sessionEmptyState.hidden = false;
+    sessionDetail.hidden = true;
+    outputPre.innerHTML = '';
+    autoScrollEnabled = true;
+    scrollToBottomBtn.hidden = true;
+  }
 }
 
 function updateSessionStatusUI(status) {
@@ -2857,7 +2809,7 @@ function handleSessionWsMessage(message) {
       renderSessionList();
       if (activeSessionId === sid) {
         activeSessionId = null;
-        showSessionEmpty();
+        selectTopSession();
       }
       // Remove from board members
       const bsBefore = boardSessions.length;
