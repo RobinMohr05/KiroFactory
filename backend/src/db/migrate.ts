@@ -1078,6 +1078,25 @@ async function runUpgrades(pool: sql.ConnectionPool): Promise<void> {
     `);
     console.log("[migrate] Upgrade complete: is_permanent added to sessions.");
   }
+
+  // Upgrade 25: Add requires_task column to agents table.
+  // Agents with requires_task = 0 run on their own prompt without claiming tasks.
+  // Default 1 (true) preserves current behavior for all existing agents.
+  // (See backend/sql/migrations/023_agent_requires_task.sql for the reference SQL —
+  // this is the step that actually applies it to an existing database.)
+  const requiresTaskColExists = await pool.request().query(`
+    SELECT COUNT(*) AS cnt
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_NAME = 'agents' AND COLUMN_NAME = 'requires_task'
+  `);
+
+  if (requiresTaskColExists.recordset[0].cnt === 0) {
+    console.log("[migrate] Upgrading: adding requires_task to agents table...");
+    await pool.request().query(`
+      ALTER TABLE agents ADD requires_task BIT NOT NULL DEFAULT 1
+    `);
+    console.log("[migrate] Upgrade complete: requires_task added to agents.");
+  }
 }
 
 /**
