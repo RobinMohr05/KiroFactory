@@ -549,3 +549,69 @@ export async function markTaskDone(
 
   broadcastTaskUpdate(taskId);
 }
+
+/**
+ * Find a shared branch from sibling tasks in the same tab(s).
+ *
+ * Used for AC#2: when a task has no `branch` value, look up other tasks in
+ * the same tab(s) that share a branch (i.e., the same branch value appears
+ * on more than one task). This filters out one-off branches from past work
+ * and only returns branches that indicate intentional grouping.
+ *
+ * If exactly one such shared branch exists, return it (the task should join
+ * that group). If multiple shared branches exist (ambiguous) or none, returns null.
+ *
+ * @param taskId The task to find siblings for (excluded from results)
+ * @param tabIds The tab IDs the task belongs to (if not provided, looked up from DB)
+ * @returns The shared branch name, or null if no unambiguous shared branch exists.
+ */
+export async function findSharedBranchInTab(
+  taskId: number,
+  tabIds?: number[]
+): Promise<string | null> {
+  const pool = await getPool();
+
+  // If tabIds not provided, look them up from the task's tab associations
+  let resolvedTabIds = tabIds;
+  if (!resolvedTabIds || resolvedTabIds.length === 0) {
+    const tabResult = await pool
+      .request()
+      .input("taskId", sql.Int, taskId)
+      .query("SELECT tab_id FROM task_tabs WHERE task_id = @taskId");
+    resolvedTabIds = tabResult.recordset.map((row: any) => row.tab_id as number);
+  }
+
+  if (resolvedTabIds.length === 0) return null;
+
+  const request = pool.request();
+  request.input("taskId", sql.Int, taskId);
+
+  const tabIdParams = resolvedTabIds.map((id, i) => `@tabId${i}`);
+  resolvedTabIds.forEach((id, i) => {
+    request.input(`tabId${i}`, sql.Int, id);
+  });
+
+  // Find branch values shared by multiple tasks in the same tab(s).
+  // HAVING COUNT(*) > 1 ensures we only return branches that are deliberately
+  // shared (appear on 2+ tasks), filtering out one-off branches from past work.
+  const result = await request.query(`
+    SELECT t.branch
+    FROM tasks t
+    INNER JOIN task_tabs tt ON tt.task_id = t.id
+    WHERE tt.tab_id IN (${tabIdParams.join(", ")})
+      AND t.id != @taskId
+      AND t.branch IS NOT NULL AND t.branch != ''
+    GROUP BY t.branch
+    HAVING COUNT(*) > 1
+  `);
+
+  const branches = result.recordset.map((row: any) => row.branch as string);
+
+  // If exactly one shared branch exists among siblings, use it
+  if (branches.length === 1) {
+    return branches[0];
+  }
+
+  // Ambiguous (multiple shared branches) or no shared branches found
+  return null;
+}

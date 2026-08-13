@@ -25,7 +25,7 @@ dotenv.config();
 import { resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { KiroRunner } from "./kiro-runner.js";
-import { claimTask, markTaskDeveloped, resetTaskToTodo, getAvailableTaskCount, getTasksByBranch } from "./task-claimer.js";
+import { claimTask, markTaskDeveloped, resetTaskToTodo, getAvailableTaskCount, getTasksByBranch, findSharedBranchInTab } from "./task-claimer.js";
 import { buildDevPrompt, buildTddDevPrompt } from "./prompt-builder.js";
 import { parseGitHubRepoUrl } from "./repo-url-parser.js";
 import { prepareWorkspace, installDependencies, createFeatureBranch, checkoutExistingBranch, commitChanges, pushBranch } from "./git-workspace.js";
@@ -340,12 +340,26 @@ async function runOnce(config: AgentConfig): Promise<boolean> {
   // 5. Resolve branch — existing shared branch or create new
   let branchName: string;
   try {
-    const resolution = resolveBranchForTask(task);
+    // AC#2: If task has no branch, look up siblings in the same tab for a shared branch
+    let siblingBranch: string | null = null;
+    if (!task.branch) {
+      siblingBranch = await findSharedBranchInTab(task.id);
+      if (siblingBranch) {
+        log(`Found shared branch from sibling tasks: ${siblingBranch}`, "cyan");
+      }
+    }
+
+    const resolution = resolveBranchForTask(task, siblingBranch);
 
     if (resolution.isExisting && resolution.branchName) {
-      // Task has an assigned branch — check it out
+      // Task has an assigned branch (or inherited from siblings) — check it out
       branchName = await checkoutExistingBranch(workspacePath, resolution.branchName);
       log(`Checked out existing branch: ${branchName}`, "green");
+
+      // Persist the branch name back to the task if it was inherited from siblings
+      if (!task.branch) {
+        await setTaskBranchAndPr(task.id, branchName, null);
+      }
     } else {
       // No existing branch — create a new feature branch
       branchName = await createFeatureBranch(workspacePath, task.type, task.id, task.title);

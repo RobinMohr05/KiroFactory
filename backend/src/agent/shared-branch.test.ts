@@ -17,7 +17,7 @@ import {
   updatePullRequestBody,
 } from "./github-pr.js";
 import { checkoutExistingBranch } from "./git-workspace.js";
-import { getTasksByBranch } from "./task-claimer.js";
+import { getTasksByBranch, findSharedBranchInTab } from "./task-claimer.js";
 
 // Mock child_process for git operations
 vi.mock("node:child_process", () => ({
@@ -209,6 +209,48 @@ describe("checkoutExistingBranch", () => {
   it("should be exported from git-workspace", () => {
     expect(typeof checkoutExistingBranch).toBe("function");
   });
+
+  it("should verify remote branch exists via rev-parse before attempting checkout", async () => {
+    const { execFile } = await import("node:child_process");
+    const mockExecFile = vi.mocked(execFile);
+
+    // Track all git commands called
+    const calledCommands: string[][] = [];
+    mockExecFile.mockImplementation((_cmd: any, args: any, _opts: any, cb?: any) => {
+      calledCommands.push(args as string[]);
+      const callback = typeof _opts === "function" ? _opts : cb;
+      if (callback) callback(null, "", "");
+      return {} as any;
+    });
+
+    await checkoutExistingBranch("/workspace", "feature/shared-branch");
+
+    // Should have: fetch, rev-parse --verify, checkout, reset --hard
+    expect(calledCommands[0]).toEqual(["fetch", "origin"]);
+    expect(calledCommands[1]).toEqual(["rev-parse", "--verify", "origin/feature/shared-branch"]);
+  });
+
+  it("should throw early if branch does not exist on remote (rev-parse fails)", async () => {
+    const { execFile } = await import("node:child_process");
+    const mockExecFile = vi.mocked(execFile);
+
+    let callCount = 0;
+    mockExecFile.mockImplementation((_cmd: any, args: any, _opts: any, cb?: any) => {
+      callCount++;
+      const callback = typeof _opts === "function" ? _opts : cb;
+      if (callCount === 1) {
+        // fetch succeeds
+        if (callback) callback(null, "", "");
+      } else if (callCount === 2) {
+        // rev-parse --verify fails (branch doesn't exist on remote)
+        if (callback) callback(new Error("fatal: Needed a single revision"), "", "");
+      }
+      return {} as any;
+    });
+
+    await expect(checkoutExistingBranch("/workspace", "nonexistent-branch"))
+      .rejects.toThrow("does not exist on remote");
+  });
 });
 
 describe("getTasksByBranch", () => {
@@ -251,5 +293,143 @@ describe("resolveBranchForTask", () => {
 
     expect(result.branchName).toBeNull();
     expect(result.isExisting).toBe(false);
+  });
+
+  it("should return siblingBranch when task has no branch but siblingBranch is provided", async () => {
+    const { resolveBranchForTask } = await import("./dev-agent-helpers.js");
+
+    const result = resolveBranchForTask(
+      {
+        id: 10,
+        title: "My task",
+        type: "feature",
+        branch: null,
+        pullRequestUrl: null,
+      },
+      "feature/#5_shared-branch"
+    );
+
+    expect(result.branchName).toBe("feature/#5_shared-branch");
+    expect(result.isExisting).toBe(true);
+  });
+
+  it("should prefer task.branch over siblingBranch", async () => {
+    const { resolveBranchForTask } = await import("./dev-agent-helpers.js");
+
+    const result = resolveBranchForTask(
+      {
+        id: 10,
+        title: "My task",
+        type: "feature",
+        branch: "feature/#10_my-own-branch",
+        pullRequestUrl: null,
+      },
+      "feature/#5_shared-branch"
+    );
+
+    expect(result.branchName).toBe("feature/#10_my-own-branch");
+    expect(result.isExisting).toBe(true);
+  });
+});
+
+describe("findSharedBranchInTab", () => {
+  it("should be exported from task-claimer", () => {
+    expect(typeof findSharedBranchInTab).toBe("function");
+  });
+
+  it("should return a branch shared by multiple tasks in the same tab", async () => {
+    const { getPool } = await import("../db/connection.js");
+    const mockGetPool = vi.mocked(getPool);
+
+    // Mock: task 10 belongs to tab 2, and there are two tasks sharing "feature/shared"
+    const mockRequest = {
+      input: vi.fn().mockReturnThis(),
+      query: vi.fn(),
+    };
+    mockRequest.query
+      .mockResolvedValueOnce({ recordset: [{ tab_id: 2 }] }) // tab lookup
+      .mockResolvedValueOnce({ recordset: [{ branch: "feature/shared" }] }); // shared branch query with HAVING
+
+    mockGetPool.mockResolvedValue({ request: () => mockRequest } as any);
+
+    const result = await findSharedBranchInTab(10);
+
+    expect(result).toBe("feature/shared");
+  });
+
+  it("should return null when no branch is shared by multiple tasks", async () => {
+    const { getPool } = await import("../db/connection.js");
+    const mockGetPool = vi.mocked(getPool);
+
+    const mockRequest = {
+      input: vi.fn().mockReturnThis(),
+      query: vi.fn(),
+    };
+    mockRequest.query
+      .mockResolvedValueOnce({ recordset: [{ tab_id: 2 }] }) // tab lookup
+      .mockResolvedValueOnce({ recordset: [] }); // no branches shared by multiple tasks
+
+    mockGetPool.mockResolvedValue({ request: () => mockRequest } as any);
+
+    const result = await findSharedBranchInTab(10);
+
+    expect(result).toBeNull();
+  });
+
+  it("should return null when task has no tab associations", async () => {
+    const { getPool } = await import("../db/connection.js");
+    const mockGetPool = vi.mocked(getPool);
+
+    const mockRequest = {
+      input: vi.fn().mockReturnThis(),
+      query: vi.fn(),
+    };
+    mockRequest.query.mockResolvedValueOnce({ recordset: [] }); // no tabs
+
+    mockGetPool.mockResolvedValue({ request: () => mockRequest } as any);
+
+    const result = await findSharedBranchInTab(10);
+
+    expect(result).toBeNull();
+  });
+
+  it("should return null when multiple different branches are each shared (ambiguous)", async () => {
+    const { getPool } = await import("../db/connection.js");
+    const mockGetPool = vi.mocked(getPool);
+
+    const mockRequest = {
+      input: vi.fn().mockReturnThis(),
+      query: vi.fn(),
+    };
+    mockRequest.query
+      .mockResolvedValueOnce({ recordset: [{ tab_id: 2 }] }) // tab lookup
+      .mockResolvedValueOnce({ recordset: [{ branch: "feature/a" }, { branch: "feature/b" }] }); // multiple shared branches
+
+    mockGetPool.mockResolvedValue({ request: () => mockRequest } as any);
+
+    const result = await findSharedBranchInTab(10);
+
+    expect(result).toBeNull();
+  });
+
+  it("should use provided tabIds instead of looking them up", async () => {
+    const { getPool } = await import("../db/connection.js");
+    const mockGetPool = vi.mocked(getPool);
+
+    const mockRequest = {
+      input: vi.fn().mockReturnThis(),
+      query: vi.fn(),
+    };
+    // Only one query (the shared branch query) — no tab lookup needed
+    mockRequest.query
+      .mockResolvedValueOnce({ recordset: [{ branch: "feature/shared" }] });
+
+    mockGetPool.mockResolvedValue({ request: () => mockRequest } as any);
+
+    const result = await findSharedBranchInTab(10, [2, 3]);
+
+    expect(result).toBe("feature/shared");
+    // Should NOT have queried for tabs (only 1 query call, not 2)
+    expect(mockRequest.query).toHaveBeenCalledTimes(1);
   });
 });
