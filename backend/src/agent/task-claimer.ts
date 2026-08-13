@@ -376,18 +376,6 @@ export async function resolveTask(
 }
 
 /**
- * Mark a task as "developed" (completed by the developer agent).
- * Thin wrapper around resolveTask for backward compatibility.
- */
-export async function markTaskDeveloped(
-  taskId: number,
-  branch?: string | null,
-  pullRequestUrl?: string | null
-): Promise<void> {
-  return resolveTask(taskId, "developed", branch, pullRequestUrl);
-}
-
-/**
  * Reset a task back to a given state (agent failed or timed out).
  * Each agent stage resets to its own claim state on failure — e.g. a failed
  * review resets to "developed" (the reviewer's claimState), not to "todo".
@@ -435,18 +423,6 @@ export async function resetTask(
   broadcastTaskUpdate(taskId);
   // A reset puts the task back into a claimable state — wake any waiting loops.
   notifyTaskAvailable();
-}
-
-/**
- * Reset a task back to "todo" (developer agent failed or timed out).
- * Thin wrapper around resetTask for backward compatibility.
- */
-export async function resetTaskToTodo(
-  taskId: number,
-  branch?: string | null,
-  pullRequestUrl?: string | null
-): Promise<void> {
-  return resetTask(taskId, "todo", branch, pullRequestUrl);
 }
 
 /**

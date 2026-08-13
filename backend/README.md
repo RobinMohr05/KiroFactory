@@ -54,10 +54,14 @@ Runs as part of the npm workspaces monorepo; the lockfile lives at the repo root
 | File | Responsibility |
 |------|----------------|
 | `kiro-runner.ts` | Wraps `kiro-cli acp` as a subprocess over the Agent Client Protocol (NDJSON/stdio). Used in **local** worker mode. |
-| `task-claimer.ts` | Atomically claims a task from the DB for a loop session; resets orphaned tasks. |
-| `prompt-builder.ts` | Builds the developer prompt sent to the agent for a claimed task. |
-| `dev-agent.ts` | CLI entry point for running an agent loop locally (dev tooling). |
+| `task-claimer.ts` | Atomically claims a task from the DB for a loop session; resolves/resets through the multi-stage pipeline; resets orphaned tasks. |
+| `prompt-builder.ts` | Builds the per-turn prompt sent to the agent for a claimed task (editor vs. inspector). |
 | `index.ts` | Agent module exports. |
+
+There is no standalone CLI agent runner in this directory — task execution always goes through
+`session-manager.ts` (local child process or ACA worker job). See
+[`.kiro/steering/developer-agent-task-lifecycle.md`](../.kiro/steering/developer-agent-task-lifecycle.md)
+for the full pipeline.
 
 ### `db/`
 | File | Responsibility |

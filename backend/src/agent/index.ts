@@ -1,28 +1,24 @@
 /**
- * Agent module — Developer agent for autonomous task completion.
+ * Agent module — task-driven Kiro agent infrastructure used by session-manager.ts.
  *
- * This module provides the agent infrastructure for Vibecode Heaven:
- * - KiroRunner: Spawns kiro-cli ACP sessions and communicates via NDJSON
- * - Task Claimer: Atomic task claiming from SQL Server with row locking
- * - Prompt Builder: Constructs focused prompts from task data
- * - Dev Agent: Main entry point that ties it all together
+ * - KiroRunner: Spawns kiro-cli ACP sessions and communicates via NDJSON (local worker mode)
+ * - Task Claimer: Atomic task claiming from SQL Server with row locking, resolve/reset
+ *   through the multi-stage pipeline (see .kiro/steering/developer-agent-task-lifecycle.md)
+ * - Prompt Builder: Constructs the per-turn prompt from task data (editor vs inspector)
  *
- * Usage (standalone):
- *   npx tsx src/agent/dev-agent.ts                    # claim next task
- *   npx tsx src/agent/dev-agent.ts --task 5           # claim specific task
- *   npx tsx src/agent/dev-agent.ts --loop             # continuous mode
- *   npx tsx src/agent/dev-agent.ts --agent my-agent   # custom agent
- *   npx tsx src/agent/dev-agent.ts --timeout 600      # 10 min timeout
+ * There is no standalone CLI entry point in this module — production task execution
+ * happens through `session-manager.ts` (local child process or ACA worker job), never
+ * as an independent process run directly from this directory.
  *
  * Usage (programmatic):
- *   import { claimTask, markTaskDeveloped } from "./agent/index.js";
+ *   import { claimTask, resolveTask } from "./agent/index.js";
  *   import { KiroRunner } from "./agent/index.js";
  */
 
 export { KiroRunner } from "./kiro-runner.js";
 export type { SessionUpdateChunk, KiroRunnerOptions, McpServerEntry } from "./kiro-runner.js";
 
-export { claimTask, markTaskDeveloped, markTaskDone, resolveTask, resetTaskToTodo, resetTask, getAvailableTaskCount, waitForTaskAvailable, notifyTaskAvailable } from "./task-claimer.js";
+export { claimTask, markTaskDone, resolveTask, resetTask, getAvailableTaskCount, waitForTaskAvailable, notifyTaskAvailable } from "./task-claimer.js";
 export type { ClaimedTask } from "./task-claimer.js";
 
-export { buildDevPrompt, buildReviewPrompt, buildVerifyPrompt } from "./prompt-builder.js";
+export { buildDevPrompt, buildReviewPrompt } from "./prompt-builder.js";

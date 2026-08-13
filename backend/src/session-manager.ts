@@ -892,7 +892,7 @@ async function runSession(managed: ManagedSession): Promise<void> {
     });
 
     if (meta.loop) {
-      // ─── Autonomous loop mode (like dev-agent.ts) ───
+      // ─── Autonomous loop mode — claims/resolves tasks through the pipeline ───
       const stages = await getAgentStageStates(meta.agent);
       if (!stages.requiresTask) {
         // Standalone mode: repeat the session prompt, no task queue

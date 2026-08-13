@@ -4,8 +4,9 @@
  * Clones a repository into a temporary directory so the planner's kiro-cli
  * session can browse files, read READMEs, and understand the project structure.
  *
- * Unlike git-workspace.ts (which handles full branch/commit/push for the dev agent),
- * this module is lightweight and read-only: clone, give access, then clean up.
+ * Unlike the ACA worker (worker/worker.js, which handles full branch/commit/push
+ * for task execution), this module is lightweight and read-only: clone, give
+ * access, then clean up.
  */
 
 import { execFile } from "node:child_process";

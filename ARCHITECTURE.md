@@ -233,7 +233,9 @@ production reliability).
   `omit` config default to `dev`, which silently skips writing devDependencies (test runner,
   compiler, type stubs) to `node_modules` even though the install reports success. That bug is
   what made `vitest`/`typescript` disappear from every agent session while `npm install` exited 0.
-  See the failure mode table below.
+  See the failure mode table below. (The worker's own dependency-install logic lives entirely
+  in `worker/worker.js` — there is no separate `git-workspace.ts` module; that name belonged to
+  a removed standalone dev-agent path.)
 
 ### Infrastructure as code (source of truth for config + RBAC)
 
@@ -313,7 +315,7 @@ The backend keeps a lightweight error log surfaced in the UI under the **Errors*
 | WebSocket `Invalid frame header` | ACA ingress transport wrong | Ingress transport must be `http` (HTTP/1.1). `http2` breaks WebSockets. |
 | Old sessions error on startup | Sessions left `running` in DB from a previous host | Mark them `stopped` in the DB; they auto-restart on boot. |
 | Deploy didn't take effect | Restart reuses cached image | Use `az containerapp update --image ...` to force a new revision. |
-| Agent session can't run tests — `sh: 1: vitest: not found` / `npm error code 127`, even right after `npm install` reported success | `NODE_ENV=production` was set in the worker container (npm's `omit` config defaults to `dev` under that env, so devDependencies resolve into `package-lock.json` but are never installed to disk) | Fixed by removing `ENV NODE_ENV=production` from `worker/Dockerfile` and adding `--include=dev` to every install call in `worker.js` / `git-workspace.ts`. If this resurfaces, check for `NODE_ENV=production` anywhere in the worker's env (Dockerfile, ACA job env vars, or an `.npmrc`/`omit` setting) — it should never be set for the container that installs a target repo's own dependencies. |
+| Agent session can't run tests — `sh: 1: vitest: not found` / `npm error code 127`, even right after `npm install` reported success | `NODE_ENV=production` was set in the worker container (npm's `omit` config defaults to `dev` under that env, so devDependencies resolve into `package-lock.json` but are never installed to disk) | Fixed by removing `ENV NODE_ENV=production` from `worker/Dockerfile` and adding `--include=dev` to every install call in `worker.js`. If this resurfaces, check for `NODE_ENV=production` anywhere in the worker's env (Dockerfile, ACA job env vars, or an `.npmrc`/`omit` setting) — it should never be set for the container that installs a target repo's own dependencies. |
 
 ---
 
