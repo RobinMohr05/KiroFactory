@@ -24,6 +24,15 @@ import { KiroRunner } from "../agent/kiro-runner.js";
 import { resolve } from "node:path";
 import type { CreateTaskInput } from "../types.js";
 
+/**
+ * Extended PooledRunner that exposes the underlying KiroRunner instance.
+ * Needed because `injectPendingRunner()` requires the actual KiroRunner object,
+ * not just the PooledRunner interface.
+ */
+interface PooledKiroRunner extends PooledRunner {
+  readonly _kiroRunner: KiroRunner;
+}
+
 const router = Router();
 
 // All task planner routes require authentication
@@ -79,7 +88,7 @@ export function isPoolEnabled(): boolean {
  * NOTE: Pool runners authenticate using the server's global KIRO_API_KEY env var.
  * Per-user keys cannot be injected into an already-running process.
  */
-async function createPoolRunner(): Promise<PooledRunner> {
+async function createPoolRunner(): Promise<PooledKiroRunner> {
   const runner = await KiroRunner.create({
     cwd: DEFAULT_POOL_CWD,
     model: null,
@@ -94,9 +103,9 @@ async function createPoolRunner(): Promise<PooledRunner> {
     get isAlive() { return runner.isAlive; },
     newSession: (cwd?: string) => runner.newSession(cwd),
     close: () => runner.close(),
-    /** @internal — the underlying KiroRunner (needed for injectPendingRunner) */
+    /** The underlying KiroRunner (needed for injectPendingRunner) */
     _kiroRunner: runner,
-  } as PooledRunner & { _kiroRunner: KiroRunner };
+  };
 }
 
 /** Singleton pool instance. */
@@ -106,6 +115,22 @@ export const plannerPool = new PlannerSessionPool({
   idleTimeoutMs: POOL_IDLE_TIMEOUT_MS,
   factory: createPoolRunner,
 });
+
+// Log pool status at startup so operators know whether warm pooling is active.
+if (isPoolEnabled()) {
+  log.info("planner-pool-enabled", {
+    component: "planner-pool",
+    maxPerTab: POOL_MAX_PER_TAB,
+    maxTotal: POOL_MAX_TOTAL,
+    idleTimeoutMs: POOL_IDLE_TIMEOUT_MS,
+    msg: `Planner session pool enabled (using server KIRO_API_KEY). Max ${POOL_MAX_TOTAL} total, ${POOL_MAX_PER_TAB} per tab, ${POOL_IDLE_TIMEOUT_MS / 1000}s idle timeout.`,
+  });
+} else {
+  log.warn("planner-pool-disabled", {
+    component: "planner-pool",
+    msg: "Planner session pool DISABLED — KIRO_API_KEY env var is not set. All planner sessions will cold-start. Set KIRO_API_KEY to enable warm pooling.",
+  });
+}
 
 /**
  * System prompt for the task planner agent.
@@ -282,9 +307,9 @@ router.post("/start", async (req: Request, res: Response) => {
     // Pool runners use the server's global KIRO_API_KEY — skip if not configured.
     const effectiveTabId = tabId ?? 0;
     if (isPoolEnabled()) {
-      const warmRunner = plannerPool.checkout(effectiveTabId);
+      const warmRunner = plannerPool.checkout(effectiveTabId) as PooledKiroRunner | null;
       if (warmRunner) {
-        const kiroRunner = (warmRunner as any)._kiroRunner as KiroRunner;
+        const kiroRunner = warmRunner._kiroRunner;
         const injected = injectPendingRunner(session.id, kiroRunner);
         if (injected) {
           log.info("planner-warm-start", {
@@ -299,14 +324,15 @@ router.post("/start", async (req: Request, res: Response) => {
           plannerPool.detach(warmRunner.id);
         } else {
           // Injection failed (e.g. session was deleted or already running) —
-          // return the runner to the pool so it's not leaked.
-          plannerPool.release(warmRunner.id);
+          // destroy the runner rather than returning it to the pool, since the
+          // failure indicates an unexpected state that could leave the runner tainted.
+          plannerPool.destroy(warmRunner.id).catch(() => {});
           log.warn("planner-warm-inject-failed", {
             component: "task-planner",
             sessionId: session.id,
             tabId: effectiveTabId,
             runnerId: warmRunner.id,
-            msg: `Failed to inject warm runner into session ${session.id} — returned to pool`,
+            msg: `Failed to inject warm runner into session ${session.id} — destroyed`,
           });
         }
       }
