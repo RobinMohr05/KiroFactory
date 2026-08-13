@@ -549,3 +549,66 @@ export async function markTaskDone(
 
   broadcastTaskUpdate(taskId);
 }
+
+/**
+ * Find a shared branch from sibling tasks in the same tab(s).
+ *
+ * Used for AC#2: when a task has no `branch` value, look up other tasks in
+ * the same tab(s) that DO have a branch set. If there's exactly one unique
+ * branch among those siblings, return it (the task should join that group).
+ *
+ * If siblings have multiple different branches, returns null (ambiguous —
+ * the task should create its own branch).
+ *
+ * @param taskId The task to find siblings for (excluded from results)
+ * @param tabIds The tab IDs the task belongs to (if not provided, looked up from DB)
+ * @returns The shared branch name, or null if no unambiguous shared branch exists.
+ */
+export async function findSharedBranchInTab(
+  taskId: number,
+  tabIds?: number[]
+): Promise<string | null> {
+  const pool = await getPool();
+
+  // If tabIds not provided, look them up from the task's tab associations
+  let resolvedTabIds = tabIds;
+  if (!resolvedTabIds || resolvedTabIds.length === 0) {
+    const tabResult = await pool
+      .request()
+      .input("taskId", sql.Int, taskId)
+      .query("SELECT tab_id FROM task_tabs WHERE task_id = @taskId");
+    resolvedTabIds = tabResult.recordset.map((row: any) => row.tab_id as number);
+  }
+
+  if (resolvedTabIds.length === 0) return null;
+
+  const request = pool.request();
+  request.input("taskId", sql.Int, taskId);
+
+  const tabIdParams = resolvedTabIds.map((id, i) => `@tabId${i}`);
+  resolvedTabIds.forEach((id, i) => {
+    request.input(`tabId${i}`, sql.Int, id);
+  });
+
+  // Find distinct branch values from sibling tasks in the same tab(s)
+  // Exclude the current task and only consider tasks that have a branch set
+  const result = await request.query(`
+    SELECT DISTINCT t.branch
+    FROM tasks t
+    INNER JOIN task_tabs tt ON tt.task_id = t.id
+    WHERE tt.tab_id IN (${tabIdParams.join(", ")})
+      AND t.id != @taskId
+      AND t.branch IS NOT NULL
+      AND t.branch != ''
+  `);
+
+  const branches = result.recordset.map((row: any) => row.branch as string);
+
+  // If exactly one unique branch exists among siblings, use it
+  if (branches.length === 1) {
+    return branches[0];
+  }
+
+  // Ambiguous (multiple branches) or no branches found
+  return null;
+}

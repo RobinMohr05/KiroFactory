@@ -217,6 +217,13 @@ describe("getTasksByBranch", () => {
   });
 });
 
+describe("findSharedBranchInTab", () => {
+  it("should be exported from task-claimer", async () => {
+    const { findSharedBranchInTab } = await import("./task-claimer.js");
+    expect(typeof findSharedBranchInTab).toBe("function");
+  });
+});
+
 describe("resolveBranchForTask", () => {
   it("should be exported from dev-agent-helpers", async () => {
     const { resolveBranchForTask } = await import("./dev-agent-helpers.js");
@@ -238,7 +245,7 @@ describe("resolveBranchForTask", () => {
     expect(result.isExisting).toBe(true);
   });
 
-  it("should return null branchName when task has no branch", async () => {
+  it("should return null branchName when task has no branch and no siblingBranch", async () => {
     const { resolveBranchForTask } = await import("./dev-agent-helpers.js");
 
     const result = resolveBranchForTask({
@@ -251,5 +258,41 @@ describe("resolveBranchForTask", () => {
 
     expect(result.branchName).toBeNull();
     expect(result.isExisting).toBe(false);
+  });
+
+  it("should use siblingBranch when task has no branch but siblings do (AC#2)", async () => {
+    const { resolveBranchForTask } = await import("./dev-agent-helpers.js");
+
+    const result = resolveBranchForTask(
+      {
+        id: 11,
+        title: "Second task in group",
+        type: "feature",
+        branch: null,
+        pullRequestUrl: null,
+      },
+      "feature/#10_first-task-in-group"
+    );
+
+    expect(result.branchName).toBe("feature/#10_first-task-in-group");
+    expect(result.isExisting).toBe(true);
+  });
+
+  it("should prefer task.branch over siblingBranch when both are present", async () => {
+    const { resolveBranchForTask } = await import("./dev-agent-helpers.js");
+
+    const result = resolveBranchForTask(
+      {
+        id: 12,
+        title: "Task with its own branch",
+        type: "feature",
+        branch: "feature/#12_my-own-branch",
+        pullRequestUrl: null,
+      },
+      "feature/#10_sibling-branch"
+    );
+
+    expect(result.branchName).toBe("feature/#12_my-own-branch");
+    expect(result.isExisting).toBe(true);
   });
 });
