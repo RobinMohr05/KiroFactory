@@ -25,12 +25,14 @@ dotenv.config();
 import { resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { KiroRunner } from "./kiro-runner.js";
-import { claimTask, markTaskDeveloped, resetTaskToTodo, getAvailableTaskCount } from "./task-claimer.js";
+import { claimTask, markTaskDeveloped, resetTaskToTodo, getAvailableTaskCount, getTasksByBranch } from "./task-claimer.js";
 import { buildDevPrompt, buildTddDevPrompt } from "./prompt-builder.js";
 import { parseGitHubRepoUrl } from "./repo-url-parser.js";
-import { prepareWorkspace, installDependencies, createFeatureBranch, commitChanges, pushBranch } from "./git-workspace.js";
-import { createPullRequest, buildPrBody } from "./github-pr.js";
+import { prepareWorkspace, installDependencies, createFeatureBranch, checkoutExistingBranch, commitChanges, pushBranch } from "./git-workspace.js";
+import { createPullRequest, buildPrBody, findExistingPrForBranch, updatePullRequestBody, buildGroupedPrBody, buildGroupedPrTitle } from "./github-pr.js";
+import { resolveBranchForTask } from "./dev-agent-helpers.js";
 import { getDecryptedCredential } from "../db/credentials.js";
+import { setTaskBranchAndPr } from "../db/tasks.js";
 import { closePool } from "../db/connection.js";
 import type { ClaimedTask } from "./task-claimer.js";
 
@@ -335,13 +337,25 @@ async function runOnce(config: AgentConfig): Promise<boolean> {
     log(`WARNING: dependency install failed: ${err.message}`, "yellow");
   }
 
-  // 5. Create feature branch
+  // 5. Resolve branch — existing shared branch or create new
   let branchName: string;
   try {
-    branchName = await createFeatureBranch(workspacePath, task.type, task.id, task.title);
-    log(`Created branch: ${branchName}`, "green");
+    const resolution = resolveBranchForTask(task);
+
+    if (resolution.isExisting && resolution.branchName) {
+      // Task has an assigned branch — check it out
+      branchName = await checkoutExistingBranch(workspacePath, resolution.branchName);
+      log(`Checked out existing branch: ${branchName}`, "green");
+    } else {
+      // No existing branch — create a new feature branch
+      branchName = await createFeatureBranch(workspacePath, task.type, task.id, task.title);
+      log(`Created branch: ${branchName}`, "green");
+
+      // Persist the branch name back to the task in DB
+      await setTaskBranchAndPr(task.id, branchName, null);
+    }
   } catch (err: any) {
-    log(`ERROR creating branch: ${err.message}`, "red");
+    log(`ERROR with branch: ${err.message}`, "red");
     await resetTaskToTodo(task.id);
     log(`Task ${task.id} reset to "todo".`, "red");
     return false;
@@ -436,33 +450,84 @@ async function runOnce(config: AgentConfig): Promise<boolean> {
     return false;
   }
 
-  // 9. Create Pull Request
-  log(`Creating Pull Request...`, "cyan");
-  const prTitle = `${task.title} [Vibecode Heaven #${task.id}]`;
-  const prBody = buildPrBody(task.id, task.title, task.type, task.priority, task.description);
+  // 9. Create or update Pull Request
+  log(`Checking for existing PR on branch "${branchName}"...`, "cyan");
 
-  const prResult = await createPullRequest({
+  let prUrl: string | null = null;
+
+  // Check if a PR already exists for this branch (shared branch scenario)
+  const existingPr = await findExistingPrForBranch({
     owner: repoInfo.owner,
     repo: repoInfo.repo,
     pat: githubPat,
     head: branchName,
-    base: baseBranch,
-    title: prTitle,
-    body: prBody,
   });
 
-  if (!prResult.success) {
-    // PR creation failed but code is pushed — leave task in-progress for manual intervention
-    log(`ERROR creating PR: ${prResult.error} (HTTP ${prResult.statusCode || "N/A"})`, "red");
-    log(`Code is pushed to branch "${branchName}" — manual PR creation required.`, "yellow");
-    log(`Task ${task.id} left as "in-progress" (needs manual intervention).`, "yellow");
-    return false;
+  if (existingPr) {
+    // PR already exists — update its title and body to reference all tasks in the group
+    log(`Existing PR found: ${existingPr.prUrl} — updating...`, "cyan");
+
+    const siblingTasks = await getTasksByBranch(branchName);
+    const groupedTitle = buildGroupedPrTitle(siblingTasks);
+    const groupedBody = buildGroupedPrBody(siblingTasks);
+
+    const updateResult = await updatePullRequestBody({
+      owner: repoInfo.owner,
+      repo: repoInfo.repo,
+      pat: githubPat,
+      prNumber: existingPr.prNumber,
+      title: groupedTitle,
+      body: groupedBody,
+    });
+
+    if (!updateResult.success) {
+      log(`WARNING: Failed to update PR body: ${updateResult.error}`, "yellow");
+    } else {
+      log(`PR updated with grouped task references.`, "green");
+    }
+
+    prUrl = existingPr.prUrl;
+  } else {
+    // No existing PR — create a new one
+    log(`Creating Pull Request...`, "cyan");
+
+    // If this branch has multiple tasks already, create a grouped PR
+    const siblingTasks = await getTasksByBranch(branchName);
+    let prTitle: string;
+    let prBody: string;
+
+    if (siblingTasks.length > 1) {
+      prTitle = buildGroupedPrTitle(siblingTasks);
+      prBody = buildGroupedPrBody(siblingTasks);
+    } else {
+      prTitle = `${task.title} [Vibecode Heaven #${task.id}]`;
+      prBody = buildPrBody(task.id, task.title, task.type, task.priority, task.description);
+    }
+
+    const prResult = await createPullRequest({
+      owner: repoInfo.owner,
+      repo: repoInfo.repo,
+      pat: githubPat,
+      head: branchName,
+      base: baseBranch,
+      title: prTitle,
+      body: prBody,
+    });
+
+    if (!prResult.success) {
+      // PR creation failed but code is pushed — leave task in-progress for manual intervention
+      log(`ERROR creating PR: ${prResult.error} (HTTP ${prResult.statusCode || "N/A"})`, "red");
+      log(`Code is pushed to branch "${branchName}" — manual PR creation required.`, "yellow");
+      log(`Task ${task.id} left as "in-progress" (needs manual intervention).`, "yellow");
+      return false;
+    }
+
+    prUrl = prResult.prUrl ?? null;
+    log(`Pull Request created: ${prUrl}`, "green");
   }
 
-  log(`Pull Request created: ${prResult.prUrl}`, "green");
-
   // 10. Mark task as developed
-  await markTaskDeveloped(task.id, branchName, prResult.prUrl);
+  await markTaskDeveloped(task.id, branchName, prUrl);
   log(`Task ${task.id} marked as "developed" ✓`, "green");
 
   return true;

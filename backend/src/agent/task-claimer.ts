@@ -494,6 +494,38 @@ export async function getAvailableTaskCount(tabIds?: number[], claimState: strin
 }
 
 /**
+ * Get all tasks that share the same branch name.
+ * Used to find sibling tasks in a grouped-task workflow.
+ *
+ * @param branchName The branch name to search for.
+ * @returns Array of tasks with that branch value.
+ */
+export async function getTasksByBranch(
+  branchName: string
+): Promise<Array<{ id: number; title: string; type: string; priority: number; description: string; pullRequestUrl: string | null; state: string }>> {
+  const pool = await getPool();
+  const result = await pool
+    .request()
+    .input("branch", sql.NVarChar(250), branchName)
+    .query(`
+      SELECT id, title, type, priority, description, pull_request_url, state
+      FROM tasks
+      WHERE branch = @branch
+      ORDER BY id ASC
+    `);
+
+  return result.recordset.map((row: any) => ({
+    id: row.id as number,
+    title: row.title as string,
+    type: row.type as string,
+    priority: row.priority as number,
+    description: row.description as string,
+    pullRequestUrl: (row.pull_request_url as string) || null,
+    state: row.state as string,
+  }));
+}
+
+/**
  * Mark a task as "done" — skipping remaining pipeline stages.
  * Used when an agent reports verdict "no_action_needed" (nothing to change/review),
  * indicating the task should bypass further stages and go straight to done.

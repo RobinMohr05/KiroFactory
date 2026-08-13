@@ -206,6 +206,43 @@ export async function installDependencies(workspacePath: string): Promise<void> 
 }
 
 /**
+ * Checkout an existing remote branch (for shared/grouped task workflows).
+ *
+ * Fetches from origin, then checks out the branch. If the branch exists
+ * locally, it resets to match the remote. If it only exists on the remote,
+ * it creates a local tracking branch.
+ *
+ * @returns The branch name that was checked out.
+ * @throws If the branch does not exist on the remote.
+ */
+export async function checkoutExistingBranch(
+  workspacePath: string,
+  branchName: string
+): Promise<string> {
+  // Fetch latest from origin to ensure we have the remote branch
+  await git(["fetch", "origin"], workspacePath);
+
+  // Try checking out the branch locally
+  try {
+    await git(["checkout", branchName], workspacePath);
+    // Reset to match remote (pick up any new commits from sibling tasks)
+    await git(["reset", "--hard", `origin/${branchName}`], workspacePath);
+  } catch {
+    // Branch doesn't exist locally — create from remote tracking branch
+    try {
+      await git(["checkout", "-b", branchName, `origin/${branchName}`], workspacePath);
+    } catch (err: any) {
+      throw new Error(
+        `Branch "${branchName}" does not exist on remote. ` +
+        `Cannot checkout existing branch: ${err.message || String(err)}`
+      );
+    }
+  }
+
+  return branchName;
+}
+
+/**
  * Create a new feature branch from the current base branch.
  *
  * @returns The branch name that was created.

@@ -22,7 +22,11 @@
 export { KiroRunner } from "./kiro-runner.js";
 export type { SessionUpdateChunk, KiroRunnerOptions, McpServerEntry } from "./kiro-runner.js";
 
-export { claimTask, markTaskDeveloped, markTaskDone, resolveTask, resetTaskToTodo, resetTask, getAvailableTaskCount, waitForTaskAvailable, notifyTaskAvailable } from "./task-claimer.js";
+export { claimTask, markTaskDeveloped, markTaskDone, resolveTask, resetTaskToTodo, resetTask, getAvailableTaskCount, waitForTaskAvailable, notifyTaskAvailable, getTasksByBranch } from "./task-claimer.js";
 export type { ClaimedTask } from "./task-claimer.js";
 
 export { buildDevPrompt, buildReviewPrompt, buildVerifyPrompt } from "./prompt-builder.js";
+
+export { checkoutExistingBranch } from "./git-workspace.js";
+export { findExistingPrForBranch, updatePullRequestBody, buildGroupedPrBody, buildGroupedPrTitle } from "./github-pr.js";
+export { resolveBranchForTask } from "./dev-agent-helpers.js";
