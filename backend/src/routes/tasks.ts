@@ -158,6 +158,12 @@ router.put("/:id", async (req: Request, res: Response) => {
       return;
     }
     broadcastToUser(userId, { type: "task-updated", task });
+    // If this update changed `state` (e.g. dragging a card between board
+    // columns), the task may have just moved INTO a claim state some idle
+    // loop session is waiting on — wake it. Gated on state actually being
+    // part of the request so plain title/description edits don't trigger a
+    // pointless cache invalidation + wake across every loop session.
+    if (input.state !== undefined) notifyTaskAvailable();
     res.json(task);
   } catch (err) {
     log.error("route-error", {
@@ -244,6 +250,10 @@ router.post("/:id/tabs", async (req: Request, res: Response) => {
       return;
     }
     broadcastToUser(userId, { type: "task-updated", task });
+    // Assigning the task to a new tab can make it newly visible to a
+    // tab-scoped loop session that was idle because its tab filter didn't
+    // previously include this task — wake any waiting loops.
+    notifyTaskAvailable();
     res.json(task);
   } catch (err) {
     log.error("route-error", {
