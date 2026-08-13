@@ -50,14 +50,42 @@ const POOL_IDLE_TIMEOUT_MS = Number(process.env.PLANNER_POOL_IDLE_MS) || 20 * 60
 let runnerIdSeq = 0;
 
 /**
+ * Check whether the warm pool can be used.
+ *
+ * DESIGN DECISION — API key handling for pooled runners:
+ * Pool runners are spawned ahead of time (before any user context is known).
+ * The Kiro API key is baked into the child process environment at spawn time
+ * and cannot be changed afterwards — `newSession()` only resets the ACP
+ * session/cwd, not the process environment.
+ *
+ * Therefore pooled runners ALWAYS use the server's global `KIRO_API_KEY` env var.
+ * If no global key is configured, pooling is disabled and the system falls back
+ * to cold-start, which correctly decrypts and uses each user's individual key.
+ *
+ * This is an acceptable trade-off because:
+ * - The server's global key is used only for planner sessions (short, interactive)
+ * - The cold-start path remains the fallback and always uses per-user keys
+ * - Production deployments should always set `KIRO_API_KEY` in the server env
+ */
+export function isPoolEnabled(): boolean {
+  return !!process.env.KIRO_API_KEY;
+}
+
+/**
  * Factory function that spawns a real KiroRunner process for the pool.
  * Uses a generic cwd (project root) — the actual workspace cwd is set later
  * via newSession(cwd) when the runner is checked out for a real conversation.
+ *
+ * NOTE: Pool runners authenticate using the server's global KIRO_API_KEY env var.
+ * Per-user keys cannot be injected into an already-running process.
  */
 async function createPoolRunner(): Promise<PooledRunner> {
   const runner = await KiroRunner.create({
     cwd: DEFAULT_POOL_CWD,
     model: null,
+    // kiroApiKey is intentionally NOT passed here — KiroRunner.create() will
+    // automatically pick up process.env.KIRO_API_KEY (the server's global key).
+    // See isPoolEnabled() guard for why per-user keys can't be used in the pool.
   });
   runnerIdSeq++;
   const id = `planner-pool-${runnerIdSeq}-${Date.now()}`;
@@ -135,6 +163,12 @@ router.post("/prewarm", (req: Request, res: Response) => {
   const userId = getUserId(req);
   const { tabId } = req.body as { tabId?: number };
   const effectiveTabId = tabId ?? 0;
+
+  // Pool requires a server-level KIRO_API_KEY — skip if not configured.
+  if (!isPoolEnabled()) {
+    res.status(202).json({ ok: true });
+    return;
+  }
 
   // Fire-and-forget: kick off the warm in the background, respond immediately.
   // Never block the caller, never surface spawn errors to the caller.
@@ -245,21 +279,37 @@ router.post("/start", async (req: Request, res: Response) => {
 
     // Try to use a warm runner from the pool (keyed by tabId).
     // If one is available, inject it so startSession() skips the cold spawn.
+    // Pool runners use the server's global KIRO_API_KEY — skip if not configured.
     const effectiveTabId = tabId ?? 0;
-    const warmRunner = plannerPool.checkout(effectiveTabId);
-    if (warmRunner) {
-      const kiroRunner = (warmRunner as any)._kiroRunner as KiroRunner;
-      injectPendingRunner(session.id, kiroRunner);
-      log.info("planner-warm-start", {
-        component: "task-planner",
-        sessionId: session.id,
-        tabId: effectiveTabId,
-        runnerId: warmRunner.id,
-        msg: `Using warm pool runner for planner session ${session.id}`,
-      });
-      // Detach the pool slot (runner is now owned by the session, not the pool).
-      // Uses detach() instead of destroy() so the runner is NOT closed.
-      plannerPool.detach(warmRunner.id);
+    if (isPoolEnabled()) {
+      const warmRunner = plannerPool.checkout(effectiveTabId);
+      if (warmRunner) {
+        const kiroRunner = (warmRunner as any)._kiroRunner as KiroRunner;
+        const injected = injectPendingRunner(session.id, kiroRunner);
+        if (injected) {
+          log.info("planner-warm-start", {
+            component: "task-planner",
+            sessionId: session.id,
+            tabId: effectiveTabId,
+            runnerId: warmRunner.id,
+            msg: `Using warm pool runner for planner session ${session.id}`,
+          });
+          // Detach the pool slot (runner is now owned by the session, not the pool).
+          // Uses detach() instead of destroy() so the runner is NOT closed.
+          plannerPool.detach(warmRunner.id);
+        } else {
+          // Injection failed (e.g. session was deleted or already running) —
+          // return the runner to the pool so it's not leaked.
+          plannerPool.release(warmRunner.id);
+          log.warn("planner-warm-inject-failed", {
+            component: "task-planner",
+            sessionId: session.id,
+            tabId: effectiveTabId,
+            runnerId: warmRunner.id,
+            msg: `Failed to inject warm runner into session ${session.id} — returned to pool`,
+          });
+        }
+      }
     }
 
     // Start the session immediately

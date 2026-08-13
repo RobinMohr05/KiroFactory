@@ -8,6 +8,7 @@
  * - Reaping idle slots after timeout
  * - Per-tab and total size caps
  * - Concurrency isolation: two checkouts from same tab get separate runners
+ * - Pool-enabled guard (requires server-level KIRO_API_KEY)
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -279,5 +280,38 @@ describe("PlannerSessionPool", () => {
       expect(pool.totalCount()).toBe(0);
       expect(r!.close).toHaveBeenCalled();
     });
+  });
+});
+
+describe("isPoolEnabled", () => {
+  // Dynamically import to test the env-var guard from the route module
+  const originalEnv = process.env.KIRO_API_KEY;
+
+  afterEach(() => {
+    // Restore original env
+    if (originalEnv !== undefined) {
+      process.env.KIRO_API_KEY = originalEnv;
+    } else {
+      delete process.env.KIRO_API_KEY;
+    }
+  });
+
+  it("returns true when KIRO_API_KEY is set", async () => {
+    process.env.KIRO_API_KEY = "test-key-123";
+    // Import the function fresh — it reads env at call time, not import time
+    const { isPoolEnabled } = await import("./routes/task-planner.js");
+    expect(isPoolEnabled()).toBe(true);
+  });
+
+  it("returns false when KIRO_API_KEY is not set", async () => {
+    delete process.env.KIRO_API_KEY;
+    const { isPoolEnabled } = await import("./routes/task-planner.js");
+    expect(isPoolEnabled()).toBe(false);
+  });
+
+  it("returns false when KIRO_API_KEY is empty string", async () => {
+    process.env.KIRO_API_KEY = "";
+    const { isPoolEnabled } = await import("./routes/task-planner.js");
+    expect(isPoolEnabled()).toBe(false);
   });
 });
