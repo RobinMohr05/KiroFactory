@@ -419,6 +419,7 @@ export async function createSession(input: CreateSessionInput): Promise<Session>
     model: input.model,
     mcpServers: input.mcpServers,
     mcpConfigOverride: input.mcpConfigOverride ?? undefined,
+    rawMcpServers: input.rawMcpServers,
     tabIds: input.tabIds,
     userId: input.userId ?? 0,
     createdAt: now(),
@@ -426,6 +427,7 @@ export async function createSession(input: CreateSessionInput): Promise<Session>
     pinned: input.pinned === true,
     isPermanent: input.isPermanent === true,
     sortOrder: 0, // placeholder — calculated below
+    forceLocal: input.forceLocal === true,
   };
 
   // Calculate sortOrder: place new session at end of appropriate group
@@ -696,7 +698,7 @@ export async function startSession(id: number): Promise<boolean> {
   appendOutput(session, {
     timestamp: now(),
     stream: "system",
-    text: ACA_MODE
+    text: ACA_MODE && !session.meta.forceLocal
       ? session.meta.agent
         ? `Starting ACA worker for agent "${session.meta.agent}"...`
         : `Starting ACA worker (no agent)...`
@@ -706,7 +708,10 @@ export async function startSession(id: number): Promise<boolean> {
   });
 
   // Spawn async — don't block the caller
-  const launcher = ACA_MODE ? runSessionAca(session) : runSession(session);
+  // forceLocal sessions (e.g. task planner) always use the local KiroRunner
+  // child process, even when the global worker mode is "remote" (ACA_MODE).
+  const useLocal = session.meta.forceLocal || !ACA_MODE;
+  const launcher = useLocal ? runSession(session) : runSessionAca(session);
   launcher.catch((err) => {
     const msg = err instanceof Error ? err.message : String(err);
     appendOutput(session, { timestamp: now(), stream: "stderr", text: `Fatal: ${msg}` });
@@ -879,6 +884,7 @@ async function runSession(managed: ManagedSession): Promise<void> {
         args: s.args,
         env: s.env,
       })),
+      rawMcpServers: meta.rawMcpServers,
       kiroApiKey,
     });
 

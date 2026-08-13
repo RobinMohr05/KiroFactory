@@ -17,19 +17,13 @@ import { log, toErrorFields } from "../logger.js";
 import { getDecryptedCredential } from "../db/credentials.js";
 import { resolveGitProvider } from "../types.js";
 import { getUserById } from "../db/users.js";
-import { preparePlannerWorkspace, cleanupPlannerWorkspace } from "../agent/planner-workspace.js";
+import { buildPlannerRepoMcpServer } from "./task-planner-mcp.js";
 import type { CreateTaskInput } from "../types.js";
 
 const router = Router();
 
 // All task planner routes require authentication
 router.use(requireAuth);
-
-/**
- * Tracks the temporary workspace path for each planner session,
- * so it can be cleaned up when the session is closed/deleted.
- */
-const plannerWorkspaces = new Map<number, string>();
 
 /**
  * System prompt for the task planner agent.
@@ -91,7 +85,7 @@ router.post("/start", async (req: Request, res: Response) => {
     // Build the system prompt, optionally enriched with tab/repository context
     let systemPrompt = TASK_PLANNER_SYSTEM_PROMPT;
     let sessionTabIds: number[] | undefined;
-    let sessionCwd: string | undefined;
+    let rawMcpServers: unknown[] | undefined;
 
     if (tabId) {
       const tab = await getTabById(tabId);
@@ -109,7 +103,7 @@ router.post("/start", async (req: Request, res: Response) => {
           contextLines.push(`- **Git provider:** ${tab.gitProvider}`);
         }
 
-        // Clone the repository so the planner can read actual files
+        // Build an MCP server entry for repo access (replaces git clone)
         if (tab.repositoryUrl) {
           const owner = await getUserById(userId);
           const provider = resolveGitProvider(
@@ -129,20 +123,20 @@ router.post("/start", async (req: Request, res: Response) => {
             if (pat) azureDevOpsPat = pat;
           }
 
-          const workspace = await preparePlannerWorkspace({
+          const mcpServer = buildPlannerRepoMcpServer({
+            provider,
             repositoryUrl: tab.repositoryUrl,
-            gitProvider: provider,
             githubPat,
             azureDevOpsPat,
           });
 
-          if (workspace) {
-            sessionCwd = workspace.workspacePath;
+          if (mcpServer) {
+            rawMcpServers = [mcpServer];
             contextLines.push(
-              `\n**You have full read access to this repository's files.** ` +
-              `Use your file reading tools (readFile, listDirectory, etc.) to browse the codebase. ` +
-              `Read README.md, any SPEC.md or architecture docs, and browse the file tree to understand ` +
-              `the project structure before proposing tasks. Reference actual file paths that exist in the repo.`
+              `\n**You have MCP tools available for browsing this repository's files.** ` +
+              `Use the available tools to browse the codebase, read READMEs, architecture docs, ` +
+              `and understand the project structure before proposing tasks. ` +
+              `Reference actual file paths that exist in the repo.`
             );
           }
         }
@@ -155,7 +149,9 @@ router.post("/start", async (req: Request, res: Response) => {
       }
     }
 
-    // Create a dedicated interactive session for this planning conversation
+    // Create a dedicated interactive session for this planning conversation.
+    // forceLocal ensures the planner never triggers an ACA Job execution —
+    // it only needs to chat and read files via MCP, never build/test/commit.
     const session = await createSession({
       name: "Task Planner",
       prompt: systemPrompt,
@@ -166,13 +162,9 @@ router.post("/start", async (req: Request, res: Response) => {
       userId,
       tabIds: sessionTabIds,
       pinned: false,
-      cwd: sessionCwd,
+      forceLocal: true,
+      rawMcpServers,
     });
-
-    // Track workspace path for cleanup when the session ends
-    if (sessionCwd) {
-      plannerWorkspaces.set(session.id, sessionCwd);
-    }
 
     // Start the session immediately
     await startSession(session.id);
@@ -310,15 +302,6 @@ router.post("/:sessionId/create-task", async (req: Request, res: Response) => {
       // Non-fatal — session cleanup failure doesn't affect the created task
     }
 
-    // Clean up the cloned workspace
-    const workspacePath = plannerWorkspaces.get(sessionId);
-    if (workspacePath) {
-      plannerWorkspaces.delete(sessionId);
-      cleanupPlannerWorkspace(workspacePath).catch(() => {
-        // Non-fatal — workspace cleanup runs in background
-      });
-    }
-
     res.status(201).json(task);
   } catch (err) {
     log.error("route-error", {
@@ -350,15 +333,6 @@ router.delete("/:sessionId", async (req: Request, res: Response) => {
 
     await stopSession(sessionId);
     deleteSession(sessionId);
-
-    // Clean up the cloned workspace
-    const workspacePath = plannerWorkspaces.get(sessionId);
-    if (workspacePath) {
-      plannerWorkspaces.delete(sessionId);
-      cleanupPlannerWorkspace(workspacePath).catch(() => {
-        // Non-fatal — workspace cleanup runs in background
-      });
-    }
 
     res.status(204).send();
   } catch (err) {
