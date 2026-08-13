@@ -3,22 +3,20 @@ inclusion: fileMatch
 fileMatchPattern: "backend/src/agent/kiro-runner.ts,worker/worker.js,backend/src/session-manager.ts"
 ---
 
-# Kiro CLI Credit/Usage Data — Confirmed Availability
+# Kiro CLI Credit/Usage Tracking
 
-## Investigation Summary (confirmed 2026-08-04)
+## Status: shipped, with one known gap
 
-Credit/usage data from kiro-cli **IS available over the ACP stdio channel** and does
-NOT require reading the local session file. Both `kiro-runner.ts` (local dev) and
-`worker.js` (production ACA container) can capture it from messages they already
-parse.
+Credit tracking from kiro-cli is implemented and live in both local and ACA worker modes.
+**What's missing:** durable per-task persistence — usage only lives in in-memory session state
+today and is lost on session restart. See "Known gap" below before treating this as fully done.
 
-## How It Arrives: `_kiro.dev/metadata` Notification
+## How credit data arrives: `_kiro.dev/metadata`
 
-The credit data is delivered as a **Kiro-proprietary extension notification** over
-the same NDJSON stdio stream used for all ACP messages. It is NOT the ACP-standard
-`usage_update` session update (which exists in the schema but kiro-cli 2.16.0 does
-not populate), and NOT the `PromptResponse.usage` field (which kiro-cli currently
-returns as absent/null).
+Credit data is delivered as a **Kiro-proprietary extension notification** over the same NDJSON
+stdio stream used for all ACP messages — NOT the ACP-standard `usage_update` session update
+(present in the schema but unpopulated by kiro-cli 2.16.0), and NOT `PromptResponse.usage`
+(currently absent/null).
 
 ### Notification shape
 
@@ -46,131 +44,87 @@ returns as absent/null).
 
 Multiple `_kiro.dev/metadata` notifications are emitted per turn:
 
-1. **Pre-prompt** — `{ contextUsagePercentage }` only (after session/new, before
-   agent output). Represents context window fill after system prompt is loaded.
-2. **Mid-turn** — `{ contextUsagePercentage }` only (after the agent finishes
-   streaming output, before credits are tallied).
-3. **End-of-turn** — `{ contextUsagePercentage, meteringUsage, turnDurationMs }`.
-   This is the one that carries the credit cost. It arrives **immediately before**
-   the `session/prompt` JSON-RPC response (`PromptResponse`).
+1. **Pre-prompt** — `{ contextUsagePercentage }` only (after session/new, before agent output).
+2. **Mid-turn** — `{ contextUsagePercentage }` only (after streaming ends, before credits are
+   tallied).
+3. **End-of-turn** — `{ contextUsagePercentage, meteringUsage, turnDurationMs }`. This is the
+   one that carries the credit cost, arriving immediately before the `session/prompt` JSON-RPC
+   response.
 
-The actionable notification is the one that has `meteringUsage` present and
-non-empty. Earlier metadata notifications in the same turn can be ignored for
-cost tracking purposes (they are useful for context-window monitoring only).
+The actionable notification is the one with a non-empty `meteringUsage`. Earlier ones in the
+same turn are only useful for context-window monitoring, not cost.
 
-## Where to Capture It in KiroFactory
+## Where it's captured today
 
 ### `backend/src/agent/kiro-runner.ts` (local dev mode)
 
-The `handleMessage()` function already intercepts all `_kiro.dev/*` notifications
-(lines ~211-227). Currently it only looks for `_kiro.dev/session/update`. To
-capture usage:
-
-```typescript
-if (msg.method === "_kiro.dev/metadata") {
-  const params = msg.params as {
-    sessionId?: string;
-    contextUsagePercentage?: number;
-    meteringUsage?: Array<{ value: number; unit: string; unitPlural: string }>;
-    turnDurationMs?: number;
-  };
-  if (params.meteringUsage?.length) {
-    // This is the end-of-turn metadata with credit cost
-    client.updateQueue.push({
-      sessionUpdate: "usage_update",  // synthetic, for downstream consumers
-      meteringUsage: params.meteringUsage,
-      turnDurationMs: params.turnDurationMs,
-      contextUsagePercentage: params.contextUsagePercentage,
-    } as any);
-    client.updateResolve?.();
-    client.updateResolve = null;
-  }
-  return; // already handled (don't forward to SDK)
-}
-```
+`handleMessage()` intercepts `_kiro.dev/*` notifications. On `_kiro.dev/metadata` with a
+non-empty `meteringUsage`, it sums all entries where `unit === "credit"` and stores the total on
+`client._lastTurnCredits`, read by the caller after the turn completes as `lastTurnCredits`.
 
 ### `worker/worker.js` (production ACA container)
 
-The `handleAcpMessage()` function checks `msg.method` for routing. Add handling
-for `_kiro.dev/metadata` alongside the existing `_kiro.dev/agent/not_found` case:
+The ACP message handler checks `method === "_kiro.dev/metadata"`. On a non-empty
+`meteringUsage`, it sums credit entries into `turnStats.credits` and logs a `turn-metering`
+structured log entry (`credits`, `unit`, `turnDurationMs`, `contextUsagePercentage`). This value
+flows back to the orchestrator as `credits` on the `prompt-done` worker message
+(`worker-ws-handler.ts` → `session-manager.ts`).
 
-```javascript
-if (method === "_kiro.dev/metadata") {
-  const params = msg.params ?? {};
-  if (params.meteringUsage?.length) {
-    logInfo("turn-metering", {
-      credits: params.meteringUsage[0].value,
-      unit: params.meteringUsage[0].unit,
-      turnDurationMs: params.turnDurationMs,
-      contextUsagePercentage: params.contextUsagePercentage,
-    });
-    // Forward to orchestrator so it can persist credits per task
-    sendSessionUpdate({
-      sessionUpdate: "usage_update",
-      meteringUsage: params.meteringUsage,
-      turnDurationMs: params.turnDurationMs,
-      contextUsagePercentage: params.contextUsagePercentage,
-    });
-  }
-  return true;
-}
-```
+### `backend/src/session-manager.ts` (both modes)
 
-## Local Session File (alternative / backup path)
+After each turn, `managed.totalCreditsUsed` (local) or `session.totalCreditsUsed` (ACA) is
+incremented by the turn's credits, mirrored onto `session.meta.totalCreditsUsed`, broadcast to
+the browser over the client WebSocket, and surfaced as a system-log line: `"Task used X credits
+(session total: Y credits)"`.
 
-The same data is also available in the kiro-cli local session metadata file:
+**Reset semantics:** `totalCreditsUsed` is reset to `0` whenever a session is (re)started — it is
+a live "this run" counter, not a lifetime total.
 
-- **Path:** `$KIRO_HOME/sessions/cli/<session-uuid>.json`
-  (default `KIRO_HOME` is `~/.kiro`)
-- **Location in JSON:**
-  `session_state.conversation_metadata.user_turn_metadatas[N].metering_usage`
+## Known gap: no durable per-task persistence
 
-Each turn's metadata entry includes:
-```jsonc
-{
-  "metering_usage": [{ "value": 0.0609, "unit": "credit", "unitPlural": "credits" }],
-  "input_token_count": 12345,
-  "output_token_count": 678,
-  "cache_read_input_token_count": 9000,
-  "cache_write_input_token_count": 1500,
-  "turn_duration": { "secs": 2, "nanos": 279494671 },
-  "context_usage_percentage": 1.91,
-  "model": "auto"
-}
-```
+`totalCreditsUsed` lives only in the in-memory `ManagedSession`/`session.meta` — there is no
+`credits` column on the `tasks` table (`backend/sql/schema.sql`) and no code path writes
+per-task or per-turn credit cost to the database. Consequences:
 
-### Reachability from worker container
+- Restarting a session zeroes its running total; there is no way to recover "how many credits did
+  task #142 actually cost" after the fact.
+- There is no cross-session or cross-task cost reporting (e.g. "total credits spent this week",
+  "which task type is most expensive") beyond manually correlating log lines.
 
-In the ACA worker container, kiro-cli writes to `/root/.kiro/sessions/cli/` (the
-container runs as root). This path is readable by `worker.js` while the container
-is alive. However, since the data is also available over the stdio channel (the
-`_kiro.dev/metadata` notification), there is **no need to read the file** — the
-stdio approach is simpler, real-time, and doesn't require knowing the session UUID
-in advance.
+If this is worth solving, the natural next step is accumulating credits per task across all its
+turns (a task may span multiple turns if reworked) and persisting that total when the task
+resolves — but this hasn't been scoped or built. Treat it as a real gap, not an oversight to
+silently work around.
 
-## Confirmed Answers to the Open Questions
+## Local session file (alternative source, not used by KiroFactory)
+
+The same data also exists in kiro-cli's local session metadata file
+(`$KIRO_HOME/sessions/cli/<session-uuid>.json`,
+`session_state.conversation_metadata.user_turn_metadatas[N].metering_usage`), readable from
+inside the ACA worker container at `/root/.kiro/sessions/cli/` (runs as root). KiroFactory does
+not use this path — the stdio notification is simpler, real-time, and doesn't require knowing
+the session UUID in advance. Documented here only so it isn't "rediscovered" later; prefer the
+stdio path if extending this feature.
+
+## Reference: confirmed facts (as of kiro-cli 2.16.0)
 
 | Question | Answer |
 |----------|--------|
-| Is credit data emitted over ACP stdio? | **Yes** — via `_kiro.dev/metadata` notification |
-| Is it the standard ACP `usage_update`? | No — kiro-cli uses a proprietary extension method |
-| Is `PromptResponse.usage` populated? | No — kiro-cli 2.16.0 returns it as absent |
-| Is the local session file reachable in the ACA worker? | Yes — at `/root/.kiro/sessions/cli/<uuid>.json` |
-| Which path should KiroFactory use? | **Stdio (`_kiro.dev/metadata`)** — real-time, no file I/O |
+| Is credit data emitted over ACP stdio? | Yes — via `_kiro.dev/metadata` |
+| Is it the standard ACP `usage_update`? | No — proprietary extension method |
+| Is `PromptResponse.usage` populated? | No — returned absent |
+| Is the local session file reachable in the ACA worker? | Yes, but unused (see above) |
 
-## Key Design Decisions for Follow-Up Implementation
+**ACP spec evolution:** the standard `UsageUpdate` (`sessionUpdate: "usage_update"`) and
+`PromptResponse.usage` exist in the schema (marked UNSTABLE) but aren't populated by kiro-cli
+2.16.0. If a future version populates them, prefer the standard path and drop the
+`_kiro.dev/metadata` extension handling — but don't do so speculatively; re-verify against the
+kiro-cli version actually in use first.
 
-1. **Parse `_kiro.dev/metadata`** in both `kiro-runner.ts` and `worker.js` to
-   extract `meteringUsage[0].value` (credits) and `turnDurationMs` per turn.
-2. **Forward to orchestrator** via the existing `session-update` WebSocket message
-   (worker → orchestrator) or capture directly (local dev mode).
-3. **Persist per-task** — accumulate credits across all turns of a task (a task may
-   have multiple prompt turns if retried or multi-step).
-4. **Schema consideration** — the `meteringUsage` array could theoretically have
-   multiple entries (e.g., if multiple models are used in one turn). Sum all
-   `value` fields where `unit === "credit"` for the total.
-5. **ACP spec evolution** — the standard `UsageUpdate` (`sessionUpdate:
-   "usage_update"`) and `PromptResponse.usage` exist in the schema (marked
-   UNSTABLE) but are not populated by kiro-cli 2.16.0. If a future version
-   populates them, KiroFactory should prefer the standard path. Until then, the
-   `_kiro.dev/metadata` extension is the only source of credit data.
+## Related: broader Kiro usage/cost data (CLI session files, IDE storage, billing dashboard)
+
+This document covers only the live ACP-stdio path KiroFactory itself uses. For a broader
+reference on reading Kiro credit/token/usage data from kiro-cli's local JSONL session logs, the
+Kiro IDE's SQLite storage, and the official billing/enterprise dashboards — useful when
+investigating cost questions that aren't about KiroFactory's own worker/orchestrator code — see
+the `kiro-usage-data-access` skill.
