@@ -24,6 +24,16 @@ RUN npm run build -w backend
 FROM node:22-slim AS production
 WORKDIR /app
 
+# Install curl (needed for kiro-cli installer) — git is NOT needed here
+# because the planner uses MCP servers for repo access, not git clone.
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install kiro-cli — needed for forceLocal sessions (e.g. task planner)
+# that run as local KiroRunner child processes inside the orchestrator container.
+RUN curl -fsSL https://cli.kiro.dev/install | bash && \
+    ln -sf /root/.local/bin/kiro-cli /usr/local/bin/kiro-cli
+
 # Copy root workspace files
 COPY package.json package-lock.json ./
 
