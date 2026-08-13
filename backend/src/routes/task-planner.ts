@@ -7,6 +7,7 @@ import {
   getSession,
   getSessionOutput,
   deleteSession,
+  injectPendingRunner,
 } from "../session-manager.js";
 import { createTask } from "../db/tasks.js";
 import { getAllTabs, getTabById } from "../db/tabs.js";
@@ -18,6 +19,9 @@ import { getDecryptedCredential } from "../db/credentials.js";
 import { resolveGitProvider } from "../types.js";
 import { getUserById } from "../db/users.js";
 import { preparePlannerWorkspace, cleanupPlannerWorkspace } from "../agent/planner-workspace.js";
+import { PlannerSessionPool, type PooledRunner } from "../planner-session-pool.js";
+import { KiroRunner } from "../agent/kiro-runner.js";
+import { resolve } from "node:path";
 import type { CreateTaskInput } from "../types.js";
 
 const router = Router();
@@ -30,6 +34,50 @@ router.use(requireAuth);
  * so it can be cleaned up when the session is closed/deleted.
  */
 const plannerWorkspaces = new Map<number, string>();
+
+// ---------------------------------------------------------------------------
+// Warm Session Pool
+// ---------------------------------------------------------------------------
+
+/** Default cwd for pre-warmed pool runners (project root). */
+const DEFAULT_POOL_CWD = resolve(import.meta.dirname, "../../..");
+
+/** Configurable pool limits via env vars (with sensible defaults). */
+const POOL_MAX_PER_TAB = Number(process.env.PLANNER_POOL_MAX_PER_TAB) || 2;
+const POOL_MAX_TOTAL = Number(process.env.PLANNER_POOL_MAX_TOTAL) || 6;
+const POOL_IDLE_TIMEOUT_MS = Number(process.env.PLANNER_POOL_IDLE_MS) || 20 * 60 * 1000; // 20 min
+
+let runnerIdSeq = 0;
+
+/**
+ * Factory function that spawns a real KiroRunner process for the pool.
+ * Uses a generic cwd (project root) — the actual workspace cwd is set later
+ * via newSession(cwd) when the runner is checked out for a real conversation.
+ */
+async function createPoolRunner(): Promise<PooledRunner> {
+  const runner = await KiroRunner.create({
+    cwd: DEFAULT_POOL_CWD,
+    model: null,
+  });
+  runnerIdSeq++;
+  const id = `planner-pool-${runnerIdSeq}-${Date.now()}`;
+  return {
+    id,
+    get isAlive() { return runner.isAlive; },
+    newSession: (cwd?: string) => runner.newSession(cwd),
+    close: () => runner.close(),
+    /** @internal — the underlying KiroRunner (needed for injectPendingRunner) */
+    _kiroRunner: runner,
+  } as PooledRunner & { _kiroRunner: KiroRunner };
+}
+
+/** Singleton pool instance. */
+export const plannerPool = new PlannerSessionPool({
+  maxPerTab: POOL_MAX_PER_TAB,
+  maxTotal: POOL_MAX_TOTAL,
+  idleTimeoutMs: POOL_IDLE_TIMEOUT_MS,
+  factory: createPoolRunner,
+});
 
 /**
  * System prompt for the task planner agent.
@@ -81,6 +129,27 @@ When the user confirms the task, output EXACTLY this format (and nothing else af
 \`\`\`
 
 Start by greeting the user and asking what they'd like to accomplish.`;
+
+// POST /api/task-planner/prewarm — Fire-and-forget: ensure a warm pool slot exists for the tab
+router.post("/prewarm", (req: Request, res: Response) => {
+  const userId = getUserId(req);
+  const { tabId } = req.body as { tabId?: number };
+  const effectiveTabId = tabId ?? 0;
+
+  // Fire-and-forget: kick off the warm in the background, respond immediately.
+  // Never block the caller, never surface spawn errors to the caller.
+  plannerPool.warm(effectiveTabId).catch((err) => {
+    log.warn("prewarm-background-error", {
+      component: "task-planner",
+      tabId: effectiveTabId,
+      userId,
+      ...toErrorFields(err),
+      msg: `Background prewarm failed for tab ${effectiveTabId}`,
+    });
+  });
+
+  res.status(202).json({ ok: true });
+});
 
 // POST /api/task-planner/start — Start a new task planning conversation
 router.post("/start", async (req: Request, res: Response) => {
@@ -172,6 +241,25 @@ router.post("/start", async (req: Request, res: Response) => {
     // Track workspace path for cleanup when the session ends
     if (sessionCwd) {
       plannerWorkspaces.set(session.id, sessionCwd);
+    }
+
+    // Try to use a warm runner from the pool (keyed by tabId).
+    // If one is available, inject it so startSession() skips the cold spawn.
+    const effectiveTabId = tabId ?? 0;
+    const warmRunner = plannerPool.checkout(effectiveTabId);
+    if (warmRunner) {
+      const kiroRunner = (warmRunner as any)._kiroRunner as KiroRunner;
+      injectPendingRunner(session.id, kiroRunner);
+      log.info("planner-warm-start", {
+        component: "task-planner",
+        sessionId: session.id,
+        tabId: effectiveTabId,
+        runnerId: warmRunner.id,
+        msg: `Using warm pool runner for planner session ${session.id}`,
+      });
+      // Detach the pool slot (runner is now owned by the session, not the pool).
+      // Uses detach() instead of destroy() so the runner is NOT closed.
+      plannerPool.detach(warmRunner.id);
     }
 
     // Start the session immediately
