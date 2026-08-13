@@ -743,6 +743,8 @@ function renderBoardSelector() {
           activeSessionId = null;
           selectTopSession();
         }
+      } else {
+        selectTopSession();
       }
       renderSessionList();
       fetchBoardTasks(currentBoardId);
@@ -1326,20 +1328,7 @@ function setupTabs() {
   tabBoards.addEventListener('click', () => activateTab(tabBoards, panelBoards));
   tabSessions.addEventListener('click', () => {
     activateTab(tabSessions, panelSessions);
-    // Auto-select a session if none is currently active, so the detail panel
-    // doesn't sit empty when there's something to show. Prefer an agentless
-    // (interactive) session, otherwise fall back to the first visible one.
-    if (!activeSessionId && sessions.length > 0) {
-      const visible = currentBoardId
-        ? sessions.filter(s => !s.agent || (s.tabIds && s.tabIds.includes(Number(currentBoardId))))
-        : sessions;
-      const preferred = visible.find(s => !s.agent) || visible[0];
-      if (preferred) {
-        selectSession(preferred.id);
-      } else {
-        selectTopSession();
-      }
-    } else if (!activeSessionId) {
+    if (!activeSessionId) {
       selectTopSession();
     }
   });
