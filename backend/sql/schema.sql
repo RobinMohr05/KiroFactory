@@ -163,5 +163,11 @@ CREATE TABLE sessions (
     -- Permanent, agentless "Chat" session every user gets on registration.
     -- Pinned sessions are always sorted first in the UI and cannot be deleted.
     pinned              BIT             NOT NULL DEFAULT 0,
-    sort_order          INT             NOT NULL DEFAULT 0
+    sort_order          INT             NOT NULL DEFAULT 0,
+    -- force_local ensures the session always runs locally (KiroRunner child process),
+    -- even when ACA_MODE / WORKER_MODE=remote is active. Used by the task planner.
+    force_local         BIT             NOT NULL DEFAULT 0,
+    -- Raw MCP server entries (HTTP or other non-stdio shapes) passed directly to the
+    -- ACP session/new mcpServers payload. JSON array. Nullable = no raw servers.
+    raw_mcp_servers     NVARCHAR(MAX)   NULL
 );

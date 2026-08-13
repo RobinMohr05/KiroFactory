@@ -13,6 +13,7 @@ import { resolve } from "node:path";
 import { KiroRunner } from "./agent/kiro-runner.js";
 import type { SessionUpdateChunk } from "./agent/kiro-runner.js";
 import { broadcastToUser } from "./websocket-handler.js";
+import { sanitizeSessionForClient } from "./session-sanitize.js";
 import { claimTask, resolveTask, resetTask, getAvailableTaskCount, waitForTaskAvailable, markTaskDone } from "./agent/task-claimer.js";
 import type { ClaimedTask } from "./agent/task-claimer.js";
 import { buildDevPrompt, buildReviewPrompt } from "./agent/prompt-builder.js";
@@ -381,7 +382,7 @@ function setActivity(session: ManagedSession, activity: Activity): void {
 
 function setStatus(session: ManagedSession, status: Session["status"]): void {
   session.meta.status = status;
-  broadcastToUser(session.meta.userId, { type: "session-updated", session: session.meta });
+  broadcastToUser(session.meta.userId, { type: "session-updated", session: sanitizeSessionForClient(session.meta) });
   persistSession(session.meta.id);
 }
 
@@ -472,7 +473,7 @@ export async function createSession(input: CreateSessionInput): Promise<Session>
   };
 
   sessions.set(meta.id, session);
-  broadcastToUser(session.meta.userId, { type: "session-created", session: session.meta });
+  broadcastToUser(session.meta.userId, { type: "session-created", session: sanitizeSessionForClient(session.meta) });
 
   // Structured log for Azure Monitor
   logSessionEvent("session-created", meta.id, { agent: meta.agent, name: meta.name });
@@ -493,7 +494,7 @@ export function getAllSessions(userId?: number): Session[] {
       return (a.meta.sortOrder ?? 0) - (b.meta.sortOrder ?? 0);
     })
     .map((s) => ({
-    ...s.meta,
+    ...sanitizeSessionForClient(s.meta),
     // Don't include full output in list endpoint — too large
     output: [],
   }));
@@ -537,7 +538,7 @@ export function updateSessionTabs(id: number, tabIds: number[]): boolean {
   if (!session) return false;
 
   session.meta.tabIds = tabIds.length > 0 ? tabIds : undefined;
-  broadcastToUser(session.meta.userId, { type: "session-updated", session: session.meta });
+  broadcastToUser(session.meta.userId, { type: "session-updated", session: sanitizeSessionForClient(session.meta) });
   persistSession(id);
 
   logSessionEvent("session-tabs-updated", id, { tabIds });
@@ -675,7 +676,7 @@ export function updateSessionFields(
   if (updates.mcpConfigOverride !== undefined) session.meta.mcpConfigOverride = updates.mcpConfigOverride;
   if (updates.tabIds !== undefined) session.meta.tabIds = updates.tabIds?.length ? updates.tabIds : undefined;
 
-  broadcastToUser(session.meta.userId, { type: "session-updated", session: session.meta });
+  broadcastToUser(session.meta.userId, { type: "session-updated", session: sanitizeSessionForClient(session.meta) });
   persistSession(id);
 
   logSessionEvent("session-fields-updated", id, { updatedKeys: Object.keys(updates) });
@@ -1078,7 +1079,7 @@ async function runLoopMode(
 
     // Track current task
     meta.currentTaskId = task.id;
-    broadcastToUser(meta.userId, { type: "session-updated", session: meta });
+    broadcastToUser(meta.userId, { type: "session-updated", session: sanitizeSessionForClient(meta) });
     persistSession(meta.id);
 
     appendOutput(managed, {

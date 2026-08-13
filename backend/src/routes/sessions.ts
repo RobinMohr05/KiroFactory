@@ -16,6 +16,7 @@ import {
 import { requireAuth, getUserId } from "../middleware/auth.js";
 import type { CreateSessionInput, UpdateSessionInput } from "../types.js";
 import { log, toErrorFields } from "../logger.js";
+import { sanitizeSessionForClient } from "../session-sanitize.js";
 
 const router = Router();
 
@@ -63,7 +64,7 @@ router.post("/", async (req: Request, res: Response) => {
     input.pinned = false;
     input.isPermanent = false;
     const session = await createSession(input);
-    res.status(201).json(session);
+    res.status(201).json(sanitizeSessionForClient(session));
   } catch (err) {
     log.error("route-error", {
       component: "sessions",
@@ -117,7 +118,7 @@ router.get("/:id", (req: Request, res: Response) => {
       res.status(404).json({ error: "Session not found" });
       return;
     }
-    res.json(session);
+    res.json(sanitizeSessionForClient(session));
   } catch (err) {
     log.error("route-error", {
       component: "sessions",
