@@ -2905,11 +2905,67 @@ textarea:focus {
 
 .task-planner-input-area {
   display: flex;
+  flex-direction: column;
   gap: 0.5rem;
   padding: 1rem 1.5rem;
   border-top: 1px solid var(--border-color);
   flex-shrink: 0;
   background: var(--bg-primary);
+}
+
+.task-planner-input-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-end;
+}
+
+.task-planner-attachment {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.5rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.task-planner-attachment .attachment-filename {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 200px;
+}
+
+.task-planner-attachment .attachment-remove {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+  padding: 0 0.25rem;
+}
+
+.task-planner-attachment .attachment-remove:hover {
+  color: var(--text-primary);
+}
+
+.btn-icon {
+  background: none;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  padding: 0.4rem 0.5rem;
+  font-size: 1rem;
+  line-height: 1;
+  color: var(--text-secondary);
+}
+
+.btn-icon:hover {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
 }
 
 .task-planner-input-area textarea {
