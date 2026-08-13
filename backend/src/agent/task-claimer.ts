@@ -22,13 +22,31 @@ const taskBus = new EventEmitter();
 taskBus.setMaxListeners(50); // one per active loop session, allow headroom
 
 /**
+ * Safety-net re-check interval for waitForTaskAvailable. The event bus above
+ * is the primary wake-up path and fires immediately on any relevant write —
+ * this timer only guards against a "task-available" event getting dropped
+ * for some unforeseen reason (e.g. the cache-staleness bug this same change
+ * fixes, or a future regression like it).
+ *
+ * There's no session/replica timeout to size this against: a loop parked in
+ * waitForTaskAvailable is never killed for being idle. ACA's replicaTimeout
+ * (infra/modules/worker-job.bicep) caps total wall-clock time for a session
+ * regardless of idle vs. busy, it isn't an idle-specific timeout, and local
+ * sessions have no ceiling at all. So this is purely "how long is acceptable
+ * if a wake-up signal is ever silently lost" — 5 minutes is comfortably above
+ * that bar while staying cheap (one indexed COUNT per idle loop per interval).
+ */
+const FALLBACK_POLL_MS = 5 * 60 * 1000;
+
+/**
  * Wait until at least one task in `claimState` is available for `tabIds`,
  * or until the AbortSignal fires.
  *
  * Returns immediately if tasks are already available (checked via DB COUNT).
  * Otherwise parks the caller until a "task-available" event is emitted by
- * any write path (createTask broadcast, resetTask, resolveTask that rolls
- * back, etc.) — no polling involved.
+ * any write path (createTask broadcast, resetTask, resolveTask, etc.), the
+ * AbortSignal fires, or FALLBACK_POLL_MS elapses with no event at all — no
+ * polling involved on the happy path.
  */
 export async function waitForTaskAvailable(
   tabIds: number[] | undefined,
@@ -42,10 +60,15 @@ export async function waitForTaskAvailable(
   return new Promise<void>((resolve) => {
     const onTask = () => { cleanup(); resolve(); };
     const onAbort = () => { cleanup(); resolve(); };
+    // Belt-and-suspenders: re-check periodically even if we're never notified.
+    // The caller always re-queries getAvailableTaskCount() after this resolves,
+    // so a spurious wake here just costs one extra cheap COUNT query.
+    const fallbackTimer = setTimeout(() => { cleanup(); resolve(); }, FALLBACK_POLL_MS);
 
     function cleanup() {
       taskBus.off("task-available", onTask);
       signal.removeEventListener("abort", onAbort);
+      clearTimeout(fallbackTimer);
     }
 
     taskBus.on("task-available", onTask);
@@ -57,8 +80,17 @@ export async function waitForTaskAvailable(
  * Notify waiting loop sessions that a task may now be available.
  * Call this after any write that moves a task INTO a claimable state.
  * Also called by the REST task-creation route so new tasks wake idle loops.
+ *
+ * Also invalidates the count cache (see getAvailableTaskCount) so that the
+ * recheck every caller performs immediately after waking up — either the
+ * fast path at the top of this function's own next call, or the loop's own
+ * top-of-while COUNT after `continue` — reads a fresh value instead of a
+ * stale pre-write count. Without this, a loop could wake up, immediately
+ * re-read a cached "0" from just before the write, and park again waiting
+ * for a second event that may never come.
  */
 export function notifyTaskAvailable(): void {
+  countCache.clear();
   taskBus.emit("task-available");
 }
 
@@ -336,6 +368,11 @@ export async function resolveTask(
   await request.query(`UPDATE tasks SET ${setClauses.join(", ")} WHERE id = @id`);
 
   broadcastTaskUpdate(taskId);
+  // Resolving hands the task to the NEXT pipeline stage's claim state (e.g.
+  // dev "developed" -> reviewer's claimState). Wake any loop parked waiting
+  // for exactly that state — this is the primary dev -> review -> qa handoff,
+  // not just an edge case.
+  notifyTaskAvailable();
 }
 
 /**
