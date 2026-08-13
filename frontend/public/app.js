@@ -1923,8 +1923,7 @@ async function fetchSessions() {
 }
 
 /**
- * Core session creation logic shared by the full "New Session" modal and the
- * lightweight quick-start form shown in the empty state.
+ * Core session creation logic used by the "New Session" modal.
  */
 async function createAndStartSessionCore({ name, agent, prompt, cwd, model, interactive, runs, intervalSeconds, boardIds, mcpConfigOverride, mcpServers }) {
   if (!name) return null;
@@ -2013,10 +2012,6 @@ async function createAndStartSession() {
   if (session) hideSessionForm();
 }
 
-/**
- * Quick-start: create an interactive (or agent-driven) session directly from
- * the sessions empty state, without opening the full "New Session" modal.
- */
 
 
 async function startAgentSession(id) {
