@@ -222,6 +222,15 @@ export async function checkoutExistingBranch(
   // Fetch latest from origin to ensure we have the remote branch
   await git(["fetch", "origin"], workspacePath);
 
+  // Verify the branch exists on remote before attempting checkout
+  try {
+    await git(["rev-parse", "--verify", `origin/${branchName}`], workspacePath);
+  } catch {
+    throw new Error(
+      `Branch "${branchName}" does not exist on remote.`
+    );
+  }
+
   // Try checking out the branch locally
   try {
     await git(["checkout", branchName], workspacePath);
@@ -229,14 +238,7 @@ export async function checkoutExistingBranch(
     await git(["reset", "--hard", `origin/${branchName}`], workspacePath);
   } catch {
     // Branch doesn't exist locally — create from remote tracking branch
-    try {
-      await git(["checkout", "-b", branchName, `origin/${branchName}`], workspacePath);
-    } catch (err: any) {
-      throw new Error(
-        `Branch "${branchName}" does not exist on remote. ` +
-        `Cannot checkout existing branch: ${err.message || String(err)}`
-      );
-    }
+    await git(["checkout", "-b", branchName, `origin/${branchName}`], workspacePath);
   }
 
   return branchName;

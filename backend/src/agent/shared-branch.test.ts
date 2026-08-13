@@ -209,6 +209,50 @@ describe("checkoutExistingBranch", () => {
   it("should be exported from git-workspace", () => {
     expect(typeof checkoutExistingBranch).toBe("function");
   });
+
+  it("should verify remote branch exists before attempting checkout (edge case: stale local branch)", async () => {
+    const { execFile } = await import("node:child_process");
+    const mockExecFile = execFile as unknown as ReturnType<typeof vi.fn>;
+
+    // Set up mock to simulate: fetch succeeds, then rev-parse fails (remote branch doesn't exist)
+    mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: any, cb?: Function) => {
+      const callback = cb || _opts;
+      if (args[0] === "fetch") {
+        // git fetch origin succeeds
+        callback(null, { stdout: "", stderr: "" });
+      } else if (args[0] === "rev-parse" && args.includes("--verify")) {
+        // git rev-parse --verify origin/branchName fails — remote branch doesn't exist
+        callback(new Error("fatal: Needed a single revision"));
+      } else {
+        callback(null, { stdout: "", stderr: "" });
+      }
+    });
+
+    await expect(
+      checkoutExistingBranch("/tmp/workspace", "stale-local-branch")
+    ).rejects.toThrow(/does not exist on remote/);
+
+    // Verify rev-parse was called to check remote branch existence
+    const revParseCall = mockExecFile.mock.calls.find(
+      (call: any[]) => call[1][0] === "rev-parse" && call[1].includes("--verify")
+    );
+    expect(revParseCall).toBeDefined();
+    expect(revParseCall![1]).toContain("origin/stale-local-branch");
+  });
+
+  it("should succeed when remote branch exists", async () => {
+    const { execFile } = await import("node:child_process");
+    const mockExecFile = execFile as unknown as ReturnType<typeof vi.fn>;
+
+    mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: any, cb?: Function) => {
+      const callback = cb || _opts;
+      // All git operations succeed
+      callback(null, { stdout: "", stderr: "" });
+    });
+
+    const result = await checkoutExistingBranch("/tmp/workspace", "feature/#10_valid-branch");
+    expect(result).toBe("feature/#10_valid-branch");
+  });
 });
 
 describe("getTasksByBranch", () => {
@@ -221,6 +265,54 @@ describe("findSharedBranchInTab", () => {
   it("should be exported from task-claimer", async () => {
     const { findSharedBranchInTab } = await import("./task-claimer.js");
     expect(typeof findSharedBranchInTab).toBe("function");
+  });
+
+  it("should only return branches shared by multiple tasks (not one-off branches from past work)", async () => {
+    // This tests the reviewer's bug: if a tab has 50 completed tasks each with
+    // their own unique branch, plus 2 tasks sharing "feature/#10_grouped", the
+    // function should return "feature/#10_grouped" — not null.
+    const { getPool } = await import("../db/connection.js");
+
+    const mockQuery = vi.fn();
+    const mockInput = vi.fn().mockReturnThis();
+    const mockRequest = { input: mockInput, query: mockQuery };
+    (getPool as any).mockResolvedValue({ request: () => mockRequest });
+
+    // Simulate: multiple branches exist, but only "feature/#10_grouped" appears on >1 task
+    mockQuery.mockResolvedValueOnce({
+      recordset: [
+        { branch: "feature/#10_grouped" },
+      ],
+    });
+
+    const { findSharedBranchInTab } = await import("./task-claimer.js");
+    const result = await findSharedBranchInTab(11, [2]);
+
+    expect(result).toBe("feature/#10_grouped");
+
+    // Verify the SQL uses GROUP BY + HAVING COUNT(*) > 1 to filter one-off branches
+    const sqlQuery = mockQuery.mock.calls[0][0] as string;
+    expect(sqlQuery).toMatch(/GROUP\s+BY/i);
+    expect(sqlQuery).toMatch(/HAVING\s+COUNT\(\*\)\s*>\s*1/i);
+  });
+
+  it("should return null when no branches are shared by multiple tasks", async () => {
+    const { getPool } = await import("../db/connection.js");
+
+    const mockQuery = vi.fn();
+    const mockInput = vi.fn().mockReturnThis();
+    const mockRequest = { input: mockInput, query: mockQuery };
+    (getPool as any).mockResolvedValue({ request: () => mockRequest });
+
+    // The query returns empty recordset (no branch has COUNT > 1)
+    mockQuery.mockResolvedValueOnce({
+      recordset: [],
+    });
+
+    const { findSharedBranchInTab } = await import("./task-claimer.js");
+    const result = await findSharedBranchInTab(11, [2]);
+
+    expect(result).toBeNull();
   });
 });
 

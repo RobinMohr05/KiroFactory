@@ -590,25 +590,28 @@ export async function findSharedBranchInTab(
     request.input(`tabId${i}`, sql.Int, id);
   });
 
-  // Find distinct branch values from sibling tasks in the same tab(s)
-  // Exclude the current task and only consider tasks that have a branch set
+  // Find branches that are shared by multiple tasks in the same tab(s).
+  // This filters out one-off branches from past completed work — only branches
+  // that appear on more than one task indicate intentional grouping (AC#2).
   const result = await request.query(`
-    SELECT DISTINCT t.branch
+    SELECT t.branch
     FROM tasks t
     INNER JOIN task_tabs tt ON tt.task_id = t.id
     WHERE tt.tab_id IN (${tabIdParams.join(", ")})
       AND t.id != @taskId
       AND t.branch IS NOT NULL
       AND t.branch != ''
+    GROUP BY t.branch
+    HAVING COUNT(*) > 1
   `);
 
   const branches = result.recordset.map((row: any) => row.branch as string);
 
-  // If exactly one unique branch exists among siblings, use it
+  // If exactly one shared branch exists among siblings, use it
   if (branches.length === 1) {
     return branches[0];
   }
 
-  // Ambiguous (multiple branches) or no branches found
+  // Ambiguous (multiple shared branches) or no shared branches found
   return null;
 }
