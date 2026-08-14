@@ -863,19 +863,89 @@ function commitAndPush() {
   // A push failure is reported, not thrown: the agent's work is real and
   // committed, and the orchestrator needs to tell "the agent produced nothing"
   // apart from "the agent produced work we could not deliver".
-  try {
-    execFileArgs("git", ["push", authRemoteUrl || "origin", `HEAD:refs/heads/${branchName}`], {
-      cwd: WORKSPACE,
-    });
-  } catch (err) {
-    const pushError = redactSecrets(err?.message || String(err));
-    logError("git push failed", { branchName, error: pushError });
-    sendOutput(`Push to ${branchName} failed: ${pushError}`, "stderr");
-    return { pushed: false, hasChanges: true, committed: true, branchName, pushError };
+  const pushResult = pushWithRebaseRetry(branchName);
+  if (!pushResult.pushed) {
+    logError("git push failed", { branchName, error: pushResult.pushError });
+    sendOutput(`Push to ${branchName} failed: ${pushResult.pushError}`, "stderr");
+    return { pushed: false, hasChanges: true, committed: true, branchName, pushError: pushResult.pushError };
   }
 
   sendOutput(`Pushed branch ${branchName}`, "system");
   return { pushed: true, hasChanges: true, committed: true, branchName };
+}
+
+/**
+ * Push HEAD to `refs/heads/<branchName>` on origin, automatically recovering
+ * from non-fast-forward rejections.
+ *
+ * A non-fast-forward rejection means the remote branch moved after this
+ * container checked it out — e.g. the same task being reworked across
+ * multiple runs (editor -> reviewer comments -> editor again) or a shared
+ * branch (see task #163) being pushed to from a different run in between
+ * this container's checkout and its push. That is a recoverable race, NOT a
+ * credential/permission problem. The caller upstream (session-manager.ts)
+ * treats any push failure after a successful commit as `deliveryFailed` and
+ * permanently blocks the task for the rest of the session on the assumption
+ * that retrying can't help — which is only true for real auth/permission
+ * errors. Retrying blindly would fail identically forever, so on a detected
+ * non-fast-forward rejection we fetch the branch, rebase our new commit on
+ * top of the fetched tip, and retry the push here — before the failure ever
+ * reaches that "credential problem" classification.
+ *
+ * A genuine auth/permission error (bad PAT, no write access, unknown host)
+ * produces a completely different git error and is returned immediately
+ * without retrying, so it still surfaces (and blocks) as the real problem it
+ * is.
+ */
+function pushWithRebaseRetry(branchName, maxAttempts = 3) {
+  const remote = authRemoteUrl || "origin";
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      execFileArgs("git", ["push", remote, `HEAD:refs/heads/${branchName}`], { cwd: WORKSPACE });
+      return { pushed: true };
+    } catch (err) {
+      const pushError = redactSecrets(err?.message || String(err));
+      lastError = pushError;
+
+      const isNonFastForward = /\[rejected\]|non-fast-forward|fetch first|behind its remote/i.test(pushError);
+      if (!isNonFastForward || attempt === maxAttempts) {
+        return { pushed: false, pushError };
+      }
+
+      sendOutput(
+        `Push to ${branchName} rejected (non-fast-forward, attempt ${attempt}/${maxAttempts}) — ` +
+          `remote moved since checkout. Fetching and rebasing before retry...`,
+        "system"
+      );
+      logInfo("Non-fast-forward push rejected — rebasing onto remote and retrying", { branchName, attempt });
+
+      try {
+        execFileArgs("git", ["fetch", remote, branchName], { cwd: WORKSPACE });
+        // FETCH_HEAD, not refs/remotes/origin/<branch> — fetching from a raw
+        // authenticated URL (not the "origin" remote name) only updates
+        // FETCH_HEAD (same reasoning as syncPersistentBranch() above).
+        execFileArgs("git", ["rebase", "FETCH_HEAD"], { cwd: WORKSPACE });
+      } catch (rebaseErr) {
+        // A real conflict (or fetch failure) needs a human/agent to resolve,
+        // not a blind retry — abort so the workspace isn't left mid-rebase,
+        // and surface both errors together for diagnosis.
+        try {
+          execFileArgs("git", ["rebase", "--abort"], { cwd: WORKSPACE });
+        } catch { /* no rebase in progress */ }
+        const rebaseError = redactSecrets(rebaseErr?.message || String(rebaseErr));
+        logError("Rebase onto remote failed after non-fast-forward push rejection", {
+          branchName,
+          attempt,
+          error: rebaseError,
+        });
+        return { pushed: false, pushError: `${pushError}\n\nRebase retry also failed: ${rebaseError}` };
+      }
+    }
+  }
+
+  return { pushed: false, pushError: lastError };
 }
 
 // ---------------------------------------------------------------------------
