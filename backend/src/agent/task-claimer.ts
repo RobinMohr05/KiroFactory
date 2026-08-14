@@ -555,20 +555,29 @@ export async function markTaskDone(
  *
  * Called by the dev-agent orchestration (step 5) for AC#2: when a task has no
  * `branch` value, discover if sibling tasks in the same tab(s) already have a
- * branch (i.e., a group is in progress). Only tasks in non-terminal states
- * (todo, in-progress, developed) are considered — branches from completed/done
- * tasks are ignored to avoid matching old one-off work.
+ * branch (i.e., a group is in progress). Only tasks in actively-worked states
+ * (todo, in-progress) are considered — branches from developed/done tasks are
+ * excluded to avoid pulling new unrelated tasks onto a branch whose work is
+ * already complete.
  *
  * **Disambiguation:** If exactly one active branch exists among siblings, return
  * it (the task should join that group). If multiple active branches exist
  * (ambiguous — no way to determine which group the task belongs to) or none,
  * returns null and the caller creates a new branch.
  *
- * **Limitation:** Uses "same tab + non-terminal state" as a grouping proxy.
- * Tasks can also be grouped explicitly by pre-setting the `branch` field on all
- * tasks in a group before they are claimed (bypassing this lookup entirely via
- * AC#1). For cases where multiple unrelated branches are active in a tab, the
- * function correctly returns null (ambiguous) and the task gets its own branch.
+ * **Design note on implicit grouping:** This function uses "same tab + actively
+ * worked state" as a grouping proxy. This is intentionally conservative:
+ * - Only `todo`/`in-progress` tasks are candidates (not `developed` — those
+ *   have finished and their branch may already have an open PR under review).
+ * - If multiple branches are active in the same tab, the function returns null
+ *   (ambiguous) and the task gets its own branch — no false match possible.
+ * - The primary intended scenario is batch-created tasks: a user creates tasks
+ *   A, B, C together; A gets claimed first and creates a branch; B and C then
+ *   discover that branch because A is still `in-progress` or was reset to `todo`.
+ *
+ * For deterministic grouping without relying on this heuristic, pre-set the
+ * `branch` field on all tasks in a group before they are claimed (AC#1 path),
+ * which bypasses this lookup entirely.
  *
  * @param taskId The task to find siblings for (excluded from results)
  * @param tabIds The tab IDs the task belongs to (if not provided, looked up from DB)
@@ -601,10 +610,10 @@ export async function findSharedBranchInTab(
   });
 
   // Find branch values from sibling tasks in the same tab(s) that are in
-  // non-terminal states (todo, in-progress, developed). This filters out
-  // branches from completed/done tasks (old one-off work) while correctly
-  // discovering branches even when only one sibling task has it — the primary
-  // use case for AC#2 (Task A creates branch, Task B joins it).
+  // actively-worked states (todo, in-progress). This excludes developed/done
+  // tasks to avoid false matches where a completed task's branch pulls in
+  // unrelated new work. The primary scenario is batch-created tasks where
+  // one has already been claimed and created a branch.
   const result = await request.query(`
     SELECT DISTINCT t.branch
     FROM tasks t
@@ -612,7 +621,7 @@ export async function findSharedBranchInTab(
     WHERE tt.tab_id IN (${tabIdParams.join(", ")})
       AND t.id != @taskId
       AND t.branch IS NOT NULL AND t.branch != ''
-      AND t.state IN ('todo', 'in-progress', 'developed')
+      AND t.state IN ('todo', 'in-progress')
   `);
 
   const branches = result.recordset.map((row: any) => row.branch as string);

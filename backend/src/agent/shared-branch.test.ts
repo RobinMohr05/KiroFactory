@@ -502,9 +502,11 @@ describe("findSharedBranchInTab", () => {
     expect(result).toBe("feature/#5_shared");
   });
 
-  it("should only find branches from tasks in non-terminal states (todo/in-progress/developed)", async () => {
-    // Branches from tasks that are already 'done' should not be discovered as shared branches.
-    // The query should filter by state to avoid picking up old completed task branches.
+  it("should only find branches from tasks in non-terminal states (todo/in-progress)", async () => {
+    // Branches from tasks that are already 'done' or 'developed' should not be discovered
+    // as shared branches. Only truly active tasks (todo/in-progress) represent ongoing
+    // grouped work that a new task should join. This prevents false matches where a
+    // completed task's branch accidentally pulls in unrelated new tasks.
     const { getPool } = await import("../db/connection.js");
     const mockGetPool = vi.mocked(getPool);
 
@@ -514,7 +516,7 @@ describe("findSharedBranchInTab", () => {
     };
     mockRequest.query
       .mockResolvedValueOnce({ recordset: [{ tab_id: 2 }] }) // tab lookup
-      .mockResolvedValueOnce({ recordset: [] }); // no active branches found (all are done)
+      .mockResolvedValueOnce({ recordset: [] }); // no active branches found (all are done/developed)
 
     mockGetPool.mockResolvedValue({ request: () => mockRequest } as any);
 
@@ -522,9 +524,14 @@ describe("findSharedBranchInTab", () => {
 
     expect(result).toBeNull();
 
-    // Verify the query filters by state
+    // Verify the query filters by state — should only include 'todo' and 'in-progress',
+    // NOT 'developed' (developed tasks have finished their work and shouldn't attract
+    // unrelated new tasks to their branch)
     const queryCall = mockRequest.query.mock.calls[1][0] as string;
     expect(queryCall).toContain("state");
+    expect(queryCall).toContain("'todo'");
+    expect(queryCall).toContain("'in-progress'");
+    expect(queryCall).not.toContain("'developed'");
     expect(queryCall).not.toContain("HAVING COUNT");
   });
 });

@@ -341,10 +341,10 @@ async function runOnce(config: AgentConfig): Promise<boolean> {
   //
   // AC#1: If task.branch is pre-set, check out that existing branch.
   // AC#2: If task.branch is null, look up sibling tasks in the same tab(s)
-  //        to discover an existing shared branch. Only tasks in non-terminal
-  //        states (todo/in-progress/developed) are considered, which limits
-  //        false matches from old completed work. If exactly one active branch
-  //        is found among siblings, join it. If ambiguous (multiple) or none,
+  //        to discover an existing shared branch. Only tasks in actively-worked
+  //        states (todo/in-progress) are considered, which limits false matches
+  //        from completed or developed work. If exactly one active branch is
+  //        found among siblings, join it. If ambiguous (multiple) or none,
   //        fall through to create a new branch.
   // AC#4: If no branch exists, fall back to creating a new feature branch.
   let branchName: string;

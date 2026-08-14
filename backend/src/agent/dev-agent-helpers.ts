@@ -30,8 +30,8 @@ export interface BranchResolutionResult {
  *
  * The dev-agent calls findSharedBranchInTab() when task.branch is null to
  * discover a sibling branch (AC#2). The result is passed as siblingBranch.
- * Only tasks in non-terminal states (todo/in-progress/developed) are
- * considered as siblings, limiting false matches from old completed work.
+ * Only tasks in actively-worked states (todo/in-progress) are considered as
+ * siblings, limiting false matches from completed or developed work.
  *
  * @param task The task to resolve branch for
  * @param siblingBranch Optional branch name discovered from sibling tasks sharing the same tab
