@@ -2289,15 +2289,39 @@ async function runLoopModeAca(
     /** Set when the agent succeeded but the push failed — not worth retrying. */
     let deliveryFailure = false;
 
-    // Look up sibling tasks sharing the same branch for grouped PR content (AC5).
-    // Also implements AC2: when the task has no branch but has a groupId, look up
-    // siblings by group_id to discover the shared branch from an earlier task.
+    // Sibling task lookup for shared branch/PR support (AC1, AC2, AC3, AC5).
+    //
+    // Two paths:
+    //   1. task.branch IS set → look up siblings sharing that branch (AC1/AC5)
+    //   2. task.branch is NULL but task.groupId IS set → look up siblings by
+    //      group_id to discover a shared branch from an earlier task (AC2).
+    //
+    // AC2 requires that tasks share an explicit `group_id` column value. Without
+    // a groupId, there is no way to discover siblings when the task has no branch
+    // (since "sibling by branch" requires a branch to search for). The groupId is
+    // the grouping mechanism; the first task in a group that runs creates the
+    // branch, and subsequent tasks discover it via this lookup.
+    //
+    // Race conditions between tasks in the same group are prevented by the
+    // NOT EXISTS clause in claimTask() — only one task per group can be in a
+    // workingState at any time.
     let siblingTasks: Array<{ id: number; title: string; type: string; description: string; pullRequestUrl: string | null }> | undefined;
     if (task.branch) {
       try {
         const siblings = await findSiblingTasks(task.branch, task.id);
         if (siblings.length > 0) {
           siblingTasks = siblings.map(s => ({ id: s.id, title: s.title, type: s.type, description: s.description, pullRequestUrl: s.pullRequestUrl }));
+          // Propagate sibling's PR URL to the current task if the task itself
+          // doesn't have one yet. This ensures the worker receives the PR URL
+          // directly on `currentTaskMeta.pullRequestUrl` (instead of relying on
+          // the worker-side `findSiblingPrUrl` fallback), which is required for
+          // Azure DevOps where there's no 422-based duplicate PR recovery.
+          if (!task.pullRequestUrl) {
+            const siblingPrUrl = siblings.find(s => s.pullRequestUrl)?.pullRequestUrl;
+            if (siblingPrUrl) {
+              task.pullRequestUrl = siblingPrUrl;
+            }
+          }
           appendOutput(managed, {
             timestamp: now(),
             stream: "system",

@@ -235,6 +235,16 @@ export async function claimTask(
           INNER JOIN task_tabs tt ON tt.task_id = t.id
           WHERE t.state = @claimState
             AND tt.tab_id IN (${tabIdParams.join(", ")})
+            -- Prevent concurrent claims of tasks in the same group: skip any task
+            -- whose group_id matches a task already in a working state. This avoids
+            -- two workers creating independent branches for the same group.
+            AND NOT EXISTS (
+              SELECT 1 FROM tasks g
+              WHERE g.group_id = t.group_id
+                AND g.group_id IS NOT NULL
+                AND g.state = @workingState
+                AND g.id != t.id
+            )
           ORDER BY
             t.priority ASC,
             CASE t.origin
@@ -264,18 +274,28 @@ export async function claimTask(
           INSERTED.pull_request_url,
           INSERTED.group_id
         WHERE id = (
-          SELECT TOP 1 id
-          FROM tasks WITH (UPDLOCK, READPAST)
-          WHERE state = @claimState
+          SELECT TOP 1 t.id
+          FROM tasks t WITH (UPDLOCK, READPAST)
+          WHERE t.state = @claimState
+            -- Prevent concurrent claims of tasks in the same group: skip any task
+            -- whose group_id matches a task already in a working state. This avoids
+            -- two workers creating independent branches for the same group.
+            AND NOT EXISTS (
+              SELECT 1 FROM tasks g
+              WHERE g.group_id = t.group_id
+                AND g.group_id IS NOT NULL
+                AND g.state = @workingState
+                AND g.id != t.id
+            )
           ORDER BY
-            priority ASC,
-            CASE origin
+            t.priority ASC,
+            CASE t.origin
               WHEN 'user' THEN 0
               WHEN 'user-assisted' THEN 1
               WHEN 'ai' THEN 2
               ELSE 3
             END ASC,
-            created_at ASC
+            t.created_at ASC
         )
       `;
     }
@@ -538,18 +558,15 @@ export async function markTaskDone(
 }
 
 /**
- * Find the shared branch info for a task by looking at sibling tasks that
- * share the same `branch` value in the DB.
+ * Find sibling tasks that share the same `branch` value in the DB.
  *
- * Used for the shared branch/PR feature (task #163): when a claimed task has
- * no `branch` value, the orchestrator can still discover the group's branch
- * by checking if any other task in the DB already has a branch value that
- * maps to the same group. However, since "group" is defined by tasks sharing
- * the same branch value, this lookup only works if the task itself already
- * has a branch set (otherwise there's nothing to join on).
+ * Used for AC1/AC5: when a claimed task already has a branch, look up other
+ * tasks sharing that branch to include them in PR content and to propagate
+ * the shared PR URL.
  *
- * This function is primarily useful when a task already has a branch value
- * set in the DB and we want to find its siblings for PR body updates.
+ * Note: this only works when the task already has a branch set (since it
+ * queries by branch name). For tasks with no branch, AC2 discovery is handled
+ * by `findSiblingTasksByGroupId()` using the `group_id` column instead.
  *
  * @param branch The branch name to look for siblings of
  * @param excludeTaskId The current task ID (excluded from results)
