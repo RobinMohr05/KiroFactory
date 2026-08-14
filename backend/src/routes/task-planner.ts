@@ -209,15 +209,56 @@ router.post("/:sessionId/message", async (req: Request, res: Response) => {
       return;
     }
 
-    const { message } = req.body as { message: string };
+    const { message, image } = req.body as {
+      message: string;
+      image?: { data: string; mimeType: string };
+    };
     if (!message || !message.trim()) {
       res.status(400).json({ error: "message is required" });
       return;
     }
 
-    const sent = await sendPrompt(sessionId, message.trim());
-    if (!sent) {
-      res.status(400).json({ error: "Could not send message — session may not be running" });
+    // Validate image attachment if provided
+    if (image) {
+      if (!image.data || typeof image.data !== "string") {
+        res.status(400).json({ error: "image.data is required and must be a base64 string" });
+        return;
+      }
+      if (!image.mimeType || typeof image.mimeType !== "string") {
+        res.status(400).json({ error: "image.mimeType is required" });
+        return;
+      }
+      const allowedMimeTypes = ["image/jpeg", "image/png", "image/gif", "image/webp"];
+      if (!allowedMimeTypes.includes(image.mimeType)) {
+        res.status(400).json({
+          error: `Invalid image mimeType "${image.mimeType}". Allowed: ${allowedMimeTypes.join(", ")}`,
+        });
+        return;
+      }
+      const decodedSize = Buffer.byteLength(image.data, "base64");
+      const maxSize = 10 * 1024 * 1024; // 10MB
+      if (decodedSize > maxSize) {
+        res.status(400).json({
+          error: `Image size (${(decodedSize / 1024 / 1024).toFixed(1)}MB) exceeds maximum allowed size of 10MB`,
+        });
+        return;
+      }
+    }
+
+    try {
+      const sent = await sendPrompt(
+        sessionId,
+        message.trim(),
+        image ? { data: image.data, mimeType: image.mimeType } : undefined
+      );
+      if (!sent) {
+        res.status(400).json({ error: "Could not send message — session may not be running" });
+        return;
+      }
+    } catch (err) {
+      // Catch "remote worker mode" error and return as 400
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(400).json({ error: msg });
       return;
     }
 

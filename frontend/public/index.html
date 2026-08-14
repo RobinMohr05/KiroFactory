@@ -390,8 +390,16 @@
         <!-- Chat messages appear here -->
       </div>
       <div class="task-planner-input-area">
-        <textarea id="taskPlannerInput" rows="1" placeholder="Describe what you want to build..." aria-label="Your message"></textarea>
-        <button type="button" class="btn btn-primary" id="taskPlannerSendBtn" disabled>Send</button>
+        <div class="task-planner-attachment" id="taskPlannerAttachment" hidden>
+          <span class="attachment-filename" id="taskPlannerAttachmentName"></span>
+          <button type="button" class="attachment-remove" id="taskPlannerAttachmentRemove" aria-label="Remove attachment">&times;</button>
+        </div>
+        <div class="task-planner-input-row">
+          <button type="button" class="btn btn-icon" id="taskPlannerAttachBtn" title="Attach image" aria-label="Attach image">📎</button>
+          <textarea id="taskPlannerInput" rows="1" placeholder="Describe what you want to build..." aria-label="Your message"></textarea>
+          <button type="button" class="btn btn-primary" id="taskPlannerSendBtn" disabled>Send</button>
+        </div>
+        <input type="file" id="taskPlannerFileInput" accept="image/jpeg,image/png,image/gif,image/webp" hidden aria-hidden="true">
       </div>
       <div class="task-planner-actions">
         <button type="button" class="btn btn-secondary" id="taskPlannerCancelBtn">Cancel</button>

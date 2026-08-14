@@ -786,7 +786,7 @@ export async function stopSession(id: number): Promise<boolean> {
   return true;
 }
 
-export async function sendPrompt(id: number, text: string): Promise<boolean> {
+export async function sendPrompt(id: number, text: string, image?: { data: string; mimeType: string }): Promise<boolean> {
   const session = sessions.get(id);
   if (!session || session.meta.status !== "running") return false;
   if (!session.meta.interactive) return false;
@@ -796,13 +796,18 @@ export async function sendPrompt(id: number, text: string): Promise<boolean> {
   const hasAcaWorker = ACA_MODE && isWorkerConnected(id);
   if (!hasLocalRunner && !hasAcaWorker) return false;
 
+  // Image attachments are only supported in local worker mode
+  if (image && hasAcaWorker) {
+    throw new Error("Image attachments are not supported for sessions running in remote worker mode");
+  }
+
   appendOutput(session, { timestamp: now(), stream: "system", text: `▶ ${text}` });
   setActivity(session, { type: "working", detail: "Processing prompt..." });
 
   // Run prompt in background
   const promptFn = hasAcaWorker
     ? streamPromptAca(session, text)
-    : streamPrompt(session, text);
+    : streamPrompt(session, text, image);
 
   promptFn.catch((err) => {
     const msg = err instanceof Error ? err.message : String(err);
@@ -1318,11 +1323,11 @@ async function runStandaloneLoopLocal(
   }
 }
 
-async function streamPrompt(managed: ManagedSession, text: string): Promise<void> {
+async function streamPrompt(managed: ManagedSession, text: string, image?: { data: string; mimeType: string }): Promise<void> {
   if (!managed.runner) return;
 
   try {
-    for await (const update of managed.runner.prompt(text)) {
+    for await (const update of managed.runner.prompt(text, image)) {
       if (managed.abortController?.signal.aborted) break;
       processUpdate(managed, update);
     }

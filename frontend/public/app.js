@@ -4065,6 +4065,8 @@ let taskPlannerSessionId = null;
 let taskPlannerMessages = [];
 let taskPlannerReady = false;
 let taskPlannerParsedTask = null;
+/** Image attachment state for the current message */
+let taskPlannerImageAttachment = null; // { data: string (base64), mimeType: string, fileName: string }
 
 const taskPlannerModal = document.getElementById('taskPlannerModal');
 const taskPlannerMessagesEl = document.getElementById('taskPlannerMessages');
@@ -4075,6 +4077,11 @@ const taskPlannerCreateBtn = document.getElementById('taskPlannerCreateBtn');
 const taskPlannerDot = document.getElementById('taskPlannerDot');
 const taskPlannerStatusText = document.getElementById('taskPlannerStatusText');
 const aiPlannerBtn = document.getElementById('aiPlannerBtn');
+const taskPlannerAttachBtn = document.getElementById('taskPlannerAttachBtn');
+const taskPlannerFileInput = document.getElementById('taskPlannerFileInput');
+const taskPlannerAttachment = document.getElementById('taskPlannerAttachment');
+const taskPlannerAttachmentName = document.getElementById('taskPlannerAttachmentName');
+const taskPlannerAttachmentRemove = document.getElementById('taskPlannerAttachmentRemove');
 
 /**
  * Open the AI Task Planner modal and start a new planning session.
@@ -4093,6 +4100,7 @@ async function openTaskPlanner() {
   taskPlannerSendBtn.disabled = true;
   taskPlannerCreateBtn.disabled = true;
   taskPlannerModal.hidden = false;
+  clearPlannerAttachment();
 
   // Update status
   setTaskPlannerStatus('connecting');
@@ -4143,6 +4151,7 @@ async function closeTaskPlanner() {
   taskPlannerParsedTask = null;
   plannerCurrentAssistantMessage = '';
   partialMessageEl = null;
+  clearPlannerAttachment();
 }
 
 /**
@@ -4152,17 +4161,29 @@ async function sendPlannerMessage() {
   const text = taskPlannerInput.value.trim();
   if (!text || !taskPlannerSessionId || !taskPlannerReady) return;
 
-  // Add user message to UI
-  addPlannerMessage('user', text);
+  // Capture and clear image attachment before sending
+  const imagePayload = taskPlannerImageAttachment
+    ? { data: taskPlannerImageAttachment.data, mimeType: taskPlannerImageAttachment.mimeType }
+    : undefined;
+  const attachedFileName = taskPlannerImageAttachment?.fileName;
+
+  // Add user message to UI (include image filename indicator)
+  const displayText = attachedFileName ? `${text}\n📎 (${attachedFileName})` : text;
+  addPlannerMessage('user', displayText);
   taskPlannerInput.value = '';
+  clearPlannerAttachment();
   taskPlannerSendBtn.disabled = true;
   setTaskPlannerStatus('thinking');
 
   try {
+    const body = { message: text };
+    if (imagePayload) {
+      body.image = imagePayload;
+    }
     const res = await apiFetch(`/api/task-planner/${taskPlannerSessionId}/message`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: text }),
+      body: JSON.stringify(body),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -4175,6 +4196,92 @@ async function sendPlannerMessage() {
     setTaskPlannerStatus('ready');
     taskPlannerSendBtn.disabled = false;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Image attachment helpers
+// ---------------------------------------------------------------------------
+
+const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+const MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024; // 10MB
+
+/**
+ * Clear the current image attachment state and hide the preview.
+ */
+function clearPlannerAttachment() {
+  taskPlannerImageAttachment = null;
+  if (taskPlannerAttachment) taskPlannerAttachment.hidden = true;
+  if (taskPlannerAttachmentName) taskPlannerAttachmentName.textContent = '';
+  if (taskPlannerFileInput) taskPlannerFileInput.value = '';
+}
+
+/**
+ * Handle file selection from the hidden file input.
+ */
+function handlePlannerFileSelect(file) {
+  if (!file) return;
+
+  // Validate mime type
+  if (!ALLOWED_IMAGE_TYPES.includes(file.type)) {
+    addPlannerMessage('system', `Error: Unsupported image type "${file.type}". Allowed: JPEG, PNG, GIF, WebP.`);
+    clearPlannerAttachment();
+    return;
+  }
+
+  // Validate file size (raw file size — base64 will be ~33% larger but backend checks decoded size)
+  if (file.size > MAX_IMAGE_SIZE_BYTES) {
+    addPlannerMessage('system', `Error: Image size (${(file.size / 1024 / 1024).toFixed(1)}MB) exceeds maximum of 10MB.`);
+    clearPlannerAttachment();
+    return;
+  }
+
+  // Read as base64
+  const reader = new FileReader();
+  reader.onload = () => {
+    const dataUrl = reader.result;
+    // Strip the "data:image/png;base64," prefix
+    const base64Data = dataUrl.split(',')[1];
+    if (!base64Data) {
+      addPlannerMessage('system', 'Error: Failed to read image file.');
+      clearPlannerAttachment();
+      return;
+    }
+
+    taskPlannerImageAttachment = {
+      data: base64Data,
+      mimeType: file.type,
+      fileName: file.name,
+    };
+
+    // Show attachment preview
+    taskPlannerAttachment.hidden = false;
+    taskPlannerAttachmentName.textContent = `📎 ${file.name}`;
+  };
+  reader.onerror = () => {
+    addPlannerMessage('system', 'Error: Failed to read image file.');
+    clearPlannerAttachment();
+  };
+  reader.readAsDataURL(file);
+}
+
+// Wire up attachment UI event handlers
+if (taskPlannerAttachBtn) {
+  taskPlannerAttachBtn.addEventListener('click', () => {
+    if (taskPlannerFileInput) taskPlannerFileInput.click();
+  });
+}
+
+if (taskPlannerFileInput) {
+  taskPlannerFileInput.addEventListener('change', (e) => {
+    const file = e.target.files?.[0];
+    if (file) handlePlannerFileSelect(file);
+  });
+}
+
+if (taskPlannerAttachmentRemove) {
+  taskPlannerAttachmentRemove.addEventListener('click', () => {
+    clearPlannerAttachment();
+  });
 }
 
 // Accumulated assistant message text (built from WebSocket stream)
