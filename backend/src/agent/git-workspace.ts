@@ -313,6 +313,11 @@ export async function commitChanges(
 /**
  * Push the current branch to origin with retry logic.
  *
+ * Between retries, attempts a `git pull --rebase` to incorporate any remote
+ * commits (e.g. from a concurrent agent on a shared branch). If the rebase
+ * fails (merge conflicts), the next push attempt will also fail and the
+ * task will be reset to "todo" for retry from scratch.
+ *
  * @param maxAttempts Maximum push attempts (default: 2)
  * @param delayMs Delay between retries in milliseconds (default: 2000)
  * @throws If push fails after all attempts.
@@ -332,6 +337,12 @@ export async function pushBranch(
     } catch (err: any) {
       lastError = err.stderr || err.message || String(err);
       if (attempt < maxAttempts) {
+        // Pull remote changes before retrying (shared branch may have new commits
+        // from a concurrent agent). If rebase conflicts, the next push will also
+        // fail and the error will propagate normally.
+        try {
+          await git(["pull", "--rebase", "origin", branchName], workspacePath);
+        } catch { /* rebase conflict — let next push attempt fail too */ }
         await sleep(delayMs);
       }
     }

@@ -16,7 +16,7 @@ import {
   findExistingPrForBranch,
   updatePullRequestBody,
 } from "./github-pr.js";
-import { checkoutExistingBranch } from "./git-workspace.js";
+import { checkoutExistingBranch, pushBranch } from "./git-workspace.js";
 import { getTasksByBranch, findSharedBranchInTab } from "./task-claimer.js";
 
 // Mock child_process for git operations
@@ -621,5 +621,93 @@ describe("findSharedBranchInTab", () => {
     expect(queryCall).toContain("'in-progress'");
     expect(queryCall).not.toContain("'developed'");
     expect(queryCall).not.toContain("HAVING COUNT");
+  });
+});
+
+describe("pushBranch — retry with rebase", () => {
+  it("should attempt git pull --rebase between push retry attempts", async () => {
+    const { execFile } = await import("node:child_process");
+    const mockExecFile = vi.mocked(execFile);
+
+    const calledCommands: string[][] = [];
+    let pushCallCount = 0;
+
+    mockExecFile.mockImplementation((_cmd: any, args: any, _opts: any, cb?: any) => {
+      calledCommands.push(args as string[]);
+      const callback = typeof _opts === "function" ? _opts : cb;
+
+      if ((args as string[])[0] === "push") {
+        pushCallCount++;
+        if (pushCallCount === 1) {
+          // First push fails (non-fast-forward)
+          if (callback) callback(Object.assign(new Error("non-fast-forward"), { stderr: "rejected non-fast-forward" }), "", "rejected non-fast-forward");
+        } else {
+          // Second push succeeds (after rebase)
+          if (callback) callback(null, "", "");
+        }
+      } else if ((args as string[])[0] === "pull") {
+        // Rebase succeeds
+        if (callback) callback(null, "", "");
+      } else {
+        if (callback) callback(null, "", "");
+      }
+      return {} as any;
+    });
+
+    const { pushBranch } = await import("./git-workspace.js");
+    await pushBranch("/workspace", "feature/shared-branch", 2, 0);
+
+    // Should have: push (fail), pull --rebase, push (success)
+    expect(calledCommands).toEqual([
+      ["push", "-u", "origin", "feature/shared-branch"],
+      ["pull", "--rebase", "origin", "feature/shared-branch"],
+      ["push", "-u", "origin", "feature/shared-branch"],
+    ]);
+  });
+
+  it("should not attempt rebase if first push succeeds", async () => {
+    const { execFile } = await import("node:child_process");
+    const mockExecFile = vi.mocked(execFile);
+
+    const calledCommands: string[][] = [];
+
+    mockExecFile.mockImplementation((_cmd: any, args: any, _opts: any, cb?: any) => {
+      calledCommands.push(args as string[]);
+      const callback = typeof _opts === "function" ? _opts : cb;
+      if (callback) callback(null, "", "");
+      return {} as any;
+    });
+
+    const { pushBranch } = await import("./git-workspace.js");
+    await pushBranch("/workspace", "feature/my-branch", 2, 0);
+
+    // Only one push — no rebase needed
+    expect(calledCommands).toEqual([
+      ["push", "-u", "origin", "feature/my-branch"],
+    ]);
+  });
+
+  it("should throw after all retry attempts fail even with rebase", async () => {
+    const { execFile } = await import("node:child_process");
+    const mockExecFile = vi.mocked(execFile);
+
+    mockExecFile.mockImplementation((_cmd: any, args: any, _opts: any, cb?: any) => {
+      const callback = typeof _opts === "function" ? _opts : cb;
+
+      if ((args as string[])[0] === "push") {
+        // All pushes fail
+        if (callback) callback(Object.assign(new Error("conflict"), { stderr: "merge conflict" }), "", "merge conflict");
+      } else if ((args as string[])[0] === "pull") {
+        // Rebase also fails (conflict)
+        if (callback) callback(new Error("rebase conflict"), "", "");
+      } else {
+        if (callback) callback(null, "", "");
+      }
+      return {} as any;
+    });
+
+    const { pushBranch } = await import("./git-workspace.js");
+    await expect(pushBranch("/workspace", "feature/conflicting", 2, 0))
+      .rejects.toThrow("Push failed after 2 attempts");
   });
 });

@@ -367,6 +367,15 @@ async function runOnce(config: AgentConfig): Promise<boolean> {
         branchName = await checkoutExistingBranch(workspacePath, resolution.branchName);
         log(`Checked out existing branch: ${branchName}`, "green");
 
+        // Re-install dependencies since the feature branch may have different
+        // package.json/package-lock.json from the base branch (e.g. a previous
+        // task in the group added new dependencies).
+        try {
+          await installDependencies(workspacePath);
+        } catch (err: any) {
+          log(`WARNING: dependency re-install after branch checkout failed: ${err.message}`, "yellow");
+        }
+
         // Persist the discovered branch back to the task (preserving existing PR URL)
         // so subsequent lookups can find it directly via task.branch (AC#6).
         // Safe to persist immediately: the branch already exists on the remote.
@@ -416,41 +425,64 @@ async function runOnce(config: AgentConfig): Promise<boolean> {
   if (!agentSuccess) {
     log(`Agent failed or timed out for task ${task.id}.`, "red");
 
-    // Best-effort: try to commit & push whatever the agent produced
-    let failBranch: string | null = null;
-    let failPrUrl: string | null = null;
-    try {
-      const hasFailChanges = await commitChanges(
-        workspacePath, task.id, task.title, task.type, task.priority, task.description
-      );
-      if (hasFailChanges) {
-        await pushBranch(workspacePath, branchName);
-        failBranch = branchName;
-        log(`Best-effort push to "${branchName}" succeeded.`, "yellow");
-        // Attempt PR creation too (best-effort)
-        try {
-          const prTitle = `[WIP] ${task.title} [Vibecode Heaven #${task.id}]`;
-          const prBody = buildPrBody(task.id, task.title, task.type, task.priority, task.description);
-          const failPrResult = await createPullRequest({
-            owner: repoInfo.owner,
-            repo: repoInfo.repo,
-            pat: githubPat,
-            head: branchName,
-            base: baseBranch,
-            title: prTitle,
-            body: prBody,
-          });
-          if (failPrResult.success) {
-            failPrUrl = failPrResult.prUrl ?? null;
-            log(`Best-effort PR created: ${failPrUrl}`, "yellow");
-          }
-        } catch { /* best effort — ignore PR creation failure */ }
+    // Best-effort: try to commit & push whatever the agent produced.
+    // IMPORTANT: Only push partial/broken work for branches this task created (new branches).
+    // Pushing to a shared branch would corrupt the existing PR with incomplete code.
+    let failBranch: string | null = task.branch ?? null;
+    let failPrUrl: string | null = task.pullRequestUrl ?? null;
+
+    if (branchNeedsPostPushPersist) {
+      // This is a NEW branch created by this task — safe to push partial work
+      try {
+        const hasFailChanges = await commitChanges(
+          workspacePath, task.id, task.title, task.type, task.priority, task.description
+        );
+        if (hasFailChanges) {
+          await pushBranch(workspacePath, branchName);
+          failBranch = branchName;
+          log(`Best-effort push to "${branchName}" succeeded.`, "yellow");
+          // Attempt PR creation too (best-effort)
+          try {
+            const prTitle = `[WIP] ${task.title} [Vibecode Heaven #${task.id}]`;
+            const prBody = buildPrBody(task.id, task.title, task.type, task.priority, task.description);
+            const failPrResult = await createPullRequest({
+              owner: repoInfo.owner,
+              repo: repoInfo.repo,
+              pat: githubPat,
+              head: branchName,
+              base: baseBranch,
+              title: prTitle,
+              body: prBody,
+            });
+            if (failPrResult.success) {
+              failPrUrl = failPrResult.prUrl ?? null;
+              log(`Best-effort PR created: ${failPrUrl}`, "yellow");
+            }
+          } catch { /* best effort — ignore PR creation failure */ }
+        }
+      } catch {
+        // Best effort — push failed or nothing to push
       }
-    } catch {
-      // Best effort — push failed or nothing to push
+    } else {
+      // Shared branch — do NOT push partial work. Check if an existing PR is
+      // associated with this branch so we can preserve the reference.
+      log(`Skipping best-effort push to shared branch "${branchName}" to avoid corrupting existing PR.`, "yellow");
+      failBranch = branchName;
+      try {
+        const existingFailPr = await findExistingPrForBranch({
+          owner: repoInfo.owner,
+          repo: repoInfo.repo,
+          pat: githubPat,
+          head: branchName,
+        });
+        if (existingFailPr) {
+          failPrUrl = existingFailPr.prUrl;
+          log(`Existing PR found for shared branch: ${failPrUrl}`, "yellow");
+        }
+      } catch { /* best effort */ }
     }
 
-    await resetTaskToTodo(task.id, failBranch, failPrUrl);
+    await resetTaskToTodo(task.id, failBranch ?? undefined, failPrUrl ?? undefined);
     log(`Task ${task.id} reset to "todo".`, "red");
     return false;
   }
@@ -469,8 +501,22 @@ async function runOnce(config: AgentConfig): Promise<boolean> {
 
     if (!hasChanges) {
       log(`No changes after agent execution — task may already be implemented.`, "yellow");
-      // Still mark as developed (the agent determined nothing needed doing)
-      await markTaskDeveloped(task.id, branchName, null);
+      // Look up existing PR for the branch so the task inherits the PR URL
+      // (shared branch scenario: sibling task may have already created a PR).
+      let noChangesPrUrl: string | undefined = undefined;
+      try {
+        const existingPr = await findExistingPrForBranch({
+          owner: repoInfo.owner,
+          repo: repoInfo.repo,
+          pat: githubPat,
+          head: branchName,
+        });
+        if (existingPr) {
+          noChangesPrUrl = existingPr.prUrl;
+        }
+      } catch { /* best effort — preserve existing value */ }
+      // Pass undefined when no PR found to preserve whatever was already stored on the task
+      await markTaskDeveloped(task.id, branchName, noChangesPrUrl ?? undefined);
       log(`Task ${task.id} marked as "developed" (no changes needed).`, "green");
       return true;
     }
