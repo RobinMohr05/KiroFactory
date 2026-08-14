@@ -18,6 +18,7 @@ function mapRowToTask(row: Record<string, unknown>): Task {
     origin: row.origin as Task["origin"],
     branch: (row.branch as string) || null,
     pullRequestUrl: (row.pull_request_url as string) || null,
+    groupId: (row.group_id as string) || null,
     createdAt: (row.created_at as Date).toISOString(),
     updatedAt: (row.updated_at as Date).toISOString(),
   };
@@ -151,10 +152,11 @@ export async function createTask(input: CreateTaskInput): Promise<Task> {
     .input("description", sql.NVarChar(sql.MAX), input.description ?? "")
     .input("files", sql.NVarChar(sql.MAX), filesJson)
     .input("origin", sql.VarChar(20), origin)
+    .input("groupId", sql.NVarChar(100), input.groupId ?? null)
     .query(`
-      INSERT INTO tasks (title, priority, type, state, description, files, origin)
+      INSERT INTO tasks (title, priority, type, state, description, files, origin, group_id)
       OUTPUT INSERTED.*
-      VALUES (@title, @priority, @type, 'todo', @description, @files, @origin)
+      VALUES (@title, @priority, @type, 'todo', @description, @files, @origin, @groupId)
     `);
 
   const task = mapRowToTask(result.recordset[0]);
@@ -207,6 +209,10 @@ export async function updateTask(
   if (input.pullRequestUrl !== undefined) {
     request.input("pullRequestUrl", sql.NVarChar(500), input.pullRequestUrl);
     setClauses.push("pull_request_url = @pullRequestUrl");
+  }
+  if (input.groupId !== undefined) {
+    request.input("groupId", sql.NVarChar(100), input.groupId);
+    setClauses.push("group_id = @groupId");
   }
 
   const result = await request.query(`
@@ -331,6 +337,48 @@ export async function getTasksByBranch(
     SELECT id, title, type, description, branch, pull_request_url
     FROM tasks
     WHERE branch = @branch
+  `;
+
+  if (excludeTaskId !== undefined) {
+    request.input("excludeId", sql.Int, excludeTaskId);
+    query += ` AND id != @excludeId`;
+  }
+
+  query += ` ORDER BY id ASC`;
+
+  const result = await request.query(query);
+  return result.recordset.map((row: Record<string, unknown>) => ({
+    id: row.id as number,
+    title: row.title as string,
+    type: row.type as string,
+    description: (row.description as string) || "",
+    branch: (row.branch as string) || null,
+    pullRequestUrl: (row.pull_request_url as string) || null,
+  }));
+}
+
+/**
+ * Find sibling tasks by group_id.
+ *
+ * Used for AC2 of the shared branch/PR feature: when a task has no `branch`
+ * value but has a `group_id`, we can look up other tasks in the same group
+ * to discover the shared branch that an earlier task already created.
+ *
+ * @param groupId The group identifier to search for
+ * @param excludeTaskId Optional task ID to exclude from results (the current task)
+ * @returns Tasks sharing that group_id (minimal fields: id, title, type, description, branch, pullRequestUrl)
+ */
+export async function getTasksByGroupId(
+  groupId: string,
+  excludeTaskId?: number
+): Promise<Array<{ id: number; title: string; type: string; description: string; branch: string | null; pullRequestUrl: string | null }>> {
+  const pool = await getPool();
+  const request = pool.request().input("groupId", sql.NVarChar(100), groupId);
+
+  let query = `
+    SELECT id, title, type, description, branch, pull_request_url
+    FROM tasks
+    WHERE group_id = @groupId
   `;
 
   if (excludeTaskId !== undefined) {

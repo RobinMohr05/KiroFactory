@@ -54,6 +54,7 @@ function mapRowToTask(row: Record<string, unknown>): Task {
     origin: row.origin as Task["origin"],
     branch: (row.branch as string) || null,
     pullRequestUrl: (row.pull_request_url as string) || null,
+    groupId: (row.group_id as string) || null,
     createdAt: (row.created_at as Date).toISOString(),
     updatedAt: (row.updated_at as Date).toISOString(),
   };

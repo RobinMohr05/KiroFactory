@@ -126,3 +126,34 @@ export function findGroupBranchFromSiblings(siblings) {
 
   return null;
 }
+
+/**
+ * Find the shared branch info from group siblings (looked up by group_id).
+ *
+ * Used for AC2: when a task has no `branch` value but shares a `groupId` with
+ * other tasks, we look up those siblings by group_id in the DB and pass them
+ * here to discover the branch that the first task in the group already created.
+ *
+ * Returns the branch info AND the full siblings list (needed downstream for
+ * PR content generation via buildGroupPrContent).
+ *
+ * @param {Array<{id: number, title: string, type: string, description: string, branch: string|null, pullRequestUrl: string|null}>} siblings
+ * @returns {{ branch: string, pullRequestUrl: string|null, siblings: Array } | null}
+ */
+export function findGroupBranchFromGroupSiblings(siblings) {
+  if (!siblings || siblings.length === 0) return null;
+
+  // First try to find a sibling with both branch and PR URL
+  const withPr = siblings.find((s) => s.branch && s.pullRequestUrl);
+  if (withPr) {
+    return { branch: withPr.branch, pullRequestUrl: withPr.pullRequestUrl, siblings };
+  }
+
+  // Fall back to any sibling with a branch
+  const withBranch = siblings.find((s) => s.branch);
+  if (withBranch) {
+    return { branch: withBranch.branch, pullRequestUrl: withBranch.pullRequestUrl, siblings };
+  }
+
+  return null;
+}

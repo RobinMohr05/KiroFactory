@@ -14,7 +14,7 @@ import { KiroRunner } from "./agent/kiro-runner.js";
 import type { SessionUpdateChunk } from "./agent/kiro-runner.js";
 import { broadcastToUser } from "./websocket-handler.js";
 import { sanitizeSessionForClient } from "./session-sanitize.js";
-import { claimTask, resolveTask, resetTask, getAvailableTaskCount, waitForTaskAvailable, markTaskDone, findSiblingTasks } from "./agent/task-claimer.js";
+import { claimTask, resolveTask, resetTask, getAvailableTaskCount, waitForTaskAvailable, markTaskDone, findSiblingTasks, findSiblingTasksByGroupId } from "./agent/task-claimer.js";
 import type { ClaimedTask } from "./agent/task-claimer.js";
 import { buildDevPrompt, buildReviewPrompt } from "./agent/prompt-builder.js";
 import { buildPersistentBranchName } from "./agent/repo-url-parser.js";
@@ -2290,7 +2290,8 @@ async function runLoopModeAca(
     let deliveryFailure = false;
 
     // Look up sibling tasks sharing the same branch for grouped PR content (AC5).
-    // Only meaningful when the task already has a branch set.
+    // Also implements AC2: when the task has no branch but has a groupId, look up
+    // siblings by group_id to discover the shared branch from an earlier task.
     let siblingTasks: Array<{ id: number; title: string; type: string; description: string; pullRequestUrl: string | null }> | undefined;
     if (task.branch) {
       try {
@@ -2310,6 +2311,44 @@ async function runLoopModeAca(
           timestamp: now(),
           stream: "stderr",
           text: `Warning: could not look up sibling tasks: ${msg}`,
+        });
+      }
+    } else if (task.groupId) {
+      // AC2: task has no branch yet, but has a groupId — look up siblings by
+      // group_id to discover a shared branch from an earlier task in the group.
+      try {
+        const groupSiblings = await findSiblingTasksByGroupId(task.groupId, task.id);
+        if (groupSiblings.length > 0) {
+          // Find a sibling that already has a branch assigned
+          const siblingWithBranch = groupSiblings.find(s => s.branch);
+          if (siblingWithBranch && siblingWithBranch.branch) {
+            // Inherit the branch (and PR URL) from the sibling
+            task.branch = siblingWithBranch.branch;
+            task.pullRequestUrl = siblingWithBranch.pullRequestUrl || task.pullRequestUrl;
+            siblingTasks = groupSiblings.map(s => ({ id: s.id, title: s.title, type: s.type, description: s.description, pullRequestUrl: s.pullRequestUrl }));
+            appendOutput(managed, {
+              timestamp: now(),
+              stream: "system",
+              text: `AC2: Task has no branch but shares group "${task.groupId}" with ${groupSiblings.length} sibling(s). Inherited branch "${task.branch}" from sibling #${siblingWithBranch.id}.`,
+            });
+          } else {
+            // Siblings exist but none have a branch yet — this is the first task in the group to run.
+            // Provide siblings for PR content generation but don't set a branch.
+            siblingTasks = groupSiblings.map(s => ({ id: s.id, title: s.title, type: s.type, description: s.description, pullRequestUrl: s.pullRequestUrl }));
+            appendOutput(managed, {
+              timestamp: now(),
+              stream: "system",
+              text: `Task is in group "${task.groupId}" with ${groupSiblings.length} sibling(s), but no sibling has a branch yet — this task will create one.`,
+            });
+          }
+        }
+      } catch (err) {
+        // Non-critical — proceed without sibling info
+        const msg = err instanceof Error ? err.message : String(err);
+        appendOutput(managed, {
+          timestamp: now(),
+          stream: "stderr",
+          text: `Warning: could not look up group siblings: ${msg}`,
         });
       }
     }

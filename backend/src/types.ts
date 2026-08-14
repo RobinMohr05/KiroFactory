@@ -107,6 +107,8 @@ export interface Task {
   origin: "user" | "ai" | "user-assisted";
   branch: string | null;
   pullRequestUrl: string | null;
+  /** Optional group identifier — tasks sharing the same groupId are worked on the same branch/PR. */
+  groupId: string | null;
   createdAt: string;
   updatedAt: string;
   tabs?: Tab[];
@@ -246,6 +248,8 @@ export interface CreateTaskInput {
   files?: string[];
   origin?: "user" | "ai" | "user-assisted";
   tabIds?: number[];
+  /** Group identifier — tasks sharing the same groupId are worked on the same branch/PR. */
+  groupId?: string | null;
 }
 
 export interface UpdateTaskInput {
@@ -259,6 +263,8 @@ export interface UpdateTaskInput {
   branch?: string | null;
   /** Editable only from the edit-task view — never accepted on task creation. */
   pullRequestUrl?: string | null;
+  /** Group identifier — tasks sharing the same groupId are worked on the same branch/PR. */
+  groupId?: string | null;
 }
 
 export interface CreateTabInput {

@@ -80,12 +80,16 @@ CREATE TABLE tasks (
     max_retries     INT             NOT NULL DEFAULT 5,
     branch          NVARCHAR(250)   NULL,
     pull_request_url NVARCHAR(500)  NULL,
+    group_id        NVARCHAR(100)   NULL,
     created_at      DATETIME2       NOT NULL DEFAULT GETUTCDATE(),
     updated_at      DATETIME2       NOT NULL DEFAULT GETUTCDATE()
 );
 
 CREATE INDEX IX_tasks_todo_priority ON tasks (priority, origin)
 WHERE state = 'todo';
+
+CREATE INDEX IX_tasks_group_id ON tasks (group_id)
+WHERE group_id IS NOT NULL;
 
 -- ============================================================================
 -- Junction: tasks <-> tabs (many-to-many)

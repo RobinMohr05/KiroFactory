@@ -7,7 +7,7 @@
 
 import { describe, it, expect } from "vitest";
 // @ts-expect-error — plain JS module from worker/ (no type declarations; runs fine at test time)
-import { buildGroupPrContent, findGroupBranchFromSiblings, findSiblingPrUrl } from "../../../worker/shared-branch-utils.js";
+import { buildGroupPrContent, findGroupBranchFromSiblings, findSiblingPrUrl, findGroupBranchFromGroupSiblings } from "../../../worker/shared-branch-utils.js";
 
 describe("shared branch group - buildGroupPrContent", () => {
   // Tests AC5: PR title/body should reference all tasks in the group
@@ -178,5 +178,76 @@ describe("shared branch group - findSiblingPrUrl", () => {
     ];
     const result = findSiblingPrUrl(siblings);
     expect(result).toBe("https://github.com/org/repo/pull/7");
+  });
+});
+
+describe("shared branch group - findGroupBranchFromGroupSiblings (AC2)", () => {
+  // Tests AC2: When a task has no `branch` value but shares a `groupId` with
+  // other tasks that DO have a branch, we can discover the shared branch from
+  // those group siblings.
+
+  it("should return null when siblings array is empty", () => {
+    const result = findGroupBranchFromGroupSiblings([]);
+    expect(result).toBeNull();
+  });
+
+  it("should return null when no siblings have a branch", () => {
+    const siblings = [
+      { id: 10, title: "Task A", type: "feature", description: "a", branch: null, pullRequestUrl: null },
+      { id: 11, title: "Task B", type: "feature", description: "b", branch: null, pullRequestUrl: null },
+    ];
+    const result = findGroupBranchFromGroupSiblings(siblings);
+    expect(result).toBeNull();
+  });
+
+  it("should return the branch from a sibling that has one", () => {
+    const siblings = [
+      { id: 10, title: "Task A", type: "feature", description: "a", branch: "feature/#10_add-login-page", pullRequestUrl: "https://github.com/org/repo/pull/5" },
+      { id: 11, title: "Task B", type: "feature", description: "b", branch: null, pullRequestUrl: null },
+    ];
+    const result = findGroupBranchFromGroupSiblings(siblings);
+    expect(result).toEqual({
+      branch: "feature/#10_add-login-page",
+      pullRequestUrl: "https://github.com/org/repo/pull/5",
+      siblings,
+    });
+  });
+
+  it("should prefer a sibling with both branch and PR URL", () => {
+    const siblings = [
+      { id: 10, title: "Task A", type: "feature", description: "a", branch: "feature/#10_add-login-page", pullRequestUrl: null },
+      { id: 11, title: "Task B", type: "feature", description: "b", branch: "feature/#10_add-login-page", pullRequestUrl: "https://github.com/org/repo/pull/5" },
+    ];
+    const result = findGroupBranchFromGroupSiblings(siblings);
+    expect(result).toEqual({
+      branch: "feature/#10_add-login-page",
+      pullRequestUrl: "https://github.com/org/repo/pull/5",
+      siblings,
+    });
+  });
+
+  it("should return branch without PR URL when none have PR URL", () => {
+    const siblings = [
+      { id: 10, title: "Task A", type: "feature", description: "a", branch: null, pullRequestUrl: null },
+      { id: 11, title: "Task B", type: "feature", description: "b", branch: "feature/#7_setup-auth", pullRequestUrl: null },
+    ];
+    const result = findGroupBranchFromGroupSiblings(siblings);
+    expect(result).toEqual({
+      branch: "feature/#7_setup-auth",
+      pullRequestUrl: null,
+      siblings,
+    });
+  });
+
+  it("should include all siblings (not just those with branches) in the returned siblings array", () => {
+    const siblings = [
+      { id: 10, title: "Task A", type: "feature", description: "a", branch: "feature/#10_login", pullRequestUrl: null },
+      { id: 11, title: "Task B", type: "feature", description: "b", branch: null, pullRequestUrl: null },
+      { id: 12, title: "Task C", type: "feature", description: "c", branch: null, pullRequestUrl: null },
+    ];
+    const result = findGroupBranchFromGroupSiblings(siblings);
+    expect(result).not.toBeNull();
+    expect(result!.siblings).toHaveLength(3);
+    expect(result!.siblings).toEqual(siblings);
   });
 });

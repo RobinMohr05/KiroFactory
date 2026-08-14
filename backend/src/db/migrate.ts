@@ -1121,6 +1121,28 @@ async function runUpgrades(pool: sql.ConnectionPool): Promise<void> {
     `);
     console.log("[migrate] Upgrade complete: force_local and raw_mcp_servers added to sessions.");
   }
+
+  // Upgrade 27: Add group_id column to tasks table for shared branch grouping (AC2).
+  // Tasks sharing the same group_id are worked on the same branch/PR.
+  const groupIdColExists = await pool.request().query(`
+    SELECT COUNT(*) AS cnt
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_NAME = 'tasks' AND COLUMN_NAME = 'group_id'
+  `);
+
+  if (groupIdColExists.recordset[0].cnt === 0) {
+    console.log("[migrate] Upgrading: adding group_id column to tasks table...");
+    await pool.request().query(`
+      ALTER TABLE tasks
+      ADD group_id NVARCHAR(100) NULL
+    `);
+    // Index for efficient sibling lookup by group_id
+    await pool.request().query(`
+      CREATE INDEX IX_tasks_group_id ON tasks (group_id)
+      WHERE group_id IS NOT NULL
+    `);
+    console.log("[migrate] Upgrade complete: group_id column added to tasks.");
+  }
 }
 
 /**

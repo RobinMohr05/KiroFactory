@@ -8,7 +8,7 @@
 import { EventEmitter } from "node:events";
 import { getPool, sql } from "../db/connection.js";
 import type { Task } from "../types.js";
-import { getTaskById, getTasksByBranch } from "../db/tasks.js";
+import { getTaskById, getTasksByBranch, getTasksByGroupId } from "../db/tasks.js";
 
 // ---------------------------------------------------------------------------
 // Task-available event bus
@@ -142,6 +142,8 @@ export interface ClaimedTask {
   branch: string | null;
   /** Existing pull request URL from a previous stage (null if first stage) */
   pullRequestUrl: string | null;
+  /** Group identifier — tasks sharing the same groupId are worked on the same branch/PR (AC2) */
+  groupId: string | null;
   /** Repository URL from the task's associated tab (null if not set) */
   repositoryUrl: string | null;
   /** User ID of the tab owner (for credential lookup) */
@@ -201,7 +203,8 @@ export async function claimTask(
           INSERTED.files,
           INSERTED.origin,
           INSERTED.branch,
-          INSERTED.pull_request_url
+          INSERTED.pull_request_url,
+          INSERTED.group_id
         WHERE id = @taskId AND state = @claimState
       `;
     } else if (tabIds && tabIds.length > 0) {
@@ -224,7 +227,8 @@ export async function claimTask(
           INSERTED.files,
           INSERTED.origin,
           INSERTED.branch,
-          INSERTED.pull_request_url
+          INSERTED.pull_request_url,
+          INSERTED.group_id
         WHERE id = (
           SELECT TOP 1 t.id
           FROM tasks t WITH (UPDLOCK, READPAST)
@@ -257,7 +261,8 @@ export async function claimTask(
           INSERTED.files,
           INSERTED.origin,
           INSERTED.branch,
-          INSERTED.pull_request_url
+          INSERTED.pull_request_url,
+          INSERTED.group_id
         WHERE id = (
           SELECT TOP 1 id
           FROM tasks WITH (UPDLOCK, READPAST)
@@ -309,6 +314,7 @@ export async function claimTask(
       origin: row.origin,
       branch: row.branch || null,
       pullRequestUrl: row.pull_request_url || null,
+      groupId: row.group_id || null,
       repositoryUrl: tabRow?.repository_url || null,
       userId: tabRow?.user_id || null,
     };
@@ -554,4 +560,27 @@ export async function findSiblingTasks(
   excludeTaskId: number
 ): Promise<Array<{ id: number; title: string; type: string; description: string; branch: string | null; pullRequestUrl: string | null }>> {
   return getTasksByBranch(branch, excludeTaskId);
+}
+
+/**
+ * Find sibling tasks by group_id (AC2 implementation).
+ *
+ * When a task has no `branch` value but has a `groupId`, this function finds
+ * other tasks in the same group. If any of those siblings already has a branch
+ * (because an earlier task in the group was processed and had a branch assigned),
+ * the caller can use that branch for the current task.
+ *
+ * This is the missing piece for AC2: "When the dev-agent picks up a task that
+ * has no `branch` value but other tasks in the same group do, it looks up the
+ * shared branch name from sibling tasks."
+ *
+ * @param groupId The group identifier to look up siblings for
+ * @param excludeTaskId The current task ID (excluded from results)
+ * @returns Sibling tasks with their metadata, or empty array if none found
+ */
+export async function findSiblingTasksByGroupId(
+  groupId: string,
+  excludeTaskId: number
+): Promise<Array<{ id: number; title: string; type: string; description: string; branch: string | null; pullRequestUrl: string | null }>> {
+  return getTasksByGroupId(groupId, excludeTaskId);
 }
