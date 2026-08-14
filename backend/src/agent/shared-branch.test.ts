@@ -432,4 +432,52 @@ describe("findSharedBranchInTab", () => {
     // Should NOT have queried for tabs (only 1 query call, not 2)
     expect(mockRequest.query).toHaveBeenCalledTimes(1);
   });
+
+  it("should find a branch even when only one sibling task has it (AC#2 primary scenario)", async () => {
+    // Scenario: Task A (id=5) created branch "feature/#5_shared". Task B (id=10) has no branch.
+    // findSharedBranchInTab(10) should discover "feature/#5_shared" from Task A,
+    // even though only ONE other task has that branch (not multiple).
+    const { getPool } = await import("../db/connection.js");
+    const mockGetPool = vi.mocked(getPool);
+
+    const mockRequest = {
+      input: vi.fn().mockReturnThis(),
+      query: vi.fn(),
+    };
+    mockRequest.query
+      .mockResolvedValueOnce({ recordset: [{ tab_id: 2 }] }) // tab lookup for task 10
+      .mockResolvedValueOnce({ recordset: [{ branch: "feature/#5_shared" }] }); // single sibling branch found
+
+    mockGetPool.mockResolvedValue({ request: () => mockRequest } as any);
+
+    const result = await findSharedBranchInTab(10);
+
+    expect(result).toBe("feature/#5_shared");
+  });
+
+  it("should only find branches from tasks in non-terminal states (todo/in-progress/developed)", async () => {
+    // Branches from tasks that are already 'done' should not be discovered as shared branches.
+    // The query should filter by state to avoid picking up old completed task branches.
+    const { getPool } = await import("../db/connection.js");
+    const mockGetPool = vi.mocked(getPool);
+
+    const mockRequest = {
+      input: vi.fn().mockReturnThis(),
+      query: vi.fn(),
+    };
+    mockRequest.query
+      .mockResolvedValueOnce({ recordset: [{ tab_id: 2 }] }) // tab lookup
+      .mockResolvedValueOnce({ recordset: [] }); // no active branches found (all are done)
+
+    mockGetPool.mockResolvedValue({ request: () => mockRequest } as any);
+
+    const result = await findSharedBranchInTab(10);
+
+    expect(result).toBeNull();
+
+    // Verify the query filters by state
+    const queryCall = mockRequest.query.mock.calls[1][0] as string;
+    expect(queryCall).toContain("state");
+    expect(queryCall).not.toContain("HAVING COUNT");
+  });
 });

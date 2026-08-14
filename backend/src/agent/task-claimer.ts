@@ -554,12 +554,13 @@ export async function markTaskDone(
  * Find a shared branch from sibling tasks in the same tab(s).
  *
  * Used for AC#2: when a task has no `branch` value, look up other tasks in
- * the same tab(s) that share a branch (i.e., the same branch value appears
- * on more than one task). This filters out one-off branches from past work
- * and only returns branches that indicate intentional grouping.
+ * the same tab(s) that have a branch set and are in a non-terminal state
+ * (todo, in-progress, or developed). This filters out branches from completed
+ * tasks (old one-off work) while still discovering a branch even when only one
+ * sibling task has it — the primary use case (Task A creates branch, Task B joins it).
  *
- * If exactly one such shared branch exists, return it (the task should join
- * that group). If multiple shared branches exist (ambiguous) or none, returns null.
+ * If exactly one such branch exists, return it (the task should join it).
+ * If multiple branches exist (ambiguous) or none, returns null.
  *
  * @param taskId The task to find siblings for (excluded from results)
  * @param tabIds The tab IDs the task belongs to (if not provided, looked up from DB)
@@ -591,18 +592,19 @@ export async function findSharedBranchInTab(
     request.input(`tabId${i}`, sql.Int, id);
   });
 
-  // Find branch values shared by multiple tasks in the same tab(s).
-  // HAVING COUNT(*) > 1 ensures we only return branches that are deliberately
-  // shared (appear on 2+ tasks), filtering out one-off branches from past work.
+  // Find branch values from sibling tasks in the same tab(s) that are in
+  // non-terminal states (todo, in-progress, developed). This filters out
+  // branches from completed/done tasks (old one-off work) while correctly
+  // discovering branches even when only one sibling task has it — the primary
+  // use case for AC#2 (Task A creates branch, Task B joins it).
   const result = await request.query(`
-    SELECT t.branch
+    SELECT DISTINCT t.branch
     FROM tasks t
     INNER JOIN task_tabs tt ON tt.task_id = t.id
     WHERE tt.tab_id IN (${tabIdParams.join(", ")})
       AND t.id != @taskId
       AND t.branch IS NOT NULL AND t.branch != ''
-    GROUP BY t.branch
-    HAVING COUNT(*) > 1
+      AND t.state IN ('todo', 'in-progress', 'developed')
   `);
 
   const branches = result.recordset.map((row: any) => row.branch as string);
