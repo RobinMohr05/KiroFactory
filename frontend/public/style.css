@@ -1403,27 +1403,11 @@ textarea:focus {
   line-height: 1.5;
 }
 
-.quick-start-form textarea {
-  width: 100%;
-  resize: vertical;
-  margin-bottom: 0.75rem;
-}
-
-.quick-start-actions {
-  display: flex;
-  gap: 0.5rem;
-}
-
-.quick-start-actions select {
-  flex: 1;
-  min-width: 0;
-}
-
-.quick-start-advanced {
-  display: block;
-  margin-top: 1rem;
-  font-size: 0.8rem;
-  padding: 0;
+.session-empty-msg {
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  padding: 3rem 1rem;
 }
 
 .session-detail {
