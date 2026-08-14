@@ -58,11 +58,14 @@ router.post("/", async (req: Request, res: Response) => {
       return;
     }
     // Force userId from auth context (ignore any userId in the body).
-    // `pinned` and `isPermanent` are internal-only (set for the one permanent
-    // Chat session created at registration) — never honor from a public request body.
+    // `pinned`, `isPermanent`, `forceLocal`, and `rawMcpServers` are internal-only
+    // (set programmatically for planner sessions and permanent Chat sessions)
+    // — never honor from a public request body.
     input.userId = userId;
     input.pinned = false;
     input.isPermanent = false;
+    input.forceLocal = undefined;
+    input.rawMcpServers = undefined;
     const session = await createSession(input);
     res.status(201).json(sanitizeSessionForClient(session));
   } catch (err) {
