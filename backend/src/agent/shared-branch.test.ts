@@ -332,6 +332,64 @@ describe("resolveBranchForTask", () => {
   });
 });
 
+describe("resolveBranchForTask — branch persistence ordering contract", () => {
+  it("should return isExisting=false for new branches (caller must persist AFTER push, not before)", async () => {
+    // Race condition protection: when a new branch is created (isExisting=false),
+    // the caller MUST NOT persist the branch name to the DB until AFTER the branch
+    // has been pushed to the remote. If persisted before push, a concurrent agent
+    // could discover the branch via findSharedBranchInTab, try to checkout from
+    // remote, and fail because the branch doesn't exist on the remote yet.
+    //
+    // This test documents the contract: isExisting=false means "branch is local only,
+    // not yet on remote" → the caller should defer setTaskBranchAndPr until after pushBranch.
+    const { resolveBranchForTask } = await import("./dev-agent-helpers.js");
+
+    const result = resolveBranchForTask({
+      id: 10,
+      title: "New task",
+      type: "feature",
+      branch: null,
+      pullRequestUrl: null,
+    });
+
+    // isExisting=false signals: branch is new, not yet on remote
+    // Caller contract: persist to DB only AFTER push succeeds
+    expect(result.isExisting).toBe(false);
+    expect(result.branchName).toBeNull();
+  });
+
+  it("should return isExisting=true for pre-set branches (safe to persist immediately)", async () => {
+    // When task.branch is already set, the branch exists on remote (it was
+    // previously pushed). Safe to persist/use immediately without push-first constraint.
+    const { resolveBranchForTask } = await import("./dev-agent-helpers.js");
+
+    const result = resolveBranchForTask({
+      id: 10,
+      title: "Existing task",
+      type: "feature",
+      branch: "feature/#5_shared-branch",
+      pullRequestUrl: null,
+    });
+
+    expect(result.isExisting).toBe(true);
+    expect(result.branchName).toBe("feature/#5_shared-branch");
+  });
+
+  it("should return isExisting=true for sibling branches (already on remote, safe to persist)", async () => {
+    // When a sibling branch is discovered, it was already pushed by a previous task.
+    // Safe to persist immediately.
+    const { resolveBranchForTask } = await import("./dev-agent-helpers.js");
+
+    const result = resolveBranchForTask(
+      { id: 10, title: "Sibling task", type: "feature", branch: null, pullRequestUrl: null },
+      "feature/#5_shared-branch"
+    );
+
+    expect(result.isExisting).toBe(true);
+    expect(result.branchName).toBe("feature/#5_shared-branch");
+  });
+});
+
 describe("resolveBranchForTask — AC#2 sibling lookup integration", () => {
   it("should use siblingBranch from findSharedBranchInTab when task.branch is null (AC#2)", async () => {
     // This tests the expected orchestration: when task.branch is null, the dev-agent

@@ -348,6 +348,7 @@ async function runOnce(config: AgentConfig): Promise<boolean> {
   //        fall through to create a new branch.
   // AC#4: If no branch exists, fall back to creating a new feature branch.
   let branchName: string;
+  let branchNeedsPostPushPersist = false;
   try {
     // AC#2: look up sibling branch when task has no explicit branch
     let siblingBranch: string | null = null;
@@ -366,7 +367,8 @@ async function runOnce(config: AgentConfig): Promise<boolean> {
       log(`Checked out existing branch: ${branchName}`, "green");
 
       // Persist the discovered branch back to the task (preserving existing PR URL)
-      // so subsequent lookups can find it directly via task.branch (AC#6)
+      // so subsequent lookups can find it directly via task.branch (AC#6).
+      // Safe to persist immediately: the branch already exists on the remote.
       if (!task.branch) {
         await setTaskBranchAndPr(task.id, branchName, task.pullRequestUrl);
       }
@@ -375,8 +377,12 @@ async function runOnce(config: AgentConfig): Promise<boolean> {
       branchName = await createFeatureBranch(workspacePath, task.type, task.id, task.title);
       log(`Created branch: ${branchName}`, "green");
 
-      // Persist the new branch name back to the task in DB (preserving existing PR URL)
-      await setTaskBranchAndPr(task.id, branchName, task.pullRequestUrl);
+      // NOTE: Do NOT persist the branch name to DB here. The branch only exists
+      // locally at this point — it hasn't been pushed to the remote yet. If we
+      // persisted now, a concurrent agent could discover it via findSharedBranchInTab,
+      // try to checkout from remote, and fail because it doesn't exist there yet.
+      // The branch is persisted after push succeeds (step 8).
+      branchNeedsPostPushPersist = true;
     }
   } catch (err: any) {
     log(`ERROR with branch: ${err.message}`, "red");
@@ -467,6 +473,14 @@ async function runOnce(config: AgentConfig): Promise<boolean> {
     log(`Pushing branch "${branchName}" to origin...`, "cyan");
     await pushBranch(workspacePath, branchName);
     log(`Branch pushed successfully.`, "green");
+
+    // Now that the branch exists on the remote, persist it to the DB (AC#6).
+    // This is deferred from step 5 for newly-created branches to avoid the race
+    // condition where a concurrent agent discovers the branch via findSharedBranchInTab
+    // before it's been pushed to the remote.
+    if (branchNeedsPostPushPersist) {
+      await setTaskBranchAndPr(task.id, branchName, task.pullRequestUrl);
+    }
   } catch (err: any) {
     log(`ERROR pushing: ${err.message}`, "red");
     await resetTaskToTodo(task.id);
