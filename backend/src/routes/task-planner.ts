@@ -7,6 +7,7 @@ import {
   getSession,
   getSessionOutput,
   deleteSession,
+  injectPendingRunner,
 } from "../session-manager.js";
 import { createTask } from "../db/tasks.js";
 import { getAllTabs, getTabById } from "../db/tabs.js";
@@ -18,7 +19,19 @@ import { getDecryptedCredential } from "../db/credentials.js";
 import { resolveGitProvider } from "../types.js";
 import { getUserById } from "../db/users.js";
 import { preparePlannerWorkspace, cleanupPlannerWorkspace } from "../agent/planner-workspace.js";
+import { PlannerSessionPool, type PooledRunner } from "../planner-session-pool.js";
+import { KiroRunner } from "../agent/kiro-runner.js";
+import { resolve } from "node:path";
 import type { CreateTaskInput } from "../types.js";
+
+/**
+ * Extended PooledRunner that exposes the underlying KiroRunner instance.
+ * Needed because `injectPendingRunner()` requires the actual KiroRunner object,
+ * not just the PooledRunner interface.
+ */
+interface PooledKiroRunner extends PooledRunner {
+  readonly _kiroRunner: KiroRunner;
+}
 
 const router = Router();
 
@@ -30,6 +43,94 @@ router.use(requireAuth);
  * so it can be cleaned up when the session is closed/deleted.
  */
 const plannerWorkspaces = new Map<number, string>();
+
+// ---------------------------------------------------------------------------
+// Warm Session Pool
+// ---------------------------------------------------------------------------
+
+/** Default cwd for pre-warmed pool runners (project root). */
+const DEFAULT_POOL_CWD = resolve(import.meta.dirname, "../../..");
+
+/** Configurable pool limits via env vars (with sensible defaults). */
+const POOL_MAX_PER_TAB = Number(process.env.PLANNER_POOL_MAX_PER_TAB) || 2;
+const POOL_MAX_TOTAL = Number(process.env.PLANNER_POOL_MAX_TOTAL) || 6;
+const POOL_IDLE_TIMEOUT_MS = Number(process.env.PLANNER_POOL_IDLE_MS) || 20 * 60 * 1000; // 20 min
+
+let runnerIdSeq = 0;
+
+/**
+ * Check whether the warm pool can be used.
+ *
+ * DESIGN DECISION — API key handling for pooled runners:
+ * Pool runners are spawned ahead of time (before any user context is known).
+ * The Kiro API key is baked into the child process environment at spawn time
+ * and cannot be changed afterwards — `newSession()` only resets the ACP
+ * session/cwd, not the process environment.
+ *
+ * Therefore pooled runners ALWAYS use the server's global `KIRO_API_KEY` env var.
+ * If no global key is configured, pooling is disabled and the system falls back
+ * to cold-start, which correctly decrypts and uses each user's individual key.
+ *
+ * This is an acceptable trade-off because:
+ * - The server's global key is used only for planner sessions (short, interactive)
+ * - The cold-start path remains the fallback and always uses per-user keys
+ * - Production deployments should always set `KIRO_API_KEY` in the server env
+ */
+export function isPoolEnabled(): boolean {
+  return !!process.env.KIRO_API_KEY;
+}
+
+/**
+ * Factory function that spawns a real KiroRunner process for the pool.
+ * Uses a generic cwd (project root) — the actual workspace cwd is set later
+ * via newSession(cwd) when the runner is checked out for a real conversation.
+ *
+ * NOTE: Pool runners authenticate using the server's global KIRO_API_KEY env var.
+ * Per-user keys cannot be injected into an already-running process.
+ */
+async function createPoolRunner(): Promise<PooledKiroRunner> {
+  const runner = await KiroRunner.create({
+    cwd: DEFAULT_POOL_CWD,
+    model: null,
+    // kiroApiKey is intentionally NOT passed here — KiroRunner.create() will
+    // automatically pick up process.env.KIRO_API_KEY (the server's global key).
+    // See isPoolEnabled() guard for why per-user keys can't be used in the pool.
+  });
+  runnerIdSeq++;
+  const id = `planner-pool-${runnerIdSeq}-${Date.now()}`;
+  return {
+    id,
+    get isAlive() { return runner.isAlive; },
+    newSession: (cwd?: string) => runner.newSession(cwd),
+    close: () => runner.close(),
+    /** The underlying KiroRunner (needed for injectPendingRunner) */
+    _kiroRunner: runner,
+  };
+}
+
+/** Singleton pool instance. */
+export const plannerPool = new PlannerSessionPool({
+  maxPerTab: POOL_MAX_PER_TAB,
+  maxTotal: POOL_MAX_TOTAL,
+  idleTimeoutMs: POOL_IDLE_TIMEOUT_MS,
+  factory: createPoolRunner,
+});
+
+// Log pool status at startup so operators know whether warm pooling is active.
+if (isPoolEnabled()) {
+  log.info("planner-pool-enabled", {
+    component: "planner-pool",
+    maxPerTab: POOL_MAX_PER_TAB,
+    maxTotal: POOL_MAX_TOTAL,
+    idleTimeoutMs: POOL_IDLE_TIMEOUT_MS,
+    msg: `Planner session pool enabled (using server KIRO_API_KEY). Max ${POOL_MAX_TOTAL} total, ${POOL_MAX_PER_TAB} per tab, ${POOL_IDLE_TIMEOUT_MS / 1000}s idle timeout.`,
+  });
+} else {
+  log.warn("planner-pool-disabled", {
+    component: "planner-pool",
+    msg: "Planner session pool DISABLED — KIRO_API_KEY env var is not set. All planner sessions will cold-start. Set KIRO_API_KEY to enable warm pooling.",
+  });
+}
 
 /**
  * System prompt for the task planner agent.
@@ -81,6 +182,33 @@ When the user confirms the task, output EXACTLY this format (and nothing else af
 \`\`\`
 
 Start by greeting the user and asking what they'd like to accomplish.`;
+
+// POST /api/task-planner/prewarm — Fire-and-forget: ensure a warm pool slot exists for the tab
+router.post("/prewarm", (req: Request, res: Response) => {
+  const userId = getUserId(req);
+  const { tabId } = req.body as { tabId?: number };
+  const effectiveTabId = tabId ?? 0;
+
+  // Pool requires a server-level KIRO_API_KEY — skip if not configured.
+  if (!isPoolEnabled()) {
+    res.status(202).json({ ok: true });
+    return;
+  }
+
+  // Fire-and-forget: kick off the warm in the background, respond immediately.
+  // Never block the caller, never surface spawn errors to the caller.
+  plannerPool.warm(effectiveTabId).catch((err) => {
+    log.warn("prewarm-background-error", {
+      component: "task-planner",
+      tabId: effectiveTabId,
+      userId,
+      ...toErrorFields(err),
+      msg: `Background prewarm failed for tab ${effectiveTabId}`,
+    });
+  });
+
+  res.status(202).json({ ok: true });
+});
 
 // POST /api/task-planner/start — Start a new task planning conversation
 router.post("/start", async (req: Request, res: Response) => {
@@ -172,6 +300,42 @@ router.post("/start", async (req: Request, res: Response) => {
     // Track workspace path for cleanup when the session ends
     if (sessionCwd) {
       plannerWorkspaces.set(session.id, sessionCwd);
+    }
+
+    // Try to use a warm runner from the pool (keyed by tabId).
+    // If one is available, inject it so startSession() skips the cold spawn.
+    // Pool runners use the server's global KIRO_API_KEY — skip if not configured.
+    const effectiveTabId = tabId ?? 0;
+    if (isPoolEnabled()) {
+      const warmRunner = plannerPool.checkout(effectiveTabId) as PooledKiroRunner | null;
+      if (warmRunner) {
+        const kiroRunner = warmRunner._kiroRunner;
+        const injected = injectPendingRunner(session.id, kiroRunner);
+        if (injected) {
+          log.info("planner-warm-start", {
+            component: "task-planner",
+            sessionId: session.id,
+            tabId: effectiveTabId,
+            runnerId: warmRunner.id,
+            msg: `Using warm pool runner for planner session ${session.id}`,
+          });
+          // Detach the pool slot (runner is now owned by the session, not the pool).
+          // Uses detach() instead of destroy() so the runner is NOT closed.
+          plannerPool.detach(warmRunner.id);
+        } else {
+          // Injection failed (e.g. session was deleted or already running) —
+          // destroy the runner rather than returning it to the pool, since the
+          // failure indicates an unexpected state that could leave the runner tainted.
+          plannerPool.destroy(warmRunner.id).catch(() => {});
+          log.warn("planner-warm-inject-failed", {
+            component: "task-planner",
+            sessionId: session.id,
+            tabId: effectiveTabId,
+            runnerId: warmRunner.id,
+            msg: `Failed to inject warm runner into session ${session.id} — destroyed`,
+          });
+        }
+      }
     }
 
     // Start the session immediately

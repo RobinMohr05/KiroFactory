@@ -144,6 +144,12 @@ interface ManagedSession {
   turnVerdict: string | null;
   /** Tracks toolCallId for the report_verdict tool to capture verdict from tool_call_update */
   verdictToolCallId: string | null;
+  /**
+   * Pre-created KiroRunner from the warm session pool.
+   * If set before startSession() is called, runSession() will use this runner
+   * instead of creating a new one. Consumed (set to null) once used.
+   */
+  pendingRunner: KiroRunner | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -236,6 +242,7 @@ export async function initSessions(): Promise<void> {
       totalCreditsUsed: 0,
       turnVerdict: null,
       verdictToolCallId: null,
+      pendingRunner: null,
     });
 
     // Check if this session should auto-restart.
@@ -467,6 +474,7 @@ export async function createSession(input: CreateSessionInput): Promise<Session>
     totalCreditsUsed: 0,
     turnVerdict: null,
     verdictToolCallId: null,
+    pendingRunner: null,
   };
 
   sessions.set(meta.id, session);
@@ -680,6 +688,22 @@ export function updateSessionFields(
   return { success: true };
 }
 
+/**
+ * Inject a pre-created KiroRunner into a session before starting it.
+ * Used by the planner session pool to provide a warm runner so startSession()
+ * skips the cold spawn. The injected runner will have newSession(cwd) called
+ * on it during runSession() to reset it to the correct workspace.
+ *
+ * Must be called AFTER createSession() and BEFORE startSession().
+ */
+export function injectPendingRunner(sessionId: number, runner: KiroRunner): boolean {
+  const session = sessions.get(sessionId);
+  if (!session) return false;
+  if (session.meta.status === "running") return false;
+  session.pendingRunner = runner;
+  return true;
+}
+
 export async function startSession(id: number): Promise<boolean> {
   const session = sessions.get(id);
   if (!session) return false;
@@ -869,18 +893,40 @@ async function runSession(managed: ManagedSession): Promise<void> {
     }
 
     // Create the KiroRunner (kiroApiKey is passed to env and used only during spawn)
-    managed.runner = await KiroRunner.create({
-      agent: meta.agent || undefined,
-      cwd: meta.cwd,
-      model: meta.model ?? null,
-      mcpServers: meta.mcpServers?.map((s) => ({
-        name: s.name,
-        command: s.command,
-        args: s.args,
-        env: s.env,
-      })),
-      kiroApiKey,
-    });
+    // If a pre-warmed runner was injected from the session pool, use it (calling
+    // newSession to reset to the correct cwd) instead of cold-spawning a new one.
+    if (managed.pendingRunner) {
+      managed.runner = managed.pendingRunner;
+      managed.pendingRunner = null;
+      try {
+        await managed.runner.newSession(meta.cwd);
+      } catch (err) {
+        // If newSession fails on the pooled runner, fall through to cold-create
+        const msg = err instanceof Error ? err.message : String(err);
+        appendOutput(managed, {
+          timestamp: now(),
+          stream: "stderr",
+          text: `Warm runner newSession failed (${msg}) — falling back to cold start.`,
+        });
+        try { await managed.runner.close(); } catch { /* best effort */ }
+        managed.runner = null;
+      }
+    }
+
+    if (!managed.runner) {
+      managed.runner = await KiroRunner.create({
+        agent: meta.agent || undefined,
+        cwd: meta.cwd,
+        model: meta.model ?? null,
+        mcpServers: meta.mcpServers?.map((s) => ({
+          name: s.name,
+          command: s.command,
+          args: s.args,
+          env: s.env,
+        })),
+        kiroApiKey,
+      });
+    }
 
     // Clear decrypted key from local scope — no longer needed
     kiroApiKey = undefined;

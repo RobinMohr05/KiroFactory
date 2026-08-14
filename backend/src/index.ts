@@ -20,7 +20,7 @@ import agentsRouter from "./routes/agents.js";
 import errorsRouter from "./routes/errors.js";
 import credentialsRouter from "./routes/credentials.js";
 import adminRouter from "./routes/admin.js";
-import taskPlannerRouter from "./routes/task-planner.js";
+import taskPlannerRouter, { plannerPool } from "./routes/task-planner.js";
 import { runMigration } from "./db/migrate.js";
 import { tryConnect, isDbAvailable, closePool, getPoolStats } from "./db/connection.js";
 import { shutdownAllSessions, initSessions } from "./session-manager.js";
@@ -243,6 +243,7 @@ async function shutdown(): Promise<void> {
   }
 
   await shutdownAllSessions();
+  await plannerPool.shutdown();
   server.close();
   try {
     await closePool();

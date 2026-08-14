@@ -1298,6 +1298,10 @@ function showTaskForm(task = null) {
     document.getElementById('taskStateGroup').hidden = true;
     document.getElementById('taskOrigin').closest('.form-group').hidden = true;
     document.getElementById('taskGitInfoGroup').hidden = true;
+
+    // Fire-and-forget: prewarm a planner session pool slot so clicking
+    // "AI Planner" starts near-instantly. Never blocks or delays the modal.
+    prewarmPlannerSession();
   }
 
   document.getElementById('taskTitle').focus();
@@ -4011,6 +4015,23 @@ const taskPlannerCreateBtn = document.getElementById('taskPlannerCreateBtn');
 const taskPlannerDot = document.getElementById('taskPlannerDot');
 const taskPlannerStatusText = document.getElementById('taskPlannerStatusText');
 const aiPlannerBtn = document.getElementById('aiPlannerBtn');
+
+/**
+ * Fire-and-forget: prewarm the planner session pool for the current tab.
+ * Called when the create-task modal opens so a warm slot is ready
+ * by the time the user clicks "AI Planner".
+ * Never blocks the UI, never shows errors on failure.
+ */
+function prewarmPlannerSession() {
+  const tabId = currentBoardId ? Number(currentBoardId) : undefined;
+  apiFetch('/api/task-planner/prewarm', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tabId }),
+  }).catch(() => {
+    // Intentionally swallowed — prewarm is best-effort
+  });
+}
 
 /**
  * Open the AI Task Planner modal and start a new planning session.
