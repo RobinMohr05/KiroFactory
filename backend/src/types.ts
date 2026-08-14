@@ -305,6 +305,12 @@ export interface Session {
   mcpServers?: McpServerConfig[];
   /** Per-session MCP server toggle overrides. Nullable = inherit from tab. Merges over tab defaults (override wins). */
   mcpConfigOverride?: TabMcpConfig | null;
+  /**
+   * Raw MCP server entries (HTTP or other non-stdio shapes) passed directly
+   * to the ACP session/new mcpServers payload. Used by the task planner to
+   * attach an HTTP MCP server for GitHub repo access.
+   */
+  rawMcpServers?: unknown[];
   /** Tab memberships — session appears on these tabs; loop mode claims tasks from them */
   tabIds?: number[];
   /** Owner user ID (for multi-tenant isolation) */
@@ -336,6 +342,12 @@ export interface Session {
    * session was last started. Reset to 0 on each start.
    */
   totalCreditsUsed?: number;
+  /**
+   * When true, the session always runs locally (via KiroRunner child process)
+   * even if the global worker mode is "remote" (ACA_MODE). Used by the task
+   * planner which only reads files via MCP and never builds/tests/commits.
+   */
+  forceLocal?: boolean;
 }
 
 export interface CreateSessionInput {
@@ -352,6 +364,12 @@ export interface CreateSessionInput {
   mcpServers?: McpServerConfig[];
   /** Per-session MCP server toggle overrides. Nullable = inherit from tab. Merges over tab defaults (override wins). */
   mcpConfigOverride?: TabMcpConfig | null;
+  /**
+   * Raw MCP server entries (HTTP or other non-stdio shapes) passed directly
+   * to the ACP session/new mcpServers payload. Internal-only — not accepted
+   * from the public POST /api/sessions body.
+   */
+  rawMcpServers?: unknown[];
   /** Tab memberships — session appears on these tabs; loop mode claims tasks from them */
   tabIds?: number[];
   /** Owner user ID (for multi-tenant isolation) */
@@ -366,6 +384,13 @@ export interface CreateSessionInput {
    * Not accepted from the public POST /api/sessions body — the route strips it.
    */
   isPermanent?: boolean;
+  /**
+   * Internal-only flag forcing the session to run locally (via KiroRunner) even
+   * when ACA_MODE / WORKER_MODE=remote is active. Used by the task planner,
+   * which only needs to chat and read files — never build, test, or commit.
+   * Not accepted from the public POST /api/sessions body.
+   */
+  forceLocal?: boolean;
 }
 
 /**

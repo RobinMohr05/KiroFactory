@@ -16,6 +16,7 @@ import {
 import { requireAuth, getUserId } from "../middleware/auth.js";
 import type { CreateSessionInput, UpdateSessionInput } from "../types.js";
 import { log, toErrorFields } from "../logger.js";
+import { sanitizeSessionForClient } from "../session-sanitize.js";
 
 const router = Router();
 
@@ -57,13 +58,16 @@ router.post("/", async (req: Request, res: Response) => {
       return;
     }
     // Force userId from auth context (ignore any userId in the body).
-    // `pinned` and `isPermanent` are internal-only (set for the one permanent
-    // Chat session created at registration) — never honor from a public request body.
+    // `pinned`, `isPermanent`, `forceLocal`, and `rawMcpServers` are internal-only
+    // (set programmatically for planner sessions and permanent Chat sessions)
+    // — never honor from a public request body.
     input.userId = userId;
     input.pinned = false;
     input.isPermanent = false;
+    input.forceLocal = undefined;
+    input.rawMcpServers = undefined;
     const session = await createSession(input);
-    res.status(201).json(session);
+    res.status(201).json(sanitizeSessionForClient(session));
   } catch (err) {
     log.error("route-error", {
       component: "sessions",
@@ -117,7 +121,7 @@ router.get("/:id", (req: Request, res: Response) => {
       res.status(404).json({ error: "Session not found" });
       return;
     }
-    res.json(session);
+    res.json(sanitizeSessionForClient(session));
   } catch (err) {
     log.error("route-error", {
       component: "sessions",

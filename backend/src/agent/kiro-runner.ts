@@ -38,8 +38,14 @@ export interface KiroRunnerOptions {
   cwd: string;
   /** Optional model override */
   model?: string | null;
-  /** Optional MCP servers to inject at session creation */
+  /** Optional MCP servers to inject at session creation (stdio only) */
   mcpServers?: McpServerEntry[];
+  /**
+   * Optional raw MCP server entries to inject directly into the session/new
+   * mcpServers payload. These bypass the McpServerEntry type and are included
+   * as-is — use for HTTP-type servers or any shape that matches the ACP schema.
+   */
+  rawMcpServers?: unknown[];
   /** Optional per-user Kiro API key (takes precedence over process.env.KIRO_API_KEY) */
   kiroApiKey?: string;
 }
@@ -81,6 +87,8 @@ export class KiroRunner {
   /** cwd/mcpServers the session was created with — reused by newSession(). */
   private sessionCwd!: string;
   private sessionMcpServers: McpServerEntry[] = [];
+  /** Raw MCP server entries (HTTP or other) included verbatim in the payload. */
+  private sessionRawMcpServers: unknown[] = [];
 
   /**
    * Credits consumed by the most recently completed prompt turn.
@@ -328,6 +336,7 @@ export class KiroRunner {
 
     client.sessionCwd = cwd;
     client.sessionMcpServers = opts.mcpServers ?? [];
+    client.sessionRawMcpServers = opts.rawMcpServers ?? [];
 
     const result = await client.conn.newSession({
       cwd,
@@ -352,6 +361,7 @@ export class KiroRunner {
         env: [],
       },
       ...(this.sessionMcpServers as any[]),
+      ...this.sessionRawMcpServers,
     ];
   }
 

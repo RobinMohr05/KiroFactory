@@ -361,3 +361,51 @@ describe("updateSessionFields", () => {
     expect(session!.prompt).toBe("");
   });
 });
+
+describe("createSession — internal-only fields", () => {
+  it("does not apply forceLocal when set via createSession with explicit undefined", async () => {
+    const session = await createSession({
+      name: "Public Session",
+      interactive: true,
+      loop: false,
+      runs: 0,
+      intervalSeconds: 10,
+      userId: 1,
+      forceLocal: undefined,
+    });
+
+    const loaded = getSession(session.id);
+    expect(loaded!.forceLocal).toBeFalsy();
+  });
+
+  it("applies forceLocal when set via createSession (internal path)", async () => {
+    const session = await createSession({
+      name: "Planner Session",
+      interactive: true,
+      loop: false,
+      runs: 0,
+      intervalSeconds: 10,
+      userId: 1,
+      forceLocal: true,
+    });
+
+    const loaded = getSession(session.id);
+    expect(loaded!.forceLocal).toBe(true);
+  });
+
+  it("applies rawMcpServers when set via createSession (internal path)", async () => {
+    const mcpEntry = { type: "http", name: "github", url: "https://api.githubcopilot.com/mcp/", headers: [] };
+    const session = await createSession({
+      name: "Planner Session",
+      interactive: true,
+      loop: false,
+      runs: 0,
+      intervalSeconds: 10,
+      userId: 1,
+      rawMcpServers: [mcpEntry],
+    });
+
+    const loaded = getSession(session.id);
+    expect(loaded!.rawMcpServers).toEqual([mcpEntry]);
+  });
+});

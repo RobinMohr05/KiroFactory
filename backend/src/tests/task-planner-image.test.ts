@@ -108,11 +108,6 @@ vi.mock("../worker-ws-handler.js", () => ({
   isWorkerConnected: vi.fn().mockReturnValue(false),
 }));
 
-vi.mock("../agent/planner-workspace.js", () => ({
-  preparePlannerWorkspace: vi.fn().mockResolvedValue(null),
-  cleanupPlannerWorkspace: vi.fn().mockResolvedValue(undefined),
-}));
-
 vi.mock("../db/tasks.js", () => ({
   createTask: vi.fn().mockResolvedValue({ id: 1, title: "Test" }),
 }));

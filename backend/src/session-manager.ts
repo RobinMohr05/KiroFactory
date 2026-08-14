@@ -13,6 +13,7 @@ import { resolve } from "node:path";
 import { KiroRunner } from "./agent/kiro-runner.js";
 import type { SessionUpdateChunk } from "./agent/kiro-runner.js";
 import { broadcastToUser } from "./websocket-handler.js";
+import { sanitizeSessionForClient } from "./session-sanitize.js";
 import { claimTask, resolveTask, resetTask, getAvailableTaskCount, waitForTaskAvailable, markTaskDone } from "./agent/task-claimer.js";
 import type { ClaimedTask } from "./agent/task-claimer.js";
 import { buildDevPrompt, buildReviewPrompt } from "./agent/prompt-builder.js";
@@ -388,7 +389,7 @@ function setActivity(session: ManagedSession, activity: Activity): void {
 
 function setStatus(session: ManagedSession, status: Session["status"]): void {
   session.meta.status = status;
-  broadcastToUser(session.meta.userId, { type: "session-updated", session: session.meta });
+  broadcastToUser(session.meta.userId, { type: "session-updated", session: sanitizeSessionForClient(session.meta) });
   persistSession(session.meta.id);
 }
 
@@ -426,6 +427,7 @@ export async function createSession(input: CreateSessionInput): Promise<Session>
     model: input.model,
     mcpServers: input.mcpServers,
     mcpConfigOverride: input.mcpConfigOverride ?? undefined,
+    rawMcpServers: input.rawMcpServers,
     tabIds: input.tabIds,
     userId: input.userId ?? 0,
     createdAt: now(),
@@ -433,6 +435,7 @@ export async function createSession(input: CreateSessionInput): Promise<Session>
     pinned: input.pinned === true,
     isPermanent: input.isPermanent === true,
     sortOrder: 0, // placeholder — calculated below
+    forceLocal: input.forceLocal === true,
   };
 
   // Calculate sortOrder: place new session at end of appropriate group
@@ -478,7 +481,7 @@ export async function createSession(input: CreateSessionInput): Promise<Session>
   };
 
   sessions.set(meta.id, session);
-  broadcastToUser(session.meta.userId, { type: "session-created", session: session.meta });
+  broadcastToUser(session.meta.userId, { type: "session-created", session: sanitizeSessionForClient(session.meta) });
 
   // Structured log for Azure Monitor
   logSessionEvent("session-created", meta.id, { agent: meta.agent, name: meta.name });
@@ -499,7 +502,7 @@ export function getAllSessions(userId?: number): Session[] {
       return (a.meta.sortOrder ?? 0) - (b.meta.sortOrder ?? 0);
     })
     .map((s) => ({
-    ...s.meta,
+    ...sanitizeSessionForClient(s.meta),
     // Don't include full output in list endpoint — too large
     output: [],
   }));
@@ -543,7 +546,7 @@ export function updateSessionTabs(id: number, tabIds: number[]): boolean {
   if (!session) return false;
 
   session.meta.tabIds = tabIds.length > 0 ? tabIds : undefined;
-  broadcastToUser(session.meta.userId, { type: "session-updated", session: session.meta });
+  broadcastToUser(session.meta.userId, { type: "session-updated", session: sanitizeSessionForClient(session.meta) });
   persistSession(id);
 
   logSessionEvent("session-tabs-updated", id, { tabIds });
@@ -681,7 +684,7 @@ export function updateSessionFields(
   if (updates.mcpConfigOverride !== undefined) session.meta.mcpConfigOverride = updates.mcpConfigOverride;
   if (updates.tabIds !== undefined) session.meta.tabIds = updates.tabIds?.length ? updates.tabIds : undefined;
 
-  broadcastToUser(session.meta.userId, { type: "session-updated", session: session.meta });
+  broadcastToUser(session.meta.userId, { type: "session-updated", session: sanitizeSessionForClient(session.meta) });
   persistSession(id);
 
   logSessionEvent("session-fields-updated", id, { updatedKeys: Object.keys(updates) });
@@ -720,7 +723,7 @@ export async function startSession(id: number): Promise<boolean> {
   appendOutput(session, {
     timestamp: now(),
     stream: "system",
-    text: ACA_MODE
+    text: ACA_MODE && !session.meta.forceLocal
       ? session.meta.agent
         ? `Starting ACA worker for agent "${session.meta.agent}"...`
         : `Starting ACA worker (no agent)...`
@@ -730,7 +733,10 @@ export async function startSession(id: number): Promise<boolean> {
   });
 
   // Spawn async — don't block the caller
-  const launcher = ACA_MODE ? runSessionAca(session) : runSession(session);
+  // forceLocal sessions (e.g. task planner) always use the local KiroRunner
+  // child process, even when the global worker mode is "remote" (ACA_MODE).
+  const useLocal = session.meta.forceLocal || !ACA_MODE;
+  const launcher = useLocal ? runSession(session) : runSessionAca(session);
   launcher.catch((err) => {
     const msg = err instanceof Error ? err.message : String(err);
     appendOutput(session, { timestamp: now(), stream: "stderr", text: `Fatal: ${msg}` });
@@ -929,6 +935,7 @@ async function runSession(managed: ManagedSession): Promise<void> {
           args: s.args,
           env: s.env,
         })),
+        rawMcpServers: meta.rawMcpServers,
         kiroApiKey,
       });
     }
@@ -1123,7 +1130,7 @@ async function runLoopMode(
 
     // Track current task
     meta.currentTaskId = task.id;
-    broadcastToUser(meta.userId, { type: "session-updated", session: meta });
+    broadcastToUser(meta.userId, { type: "session-updated", session: sanitizeSessionForClient(meta) });
     persistSession(meta.id);
 
     appendOutput(managed, {

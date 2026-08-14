@@ -1097,6 +1097,30 @@ async function runUpgrades(pool: sql.ConnectionPool): Promise<void> {
     `);
     console.log("[migrate] Upgrade complete: requires_task added to agents.");
   }
+
+  // Upgrade 26: Add force_local and raw_mcp_servers columns to sessions table.
+  // force_local persists the flag that ensures planner sessions always run locally
+  // even when ACA_MODE / WORKER_MODE=remote is active — survives server restarts.
+  // raw_mcp_servers stores the JSON array of non-stdio MCP server entries (e.g.
+  // HTTP MCP servers for GitHub repo access) so they survive restarts too.
+  const forceLocalColExists = await pool.request().query(`
+    SELECT COUNT(*) AS cnt
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_NAME = 'sessions' AND COLUMN_NAME = 'force_local'
+  `);
+
+  if (forceLocalColExists.recordset[0].cnt === 0) {
+    console.log("[migrate] Upgrading: adding force_local and raw_mcp_servers to sessions table...");
+    await pool.request().query(`
+      ALTER TABLE sessions
+      ADD force_local BIT NOT NULL DEFAULT 0
+    `);
+    await pool.request().query(`
+      ALTER TABLE sessions
+      ADD raw_mcp_servers NVARCHAR(MAX) NULL
+    `);
+    console.log("[migrate] Upgrade complete: force_local and raw_mcp_servers added to sessions.");
+  }
 }
 
 /**
