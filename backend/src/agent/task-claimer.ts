@@ -553,14 +553,21 @@ export async function markTaskDone(
 /**
  * Find a shared branch from sibling tasks in the same tab(s).
  *
- * Used for AC#2: when a task has no `branch` value, look up other tasks in
- * the same tab(s) that have a branch set and are in a non-terminal state
- * (todo, in-progress, or developed). This filters out branches from completed
- * tasks (old one-off work) while still discovering a branch even when only one
- * sibling task has it — the primary use case (Task A creates branch, Task B joins it).
+ * **Design note:** This function is an OPT-IN utility for tooling (e.g., a UI
+ * that suggests group branches when creating tasks). It is NOT called implicitly
+ * during task execution — the dev-agent only uses branches that are explicitly
+ * pre-set on a task's `branch` field (via the API or UI). This avoids the
+ * false-match risk described below.
  *
- * If exactly one such branch exists, return it (the task should join it).
- * If multiple branches exist (ambiguous) or none, returns null.
+ * **Risk of implicit use:** A tab may contain many unrelated tasks at different
+ * stages. Using "same tab + exactly one active branch" as a proxy for grouping
+ * can cause unrelated tasks to be checked out onto another task's branch.
+ * Only use this function when there is additional context confirming the tasks
+ * should be grouped (e.g., user confirmation in the UI, or a common prefix).
+ *
+ * Looks up other tasks in the same tab(s) that have a branch set and are in a
+ * non-terminal state (todo, in-progress, or developed). If exactly one such
+ * branch exists, returns it. If multiple or none, returns null.
  *
  * @param taskId The task to find siblings for (excluded from results)
  * @param tabIds The tab IDs the task belongs to (if not provided, looked up from DB)

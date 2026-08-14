@@ -25,7 +25,7 @@ dotenv.config();
 import { resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { KiroRunner } from "./kiro-runner.js";
-import { claimTask, markTaskDeveloped, resetTaskToTodo, getAvailableTaskCount, getTasksByBranch, findSharedBranchInTab } from "./task-claimer.js";
+import { claimTask, markTaskDeveloped, resetTaskToTodo, getAvailableTaskCount, getTasksByBranch } from "./task-claimer.js";
 import { buildDevPrompt, buildTddDevPrompt } from "./prompt-builder.js";
 import { parseGitHubRepoUrl } from "./repo-url-parser.js";
 import { prepareWorkspace, installDependencies, createFeatureBranch, checkoutExistingBranch, commitChanges, pushBranch } from "./git-workspace.js";
@@ -338,35 +338,29 @@ async function runOnce(config: AgentConfig): Promise<boolean> {
   }
 
   // 5. Resolve branch — existing shared branch or create new
+  //
+  // AC#1: If task.branch is pre-set, check out that existing branch.
+  // AC#2: Grouping is achieved by pre-setting `branch` on all tasks in a group
+  //        before they are claimed (e.g., via the API or UI). This avoids
+  //        false matches from implicit heuristics like "same tab." The helper
+  //        `findSharedBranchInTab()` exists for tooling that wants to suggest
+  //        a group branch, but is NOT called implicitly during task execution.
+  // AC#4: If no branch exists, fall back to creating a new feature branch.
   let branchName: string;
   try {
-    // AC#2: If task has no branch, look up siblings in the same tab for a shared branch
-    let siblingBranch: string | null = null;
-    if (!task.branch) {
-      siblingBranch = await findSharedBranchInTab(task.id);
-      if (siblingBranch) {
-        log(`Found shared branch from sibling tasks: ${siblingBranch}`, "cyan");
-      }
-    }
-
-    const resolution = resolveBranchForTask(task, siblingBranch);
+    const resolution = resolveBranchForTask(task);
 
     if (resolution.isExisting && resolution.branchName) {
-      // Task has an assigned branch (or inherited from siblings) — check it out
+      // Task has a pre-assigned branch (AC#1 / AC#2 via pre-set) — check it out
       branchName = await checkoutExistingBranch(workspacePath, resolution.branchName);
       log(`Checked out existing branch: ${branchName}`, "green");
-
-      // Persist the branch name back to the task if it was inherited from siblings
-      if (!task.branch) {
-        await setTaskBranchAndPr(task.id, branchName, null);
-      }
     } else {
-      // No existing branch — create a new feature branch
+      // No existing branch — create a new feature branch (AC#4)
       branchName = await createFeatureBranch(workspacePath, task.type, task.id, task.title);
       log(`Created branch: ${branchName}`, "green");
 
-      // Persist the branch name back to the task in DB
-      await setTaskBranchAndPr(task.id, branchName, null);
+      // Persist the new branch name back to the task in DB (preserving existing PR URL)
+      await setTaskBranchAndPr(task.id, branchName, task.pullRequestUrl);
     }
   } catch (err: any) {
     log(`ERROR with branch: ${err.message}`, "red");
