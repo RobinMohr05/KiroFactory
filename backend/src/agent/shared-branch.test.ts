@@ -711,3 +711,98 @@ describe("pushBranch — retry with rebase", () => {
       .rejects.toThrow("Push failed after 2 attempts");
   });
 });
+
+describe("setTaskBranchAndPr — tri-state semantics", () => {
+  it("should only update branch column when pullRequestUrl is omitted (undefined)", async () => {
+    const { getPool } = await import("../db/connection.js");
+    const mockGetPool = vi.mocked(getPool);
+
+    const mockRequest = {
+      input: vi.fn().mockReturnThis(),
+      query: vi.fn().mockResolvedValue({ rowsAffected: [1] }),
+    };
+    mockGetPool.mockResolvedValue({ request: () => mockRequest } as any);
+
+    const { setTaskBranchAndPr } = await import("../db/tasks.js");
+    await setTaskBranchAndPr(10, "feature/my-branch");
+
+    // Should have inputs for id and branch only (not pullRequestUrl)
+    const inputCalls = mockRequest.input.mock.calls.map((c: any[]) => c[0]);
+    expect(inputCalls).toContain("id");
+    expect(inputCalls).toContain("branch");
+    expect(inputCalls).not.toContain("pullRequestUrl");
+
+    // Query should SET branch but NOT pull_request_url
+    const queryStr = mockRequest.query.mock.calls[0][0] as string;
+    expect(queryStr).toContain("branch = @branch");
+    expect(queryStr).not.toContain("pull_request_url = @pullRequestUrl");
+  });
+
+  it("should only update pullRequestUrl column when branch is omitted (undefined)", async () => {
+    const { getPool } = await import("../db/connection.js");
+    const mockGetPool = vi.mocked(getPool);
+
+    const mockRequest = {
+      input: vi.fn().mockReturnThis(),
+      query: vi.fn().mockResolvedValue({ rowsAffected: [1] }),
+    };
+    mockGetPool.mockResolvedValue({ request: () => mockRequest } as any);
+
+    const { setTaskBranchAndPr } = await import("../db/tasks.js");
+    await setTaskBranchAndPr(10, undefined, "https://github.com/owner/repo/pull/42");
+
+    // Should have inputs for id and pullRequestUrl only (not branch)
+    const inputCalls = mockRequest.input.mock.calls.map((c: any[]) => c[0]);
+    expect(inputCalls).toContain("id");
+    expect(inputCalls).not.toContain("branch");
+    expect(inputCalls).toContain("pullRequestUrl");
+
+    // Query should SET pull_request_url but NOT branch
+    const queryStr = mockRequest.query.mock.calls[0][0] as string;
+    expect(queryStr).not.toContain("branch = @branch");
+    expect(queryStr).toContain("pull_request_url = @pullRequestUrl");
+  });
+
+  it("should update both columns when both are provided", async () => {
+    const { getPool } = await import("../db/connection.js");
+    const mockGetPool = vi.mocked(getPool);
+
+    const mockRequest = {
+      input: vi.fn().mockReturnThis(),
+      query: vi.fn().mockResolvedValue({ rowsAffected: [1] }),
+    };
+    mockGetPool.mockResolvedValue({ request: () => mockRequest } as any);
+
+    const { setTaskBranchAndPr } = await import("../db/tasks.js");
+    await setTaskBranchAndPr(10, "feature/branch", "https://github.com/owner/repo/pull/1");
+
+    const inputCalls = mockRequest.input.mock.calls.map((c: any[]) => c[0]);
+    expect(inputCalls).toContain("branch");
+    expect(inputCalls).toContain("pullRequestUrl");
+
+    const queryStr = mockRequest.query.mock.calls[0][0] as string;
+    expect(queryStr).toContain("branch = @branch");
+    expect(queryStr).toContain("pull_request_url = @pullRequestUrl");
+  });
+
+  it("should explicitly clear branch when null is passed", async () => {
+    const { getPool } = await import("../db/connection.js");
+    const mockGetPool = vi.mocked(getPool);
+
+    const mockRequest = {
+      input: vi.fn().mockReturnThis(),
+      query: vi.fn().mockResolvedValue({ rowsAffected: [1] }),
+    };
+    mockGetPool.mockResolvedValue({ request: () => mockRequest } as any);
+
+    const { setTaskBranchAndPr } = await import("../db/tasks.js");
+    await setTaskBranchAndPr(10, null);
+
+    // null is a valid value — it should be included in the SET clause
+    const inputCalls = mockRequest.input.mock.calls.map((c: any[]) => c[0]);
+    expect(inputCalls).toContain("branch");
+
+    const queryStr = mockRequest.query.mock.calls[0][0] as string;
+    expect(queryStr).toContain("branch = @branch");
+  });
+});

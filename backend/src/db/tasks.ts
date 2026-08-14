@@ -289,23 +289,36 @@ export async function getChangedTasksSince(since: string): Promise<Task[]> {
 }
 
 /**
- * Set the branch and pull request URL on a task.
+ * Set the branch and/or pull request URL on a task.
  * Used internally by the agent lifecycle — not exposed through the public update API.
+ *
+ * Supports tri-state semantics (consistent with `resolveTask`/`resetTask`):
+ * - `undefined`: the column is left untouched (preserves existing value).
+ * - `null`: the column is explicitly cleared to NULL.
+ * - a string: the column is set to that value.
+ *
+ * Each field is controlled independently — e.g. you can update `branch`
+ * while preserving the existing `pullRequestUrl`, or vice versa.
  */
 export async function setTaskBranchAndPr(
   taskId: number,
-  branch: string | null,
-  pullRequestUrl: string | null
+  branch?: string | null,
+  pullRequestUrl?: string | null
 ): Promise<void> {
   const pool = await getPool();
-  await pool
-    .request()
-    .input("id", sql.Int, taskId)
-    .input("branch", sql.NVarChar(250), branch)
-    .input("pullRequestUrl", sql.NVarChar(500), pullRequestUrl)
-    .query(`
-      UPDATE tasks
-      SET branch = @branch, pull_request_url = @pullRequestUrl, updated_at = GETUTCDATE()
-      WHERE id = @id
-    `);
+  const request = pool.request().input("id", sql.Int, taskId);
+
+  const setClauses = ["updated_at = GETUTCDATE()"];
+
+  if (branch !== undefined) {
+    request.input("branch", sql.NVarChar(250), branch);
+    setClauses.push("branch = @branch");
+  }
+  if (pullRequestUrl !== undefined) {
+    request.input("pullRequestUrl", sql.NVarChar(500), pullRequestUrl);
+    setClauses.push("pull_request_url = @pullRequestUrl");
+  }
+
+  // If neither field was provided, still update the timestamp
+  await request.query(`UPDATE tasks SET ${setClauses.join(", ")} WHERE id = @id`);
 }

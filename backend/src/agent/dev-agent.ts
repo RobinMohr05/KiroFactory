@@ -376,11 +376,12 @@ async function runOnce(config: AgentConfig): Promise<boolean> {
           log(`WARNING: dependency re-install after branch checkout failed: ${err.message}`, "yellow");
         }
 
-        // Persist the discovered branch back to the task (preserving existing PR URL)
-        // so subsequent lookups can find it directly via task.branch (AC#6).
+        // Persist the discovered branch back to the task so subsequent lookups
+        // can find it directly via task.branch (AC#6).
         // Safe to persist immediately: the branch already exists on the remote.
+        // Only update the branch column — leave pull_request_url untouched.
         if (!task.branch) {
-          await setTaskBranchAndPr(task.id, branchName, task.pullRequestUrl);
+          await setTaskBranchAndPr(task.id, branchName);
         }
       } catch (checkoutErr: any) {
         // Branch doesn't exist on remote — fall through to create a new branch instead
@@ -390,7 +391,7 @@ async function runOnce(config: AgentConfig): Promise<boolean> {
         log(`Falling through to create a new feature branch instead.`, "yellow");
 
         // Clear the stale branch reference from the DB so we don't keep trying it
-        await setTaskBranchAndPr(task.id, null, task.pullRequestUrl);
+        await setTaskBranchAndPr(task.id, null);
 
         branchName = await createFeatureBranch(workspacePath, task.type, task.id, task.title);
         log(`Created branch: ${branchName}`, "green");
@@ -441,22 +442,35 @@ async function runOnce(config: AgentConfig): Promise<boolean> {
           await pushBranch(workspacePath, branchName);
           failBranch = branchName;
           log(`Best-effort push to "${branchName}" succeeded.`, "yellow");
-          // Attempt PR creation too (best-effort)
+          // Attempt PR association (best-effort) — check for existing PR first
+          // to avoid duplicate creation (e.g. from a previous failed run that
+          // already created a PR for this branch).
           try {
-            const prTitle = `[WIP] ${task.title} [Vibecode Heaven #${task.id}]`;
-            const prBody = buildPrBody(task.id, task.title, task.type, task.priority, task.description);
-            const failPrResult = await createPullRequest({
+            const existingFailPr = await findExistingPrForBranch({
               owner: repoInfo.owner,
               repo: repoInfo.repo,
               pat: githubPat,
               head: branchName,
-              base: baseBranch,
-              title: prTitle,
-              body: prBody,
             });
-            if (failPrResult.success) {
-              failPrUrl = failPrResult.prUrl ?? null;
-              log(`Best-effort PR created: ${failPrUrl}`, "yellow");
+            if (existingFailPr) {
+              failPrUrl = existingFailPr.prUrl;
+              log(`Existing PR found for branch: ${failPrUrl}`, "yellow");
+            } else {
+              const prTitle = `[WIP] ${task.title} [Vibecode Heaven #${task.id}]`;
+              const prBody = buildPrBody(task.id, task.title, task.type, task.priority, task.description);
+              const failPrResult = await createPullRequest({
+                owner: repoInfo.owner,
+                repo: repoInfo.repo,
+                pat: githubPat,
+                head: branchName,
+                base: baseBranch,
+                title: prTitle,
+                body: prBody,
+              });
+              if (failPrResult.success) {
+                failPrUrl = failPrResult.prUrl ?? null;
+                log(`Best-effort PR created: ${failPrUrl}`, "yellow");
+              }
             }
           } catch { /* best effort — ignore PR creation failure */ }
         }
@@ -539,8 +553,9 @@ async function runOnce(config: AgentConfig): Promise<boolean> {
     // This is deferred from step 5 for newly-created branches to avoid the race
     // condition where a concurrent agent discovers the branch via findSharedBranchInTab
     // before it's been pushed to the remote.
+    // Only update the branch column — pull_request_url will be set in step 9.
     if (branchNeedsPostPushPersist) {
-      await setTaskBranchAndPr(task.id, branchName, task.pullRequestUrl);
+      await setTaskBranchAndPr(task.id, branchName);
     }
   } catch (err: any) {
     log(`ERROR pushing: ${err.message}`, "red");
