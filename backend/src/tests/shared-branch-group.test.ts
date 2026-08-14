@@ -7,7 +7,7 @@
 
 import { describe, it, expect } from "vitest";
 // @ts-expect-error — plain JS module from worker/ (no type declarations; runs fine at test time)
-import { buildGroupPrContent, findGroupBranchFromSiblings } from "../../../worker/shared-branch-utils.js";
+import { buildGroupPrContent, findGroupBranchFromSiblings, findSiblingPrUrl } from "../../../worker/shared-branch-utils.js";
 
 describe("shared branch group - buildGroupPrContent", () => {
   // Tests AC5: PR title/body should reference all tasks in the group
@@ -139,5 +139,44 @@ describe("shared branch group - findGroupBranchFromSiblings", () => {
       branch: "feature/#7_setup-auth",
       pullRequestUrl: null,
     });
+  });
+});
+
+describe("shared branch group - findSiblingPrUrl", () => {
+  // Tests that we can resolve a PR URL from sibling tasks when the current
+  // task's own pullRequestUrl is null (review comment fix: second+ tasks in
+  // a group don't have their own PR URL persisted).
+
+  it("should return null when siblings array is empty", () => {
+    const result = findSiblingPrUrl([]);
+    expect(result).toBeNull();
+  });
+
+  it("should return null when no siblings have a pullRequestUrl", () => {
+    const siblings = [
+      { id: 10, title: "Task A", type: "feature", description: "a", pullRequestUrl: null },
+      { id: 11, title: "Task B", type: "feature", description: "b", pullRequestUrl: null },
+    ];
+    const result = findSiblingPrUrl(siblings);
+    expect(result).toBeNull();
+  });
+
+  it("should return the first sibling's pullRequestUrl when available", () => {
+    const siblings = [
+      { id: 10, title: "Task A", type: "feature", description: "a", pullRequestUrl: "https://github.com/org/repo/pull/5" },
+      { id: 11, title: "Task B", type: "feature", description: "b", pullRequestUrl: null },
+    ];
+    const result = findSiblingPrUrl(siblings);
+    expect(result).toBe("https://github.com/org/repo/pull/5");
+  });
+
+  it("should return the PR URL even if only one sibling has it", () => {
+    const siblings = [
+      { id: 10, title: "Task A", type: "feature", description: "a", pullRequestUrl: null },
+      { id: 11, title: "Task B", type: "feature", description: "b", pullRequestUrl: null },
+      { id: 12, title: "Task C", type: "feature", description: "c", pullRequestUrl: "https://github.com/org/repo/pull/7" },
+    ];
+    const result = findSiblingPrUrl(siblings);
+    expect(result).toBe("https://github.com/org/repo/pull/7");
   });
 });

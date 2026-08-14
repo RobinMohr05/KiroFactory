@@ -81,10 +81,32 @@ export function buildGroupPrContent(currentTask, siblings) {
 }
 
 /**
+ * Find the PR URL from sibling tasks in a shared-branch group.
+ *
+ * When the current task's own `pullRequestUrl` is null (because only the
+ * first task that created the PR has it persisted), this function finds
+ * the PR URL from any sibling that has one.
+ *
+ * @param {Array<{pullRequestUrl: string|null}>} siblings
+ * @returns {string | null} The PR URL, or null if no sibling has one
+ */
+export function findSiblingPrUrl(siblings) {
+  const withPr = siblings.find((s) => s.pullRequestUrl);
+  return withPr ? withPr.pullRequestUrl : null;
+}
+
+/**
  * Find the shared branch (and PR URL) from a set of sibling tasks.
  *
  * Returns the branch info from the first sibling that has a branch set,
  * preferring one that also has a pullRequestUrl.
+ *
+ * NOTE: Currently unused in production — sibling lookup is handled server-side
+ * by `findSiblingTasks()` in `task-claimer.ts`, and the worker receives sibling
+ * data pre-resolved via `currentTaskMeta.siblingTasks`. Kept as a tested utility
+ * for potential future use in a worker-side discovery path (e.g., if the worker
+ * ever needs to query siblings independently when the orchestrator can't
+ * pre-resolve them).
  *
  * @param {Array<{branch: string|null, pullRequestUrl: string|null}>} siblings
  * @returns {{ branch: string, pullRequestUrl: string|null } | null}

@@ -2044,7 +2044,7 @@ interface WorkerPromptResult {
 /**
  * Send a prompt to an ACA worker and wait for prompt-done response.
  */
-async function streamPromptAca(managed: ManagedSession, text: string, taskMeta?: { id: number; title: string; type: string; description: string; files: string[]; branch?: string | null; pullRequestUrl?: string | null; siblingTasks?: Array<{ id: number; title: string; type: string; description: string }> }): Promise<WorkerPromptResult> {
+async function streamPromptAca(managed: ManagedSession, text: string, taskMeta?: { id: number; title: string; type: string; description: string; files: string[]; branch?: string | null; pullRequestUrl?: string | null; siblingTasks?: Array<{ id: number; title: string; type: string; description: string; pullRequestUrl: string | null }> }): Promise<WorkerPromptResult> {
   if (!isWorkerConnected(managed.meta.id)) {
     throw new Error("Worker is not connected");
   }
@@ -2291,12 +2291,12 @@ async function runLoopModeAca(
 
     // Look up sibling tasks sharing the same branch for grouped PR content (AC5).
     // Only meaningful when the task already has a branch set.
-    let siblingTasks: Array<{ id: number; title: string; type: string; description: string }> | undefined;
+    let siblingTasks: Array<{ id: number; title: string; type: string; description: string; pullRequestUrl: string | null }> | undefined;
     if (task.branch) {
       try {
         const siblings = await findSiblingTasks(task.branch, task.id);
         if (siblings.length > 0) {
-          siblingTasks = siblings.map(s => ({ id: s.id, title: s.title, type: s.type, description: s.description }));
+          siblingTasks = siblings.map(s => ({ id: s.id, title: s.title, type: s.type, description: s.description, pullRequestUrl: s.pullRequestUrl }));
           appendOutput(managed, {
             timestamp: now(),
             stream: "system",

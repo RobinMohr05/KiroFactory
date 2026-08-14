@@ -20,7 +20,7 @@
 import { spawn, execSync, execFileSync } from "node:child_process";
 import { WebSocket } from "ws";
 import { mkdirSync, existsSync, writeFileSync, appendFileSync } from "node:fs";
-import { buildGroupPrContent } from "./shared-branch-utils.js";
+import { buildGroupPrContent, findSiblingPrUrl } from "./shared-branch-utils.js";
 
 // ---------------------------------------------------------------------------
 // Configuration (from environment variables injected by orchestrator)
@@ -1255,6 +1255,42 @@ function parseAzureDevOpsUrl(url) {
   return null;
 }
 
+/**
+ * Fetch an existing active Azure DevOps PR for the given branch, or null if none.
+ * Used as a recovery path when PR creation returns 409 (conflict — PR already exists).
+ */
+async function fetchExistingAzureDevOpsPullRequest(org, project, repo, branchName) {
+  if (!AZURE_DEVOPS_PAT) return null;
+
+  const apiUrl =
+    `https://dev.azure.com/${encodeURIComponent(org)}/${encodeURIComponent(project)}` +
+    `/_apis/git/repositories/${encodeURIComponent(repo)}/pullrequests` +
+    `?searchCriteria.sourceRefName=refs/heads/${encodeURIComponent(branchName)}` +
+    `&searchCriteria.status=active&$top=1&api-version=7.1`;
+
+  try {
+    const response = await fetch(apiUrl, {
+      headers: {
+        "Authorization": `Basic ${Buffer.from(`:${AZURE_DEVOPS_PAT}`).toString("base64")}`,
+        "Accept": "application/json",
+      },
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    const prs = data?.value;
+    if (Array.isArray(prs) && prs.length > 0) {
+      const pr = prs[0];
+      return pr?._links?.web?.href ||
+        (pr?.repository?.webUrl && pr?.pullRequestId
+          ? `${pr.repository.webUrl}/pullrequest/${pr.pullRequestId}`
+          : null);
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 /** Create a Pull Request via the Azure DevOps REST API. */
 async function createAzureDevOpsPullRequest(branchName) {
   const parsed = parseAzureDevOpsUrl(REPO_URL);
@@ -1309,6 +1345,24 @@ async function createAzureDevOpsPullRequest(branchName) {
 
     const errorData = await response.json().catch(() => ({}));
     const errorMsg = errorData.message || `HTTP ${response.status}`;
+
+    // Azure DevOps returns 409 Conflict when a PR for this branch already
+    // exists. Mirror the GitHub 422 recovery: fetch the existing PR URL
+    // instead of failing and leaving prUrl null in the DB.
+    if (response.status === 409) {
+      const existingUrl = await fetchExistingAzureDevOpsPullRequest(org, project, repo, branchName);
+      if (existingUrl) {
+        sendOutput(`PR already exists: ${existingUrl}`, "system");
+        logInfo("Using existing Azure DevOps PR", { url: existingUrl, branch: branchName });
+        // If this is a grouped task (has siblings), update the existing PR's
+        // title and body to reference all tasks in the group (AC5).
+        if (currentTaskMeta?.siblingTasks?.length > 0) {
+          await updateAzureDevOpsPullRequest(existingUrl, title, description);
+        }
+        return existingUrl;
+      }
+    }
+
     sendOutput(`PR creation failed: ${errorMsg}`, "stderr");
     logError("Azure DevOps PR creation failed", { status: response.status, error: errorMsg });
     return null;
@@ -1974,8 +2028,12 @@ function finishPromptTurn(msg) {
           // created the PR), skip PR creation (the push already updated the PR's
           // branch automatically). Instead, update the PR title/body to include
           // all tasks in the group (AC5).
-          if (currentTaskMeta?.pullRequestUrl && currentTaskMeta?.siblingTasks?.length > 0) {
-            prUrl = currentTaskMeta.pullRequestUrl;
+          // Check both the current task's own pullRequestUrl AND sibling PR URLs,
+          // because the second+ task in a group won't have its own PR URL persisted.
+          const groupPrUrl = currentTaskMeta?.pullRequestUrl
+            || (currentTaskMeta?.siblingTasks?.length > 0 ? findSiblingPrUrl(currentTaskMeta.siblingTasks) : null);
+          if (groupPrUrl && currentTaskMeta?.siblingTasks?.length > 0) {
+            prUrl = groupPrUrl;
             const { title, body } = buildPrContent();
             const provider = detectGitProvider(REPO_URL);
             if (provider === "github") {

@@ -258,7 +258,7 @@ export interface WorkerTaskMeta {
   /** Pull request URL from a previous pipeline stage (null = no PR yet) */
   pullRequestUrl?: string | null;
   /** Sibling tasks sharing the same branch (for grouped PR content). */
-  siblingTasks?: Array<{ id: number; title: string; type: string; description: string }>;
+  siblingTasks?: Array<{ id: number; title: string; type: string; description: string; pullRequestUrl: string | null }>;
 }
 
 /**
