@@ -373,15 +373,44 @@ router.post("/:sessionId/message", async (req: Request, res: Response) => {
       return;
     }
 
-    const { message } = req.body as { message: string };
+    const { message, image } = req.body as { message: string; image?: { data: string; mimeType: string } };
     if (!message || !message.trim()) {
       res.status(400).json({ error: "message is required" });
       return;
     }
 
-    const sent = await sendPrompt(sessionId, message.trim());
-    if (!sent) {
-      res.status(400).json({ error: "Could not send message — session may not be running" });
+    // Validate image if provided
+    if (image) {
+      const ALLOWED_MIME_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"];
+      const MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB
+
+      if (!image.data || !image.mimeType) {
+        res.status(400).json({ error: "Image must include both 'data' (base64) and 'mimeType'" });
+        return;
+      }
+
+      if (!ALLOWED_MIME_TYPES.includes(image.mimeType)) {
+        res.status(400).json({ error: `Unsupported image type: ${image.mimeType}. Allowed: ${ALLOWED_MIME_TYPES.join(", ")}` });
+        return;
+      }
+
+      const decodedSize = Buffer.byteLength(image.data, "base64");
+      if (decodedSize > MAX_IMAGE_SIZE) {
+        res.status(400).json({ error: `Image too large: ${(decodedSize / 1024 / 1024).toFixed(1)}MB exceeds the 10MB limit` });
+        return;
+      }
+    }
+
+    try {
+      const sent = await sendPrompt(sessionId, message.trim(), image);
+      if (!sent) {
+        res.status(400).json({ error: "Could not send message — session may not be running" });
+        return;
+      }
+    } catch (err) {
+      // Catch the "remote worker mode" error from sendPrompt
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(400).json({ error: msg });
       return;
     }
 

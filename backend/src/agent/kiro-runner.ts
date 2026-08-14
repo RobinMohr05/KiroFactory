@@ -384,17 +384,24 @@ export class KiroRunner {
   }
 
   /** Send a prompt and yield streaming updates as they arrive. */
-  async *prompt(text: string): AsyncGenerator<SessionUpdateChunk> {
+  async *prompt(text: string, image?: { data: string; mimeType: string }): AsyncGenerator<SessionUpdateChunk> {
     if (!this.sessionId) throw new Error("No active session");
 
     this.turnDone = false;
     this.updateQueue = [];
     this._lastTurnCredits = 0;
 
+    const contentBlocks: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [
+      { type: "text" as const, text },
+    ];
+    if (image) {
+      contentBlocks.push({ type: "image" as const, data: image.data, mimeType: image.mimeType });
+    }
+
     const promptDone = this.conn
       .prompt({
         sessionId: this.sessionId,
-        prompt: [{ type: "text" as const, text }],
+        prompt: contentBlocks,
       })
       .then(() => {
         this.turnDone = true;
