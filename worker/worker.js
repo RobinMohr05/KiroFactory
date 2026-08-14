@@ -2323,13 +2323,39 @@ function handlePrompt(text, taskMeta) {
     } catch (err) {
       sendOutput(`Warning: could not create task branch: ${err?.message || err}`, "stderr");
       logError("Failed to create task branch", { error: err?.message || String(err) });
-      // Fall back to a session-scoped branch (-B so a retry can't collide).
-      currentBranchName = `kirofactory/${SESSION_ID}`;
+      // Fall back to the TASK's own deterministic branch name — never a
+      // session-scoped name. This worker container is reused across many
+      // unrelated tasks over a loop session's lifetime (SESSION_ID stays
+      // constant), so a fallback keyed only on SESSION_ID collides across
+      // every task that ever hits this catch block during that session's
+      // lifetime — or even across different sessions, since a colliding
+      // name persisted as a task's `branch` in the DB gets reused verbatim
+      // the next time ANY session reclaims that task. Two unrelated tasks
+      // then land divergent commit histories on the exact same remote
+      // branch, which manifests as a non-fast-forward push rejection and
+      // (once the auto-rebase-retry hits a real conflict) an unresolvable
+      // rebase failure — looking exactly like a git credential/permission
+      // problem when the real cause is this naming collision. Basing it on
+      // DEV_BRANCH (not an ambiguous current HEAD) keeps it consistent with
+      // createTaskBranch()'s normal behavior.
+      currentBranchName = buildBranchName(taskMeta.type || "task", taskMeta.id, taskMeta.title);
       try {
-        execFileArgs("git", ["checkout", "-B", currentBranchName], { cwd: WORKSPACE });
-        sendOutput(`Using fallback branch: ${currentBranchName}`, "stderr");
+        execFileArgs("git", ["checkout", "-B", currentBranchName, DEV_BRANCH], { cwd: WORKSPACE });
+        sendOutput(`Using fallback branch: ${currentBranchName} (from ${DEV_BRANCH})`, "stderr");
       } catch (fallbackErr) {
         logError("Fallback branch checkout failed", { error: fallbackErr?.message || String(fallbackErr) });
+        // Absolute last resort: still task+session scoped so it can never
+        // collide with another task's branch, even though it forfeits the
+        // deterministic name other pipeline stages would look for.
+        currentBranchName = `kirofactory/${SESSION_ID}-task${taskMeta.id}`;
+        try {
+          execFileArgs("git", ["checkout", "-B", currentBranchName], { cwd: WORKSPACE });
+          sendOutput(`Using last-resort fallback branch: ${currentBranchName}`, "stderr");
+        } catch (lastResortErr) {
+          logError("Last-resort fallback branch checkout also failed", {
+            error: lastResortErr?.message || String(lastResortErr),
+          });
+        }
       }
     }
   }
