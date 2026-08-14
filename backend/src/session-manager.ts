@@ -14,7 +14,7 @@ import { KiroRunner } from "./agent/kiro-runner.js";
 import type { SessionUpdateChunk } from "./agent/kiro-runner.js";
 import { broadcastToUser } from "./websocket-handler.js";
 import { sanitizeSessionForClient } from "./session-sanitize.js";
-import { claimTask, resolveTask, resetTask, getAvailableTaskCount, waitForTaskAvailable, markTaskDone } from "./agent/task-claimer.js";
+import { claimTask, resolveTask, resetTask, getAvailableTaskCount, waitForTaskAvailable, markTaskDone, findSiblingTasks } from "./agent/task-claimer.js";
 import type { ClaimedTask } from "./agent/task-claimer.js";
 import { buildDevPrompt, buildReviewPrompt } from "./agent/prompt-builder.js";
 import { buildPersistentBranchName } from "./agent/repo-url-parser.js";
@@ -2044,13 +2044,13 @@ interface WorkerPromptResult {
 /**
  * Send a prompt to an ACA worker and wait for prompt-done response.
  */
-async function streamPromptAca(managed: ManagedSession, text: string, taskMeta?: { id: number; title: string; type: string; description: string; files: string[]; branch?: string | null; pullRequestUrl?: string | null }): Promise<WorkerPromptResult> {
+async function streamPromptAca(managed: ManagedSession, text: string, taskMeta?: { id: number; title: string; type: string; description: string; files: string[]; branch?: string | null; pullRequestUrl?: string | null; siblingTasks?: Array<{ id: number; title: string; type: string; description: string }> }): Promise<WorkerPromptResult> {
   if (!isWorkerConnected(managed.meta.id)) {
     throw new Error("Worker is not connected");
   }
 
   // Send the prompt to the worker (with optional task metadata for branch/commit/PR)
-  const workerTaskMeta = taskMeta ? { id: taskMeta.id, title: taskMeta.title, type: taskMeta.type, description: taskMeta.description, files: taskMeta.files, branch: taskMeta.branch ?? null, pullRequestUrl: taskMeta.pullRequestUrl ?? null } : undefined;
+  const workerTaskMeta = taskMeta ? { id: taskMeta.id, title: taskMeta.title, type: taskMeta.type, description: taskMeta.description, files: taskMeta.files, branch: taskMeta.branch ?? null, pullRequestUrl: taskMeta.pullRequestUrl ?? null, siblingTasks: taskMeta.siblingTasks } : undefined;
   const sent = sendWorkerPrompt(managed.meta.id, text, workerTaskMeta);
   if (!sent) {
     throw new Error("Failed to send prompt to worker");
@@ -2289,8 +2289,33 @@ async function runLoopModeAca(
     /** Set when the agent succeeded but the push failed — not worth retrying. */
     let deliveryFailure = false;
 
+    // Look up sibling tasks sharing the same branch for grouped PR content (AC5).
+    // Only meaningful when the task already has a branch set.
+    let siblingTasks: Array<{ id: number; title: string; type: string; description: string }> | undefined;
+    if (task.branch) {
+      try {
+        const siblings = await findSiblingTasks(task.branch, task.id);
+        if (siblings.length > 0) {
+          siblingTasks = siblings.map(s => ({ id: s.id, title: s.title, type: s.type, description: s.description }));
+          appendOutput(managed, {
+            timestamp: now(),
+            stream: "system",
+            text: `Task shares branch "${task.branch}" with ${siblings.length} sibling task(s): ${siblings.map(s => `#${s.id}`).join(", ")}`,
+          });
+        }
+      } catch (err) {
+        // Non-critical — proceed without sibling info
+        const msg = err instanceof Error ? err.message : String(err);
+        appendOutput(managed, {
+          timestamp: now(),
+          stream: "stderr",
+          text: `Warning: could not look up sibling tasks: ${msg}`,
+        });
+      }
+    }
+
     try {
-      promptResult = await streamPromptAca(managed, prompt, { id: task.id, title: task.title, type: task.type, description: task.description, files: task.files, branch: task.branch, pullRequestUrl: task.pullRequestUrl });
+      promptResult = await streamPromptAca(managed, prompt, { id: task.id, title: task.title, type: task.type, description: task.description, files: task.files, branch: task.branch, pullRequestUrl: task.pullRequestUrl, siblingTasks });
     } catch (err) {
       success = false;
       const msg = err instanceof Error ? err.message : String(err);

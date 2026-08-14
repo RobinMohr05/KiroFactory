@@ -18,6 +18,7 @@ RUN npm install --omit=dev
 
 # Copy worker script
 COPY worker.js ./
+COPY shared-branch-utils.js ./
 COPY verdict-mcp-server.js ./
 COPY pr-review-mcp-server.js ./
 COPY ta-mcp-connect ./

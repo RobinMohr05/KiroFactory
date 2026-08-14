@@ -8,7 +8,7 @@
 import { EventEmitter } from "node:events";
 import { getPool, sql } from "../db/connection.js";
 import type { Task } from "../types.js";
-import { getTaskById } from "../db/tasks.js";
+import { getTaskById, getTasksByBranch } from "../db/tasks.js";
 
 // ---------------------------------------------------------------------------
 // Task-available event bus
@@ -529,4 +529,29 @@ export async function markTaskDone(
     `);
 
   broadcastTaskUpdate(taskId);
+}
+
+/**
+ * Find the shared branch info for a task by looking at sibling tasks that
+ * share the same `branch` value in the DB.
+ *
+ * Used for the shared branch/PR feature (task #163): when a claimed task has
+ * no `branch` value, the orchestrator can still discover the group's branch
+ * by checking if any other task in the DB already has a branch value that
+ * maps to the same group. However, since "group" is defined by tasks sharing
+ * the same branch value, this lookup only works if the task itself already
+ * has a branch set (otherwise there's nothing to join on).
+ *
+ * This function is primarily useful when a task already has a branch value
+ * set in the DB and we want to find its siblings for PR body updates.
+ *
+ * @param branch The branch name to look for siblings of
+ * @param excludeTaskId The current task ID (excluded from results)
+ * @returns Sibling tasks with their metadata, or empty array if none found
+ */
+export async function findSiblingTasks(
+  branch: string,
+  excludeTaskId: number
+): Promise<Array<{ id: number; title: string; type: string; description: string; branch: string | null; pullRequestUrl: string | null }>> {
+  return getTasksByBranch(branch, excludeTaskId);
 }

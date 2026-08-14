@@ -309,3 +309,44 @@ export async function setTaskBranchAndPr(
       WHERE id = @id
     `);
 }
+
+/**
+ * Find all tasks that share the same branch value as a given task.
+ * Used for the shared branch/PR feature (task #163) — when multiple tasks
+ * are grouped on the same branch, the dev-agent should use the existing
+ * branch and PR instead of creating new ones.
+ *
+ * @param branch The branch name to look for
+ * @param excludeTaskId Optional task ID to exclude (typically the current task)
+ * @returns Tasks sharing that branch (minimal fields: id, title, type, description, branch, pullRequestUrl)
+ */
+export async function getTasksByBranch(
+  branch: string,
+  excludeTaskId?: number
+): Promise<Array<{ id: number; title: string; type: string; description: string; branch: string | null; pullRequestUrl: string | null }>> {
+  const pool = await getPool();
+  const request = pool.request().input("branch", sql.NVarChar(250), branch);
+
+  let query = `
+    SELECT id, title, type, description, branch, pull_request_url
+    FROM tasks
+    WHERE branch = @branch
+  `;
+
+  if (excludeTaskId !== undefined) {
+    request.input("excludeId", sql.Int, excludeTaskId);
+    query += ` AND id != @excludeId`;
+  }
+
+  query += ` ORDER BY id ASC`;
+
+  const result = await request.query(query);
+  return result.recordset.map((row: Record<string, unknown>) => ({
+    id: row.id as number,
+    title: row.title as string,
+    type: row.type as string,
+    description: (row.description as string) || "",
+    branch: (row.branch as string) || null,
+    pullRequestUrl: (row.pull_request_url as string) || null,
+  }));
+}
