@@ -363,14 +363,29 @@ async function runOnce(config: AgentConfig): Promise<boolean> {
 
     if (resolution.isExisting && resolution.branchName) {
       // Task has an existing branch (AC#1 via pre-set, or AC#2 via sibling lookup) — check it out
-      branchName = await checkoutExistingBranch(workspacePath, resolution.branchName);
-      log(`Checked out existing branch: ${branchName}`, "green");
+      try {
+        branchName = await checkoutExistingBranch(workspacePath, resolution.branchName);
+        log(`Checked out existing branch: ${branchName}`, "green");
 
-      // Persist the discovered branch back to the task (preserving existing PR URL)
-      // so subsequent lookups can find it directly via task.branch (AC#6).
-      // Safe to persist immediately: the branch already exists on the remote.
-      if (!task.branch) {
-        await setTaskBranchAndPr(task.id, branchName, task.pullRequestUrl);
+        // Persist the discovered branch back to the task (preserving existing PR URL)
+        // so subsequent lookups can find it directly via task.branch (AC#6).
+        // Safe to persist immediately: the branch already exists on the remote.
+        if (!task.branch) {
+          await setTaskBranchAndPr(task.id, branchName, task.pullRequestUrl);
+        }
+      } catch (checkoutErr: any) {
+        // Branch doesn't exist on remote — fall through to create a new branch instead
+        // of failing the task entirely. This prevents an infinite retry loop when
+        // task.branch is pre-set to a branch that was deleted from the remote.
+        log(`WARNING: Could not checkout existing branch "${resolution.branchName}": ${checkoutErr.message}`, "yellow");
+        log(`Falling through to create a new feature branch instead.`, "yellow");
+
+        // Clear the stale branch reference from the DB so we don't keep trying it
+        await setTaskBranchAndPr(task.id, null, task.pullRequestUrl);
+
+        branchName = await createFeatureBranch(workspacePath, task.type, task.id, task.title);
+        log(`Created branch: ${branchName}`, "green");
+        branchNeedsPostPushPersist = true;
       }
     } else {
       // No existing branch — create a new feature branch (AC#4)

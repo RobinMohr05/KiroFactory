@@ -251,6 +251,36 @@ describe("checkoutExistingBranch", () => {
     await expect(checkoutExistingBranch("/workspace", "nonexistent-branch"))
       .rejects.toThrow("does not exist on remote");
   });
+
+  it("should throw a descriptive error (used by dev-agent to detect checkout failure and fall through to create)", async () => {
+    // The dev-agent catches this specific error to fall through to createFeatureBranch
+    // instead of infinitely retrying a stale branch. This test documents the error message
+    // contract that the dev-agent's catch block relies on.
+    const { execFile } = await import("node:child_process");
+    const mockExecFile = vi.mocked(execFile);
+
+    let callCount = 0;
+    mockExecFile.mockImplementation((_cmd: any, args: any, _opts: any, cb?: any) => {
+      callCount++;
+      const callback = typeof _opts === "function" ? _opts : cb;
+      if (callCount === 1) {
+        if (callback) callback(null, "", "");
+      } else if (callCount === 2) {
+        if (callback) callback(new Error("fatal: Needed a single revision"), "", "");
+      }
+      return {} as any;
+    });
+
+    try {
+      await checkoutExistingBranch("/workspace", "deleted-branch");
+      expect.fail("Should have thrown");
+    } catch (err: any) {
+      // The error message must include the branch name and "does not exist on remote"
+      // so the dev-agent's log output is meaningful
+      expect(err.message).toContain("deleted-branch");
+      expect(err.message).toContain("does not exist on remote");
+    }
+  });
 });
 
 describe("getTasksByBranch", () => {
