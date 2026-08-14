@@ -2239,17 +2239,29 @@ function handlePrompt(text, taskMeta) {
       if (taskMeta.branch) {
         resetWorkingTree();
         execFileArgs("git", ["fetch", authRemoteUrl || "origin", taskMeta.branch], { cwd: WORKSPACE });
-        // checkout -B <branch> origin/<branch> — not a plain `checkout <branch>` —
-        // because this worker container is reused across many claimed tasks in a
-        // loop (see refreshDevBranch()'s doc comment for the same rationale). If
-        // this exact branch was already checked out locally earlier in the
-        // container's lifetime (e.g. the code-reviewer-agent reviewing the same
-        // task twice across a review → rework → re-review cycle), a plain
-        // `checkout` is a no-op on content: it switches to the existing local
-        // ref as-is and never picks up commits the developer pushed in between.
-        // `-B` force-resets the local branch to match the freshly fetched
-        // remote tip every time, so the reviewer always sees the latest state.
-        execFileArgs("git", ["checkout", "-B", taskMeta.branch, `origin/${taskMeta.branch}`], { cwd: WORKSPACE });
+        // checkout -B <branch> FETCH_HEAD — not a plain `checkout <branch>` and
+        // NOT `origin/<branch>` — for two separate reasons:
+        //
+        // 1. This worker container is reused across many claimed tasks in a loop
+        //    (see refreshDevBranch()'s doc comment for the same rationale). If
+        //    this exact branch was already checked out locally earlier in the
+        //    container's lifetime (e.g. the code-reviewer-agent reviewing the same
+        //    task twice across a review → rework → re-review cycle), a plain
+        //    `checkout` is a no-op on content: it switches to the existing local
+        //    ref as-is and never picks up commits pushed in between. `-B`
+        //    force-resets the local branch every time, so we always see the
+        //    latest state.
+        // 2. FETCH_HEAD, not refs/remotes/origin/<branch> — fetching from a raw
+        //    authenticated URL (not the "origin" remote name, same reasoning as
+        //    syncPersistentBranch()/setupPersistentBranch() above) only updates
+        //    FETCH_HEAD. `origin/<branch>` is whatever it was at container clone
+        //    time (or an even earlier fetch) and is NEVER refreshed by this fetch
+        //    — using it here silently reset the branch to a stale snapshot that
+        //    predated commits already pushed by an earlier round on this same
+        //    task, so the next round's commit landed on a stale base and its
+        //    push was rejected as non-fast-forward (the task then got wrongly
+        //    classified as an unretryable credential/permission failure).
+        execFileArgs("git", ["checkout", "-B", taskMeta.branch, "FETCH_HEAD"], { cwd: WORKSPACE });
         currentBranchName = taskMeta.branch;
         sendOutput(`Checked out existing branch: ${taskMeta.branch} (reset to origin's latest)`, "system");
       } else {
@@ -2277,10 +2289,11 @@ function handlePrompt(text, taskMeta) {
         if (remoteRef) {
           resetWorkingTree();
           execFileArgs("git", ["fetch", authRemoteUrl || "origin", deterministicBranch], { cwd: WORKSPACE });
-          // -B against origin/<branch>, same reasoning as the taskMeta.branch
-          // path above: force the local ref to match the fetched remote tip
-          // rather than reusing whatever was checked out locally before.
-          execFileArgs("git", ["checkout", "-B", deterministicBranch, `origin/${deterministicBranch}`], { cwd: WORKSPACE });
+          // -B against FETCH_HEAD, same reasoning as the taskMeta.branch path
+          // above: force the local ref to match the just-fetched remote tip
+          // rather than reusing whatever was checked out locally before —
+          // and NOT origin/<branch>, which this raw-URL fetch never updates.
+          execFileArgs("git", ["checkout", "-B", deterministicBranch, "FETCH_HEAD"], { cwd: WORKSPACE });
           currentBranchName = deterministicBranch;
           sendOutput(
             `Task had no branch on record, but ${deterministicBranch} already exists on the remote — ` +
