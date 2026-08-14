@@ -396,24 +396,35 @@ async function runOnce(config: AgentConfig): Promise<boolean> {
         await pushBranch(workspacePath, branchName);
         failBranch = branchName;
         log(`Best-effort push to "${branchName}" succeeded.`, "yellow");
-        // Attempt PR creation too (best-effort)
+        // Attempt PR creation too (best-effort) — check for existing PR first (shared branch scenario)
         try {
-          const prTitle = `[WIP] ${task.title} [Vibecode Heaven #${task.id}]`;
-          const prBody = buildPrBody(task.id, task.title, task.type, task.priority, task.description);
-          const failPrResult = await createPullRequest({
+          const existingFailPr = await findExistingPrForBranch({
             owner: repoInfo.owner,
             repo: repoInfo.repo,
             pat: githubPat,
             head: branchName,
-            base: baseBranch,
-            title: prTitle,
-            body: prBody,
           });
-          if (failPrResult.success) {
-            failPrUrl = failPrResult.prUrl ?? null;
-            log(`Best-effort PR created: ${failPrUrl}`, "yellow");
+          if (existingFailPr) {
+            failPrUrl = existingFailPr.prUrl;
+            log(`Best-effort: existing PR found: ${failPrUrl}`, "yellow");
+          } else {
+            const prTitle = `[WIP] ${task.title} [Vibecode Heaven #${task.id}]`;
+            const prBody = buildPrBody(task.id, task.title, task.type, task.priority, task.description);
+            const failPrResult = await createPullRequest({
+              owner: repoInfo.owner,
+              repo: repoInfo.repo,
+              pat: githubPat,
+              head: branchName,
+              base: baseBranch,
+              title: prTitle,
+              body: prBody,
+            });
+            if (failPrResult.success) {
+              failPrUrl = failPrResult.prUrl ?? null;
+              log(`Best-effort PR created: ${failPrUrl}`, "yellow");
+            }
           }
-        } catch { /* best effort — ignore PR creation failure */ }
+        } catch { /* best effort — ignore PR lookup/creation failure */ }
       }
     } catch {
       // Best effort — push failed or nothing to push
