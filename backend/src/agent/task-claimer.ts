@@ -553,21 +553,22 @@ export async function markTaskDone(
 /**
  * Find a shared branch from sibling tasks in the same tab(s).
  *
- * **Design note:** This function is an OPT-IN utility for tooling (e.g., a UI
- * that suggests group branches when creating tasks). It is NOT called implicitly
- * during task execution — the dev-agent only uses branches that are explicitly
- * pre-set on a task's `branch` field (via the API or UI). This avoids the
- * false-match risk described below.
+ * Called by the dev-agent orchestration (step 5) for AC#2: when a task has no
+ * `branch` value, discover if sibling tasks in the same tab(s) already have a
+ * branch (i.e., a group is in progress). Only tasks in non-terminal states
+ * (todo, in-progress, developed) are considered — branches from completed/done
+ * tasks are ignored to avoid matching old one-off work.
  *
- * **Risk of implicit use:** A tab may contain many unrelated tasks at different
- * stages. Using "same tab + exactly one active branch" as a proxy for grouping
- * can cause unrelated tasks to be checked out onto another task's branch.
- * Only use this function when there is additional context confirming the tasks
- * should be grouped (e.g., user confirmation in the UI, or a common prefix).
+ * **Disambiguation:** If exactly one active branch exists among siblings, return
+ * it (the task should join that group). If multiple active branches exist
+ * (ambiguous — no way to determine which group the task belongs to) or none,
+ * returns null and the caller creates a new branch.
  *
- * Looks up other tasks in the same tab(s) that have a branch set and are in a
- * non-terminal state (todo, in-progress, or developed). If exactly one such
- * branch exists, returns it. If multiple or none, returns null.
+ * **Limitation:** Uses "same tab + non-terminal state" as a grouping proxy.
+ * Tasks can also be grouped explicitly by pre-setting the `branch` field on all
+ * tasks in a group before they are claimed (bypassing this lookup entirely via
+ * AC#1). For cases where multiple unrelated branches are active in a tab, the
+ * function correctly returns null (ambiguous) and the task gets its own branch.
  *
  * @param taskId The task to find siblings for (excluded from results)
  * @param tabIds The tab IDs the task belongs to (if not provided, looked up from DB)

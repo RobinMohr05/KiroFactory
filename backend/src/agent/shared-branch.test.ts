@@ -332,6 +332,53 @@ describe("resolveBranchForTask", () => {
   });
 });
 
+describe("resolveBranchForTask — AC#2 sibling lookup integration", () => {
+  it("should use siblingBranch from findSharedBranchInTab when task.branch is null (AC#2)", async () => {
+    // This tests the expected orchestration: when task.branch is null, the dev-agent
+    // should call findSharedBranchInTab to discover a sibling branch and pass it
+    // as the siblingBranch param to resolveBranchForTask.
+    const { resolveBranchForTask } = await import("./dev-agent-helpers.js");
+
+    // Simulate the orchestration flow: task has no branch, but a sibling branch was found
+    const task = {
+      id: 20,
+      title: "New task in group",
+      type: "feature",
+      branch: null,
+      pullRequestUrl: null,
+    };
+
+    // The dev-agent should call findSharedBranchInTab(task.id) and get back a branch
+    const siblingBranch = "feature/#15_shared-group-branch";
+
+    // Then pass it to resolveBranchForTask
+    const result = resolveBranchForTask(task, siblingBranch);
+
+    expect(result.branchName).toBe("feature/#15_shared-group-branch");
+    expect(result.isExisting).toBe(true);
+  });
+
+  it("should NOT use siblingBranch when task already has its own branch (AC#1 takes precedence)", async () => {
+    const { resolveBranchForTask } = await import("./dev-agent-helpers.js");
+
+    const task = {
+      id: 20,
+      title: "Task with own branch",
+      type: "feature",
+      branch: "feature/#20_my-own-branch",
+      pullRequestUrl: null,
+    };
+
+    const siblingBranch = "feature/#15_different-group";
+
+    const result = resolveBranchForTask(task, siblingBranch);
+
+    // task.branch takes precedence over siblingBranch
+    expect(result.branchName).toBe("feature/#20_my-own-branch");
+    expect(result.isExisting).toBe(true);
+  });
+});
+
 describe("findSharedBranchInTab", () => {
   it("should be exported from task-claimer", () => {
     expect(typeof findSharedBranchInTab).toBe("function");

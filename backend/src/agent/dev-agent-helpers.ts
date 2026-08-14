@@ -24,17 +24,17 @@ export interface BranchResolutionResult {
  * Determine whether a task should use an existing branch or create a new one.
  *
  * Decision logic:
- * - If task.branch is set → use that existing branch (AC#1 / AC#2 via pre-set)
- * - If siblingBranch is provided (caller looked it up externally) → use it
+ * - If task.branch is set → use that existing branch (AC#1)
+ * - If siblingBranch is provided (looked up from sibling tasks in same tab) → use it (AC#2)
  * - Otherwise → return null (caller should create a new branch)
  *
- * The dev-agent calls this WITHOUT siblingBranch — AC#2 is fulfilled by
- * pre-setting `branch` on tasks before they are claimed (via API/UI).
- * The siblingBranch parameter exists for tooling that explicitly confirms
- * group membership before assigning a branch.
+ * The dev-agent calls findSharedBranchInTab() when task.branch is null to
+ * discover a sibling branch (AC#2). The result is passed as siblingBranch.
+ * Only tasks in non-terminal states (todo/in-progress/developed) are
+ * considered as siblings, limiting false matches from old completed work.
  *
  * @param task The task to resolve branch for
- * @param siblingBranch Optional branch name from an explicit grouping decision (not implicit tab lookup)
+ * @param siblingBranch Optional branch name discovered from sibling tasks sharing the same tab
  */
 export function resolveBranchForTask(task: BranchResolutionInput, siblingBranch?: string | null): BranchResolutionResult {
   if (task.branch) {
