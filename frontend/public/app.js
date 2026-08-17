@@ -492,6 +492,23 @@ async function fetchBoardTasks(boardId) {
   }
 }
 
+// Builds an Error carrying the parsed JSON error body (if any) as `.body`,
+// so callers that care about a specific status (e.g. 409 dependency-cycle
+// rejection) can inspect it instead of only getting a generic HTTP-status
+// message. Falls back to a plain HTTP-status message if the body isn't JSON.
+async function buildHttpError(res) {
+  let body = null;
+  try {
+    body = await res.json();
+  } catch {
+    // Non-JSON error response — body stays null, message below still works.
+  }
+  const err = new Error(body?.error || `HTTP ${res.status}`);
+  err.status = res.status;
+  err.body = body;
+  return err;
+}
+
 async function createTask(data) {
   try {
     const res = await fetch('/api/tasks', {
@@ -499,7 +516,7 @@ async function createTask(data) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data)
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) throw await buildHttpError(res);
     const task = await res.json();
     pendingOps.add(`task-created-${task.id}`);
     // Guard against duplicate: WebSocket broadcast may have already added this task
@@ -516,6 +533,13 @@ async function createTask(data) {
     return task;
   } catch (e) {
     console.error('Failed to create task:', e);
+    // Re-thrown (unlike this function's previous swallow-and-return-undefined
+    // behavior) so the task form's submit handler can distinguish "failed,
+    // show the user why" from "succeeded" — needed for surfacing 409
+    // dependency-cycle rejections. The only call site (taskForm's submit
+    // handler) already wraps this in its own try/catch, so this doesn't
+    // introduce an unhandled rejection anywhere.
+    throw e;
   }
 }
 
@@ -526,7 +550,7 @@ async function updateTask(id, data) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data)
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) throw await buildHttpError(res);
     const task = await res.json();
     pendingOps.add(`task-updated-${task.id}`);
     const idx = tasks.findIndex(t => t.id === id);
@@ -536,6 +560,8 @@ async function updateTask(id, data) {
     return task;
   } catch (e) {
     console.error('Failed to update task:', e);
+    // See createTask's comment above — re-thrown for the same reason.
+    throw e;
   }
 }
 
@@ -1172,19 +1198,30 @@ function renderTaskCard(task) {
   card.draggable = true;
   card.dataset.taskId = task.id;
   card.dataset.priority = task.priority || 4;
+  card.dataset.blocked = task.isBlocked ? 'true' : 'false';
   card.setAttribute('role', 'article');
-  card.setAttribute('aria-label', `Task: ${task.title}`);
+  card.setAttribute('aria-label', `Task: ${task.title}${task.isBlocked ? ' (blocked)' : ''}`);
 
   const typeClass = TYPE_CLASSES[task.type] || 'badge-improvement';
   const typeLabel = task.type ? task.type.charAt(0).toUpperCase() + task.type.slice(1) : 'Task';
   const originIcon = ORIGIN_ICONS[task.origin] || '\u{1F464}';
   const priority = task.priority || 4;
 
+  // Blocked badge: not color-only (accessibility — see style.css comment on
+  // .task-card[data-blocked] for the same reasoning). Title attribute lists
+  // the specific blocking task(s) rather than just "blocked", since
+  // blockedBy is already fetched with the task and costs nothing extra to show.
+  const blockedTitles = (task.blockedBy || []).map(b => b.title).join(', ');
+  const blockedBadge = task.isBlocked
+    ? `<span class="badge badge-blocked" title="Blocked by: ${escapeHtml(blockedTitles)}">⛔ Blocked</span>`
+    : '';
+
   card.innerHTML = `
     <div class="card-title">${escapeHtml(task.title)}</div>
     <div class="card-meta">
       <span class="badge ${typeClass}">${typeLabel}</span>
       <span class="card-priority">P${priority}</span>
+      ${blockedBadge}
       <span class="card-origin" title="${task.origin || 'user'}">${originIcon}</span>
     </div>
   `;
@@ -1271,6 +1308,17 @@ function showTaskForm(task = null) {
 
   const aiPlannerBtnEl = document.getElementById('aiPlannerBtn');
 
+  // Dependency picker is populated on both create and edit — a new task
+  // can validly depend on already-existing tasks from the moment it's
+  // created, so there's no reason to restrict this to edit-only the way
+  // state/origin/branch/PR are (those are genuinely edit-only because they
+  // only make sense once a task has gone through its pipeline).
+  populateTaskDependsOnSelect(task);
+
+  const errorEl = document.getElementById('taskFormError');
+  errorEl.hidden = true;
+  errorEl.textContent = '';
+
   if (task) {
     modalTitle.textContent = 'Edit Task';
     submitTaskBtn.textContent = 'Update Task';
@@ -1305,6 +1353,33 @@ function showTaskForm(task = null) {
   }
 
   document.getElementById('taskTitle').focus();
+}
+
+/**
+ * Populates the "Depends on" <select multiple> from the module-level
+ * `tasks` array (already kept in sync via WebSocket — no separate fetch),
+ * excluding the task currently being edited from its own options list, and
+ * pre-selecting whatever is in `task.dependsOn`. Mirrors the exact
+ * populate pattern used for sessionTabsSelect/editSessionBoards elsewhere
+ * in this file (plain <option> elements, .selected set directly) — this
+ * codebase has no other multi-select/autocomplete component to reuse.
+ */
+function populateTaskDependsOnSelect(task) {
+  const select = document.getElementById('taskDependsOn');
+  select.innerHTML = '';
+
+  const currentDependsOn = new Set(task && task.dependsOn ? task.dependsOn : []);
+
+  tasks
+    .filter(t => !task || t.id !== task.id) // a task can't depend on itself
+    .sort((a, b) => a.title.localeCompare(b.title))
+    .forEach(t => {
+      const opt = document.createElement('option');
+      opt.value = t.id;
+      opt.textContent = `#${t.id} — ${t.title}`;
+      if (currentDependsOn.has(t.id)) opt.selected = true;
+      select.appendChild(opt);
+    });
 }
 
 function hideTaskForm() {
@@ -1442,32 +1517,53 @@ function setupEventListeners() {
     const state = document.getElementById('taskState').value;
     const branch = document.getElementById('taskBranch').value.trim();
     const pullRequestUrl = document.getElementById('taskPullRequestUrl').value.trim();
+    const dependsOn = Array.from(document.getElementById('taskDependsOn').selectedOptions).map(opt => Number(opt.value));
 
     if (!title) {
       document.getElementById('taskTitle').focus();
       return;
     }
 
-    if (id) {
-      // Update existing task — branch/PR are only editable here, never on create
-      await updateTask(id, {
-        title,
-        description,
-        type,
-        priority,
-        state,
-        branch: branch || null,
-        pullRequestUrl: pullRequestUrl || null
-      });
-    } else {
-      // Create new task — origin defaults to 'user' on server
-      await createTask({
-        title,
-        description,
-        type,
-        priority,
-        tabIds: currentBoardId ? [Number(currentBoardId)] : []
-      });
+    const errorEl = document.getElementById('taskFormError');
+    errorEl.hidden = true;
+    errorEl.textContent = '';
+
+    try {
+      if (id) {
+        // Update existing task — branch/PR are only editable here, never on create
+        await updateTask(id, {
+          title,
+          description,
+          type,
+          priority,
+          state,
+          branch: branch || null,
+          pullRequestUrl: pullRequestUrl || null,
+          dependsOn
+        });
+      } else {
+        // Create new task — origin defaults to 'user' on server
+        await createTask({
+          title,
+          description,
+          type,
+          priority,
+          tabIds: currentBoardId ? [Number(currentBoardId)] : [],
+          dependsOn
+        });
+      }
+    } catch (err) {
+      // The backend rejects a dependsOn write that would introduce a cycle
+      // with an HTTP 409 (see db/tasks.ts's DependencyCycleError, surfaced
+      // by routes/tasks.ts). Shown inline in the form rather than via
+      // alert() — this is a validation-style failure the user should be
+      // able to read alongside the field they need to change, not a
+      // one-off dismissible popup.
+      errorEl.textContent = err.status === 409
+        ? (err.message || 'This dependency would create a cycle.')
+        : 'Failed to save task. Please try again.';
+      errorEl.hidden = false;
+      return; // keep the modal open so the user can fix the selection
     }
 
     hideTaskForm();

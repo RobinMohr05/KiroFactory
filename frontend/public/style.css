@@ -37,6 +37,14 @@
   --priority-3: var(--ta-torque-teal);
   --priority-4: #9CA3AF;
 
+  /* Blocked-task colour — orange-red, the midpoint between --ta-mango and
+     --ta-rapid-red (derived from two already-approved brand colours rather
+     than an unrelated new hex value). Distinct from --priority-1 (rapid
+     red) and --priority-2 (mango) so a blocked task's tint doesn't get
+     confused with either priority accent bar it sits alongside. */
+  --blocked-color: #E95718;
+  --blocked-bg: rgba(233, 87, 24, 0.08);
+
   /* Type badge colours */
   --type-improvement: var(--ta-blueprint);
   --type-bug: var(--ta-rapid-red);
@@ -113,6 +121,14 @@
 
 [data-theme="dark"] .task-card:hover {
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+[data-theme="dark"] .task-card[data-blocked="true"] {
+  background: rgba(233, 87, 24, 0.14);
+}
+
+[data-theme="dark"] .badge-blocked {
+  background: rgba(233, 87, 24, 0.2);
 }
 
 [data-theme="dark"] .board-item-action:hover {
@@ -851,6 +867,17 @@ textarea:focus {
 .task-card[data-priority="3"]::before { background: var(--priority-3); }
 .task-card[data-priority="4"]::before { background: var(--priority-4); }
 
+/* Blocked task (has an incomplete DEPENDS_ON dependency) — a background
+   tint + dashed outline layered on top of the existing priority accent
+   bar, not replacing it: a task can be both high-priority AND blocked,
+   and both signals need to stay visible at once. Deliberately not
+   color-only (see .badge-blocked below) for colorblind accessibility. */
+.task-card[data-blocked="true"] {
+  background: var(--blocked-bg);
+  outline: 1px dashed var(--blocked-color);
+  outline-offset: -1px;
+}
+
 .task-card:hover {
   transform: translateY(-1px);
   box-shadow: var(--shadow);
@@ -896,6 +923,12 @@ textarea:focus {
 .badge-feature {
   background: rgba(0, 122, 135, 0.1);
   color: var(--type-feature);
+}
+
+.badge-blocked {
+  background: rgba(233, 87, 24, 0.12);
+  color: var(--blocked-color);
+  font-weight: 600;
 }
 
 .card-priority {
