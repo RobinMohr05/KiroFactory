@@ -26,8 +26,6 @@ vi.mock("../db/sessions.js", () => ({
 }));
 
 vi.mock("../db/connection.js", () => ({
-  getPool: vi.fn(),
-  sql: {},
   isDbAvailable: vi.fn().mockReturnValue(true),
 }));
 
