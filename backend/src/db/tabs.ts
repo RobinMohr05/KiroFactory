@@ -97,8 +97,9 @@ function mapNodeToTab(
  */
 function mapNodeToTaskWithBlocked(
   props: Record<string, unknown>,
+  dependsOn: number[],
   blockedBy: Array<{ id: number; title: string }>
-): Task & { isBlocked: boolean; blockedBy: Array<{ id: number; title: string }> } {
+): Task {
   return {
     id: props.id as number,
     title: props.title as string,
@@ -112,6 +113,7 @@ function mapNodeToTaskWithBlocked(
     pullRequestUrl: (props.pullRequestUrl as string) || null,
     createdAt: (props.createdAt as { toString(): string }).toString(),
     updatedAt: (props.updatedAt as { toString(): string }).toString(),
+    dependsOn,
     isBlocked: blockedBy.length > 0,
     blockedBy,
   };
@@ -192,15 +194,17 @@ export async function getTabWithTasks(id: number): Promise<Tab | null> {
     const result = await tx.run(
       `MATCH (t:Task)-[:IN_TAB]->(:Tab {id: $id})
        WITH t,
+            [(t)-[:DEPENDS_ON]->(dep:Task) | dep.id] AS dependsOn,
             [(t)-[:DEPENDS_ON]->(dep:Task) WHERE dep.state <> 'done' | {id: dep.id, title: dep.title}] AS blockedBy
-       RETURN t, blockedBy
+       RETURN t, dependsOn, blockedBy
        ORDER BY t.priority ASC, t.createdAt DESC`,
       { id }
     );
     return result.records.map((record) => {
       const taskNode = record.get("t") as NodeResult;
+      const dependsOn = record.get("dependsOn") as number[];
       const blockedBy = record.get("blockedBy") as Array<{ id: number; title: string }>;
-      return mapNodeToTaskWithBlocked(taskNode.properties, blockedBy);
+      return mapNodeToTaskWithBlocked(taskNode.properties, dependsOn, blockedBy);
     });
   });
   tab.tasks = tasks;
