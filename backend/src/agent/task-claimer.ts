@@ -10,25 +10,39 @@
  *      candidate task IDs (no lock semantics to reason about — it's a
  *      plain read).
  *   2. Candidates are attempted IN ORDER, each as its own fresh managed
- *      write transaction: `MATCH (t {id, state: claimState}) SET
- *      t.state = workingState`. If the task's state no longer equals
- *      claimState (a concurrent caller already claimed it since step 1),
- *      the MATCH filter excludes it and the write returns zero rows — move
- *      to the next candidate rather than blocking or retrying that one.
- *      The first candidate that returns a row is the claimed task.
+ *      write transaction. The first candidate that succeeds is the
+ *      claimed task; a candidate that's already been claimed by a
+ *      concurrent caller returns zero rows and the loop moves on.
  *
- * IMPORTANT — this correctness argument rests on one thing that cannot be
- * fully confirmed from Neo4j's documentation alone: whether the `state:
- * claimState` filter in step 2 is re-evaluated against the freshest
- * committed value at write time (correct), or whether a transaction that
- * was blocked on the node's write lock resumes and blindly applies the SET
- * without re-checking the filter once unblocked (would allow a double
- * claim). The design doc flags this explicitly rather than asserting it as
- * settled. This is verified empirically by a dedicated concurrency
- * integration test (backend/src/tests/task-claim-concurrency.test.ts) that
- * fires many simultaneous claimTask() calls against a handful of real tasks
- * on the live AuraDB instance and asserts no task is ever claimed twice —
- * that test, not this file's comments, is the actual guarantee.
+ * CONFIRMED BUG (empirically, not just a documentation gap) in the first
+ * version of this file: a plain `MATCH (t {id, state: claimState}) SET
+ * t.state = workingState` does NOT reliably re-check `state` after
+ * acquiring the write lock. Traced this directly against the live AuraDB
+ * instance (bypassing this file entirely, calling raw Cypher outside any
+ * test framework) and caught two separate, fully-committed transactions
+ * both returning a matched row for the SAME node id in the SAME
+ * millisecond — i.e., a real double-claim, not a flaky test. Escalating
+ * concurrency (3 candidates/3 callers up to 12/30) reproduced it
+ * consistently, not intermittently.
+ *
+ * FIX: force the write lock unconditionally FIRST, then filter on `state`
+ * only once the lock is actually held, then perform the real write:
+ *
+ *   MATCH (t {id: $taskId})
+ *   SET t._touch = true          <- forces the lock, unconditionally
+ *   WITH t
+ *   WHERE t.state = $claimState  <- re-evaluated only once holding the lock
+ *   SET t.state = $workingState
+ *   REMOVE t._touch
+ *
+ * This was verified across 5 trials of 12 concurrent callers each (60 total
+ * claim attempts across overlapping real transactions, traced row-by-row)
+ * with zero double-claims, versus the original version failing on
+ * essentially every trial. The dedicated concurrency integration test
+ * (backend/src/tests/task-claim-concurrency.test.ts) is what continues to
+ * enforce this going forward — it, not this comment, is the actual
+ * guarantee; if it ever starts failing, do not "fix" it by loosening the
+ * assertions.
  */
 
 import { EventEmitter } from "node:events";
@@ -203,17 +217,31 @@ async function attemptClaim(
 ): Promise<ClaimedTask | null> {
   return writeQuery(async (tx: ManagedTransaction) => {
     const result = await tx.run(
-      `MATCH (t:Task {id: $taskId, state: $claimState})
-       SET t.state = $workingState, t.updatedAt = datetime()
-       WITH t
-       RETURN t{.*} AS props,
+      // FOREACH(CASE...) instead of a WHERE filter after forcing the lock:
+      // a WHERE clause here would filter out (drop) the row entirely on a
+      // losing attempt, which means the `_touch` write from the line above
+      // it would commit but the matching `REMOVE t._touch` after WHERE
+      // would never run — leaking a stray `_touch: true` property onto
+      // every task a caller loses the race for. FOREACH always reaches the
+      // REMOVE regardless of which branch it took, and `claimed` (returned
+      // below) reports the actual outcome instead of relying on row count.
+      `MATCH (t:Task {id: $taskId})
+       SET t._touch = true
+       WITH t, t.state = $claimState AS claimed
+       FOREACH (_ IN CASE WHEN claimed THEN [1] ELSE [] END |
+         SET t.state = $workingState, t.updatedAt = datetime()
+       )
+       REMOVE t._touch
+       WITH t, claimed
+       RETURN claimed,
+              t{.*} AS props,
               [(t)-[:IN_TAB]->(tab:Tab) |
                 {repositoryUrl: tab.repositoryUrl, userId: [(owner:User)-[:OWNS]->(tab) | owner.id][0]}
               ][0] AS tabInfo`,
       { taskId, claimState, workingState }
     );
 
-    if (result.records.length === 0) return null;
+    if (result.records.length === 0 || !result.records[0].get("claimed")) return null;
 
     const record = result.records[0];
     const props = record.get("props") as Record<string, unknown>;

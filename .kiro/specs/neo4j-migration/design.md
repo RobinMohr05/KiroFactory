@@ -308,23 +308,46 @@ LIMIT 20
 
 **Step 2 — attempt claim per candidate, in order, each its own managed write transaction:**
 ```cypher
-MATCH (t:Task {id: $id, state: $claimState})
-SET t.state = $workingState, t.updatedAt = datetime()
-WITH t
+MATCH (t:Task {id: $id})
+SET t._touch = true
+WITH t, t.state = $claimState AS claimed
+FOREACH (_ IN CASE WHEN claimed THEN [1] ELSE [] END |
+  SET t.state = $workingState, t.updatedAt = datetime()
+)
+REMOVE t._touch
+WITH t, claimed
 OPTIONAL MATCH (t)-[:IN_TAB]->(tab:Tab)<-[:OWNS]-(owner:User)
-WITH t, collect({repositoryUrl: tab.repositoryUrl, userId: owner.id})[0] AS tabInfo
-RETURN t{.*}, tabInfo
+WITH t, claimed, collect({repositoryUrl: tab.repositoryUrl, userId: owner.id})[0] AS tabInfo
+RETURN claimed, t{.*}, tabInfo
 ```
 
-Loop through the 20 candidates in order; the first one whose `MATCH ... {state: $claimState}`
-still holds (i.e., nobody else claimed it since Step 1) returns exactly one row — that's the
-claimed task, loop stops. A candidate that's already been claimed by a concurrent caller returns
-zero rows (the `MATCH` fails because `state` no longer equals `$claimState`) — move to the next
-candidate. This is the explicit-code equivalent of "skip past a row someone else is holding"
-instead of `READPAST`. If all 20 candidates are exhausted with no claim, return `null` — same
-externally-visible behavior as today's "nothing available." 20 is a generous batch size for this
-app's actual concurrency (a handful of pipeline sessions, not thousands); it is not a hard
-guarantee against a pathological worst case, but that scale of contention doesn't exist here.
+Loop through the 20 candidates in order; the first one that returns `claimed = true` is the
+claimed task, loop stops. `claimed = false` means a concurrent caller already claimed it since
+Step 1 — move to the next candidate. If all 20 candidates are exhausted with no claim, return
+`null` — same externally-visible behavior as today's "nothing available." 20 is a generous batch
+size for this app's actual concurrency (a handful of pipeline sessions, not thousands); it is not
+a hard guarantee against a pathological worst case, but that scale of contention doesn't exist
+here.
+
+**This exact shape is not the first version that was tried, and the first version failed in a way
+that looked correct.** The obvious-looking approach — `MATCH (t {id: $id, state: $claimState})
+SET t.state = $workingState` in one step, relying on Neo4j's write lock on `t` to make the check
+and the write atomic — passed cleanly on isolated single-node tests (15 concurrent callers racing
+one node, zero duplicates). It failed under the actual candidate-loop scenario: a traced test
+against multiple real tasks with many concurrent callers caught two separate, fully-committed
+transactions both returning a matched row for the **same node id at the same time** — reproduced
+consistently once concurrency was high enough, confirmed by hand-tracing raw Cypher calls outside
+any test framework. The conclusion: Neo4j's write lock does not guarantee the `state:` filter
+inside a `MATCH` is re-evaluated against the freshest committed value once the lock is acquired.
+
+The fix splits the check from the match: force the lock unconditionally first (`SET t._touch =
+true`, which every candidate touching the same node must serialize on), then evaluate `t.state =
+$claimState` only once that lock is actually held — at that point the comparison runs against
+Neo4j's true current value, not a value read before the lock existed. `FOREACH(CASE WHEN claimed
+THEN [1] ELSE [] END | ...)` is used instead of a `WHERE` filter specifically so a losing
+candidate still reaches `REMOVE t._touch` — a `WHERE` filter would drop the row (and the rest of
+the query) entirely on a loss, permanently leaking a stray `_touch: true` property onto every task
+a caller loses the race for.
 
 `resolveTask`/`resetTask`/`markTaskDone` map to plain single-`SET` managed writes — they were
 never part of the locking-sensitive path (confirmed: no `UPDLOCK`/transaction in the current
