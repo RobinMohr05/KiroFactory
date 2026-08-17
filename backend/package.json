@@ -10,6 +10,7 @@
     "migrate": "tsx src/db/migrate.ts",
     "seed:agents": "tsx scripts/seed-agents.ts",
     "seed:local": "tsx scripts/seed-local-dev.ts",
+    "verify:neo4j": "tsx scripts/verify-neo4j.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -23,6 +24,7 @@
     "express": "^4.21.0",
     "jsonwebtoken": "^9.0.2",
     "mssql": "^11.0.1",
+    "neo4j-driver": "6.2.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
