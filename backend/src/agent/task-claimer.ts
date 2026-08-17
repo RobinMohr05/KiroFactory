@@ -1,12 +1,39 @@
 /**
- * Task Claimer — Atomic task claiming from SQL Server
+ * Task Claimer — Atomic task claiming from Neo4j.
  *
- * Uses row-level locking (UPDLOCK, READPAST) to atomically claim the
- * highest-priority todo task without conflicts between concurrent agents.
+ * SQL Server's UPDLOCK + READPAST hints (the previous implementation) have
+ * no direct Cypher equivalent — there is no documented "skip a row someone
+ * else is holding" primitive. Per .kiro/specs/neo4j-migration/design.md,
+ * this is redesigned as an explicit compare-and-swap (CAS) retry loop:
+ *
+ *   1. A read-only query fetches a priority-ordered batch of claimable
+ *      candidate task IDs (no lock semantics to reason about — it's a
+ *      plain read).
+ *   2. Candidates are attempted IN ORDER, each as its own fresh managed
+ *      write transaction: `MATCH (t {id, state: claimState}) SET
+ *      t.state = workingState`. If the task's state no longer equals
+ *      claimState (a concurrent caller already claimed it since step 1),
+ *      the MATCH filter excludes it and the write returns zero rows — move
+ *      to the next candidate rather than blocking or retrying that one.
+ *      The first candidate that returns a row is the claimed task.
+ *
+ * IMPORTANT — this correctness argument rests on one thing that cannot be
+ * fully confirmed from Neo4j's documentation alone: whether the `state:
+ * claimState` filter in step 2 is re-evaluated against the freshest
+ * committed value at write time (correct), or whether a transaction that
+ * was blocked on the node's write lock resumes and blindly applies the SET
+ * without re-checking the filter once unblocked (would allow a double
+ * claim). The design doc flags this explicitly rather than asserting it as
+ * settled. This is verified empirically by a dedicated concurrency
+ * integration test (backend/src/tests/task-claim-concurrency.test.ts) that
+ * fires many simultaneous claimTask() calls against a handful of real tasks
+ * on the live AuraDB instance and asserts no task is ever claimed twice —
+ * that test, not this file's comments, is the actual guarantee.
  */
 
 import { EventEmitter } from "node:events";
-import { getPool, sql } from "../db/connection.js";
+import neo4j, { type ManagedTransaction } from "neo4j-driver";
+import { readQuery, writeQuery } from "../db/connection.js";
 import type { Task } from "../types.js";
 import { getTaskById } from "../db/tasks.js";
 
@@ -16,6 +43,8 @@ import { getTaskById } from "../db/tasks.js";
 // Emitted whenever a task transitions INTO a claimable state (created, reset,
 // or moved back to a claim state after failure). Loop sessions subscribe to
 // this instead of polling the DB every intervalSeconds when the queue is empty.
+//
+// Entirely in-process, no SQL-specific logic — carried over unchanged.
 // ---------------------------------------------------------------------------
 
 const taskBus = new EventEmitter();
@@ -149,17 +178,78 @@ export interface ClaimedTask {
 }
 
 /**
+ * Number of priority-ordered candidates fetched per claimTask() call before
+ * giving up and returning null. Generous relative to this app's actual
+ * concurrency (a handful of pipeline sessions, not thousands) — not a hard
+ * guarantee against a pathological worst case, but that scale of contention
+ * doesn't exist in this deployment.
+ */
+const CANDIDATE_BATCH_SIZE = 20;
+
+/**
+ * Attempts to claim one specific task by id. Returns the claimed task's raw
+ * Cypher record shape (props + tabInfo), or null if the task's current state
+ * no longer equals `claimState` (already claimed by someone else, or simply
+ * not in a claimable state).
+ *
+ * This is its own fresh managed write transaction (via writeQuery) — never
+ * called from inside another transaction. Each call is exactly the atomic
+ * unit the CAS loop in claimTask() depends on for correctness.
+ */
+async function attemptClaim(
+  taskId: number,
+  claimState: string,
+  workingState: string
+): Promise<ClaimedTask | null> {
+  return writeQuery(async (tx: ManagedTransaction) => {
+    const result = await tx.run(
+      `MATCH (t:Task {id: $taskId, state: $claimState})
+       SET t.state = $workingState, t.updatedAt = datetime()
+       WITH t
+       RETURN t{.*} AS props,
+              [(t)-[:IN_TAB]->(tab:Tab) |
+                {repositoryUrl: tab.repositoryUrl, userId: [(owner:User)-[:OWNS]->(tab) | owner.id][0]}
+              ][0] AS tabInfo`,
+      { taskId, claimState, workingState }
+    );
+
+    if (result.records.length === 0) return null;
+
+    const record = result.records[0];
+    const props = record.get("props") as Record<string, unknown>;
+    const tabInfo = record.get("tabInfo") as
+      | { repositoryUrl: string | null; userId: number | null }
+      | null;
+
+    return {
+      id: props.id as number,
+      title: props.title as string,
+      priority: props.priority as 1 | 2 | 3 | 4,
+      type: props.type as ClaimedTask["type"],
+      description: (props.description as string) ?? "",
+      files: (props.files as string[]) ?? [],
+      origin: props.origin as ClaimedTask["origin"],
+      branch: (props.branch as string) || null,
+      pullRequestUrl: (props.pullRequestUrl as string) || null,
+      repositoryUrl: tabInfo?.repositoryUrl ?? null,
+      userId: tabInfo?.userId ?? null,
+    };
+  });
+}
+
+/**
  * Atomically claim the highest-priority task in the given claim state.
  *
- * Uses SQL Server's UPDLOCK + READPAST hints:
- * - UPDLOCK: prevents other transactions from reading the same row
- * - READPAST: skips rows that are already locked by another session
- *
- * This means multiple agents can run concurrently without claiming the
- * same task — each agent will get the next available task.
- *
- * Priority ordering: priority ASC (1=Critical first), then by origin
- * (user > user-assisted > ai), then by creation date (oldest first).
+ * Two modes:
+ * - `taskId` given: a single claim attempt against that exact task (still
+ *   gated by `state = claimState`, so it's not an unconditional grab). No
+ *   candidate loop — if that specific task isn't currently claimable,
+ *   returns null immediately, matching the original's behavior.
+ * - `taskId` omitted: fetches up to CANDIDATE_BATCH_SIZE claimable
+ *   candidates ordered by priority ASC, then origin rank ASC (user >
+ *   user-assisted > ai > else), then creation time ASC — excluding any task
+ *   blocked by an incomplete DEPENDS_ON dependency — and attempts them in
+ *   order via attemptClaim() until one succeeds or the batch is exhausted.
  *
  * @param taskId Optional specific task ID to claim (skips priority ordering)
  * @param tabIds Optional tab IDs to filter by — only tasks belonging to at least one of these tabs are eligible. If empty/undefined, all tasks in claimState are eligible.
@@ -173,169 +263,69 @@ export async function claimTask(
   claimState: string = "todo",
   workingState: string = "in-progress"
 ): Promise<ClaimedTask | null> {
-  const pool = await getPool();
-
-  // Use a transaction with row locking for atomicity
-  const transaction = new sql.Transaction(pool);
-  await transaction.begin();
-
-  try {
-    const request = new sql.Request(transaction);
-    request.input("claimState", sql.VarChar(50), claimState);
-    request.input("workingState", sql.VarChar(50), workingState);
-
-    let query: string;
-
-    if (taskId) {
-      // Claim a specific task by ID
-      request.input("taskId", sql.Int, taskId);
-      query = `
-        UPDATE tasks
-        SET state = @workingState, updated_at = GETUTCDATE()
-        OUTPUT
-          INSERTED.id,
-          INSERTED.title,
-          INSERTED.priority,
-          INSERTED.type,
-          INSERTED.description,
-          INSERTED.files,
-          INSERTED.origin,
-          INSERTED.branch,
-          INSERTED.pull_request_url
-        WHERE id = @taskId AND state = @claimState
-      `;
-    } else if (tabIds && tabIds.length > 0) {
-      // Claim the highest-priority task that belongs to at least one of the given tabs
-      // Build a parameterized IN clause
-      const tabIdParams = tabIds.map((id, i) => `@tabId${i}`);
-      tabIds.forEach((id, i) => {
-        request.input(`tabId${i}`, sql.Int, id);
-      });
-
-      query = `
-        UPDATE tasks
-        SET state = @workingState, updated_at = GETUTCDATE()
-        OUTPUT
-          INSERTED.id,
-          INSERTED.title,
-          INSERTED.priority,
-          INSERTED.type,
-          INSERTED.description,
-          INSERTED.files,
-          INSERTED.origin,
-          INSERTED.branch,
-          INSERTED.pull_request_url
-        WHERE id = (
-          SELECT TOP 1 t.id
-          FROM tasks t WITH (UPDLOCK, READPAST)
-          INNER JOIN task_tabs tt ON tt.task_id = t.id
-          WHERE t.state = @claimState
-            AND tt.tab_id IN (${tabIdParams.join(", ")})
-          ORDER BY
-            t.priority ASC,
-            CASE t.origin
-              WHEN 'user' THEN 0
-              WHEN 'user-assisted' THEN 1
-              WHEN 'ai' THEN 2
-              ELSE 3
-            END ASC,
-            t.created_at ASC
-        )
-      `;
-    } else {
-      // Claim the highest-priority available task (no board filter)
-      // UPDLOCK + READPAST ensures concurrency safety
-      query = `
-        UPDATE tasks
-        SET state = @workingState, updated_at = GETUTCDATE()
-        OUTPUT
-          INSERTED.id,
-          INSERTED.title,
-          INSERTED.priority,
-          INSERTED.type,
-          INSERTED.description,
-          INSERTED.files,
-          INSERTED.origin,
-          INSERTED.branch,
-          INSERTED.pull_request_url
-        WHERE id = (
-          SELECT TOP 1 id
-          FROM tasks WITH (UPDLOCK, READPAST)
-          WHERE state = @claimState
-          ORDER BY
-            priority ASC,
-            CASE origin
-              WHEN 'user' THEN 0
-              WHEN 'user-assisted' THEN 1
-              WHEN 'ai' THEN 2
-              ELSE 3
-            END ASC,
-            created_at ASC
-        )
-      `;
+  if (taskId) {
+    const claimed = await attemptClaim(taskId, claimState, workingState);
+    if (claimed) {
+      // Push the state change to the UI immediately — no poll loop needed.
+      broadcastTaskUpdate(claimed.id);
     }
-
-    const result = await request.query(query);
-
-    if (result.recordset.length === 0) {
-      await transaction.commit();
-      return null;
-    }
-
-    const row = result.recordset[0];
-
-    // Fetch repository URL and user ID within the same transaction — avoids
-    // a separate pool.request() round-trip after commit.
-    const tabRequest = new sql.Request(transaction);
-    tabRequest.input("claimedTaskId", sql.Int, row.id);
-    const tabResult = await tabRequest.query(`
-      SELECT TOP 1 t.repository_url, t.user_id
-      FROM task_tabs tt
-      INNER JOIN tabs t ON t.id = tt.tab_id
-      WHERE tt.task_id = @claimedTaskId
-    `);
-
-    await transaction.commit();
-
-    const tabRow = tabResult.recordset.length > 0 ? tabResult.recordset[0] : null;
-
-    const claimed: ClaimedTask = {
-      id: row.id,
-      title: row.title,
-      priority: row.priority,
-      type: row.type,
-      description: row.description,
-      files: JSON.parse(row.files || "[]"),
-      origin: row.origin,
-      branch: row.branch || null,
-      pullRequestUrl: row.pull_request_url || null,
-      repositoryUrl: tabRow?.repository_url || null,
-      userId: tabRow?.user_id || null,
-    };
-
-    // Push the state change to the UI immediately — no poll loop needed.
-    broadcastTaskUpdate(claimed.id);
-
     return claimed;
-  } catch (err) {
-    await transaction.rollback();
-    throw err;
   }
+
+  const effectiveTabIds = tabIds && tabIds.length > 0 ? tabIds : null;
+
+  const candidateIds = await readQuery(async (tx: ManagedTransaction) => {
+    const result = await tx.run(
+      `MATCH (t:Task {state: $claimState})
+       WHERE NOT EXISTS { MATCH (t)-[:DEPENDS_ON]->(dep:Task) WHERE dep.state <> 'done' }
+         AND ($tabIds IS NULL OR EXISTS { MATCH (t)-[:IN_TAB]->(tab:Tab) WHERE tab.id IN $tabIds })
+       RETURN t.id AS id
+       ORDER BY t.priority ASC, t.originRank ASC, t.createdAt ASC
+       LIMIT $limit`,
+      // LIMIT requires an actual Cypher Integer on the wire, not a Float —
+      // a plain JS number serializes as e.g. `20.0`, which Neo4j rejects
+      // ("Must be a non-negative integer") even though disableLosslessIntegers
+      // makes *results* come back as plain numbers elsewhere in this driver
+      // config. neo4j.int() is required specifically for LIMIT/SKIP-position
+      // parameters. Confirmed via a live smoke test, not assumed from docs.
+      { claimState, tabIds: effectiveTabIds, limit: neo4j.int(CANDIDATE_BATCH_SIZE) }
+    );
+    return result.records.map((r) => r.get("id") as number);
+  });
+
+  for (const candidateId of candidateIds) {
+    const claimed = await attemptClaim(candidateId, claimState, workingState);
+    if (claimed) {
+      broadcastTaskUpdate(claimed.id);
+      return claimed;
+    }
+    // Zero rows means a concurrent caller already claimed this candidate
+    // since the read in step 1 — move on to the next one rather than
+    // blocking or retrying this specific id.
+  }
+
+  return null;
 }
 
 /**
  * Resolve a task to the given target state (agent completed successfully).
  *
  * `branch` and `pullRequestUrl` use independent tri-state semantics:
- * - omitted / `undefined`: the column is left untouched, preserving whatever
- *   a previous pipeline stage already stored. Use this when the caller has no
- *   new info for that specific field (e.g. an inspector agent never has a PR
- *   URL to contribute, but may still have a real branch name to record).
- * - `null`: the column is explicitly cleared.
- * - a string: the column is set to that value.
+ * - omitted / `undefined`: the property is left untouched, preserving
+ *   whatever a previous pipeline stage already stored. Use this when the
+ *   caller has no new info for that specific field (e.g. an inspector agent
+ *   never has a PR URL to contribute, but may still have a real branch name
+ *   to record).
+ * - `null`: the property is explicitly cleared (in Cypher, `SET n.p = null`
+ *   is equivalent to `REMOVE n.p` — confirmed empirically elsewhere in this
+ *   migration, e.g. db/sessions.ts).
+ * - a string: the property is set to that value.
  *
- * Each field is controlled independently — e.g. you can update `branch` while
- * preserving the existing `pullRequestUrl`, or vice versa.
+ * Each field is controlled independently — e.g. you can update `branch`
+ * while preserving the existing `pullRequestUrl`, or vice versa. Achieved by
+ * only including a property in the dynamic SET clause when the caller
+ * actually passed a value for it (mirrors the original's dynamic SQL SET
+ * clause builder).
  *
  * @param taskId The task to resolve
  * @param resolveState The target state (e.g. "developed", "reviewed", "done")
@@ -348,24 +338,21 @@ export async function resolveTask(
   branch?: string | null,
   pullRequestUrl?: string | null
 ): Promise<void> {
-  const pool = await getPool();
-  const request = pool
-    .request()
-    .input("id", sql.Int, taskId)
-    .input("resolveState", sql.VarChar(50), resolveState);
+  await writeQuery(async (tx: ManagedTransaction) => {
+    const setParts = ["t.state = $resolveState", "t.updatedAt = datetime()"];
+    const params: Record<string, unknown> = { taskId, resolveState };
 
-  const setClauses = ["state = @resolveState", "updated_at = GETUTCDATE()"];
+    if (branch !== undefined) {
+      setParts.push("t.branch = $branch");
+      params.branch = branch;
+    }
+    if (pullRequestUrl !== undefined) {
+      setParts.push("t.pullRequestUrl = $pullRequestUrl");
+      params.pullRequestUrl = pullRequestUrl;
+    }
 
-  if (branch !== undefined) {
-    request.input("branch", sql.NVarChar(250), branch);
-    setClauses.push("branch = @branch");
-  }
-  if (pullRequestUrl !== undefined) {
-    request.input("pullRequestUrl", sql.NVarChar(500), pullRequestUrl);
-    setClauses.push("pull_request_url = @pullRequestUrl");
-  }
-
-  await request.query(`UPDATE tasks SET ${setClauses.join(", ")} WHERE id = @id`);
+    await tx.run(`MATCH (t:Task {id: $taskId}) SET ${setParts.join(", ")}`, params);
+  });
 
   broadcastTaskUpdate(taskId);
   // Resolving hands the task to the NEXT pipeline stage's claim state (e.g.
@@ -401,24 +388,21 @@ export async function resetTask(
   branch?: string | null,
   pullRequestUrl?: string | null
 ): Promise<void> {
-  const pool = await getPool();
-  const request = pool
-    .request()
-    .input("id", sql.Int, taskId)
-    .input("resetState", sql.VarChar(50), resetState);
+  await writeQuery(async (tx: ManagedTransaction) => {
+    const setParts = ["t.state = $resetState", "t.updatedAt = datetime()"];
+    const params: Record<string, unknown> = { taskId, resetState };
 
-  const setClauses = ["state = @resetState", "updated_at = GETUTCDATE()"];
+    if (branch !== undefined) {
+      setParts.push("t.branch = $branch");
+      params.branch = branch;
+    }
+    if (pullRequestUrl !== undefined) {
+      setParts.push("t.pullRequestUrl = $pullRequestUrl");
+      params.pullRequestUrl = pullRequestUrl;
+    }
 
-  if (branch !== undefined) {
-    request.input("branch", sql.NVarChar(250), branch);
-    setClauses.push("branch = @branch");
-  }
-  if (pullRequestUrl !== undefined) {
-    request.input("pullRequestUrl", sql.NVarChar(500), pullRequestUrl);
-    setClauses.push("pull_request_url = @pullRequestUrl");
-  }
-
-  await request.query(`UPDATE tasks SET ${setClauses.join(", ")} WHERE id = @id`);
+    await tx.run(`MATCH (t:Task {id: $taskId}) SET ${setParts.join(", ")}`, params);
+  });
 
   broadcastTaskUpdate(taskId);
   // A reset puts the task back into a claimable state — wake any waiting loops.
@@ -433,15 +417,14 @@ export async function resetTask(
  * @returns The number of tasks that were reset.
  */
 export async function resetOrphanedTasks(): Promise<number> {
-  const pool = await getPool();
-  const result = await pool
-    .request()
-    .query(`
-      UPDATE tasks
-      SET state = 'todo', updated_at = GETUTCDATE()
-      WHERE state = 'in-progress'
-    `);
-  return result.rowsAffected[0] ?? 0;
+  return writeQuery(async (tx: ManagedTransaction) => {
+    const result = await tx.run(
+      `MATCH (t:Task {state: 'in-progress'})
+       SET t.state = 'todo', t.updatedAt = datetime()
+       RETURN count(t) AS resetCount`
+    );
+    return result.records[0].get("resetCount") as number;
+  });
 }
 
 /**
@@ -450,6 +433,14 @@ export async function resetOrphanedTasks(): Promise<number> {
  * Uses a short TTL cache (5s) to avoid redundant COUNT queries when multiple
  * loop sessions poll simultaneously. The cache is keyed by the sorted tabIds
  * AND the claim state.
+ *
+ * Excludes tasks blocked by an incomplete DEPENDS_ON dependency, matching
+ * exactly what claimTask()'s candidate query considers eligible — this
+ * count is what decides whether a loop session even attempts to claim
+ * (see waitForTaskAvailable's fast path), so it needs to agree with the
+ * claim query's own eligibility rule or a session could see count > 0 from
+ * blocked-only tasks, skip waiting, and immediately get null back from
+ * claimTask() anyway.
  *
  * @param tabIds Optional tab IDs to filter by — only tasks belonging to at least one of these tabs are counted. If empty/undefined, all tasks in the given state are counted.
  * @param claimState The state to count tasks in (default: "todo")
@@ -475,32 +466,18 @@ export async function getAvailableTaskCount(tabIds?: number[], claimState: strin
     return cached.value;
   }
 
-  const pool = await getPool();
-  let count: number;
+  const effectiveTabIds = tabIds && tabIds.length > 0 ? tabIds : null;
 
-  if (tabIds && tabIds.length > 0) {
-    const request = pool.request();
-    request.input("claimState", sql.VarChar(50), claimState);
-    const tabIdParams = tabIds.map((id, i) => `@tabId${i}`);
-    tabIds.forEach((id, i) => {
-      request.input(`tabId${i}`, sql.Int, id);
-    });
-
-    const result = await request.query(`
-      SELECT COUNT(DISTINCT t.id) as count
-      FROM tasks t
-      INNER JOIN task_tabs tt ON tt.task_id = t.id
-      WHERE t.state = @claimState
-        AND tt.tab_id IN (${tabIdParams.join(", ")})
-    `);
-    count = result.recordset[0].count;
-  } else {
-    const result = await pool
-      .request()
-      .input("claimState", sql.VarChar(50), claimState)
-      .query("SELECT COUNT(*) as count FROM tasks WHERE state = @claimState");
-    count = result.recordset[0].count;
-  }
+  const count = await readQuery(async (tx: ManagedTransaction) => {
+    const result = await tx.run(
+      `MATCH (t:Task {state: $claimState})
+       WHERE NOT EXISTS { MATCH (t)-[:DEPENDS_ON]->(dep:Task) WHERE dep.state <> 'done' }
+         AND ($tabIds IS NULL OR EXISTS { MATCH (t)-[:IN_TAB]->(tab:Tab) WHERE tab.id IN $tabIds })
+       RETURN count(t) AS count`,
+      { claimState, tabIds: effectiveTabIds }
+    );
+    return result.records[0].get("count") as number;
+  });
 
   countCache.set(cacheKey, { value: count, expiresAt: Date.now() + COUNT_CACHE_TTL_MS });
   return count;
@@ -510,23 +487,24 @@ export async function getAvailableTaskCount(tabIds?: number[], claimState: strin
  * Mark a task as "done" — skipping remaining pipeline stages.
  * Used when an agent reports verdict "no_action_needed" (nothing to change/review),
  * indicating the task should bypass further stages and go straight to done.
+ *
+ * Unlike resolveTask/resetTask, branch/pullRequestUrl are NOT tri-state here
+ * — they are always written, coalescing an omitted/undefined argument to
+ * null (which clears the property), exactly matching the original SQL
+ * version's `branch ?? null` / `pullRequestUrl ?? null` behavior.
  */
 export async function markTaskDone(
   taskId: number,
   branch?: string | null,
   pullRequestUrl?: string | null
 ): Promise<void> {
-  const pool = await getPool();
-  await pool
-    .request()
-    .input("id", sql.Int, taskId)
-    .input("branch", sql.NVarChar(250), branch ?? null)
-    .input("pullRequestUrl", sql.NVarChar(500), pullRequestUrl ?? null)
-    .query(`
-      UPDATE tasks
-      SET state = 'done', branch = @branch, pull_request_url = @pullRequestUrl, updated_at = GETUTCDATE()
-      WHERE id = @id
-    `);
+  await writeQuery(async (tx: ManagedTransaction) => {
+    await tx.run(
+      `MATCH (t:Task {id: $taskId})
+       SET t.state = 'done', t.branch = $branch, t.pullRequestUrl = $pullRequestUrl, t.updatedAt = datetime()`,
+      { taskId, branch: branch ?? null, pullRequestUrl: pullRequestUrl ?? null }
+    );
+  });
 
   broadcastTaskUpdate(taskId);
 }

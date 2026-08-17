@@ -1,29 +1,76 @@
-import { getPool, sql } from "./connection.js";
+import type { ManagedTransaction } from "neo4j-driver";
+import { readQuery, writeQuery } from "./connection.js";
+import { getNextId } from "./id-counter.js";
 import type { Agent, AgentKind, CreateAgentInput, UpdateAgentInput } from "../types.js";
 
 /**
- * Map a raw DB row to an Agent object.
+ * Neo4j-backed data access for the `:Agent` node label. See design.md's
+ * "Graph data model" section for the full node/relationship model:
+ *
+ *   (:User)-[:OWNS]->(:Agent)                     0 or 1 owner
+ *   (:Agent)-[:IN_TAB]->(:Tab)                     0+, also independently
+ *                                                  managed by db/tabs.ts
+ *   (:Agent)-[:HAS_TOOLS_SETTINGS]->(:ToolsSettings)  0 or 1, arbitrary map
+ *
+ * `userId` and `tabIds` on the returned `Agent` object are derived from the
+ * OWNS/IN_TAB relationships at read time — they are never stored as
+ * properties on the `:Agent` node itself.
+ *
+ * ToolsSettings storage note: `toolsSettings` is typed `Record<string,
+ * unknown>` — genuinely arbitrary/dynamic, not a fixed shape. Neo4j node
+ * properties can only be primitives or arrays of primitives, never nested
+ * objects, so a spread-merge (`SET ts += $map`) fails outright the moment a
+ * caller's toolsSettings contains any nested value (confirmed empirically:
+ * `Property values can only be of primitive types or arrays thereof`). This
+ * is the same "arbitrary/unknown shape stays an opaque string" case
+ * design.md calls out for RawMcpServerConfig — `:ToolsSettings` therefore
+ * stores one property, `json` (a JSON string of the whole object), parsed
+ * back to a plain object on every read.
  */
-function mapRowToAgent(row: Record<string, unknown>): Agent {
+
+/**
+ * Map the `a{.*}` map projection plus the separately-queried relationship
+ * data (tabIds, toolsSettingsJson, userId) to an Agent object.
+ *
+ * toolsSettingsJson is a raw JSON string (see ToolsSettings note below) —
+ * parsed back into a plain object here, defaulting to {} if absent/invalid.
+ */
+function mapToAgent(
+  agentProps: Record<string, unknown>,
+  tabIds: number[],
+  toolsSettingsJson: string | null | undefined,
+  userId: number | null
+): Agent {
+  let toolsSettings: Record<string, unknown> = {};
+  if (toolsSettingsJson) {
+    try {
+      toolsSettings = JSON.parse(toolsSettingsJson);
+    } catch {
+      // Corrupted/unparseable — fall back to {} rather than throw.
+    }
+  }
+
   return {
-    id: row.id as number,
-    name: row.name as string,
-    description: row.description as string,
-    prompt: row.prompt as string,
-    tools: JSON.parse((row.tools as string) || "[]"),
-    allowedTools: JSON.parse((row.allowed_tools as string) || "[]"),
-    toolsSettings: JSON.parse((row.tools_settings as string) || "{}"),
-    resources: JSON.parse((row.resources as string) || "[]"),
-    kind: (row.kind as AgentKind) || "editor",
-    claimState: (row.claim_state as string) || "todo",
-    workingState: (row.working_state as string) || "in-progress",
-    resolveState: (row.resolve_state as string) || "developed",
-    requiresTask: row.requires_task !== undefined && row.requires_task !== null
-      ? !!(row.requires_task as number | boolean)
-      : true,
-    userId: (row.user_id as number) ?? 0,
-    createdAt: (row.created_at as Date).toISOString(),
-    updatedAt: (row.updated_at as Date).toISOString(),
+    id: agentProps.id as number,
+    name: agentProps.name as string,
+    description: agentProps.description as string,
+    prompt: agentProps.prompt as string,
+    tools: (agentProps.tools as string[]) ?? [],
+    allowedTools: (agentProps.allowedTools as string[]) ?? [],
+    toolsSettings,
+    resources: (agentProps.resources as string[]) ?? [],
+    kind: (agentProps.kind as AgentKind) || "editor",
+    tabIds,
+    userId: userId ?? 0,
+    claimState: (agentProps.claimState as string) || "todo",
+    workingState: (agentProps.workingState as string) || "in-progress",
+    resolveState: (agentProps.resolveState as string) || "developed",
+    requiresTask:
+      agentProps.requiresTask !== undefined && agentProps.requiresTask !== null
+        ? !!agentProps.requiresTask
+        : true,
+    createdAt: (agentProps.createdAt as { toString(): string }).toString(),
+    updatedAt: (agentProps.updatedAt as { toString(): string }).toString(),
   };
 }
 
@@ -36,110 +83,120 @@ function mapRowToAgent(row: Record<string, unknown>): Agent {
  * If userId is provided, only returns agents owned by that user.
  */
 export async function getAllAgents(userId?: number): Promise<Agent[]> {
-  const pool = await getPool();
-  let result;
-  if (userId) {
-    result = await pool
-      .request()
-      .input("userId", sql.Int, userId)
-      .query("SELECT * FROM agents WHERE user_id = @userId ORDER BY name ASC");
-  } else {
-    result = await pool.request().query("SELECT * FROM agents ORDER BY name ASC");
-  }
-  const agents = result.recordset.map(mapRowToAgent);
-
-  // Attach tabIds for each agent
-  const tabsResult = await pool.request().query(
-    "SELECT agent_id, tab_id FROM agent_tabs ORDER BY agent_id"
-  );
-  const tabMap = new Map<number, number[]>();
-  for (const row of tabsResult.recordset) {
-    const id = row.agent_id as number;
-    if (!tabMap.has(id)) tabMap.set(id, []);
-    tabMap.get(id)!.push(row.tab_id as number);
-  }
-  for (const agent of agents) {
-    agent.tabIds = tabMap.get(agent.id) || [];
-  }
-
-  return agents;
+  return readQuery(async (tx: ManagedTransaction) => {
+    const result = await tx.run(
+      `MATCH (a:Agent)
+       WHERE $userId IS NULL OR EXISTS { (:User {id: $userId})-[:OWNS]->(a) }
+       OPTIONAL MATCH (a)-[:IN_TAB]->(t:Tab)
+       WITH a, collect(t.id) AS tabIds
+       OPTIONAL MATCH (a)-[:HAS_TOOLS_SETTINGS]->(ts:ToolsSettings)
+       OPTIONAL MATCH (owner:User)-[:OWNS]->(a)
+       RETURN a{.*} AS agent, tabIds, ts.json AS toolsSettingsJson, owner.id AS userId
+       ORDER BY a.name ASC`,
+      { userId: userId ?? null }
+    );
+    return result.records.map((record) =>
+      mapToAgent(
+        record.get("agent"),
+        record.get("tabIds"),
+        record.get("toolsSettingsJson"),
+        record.get("userId")
+      )
+    );
+  });
 }
 
 /**
  * Get a single agent by name.
  */
 export async function getAgentByName(name: string): Promise<Agent | null> {
-  const pool = await getPool();
-  const result = await pool
-    .request()
-    .input("name", sql.NVarChar(100), name)
-    .query("SELECT * FROM agents WHERE name = @name");
-
-  if (result.recordset.length === 0) return null;
-
-  const agent = mapRowToAgent(result.recordset[0]);
-
-  // Attach tabIds
-  const tabsResult = await pool
-    .request()
-    .input("agentId", sql.Int, agent.id)
-    .query("SELECT tab_id FROM agent_tabs WHERE agent_id = @agentId");
-  agent.tabIds = tabsResult.recordset.map((row: Record<string, unknown>) => row.tab_id as number);
-
-  return agent;
+  return readQuery(async (tx: ManagedTransaction) => {
+    const result = await tx.run(
+      `MATCH (a:Agent {name: $name})
+       OPTIONAL MATCH (a)-[:IN_TAB]->(t:Tab)
+       WITH a, collect(t.id) AS tabIds
+       OPTIONAL MATCH (a)-[:HAS_TOOLS_SETTINGS]->(ts:ToolsSettings)
+       OPTIONAL MATCH (owner:User)-[:OWNS]->(a)
+       RETURN a{.*} AS agent, tabIds, ts.json AS toolsSettingsJson, owner.id AS userId`,
+      { name }
+    );
+    if (result.records.length === 0) return null;
+    const record = result.records[0];
+    return mapToAgent(
+      record.get("agent"),
+      record.get("tabIds"),
+      record.get("toolsSettingsJson"),
+      record.get("userId")
+    );
+  });
 }
 
 /**
  * Get a single agent by numeric ID.
  */
 export async function getAgentById(id: number): Promise<Agent | null> {
-  const pool = await getPool();
-  const result = await pool
-    .request()
-    .input("id", sql.Int, id)
-    .query("SELECT * FROM agents WHERE id = @id");
-
-  if (result.recordset.length === 0) return null;
-
-  const agent = mapRowToAgent(result.recordset[0]);
-
-  // Attach tabIds
-  const tabsResult = await pool
-    .request()
-    .input("agentId", sql.Int, agent.id)
-    .query("SELECT tab_id FROM agent_tabs WHERE agent_id = @agentId");
-  agent.tabIds = tabsResult.recordset.map((row: Record<string, unknown>) => row.tab_id as number);
-
-  return agent;
+  return readQuery(async (tx: ManagedTransaction) => {
+    const result = await tx.run(
+      `MATCH (a:Agent {id: $id})
+       OPTIONAL MATCH (a)-[:IN_TAB]->(t:Tab)
+       WITH a, collect(t.id) AS tabIds
+       OPTIONAL MATCH (a)-[:HAS_TOOLS_SETTINGS]->(ts:ToolsSettings)
+       OPTIONAL MATCH (owner:User)-[:OWNS]->(a)
+       RETURN a{.*} AS agent, tabIds, ts.json AS toolsSettingsJson, owner.id AS userId`,
+      { id }
+    );
+    if (result.records.length === 0) return null;
+    const record = result.records[0];
+    return mapToAgent(
+      record.get("agent"),
+      record.get("tabIds"),
+      record.get("toolsSettingsJson"),
+      record.get("userId")
+    );
+  });
 }
 
 /**
  * Create a new agent.
  */
 export async function createAgent(input: CreateAgentInput): Promise<Agent> {
-  const pool = await getPool();
-  const result = await pool
-    .request()
-    .input("name", sql.NVarChar(100), input.name)
-    .input("description", sql.NVarChar(sql.MAX), input.description || "")
-    .input("prompt", sql.NVarChar(sql.MAX), input.prompt || "")
-    .input("tools", sql.NVarChar(sql.MAX), JSON.stringify(input.tools || []))
-    .input("allowedTools", sql.NVarChar(sql.MAX), JSON.stringify(input.allowedTools || []))
-    .input("toolsSettings", sql.NVarChar(sql.MAX), JSON.stringify(input.toolsSettings || {}))
-    .input("resources", sql.NVarChar(sql.MAX), JSON.stringify(input.resources || []))
-    .input("kind", sql.VarChar(20), input.kind || "editor")
-    .input("claimState", sql.VarChar(50), input.claimState || "todo")
-    .input("workingState", sql.VarChar(50), input.workingState || "in-progress")
-    .input("resolveState", sql.VarChar(50), input.resolveState || "developed")
-    .input("requiresTask", sql.Bit, input.requiresTask !== false ? 1 : 0)
-    .input("userId", sql.Int, input.userId)
-    .query(`
-      INSERT INTO agents (name, description, prompt, tools, allowed_tools, tools_settings, resources, kind, claim_state, working_state, resolve_state, requires_task, user_id)
-      OUTPUT INSERTED.*
-      VALUES (@name, @description, @prompt, @tools, @allowedTools, @toolsSettings, @resources, @kind, @claimState, @workingState, @resolveState, @requiresTask, @userId)
-    `);
+  const id = await getNextId("Agent");
 
-  const agent = mapRowToAgent(result.recordset[0]);
+  const agent = await writeQuery(async (tx: ManagedTransaction) => {
+    const result = await tx.run(
+      `CREATE (a:Agent {
+         id: $id, name: $name, description: $description, prompt: $prompt,
+         tools: $tools, allowedTools: $allowedTools, resources: $resources,
+         kind: $kind, claimState: $claimState, workingState: $workingState,
+         resolveState: $resolveState, requiresTask: $requiresTask,
+         createdAt: datetime(), updatedAt: datetime()
+       })
+       CREATE (a)-[:HAS_TOOLS_SETTINGS]->(ts:ToolsSettings {json: $toolsSettingsJson})
+       WITH a, ts
+       OPTIONAL MATCH (owner:User {id: $userId})
+       FOREACH (_ IN CASE WHEN owner IS NOT NULL THEN [1] ELSE [] END | MERGE (owner)-[:OWNS]->(a))
+       RETURN a{.*} AS agent, ts.json AS toolsSettingsJson, owner.id AS userId`,
+      {
+        id,
+        name: input.name,
+        description: input.description || "",
+        prompt: input.prompt || "",
+        tools: input.tools || [],
+        allowedTools: input.allowedTools || [],
+        resources: input.resources || [],
+        kind: input.kind || "editor",
+        claimState: input.claimState || "todo",
+        workingState: input.workingState || "in-progress",
+        resolveState: input.resolveState || "developed",
+        requiresTask: input.requiresTask !== false,
+        toolsSettingsJson: JSON.stringify(input.toolsSettings ?? {}),
+        userId: input.userId ?? null,
+      }
+    );
+
+    const record = result.records[0];
+    return mapToAgent(record.get("agent"), [], record.get("toolsSettingsJson"), record.get("userId"));
+  });
 
   // Assign to tabs if provided
   if (input.tabIds && input.tabIds.length > 0) {
@@ -159,50 +216,70 @@ export async function updateAgent(
   agentId: number,
   input: UpdateAgentInput
 ): Promise<Agent | null> {
-  const pool = await getPool();
-
   // Check the agent exists
   const existing = await getAgentById(agentId);
   if (!existing) return null;
 
   const newName = input.name || existing.name;
+  // toolsSettings is a full replace, not a partial merge (matches the
+  // original's JSON.stringify(input.toolsSettings ?? existing.toolsSettings)
+  // semantics) — only touched at all when the caller explicitly provided it.
+  const toolsSettingsProvided = input.toolsSettings !== undefined;
 
-  const result = await pool
-    .request()
-    .input("id", sql.Int, agentId)
-    .input("name", sql.NVarChar(100), newName)
-    .input("description", sql.NVarChar(sql.MAX), input.description ?? existing.description)
-    .input("prompt", sql.NVarChar(sql.MAX), input.prompt ?? existing.prompt)
-    .input("tools", sql.NVarChar(sql.MAX), JSON.stringify(input.tools ?? existing.tools))
-    .input("allowedTools", sql.NVarChar(sql.MAX), JSON.stringify(input.allowedTools ?? existing.allowedTools))
-    .input("toolsSettings", sql.NVarChar(sql.MAX), JSON.stringify(input.toolsSettings ?? existing.toolsSettings))
-    .input("resources", sql.NVarChar(sql.MAX), JSON.stringify(input.resources ?? existing.resources))
-    .input("kind", sql.VarChar(20), input.kind ?? existing.kind)
-    .input("claimState", sql.VarChar(50), input.claimState ?? existing.claimState)
-    .input("workingState", sql.VarChar(50), input.workingState ?? existing.workingState)
-    .input("resolveState", sql.VarChar(50), input.resolveState ?? existing.resolveState)
-    .input("requiresTask", sql.Bit, (input.requiresTask ?? existing.requiresTask) ? 1 : 0)
-    .query(`
-      UPDATE agents
-      SET name = @name,
-          description = @description,
-          prompt = @prompt,
-          tools = @tools,
-          allowed_tools = @allowedTools,
-          tools_settings = @toolsSettings,
-          resources = @resources,
-          kind = @kind,
-          claim_state = @claimState,
-          working_state = @workingState,
-          resolve_state = @resolveState,
-          requires_task = @requiresTask,
-          updated_at = GETUTCDATE()
-      OUTPUT INSERTED.*
-      WHERE id = @id
-    `);
+  const agent = await writeQuery(async (tx: ManagedTransaction) => {
+    const result = await tx.run(
+      `MATCH (a:Agent {id: $id})
+       SET a.name = $name,
+           a.description = $description,
+           a.prompt = $prompt,
+           a.tools = $tools,
+           a.allowedTools = $allowedTools,
+           a.resources = $resources,
+           a.kind = $kind,
+           a.claimState = $claimState,
+           a.workingState = $workingState,
+           a.resolveState = $resolveState,
+           a.requiresTask = $requiresTask,
+           a.updatedAt = datetime()
+       WITH a
+       FOREACH (_ IN CASE WHEN $toolsSettingsProvided THEN [1] ELSE [] END |
+         MERGE (a)-[:HAS_TOOLS_SETTINGS]->(ts:ToolsSettings)
+         SET ts.json = $toolsSettingsJson
+       )
+       WITH a
+       OPTIONAL MATCH (a)-[:HAS_TOOLS_SETTINGS]->(ts:ToolsSettings)
+       OPTIONAL MATCH (owner:User)-[:OWNS]->(a)
+       RETURN a{.*} AS agent, ts.json AS toolsSettingsJson, owner.id AS userId`,
+      {
+        id: agentId,
+        name: newName,
+        description: input.description ?? existing.description,
+        prompt: input.prompt ?? existing.prompt,
+        tools: input.tools ?? existing.tools,
+        allowedTools: input.allowedTools ?? existing.allowedTools,
+        resources: input.resources ?? existing.resources,
+        kind: input.kind ?? existing.kind,
+        claimState: input.claimState ?? existing.claimState,
+        workingState: input.workingState ?? existing.workingState,
+        resolveState: input.resolveState ?? existing.resolveState,
+        requiresTask: input.requiresTask ?? existing.requiresTask,
+        toolsSettingsProvided,
+        // SET ts.json = ... (a plain scalar assignment) is already a full
+        // replace, not a merge — this JSON string overwrites the previous
+        // one outright, matching the original's JSON.stringify(input ??
+        // existing) full-replace semantics with no extra "clear first" step
+        // needed (unlike the old spread-merge approach, which is why this
+        // no longer needs the SET ts = {} reset that used to precede it).
+        toolsSettingsJson: JSON.stringify(input.toolsSettings ?? {}),
+      }
+    );
 
-  if (result.recordset.length === 0) return null;
-  const agent = mapRowToAgent(result.recordset[0]);
+    if (result.records.length === 0) return null;
+    const record = result.records[0];
+    return mapToAgent(record.get("agent"), [], record.get("toolsSettingsJson"), record.get("userId"));
+  });
+
+  if (!agent) return null;
 
   // Update tab assignments if provided
   if (input.tabIds !== undefined) {
@@ -217,15 +294,20 @@ export async function updateAgent(
 
 /**
  * Delete an agent by numeric ID.
+ * Also deletes the agent's linked ToolsSettings sub-node, if any, so it
+ * doesn't become an orphaned node in the graph.
  */
 export async function deleteAgent(id: number): Promise<boolean> {
-  const pool = await getPool();
-  const result = await pool
-    .request()
-    .input("id", sql.Int, id)
-    .query("DELETE FROM agents WHERE id = @id");
-
-  return (result.rowsAffected[0] ?? 0) > 0;
+  return writeQuery(async (tx: ManagedTransaction) => {
+    const result = await tx.run(
+      `MATCH (a:Agent {id: $id})
+       OPTIONAL MATCH (a)-[:HAS_TOOLS_SETTINGS]->(ts:ToolsSettings)
+       DETACH DELETE a, ts
+       RETURN count(a) AS deletedCount`,
+      { id }
+    );
+    return result.records[0].get("deletedCount") > 0;
+  });
 }
 
 /**
@@ -236,47 +318,30 @@ export async function deleteAgent(id: number): Promise<boolean> {
  * across accounts.
  */
 export async function getAgentsForTab(tabId: number): Promise<Agent[]> {
-  const pool = await getPool();
-
-  const result = await pool
-    .request()
-    .input("tabId", sql.Int, tabId)
-    .query(`
-      SELECT DISTINCT a.*
-      FROM agents a
-      INNER JOIN tabs t ON t.id = @tabId
-      WHERE a.user_id = t.user_id
-        AND (
-          a.id IN (SELECT agent_id FROM agent_tabs WHERE tab_id = @tabId)
-          OR a.id NOT IN (SELECT agent_id FROM agent_tabs)
-        )
-      ORDER BY a.name ASC
-    `);
-
-  const agents = result.recordset.map(mapRowToAgent);
-
-  // Attach tabIds for each agent
-  if (agents.length > 0) {
-    const ids = agents.map((a: Agent) => a.id);
-    const tabRequest = pool.request();
-    ids.forEach((id: number, i: number) => {
-      tabRequest.input(`id${i}`, sql.Int, id);
-    });
-    const tabsRes = await tabRequest.query(
-      `SELECT agent_id, tab_id FROM agent_tabs WHERE agent_id IN (${ids.map((_: number, i: number) => `@id${i}`).join(", ")})`
+  return readQuery(async (tx: ManagedTransaction) => {
+    const result = await tx.run(
+      `MATCH (t:Tab {id: $tabId})
+       MATCH (owner0:User)-[:OWNS]->(t)
+       MATCH (owner0)-[:OWNS]->(a:Agent)
+       WHERE (a)-[:IN_TAB]->(t) OR NOT EXISTS { (a)-[:IN_TAB]->(:Tab) }
+       WITH DISTINCT a
+       OPTIONAL MATCH (a)-[:IN_TAB]->(t2:Tab)
+       WITH a, collect(t2.id) AS tabIds
+       OPTIONAL MATCH (a)-[:HAS_TOOLS_SETTINGS]->(ts:ToolsSettings)
+       OPTIONAL MATCH (owner:User)-[:OWNS]->(a)
+       RETURN a{.*} AS agent, tabIds, ts.json AS toolsSettingsJson, owner.id AS userId
+       ORDER BY agent.name ASC`,
+      { tabId }
     );
-    const tabMap = new Map<number, number[]>();
-    for (const row of tabsRes.recordset) {
-      const id = row.agent_id as number;
-      if (!tabMap.has(id)) tabMap.set(id, []);
-      tabMap.get(id)!.push(row.tab_id as number);
-    }
-    for (const agent of agents) {
-      agent.tabIds = tabMap.get(agent.id) || [];
-    }
-  }
-
-  return agents;
+    return result.records.map((record) =>
+      mapToAgent(
+        record.get("agent"),
+        record.get("tabIds"),
+        record.get("toolsSettingsJson"),
+        record.get("userId")
+      )
+    );
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -286,22 +351,16 @@ export async function getAgentsForTab(tabId: number): Promise<Agent[]> {
 /**
  * Replace all tab assignments for an agent (set exactly to tabIds).
  */
-async function setAgentTabAssignments(
-  agentId: number,
-  tabIds: number[]
-): Promise<void> {
-  const pool = await getPool();
-  // Remove all existing
-  await pool
-    .request()
-    .input("agentId", sql.Int, agentId)
-    .query("DELETE FROM agent_tabs WHERE agent_id = @agentId");
-  // Add new ones
-  for (const tabId of tabIds) {
-    await pool
-      .request()
-      .input("agentId", sql.Int, agentId)
-      .input("tabId", sql.Int, tabId)
-      .query("INSERT INTO agent_tabs (agent_id, tab_id) VALUES (@agentId, @tabId)");
-  }
+async function setAgentTabAssignments(agentId: number, tabIds: number[]): Promise<void> {
+  await writeQuery(async (tx: ManagedTransaction) => {
+    // Remove all existing
+    await tx.run(`MATCH (a:Agent {id: $agentId})-[r:IN_TAB]->(:Tab) DELETE r`, { agentId });
+    // Add new ones
+    for (const tabId of tabIds) {
+      await tx.run(
+        `MATCH (a:Agent {id: $agentId}), (t:Tab {id: $tabId}) MERGE (a)-[:IN_TAB]->(t)`,
+        { agentId, tabId }
+      );
+    }
+  });
 }

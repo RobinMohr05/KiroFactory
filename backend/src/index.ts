@@ -22,10 +22,10 @@ import credentialsRouter from "./routes/credentials.js";
 import adminRouter from "./routes/admin.js";
 import taskPlannerRouter, { plannerPool } from "./routes/task-planner.js";
 import { runMigration } from "./db/migrate.js";
-import { tryConnect, isDbAvailable, closePool, getPoolStats } from "./db/connection.js";
+import { tryConnect, isDbAvailable, closePool } from "./db/connection.js";
 import { shutdownAllSessions, initSessions } from "./session-manager.js";
 import { apiErrorLogger, uncaughtErrorLogger } from "./middleware/error-logger.js";
-import { log, logPoolMetrics } from "./logger.js";
+import { log } from "./logger.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -135,8 +135,6 @@ server.on("upgrade", (req, socket, head) => {
 
 // ─── Startup ─────────────────────────────────────────────────────────────────
 
-let poolMetricsInterval: ReturnType<typeof setInterval> | null = null;
-
 const PORT = Number(process.env.PORT) || 3500;
 
 async function start(): Promise<void> {
@@ -186,61 +184,12 @@ async function start(): Promise<void> {
         });
     }
   }
-
-  // Start pool metrics sampling. Rather than emit an identical "all is well"
-  // snapshot every minute (pure noise), we only log when the numbers carry
-  // signal: the pool is under back-pressure, it's actively in use, the values
-  // changed since the last emission, or a rare idle heartbeat is due.
-  poolMetricsInterval = setInterval(samplePoolMetrics, POOL_SAMPLE_INTERVAL_MS);
-}
-
-// ─── Pool metrics sampling ───────────────────────────────────────────────────
-
-const POOL_SAMPLE_INTERVAL_MS = 60_000;
-// Emit at most one "idle/unchanged" heartbeat every 30 minutes so the dashboard
-// can confirm the pool is alive without flooding the logs.
-const POOL_HEARTBEAT_MS = 30 * 60_000;
-
-let lastPoolSignature: string | null = null;
-let lastPoolEmitAt = 0;
-
-function samplePoolMetrics(): void {
-  if (!isDbAvailable()) return;
-  const stats = getPoolStats();
-  if (!stats) return;
-
-  // Back-pressure: callers are queued waiting for a connection, or every
-  // connection is checked out. This is the actionable signal worth a warning.
-  const pressure = stats.poolPending > 0 || stats.poolBorrowed >= stats.poolSize;
-  const active = stats.poolBorrowed > 0 || stats.poolPending > 0;
-
-  const signature = `${stats.poolSize}/${stats.poolAvailable}/${stats.poolPending}/${stats.poolBorrowed}`;
-  const changed = signature !== lastPoolSignature;
-  const heartbeatDue = Date.now() - lastPoolEmitAt >= POOL_HEARTBEAT_MS;
-
-  if (pressure || active || changed || heartbeatDue) {
-    logPoolMetrics(stats, {
-      pressure,
-      reason: pressure
-        ? "connection pool saturated"
-        : active
-          ? "pool in use"
-          : changed
-            ? "pool state changed"
-            : "heartbeat",
-    });
-    lastPoolSignature = signature;
-    lastPoolEmitAt = Date.now();
-  }
 }
 
 // ─── Graceful Shutdown ───────────────────────────────────────────────────────
 
 async function shutdown(): Promise<void> {
   log.info("shutdown", { component: "startup", msg: "Shutting down..." });
-  if (poolMetricsInterval) {
-    clearInterval(poolMetricsInterval);
-  }
 
   await shutdownAllSessions();
   await plannerPool.shutdown();

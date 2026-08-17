@@ -1,291 +1,451 @@
-import { getPool, sql } from "./connection.js";
+/**
+ * Neo4j-backed implementation of the tasks data-access layer.
+ *
+ * Every exported function here keeps the exact name, parameter types, and
+ * return type it had under the previous mssql-based implementation — see
+ * .kiro/specs/neo4j-migration/design.md for the full :Task node model and
+ * migration rationale. Two things are genuinely new, not just ported:
+ *
+ *   - `dependsOn`/`isBlocked`/`blockedBy` (Requirement 2): a task can depend
+ *     on other tasks via `(:Task)-[:DEPENDS_ON]->(:Task)`. `isBlocked` is
+ *     NEVER stored — it's computed at read time from whether any dependency
+ *     is not yet "done", so it can never go stale relative to the actual
+ *     dependency states. Writes go through `replaceDependencies` below,
+ *     which rejects any write that would introduce a cycle (directly or
+ *     transitively) — see Requirement 2.4.
+ *   - `originRank` (int property on :Task): a precomputed 0/1/2/3 from
+ *     `origin` (user/user-assisted/ai/else), replacing the SQL `CASE` that
+ *     used to live inline in the claim query's `ORDER BY`. Set once at
+ *     creation — `origin` itself is immutable after creation (there is no
+ *     `origin` field on `UpdateTaskInput`), so this never needs recomputing.
+ *
+ * Every 0-or-more relationship traversal below (dependsOn ids, blockedBy)
+ * uses a list comprehension (`[(pattern) | projection]`), not
+ * `OPTIONAL MATCH` + `collect()` — the latter produces a false-positive
+ * non-empty list (`[{id: null, title: null}]`) when nothing matches,
+ * confirmed empirically while rewriting db/tabs.ts in this same migration.
+ * List comprehensions don't have that bug (an empty match is genuinely `[]`).
+ *
+ * Dropped columns: `retry_count`/`max_retries` (confirmed dead — no code
+ * path reads them; actual retry logic is in-memory in session-manager.ts).
+ */
+
+import type { ManagedTransaction } from "neo4j-driver";
+import { readQuery, writeQuery } from "./connection.js";
+import { getNextId } from "./id-counter.js";
 import type { Task, CreateTaskInput, UpdateTaskInput } from "../types.js";
-import { DEFAULT_MCP_CONFIG, isGitProvider } from "../types.js";
+import { DEFAULT_MCP_CONFIG, DependencyCycleError, isGitProvider } from "../types.js";
 
 /**
- * Map a raw DB row to a Task object.
- * Parses the JSON `files` column and converts snake_case to camelCase.
+ * Precomputed claim-ordering rank from `origin` — mirrors the SQL `CASE
+ * origin WHEN 'user' THEN 0 WHEN 'user-assisted' THEN 1 WHEN 'ai' THEN 2
+ * ELSE 3 END` that used to live inline in the claim query. `origin` is
+ * immutable after creation, so this is computed exactly once, in createTask.
  */
-function mapRowToTask(row: Record<string, unknown>): Task {
-  return {
-    id: row.id as number,
-    title: row.title as string,
-    priority: row.priority as 1 | 2 | 3 | 4,
-    type: row.type as Task["type"],
-    state: row.state as string,
-    description: row.description as string,
-    files: JSON.parse((row.files as string) || "[]"),
-    origin: row.origin as Task["origin"],
-    branch: (row.branch as string) || null,
-    pullRequestUrl: (row.pull_request_url as string) || null,
-    createdAt: (row.created_at as Date).toISOString(),
-    updatedAt: (row.updated_at as Date).toISOString(),
-  };
+function computeOriginRank(origin: Task["origin"]): number {
+  switch (origin) {
+    case "user":
+      return 0;
+    case "user-assisted":
+      return 1;
+    case "ai":
+      return 2;
+    default:
+      return 3;
+  }
 }
 
 /**
- * Attach tab memberships to a list of tasks (batch lookup).
+ * Map a :Task node's properties plus its resolved dependsOn/blockedBy lists
+ * to a Task object. `tabs` is populated separately by attachTabs (batched
+ * across multiple tasks), matching the original code's two-step shape.
  */
-async function attachTabs(tasks: Task[]): Promise<Task[]> {
-  if (tasks.length === 0) return tasks;
+function mapNodeToTask(
+  props: Record<string, unknown>,
+  dependsOn: number[],
+  blockedBy: Array<{ id: number; title: string }>
+): Task {
+  return {
+    id: props.id as number,
+    title: props.title as string,
+    priority: props.priority as 1 | 2 | 3 | 4,
+    type: props.type as Task["type"],
+    state: props.state as string,
+    description: (props.description as string) ?? "",
+    files: (props.files as string[]) ?? [],
+    origin: props.origin as Task["origin"],
+    branch: (props.branch as string) || null,
+    pullRequestUrl: (props.pullRequestUrl as string) || null,
+    // createdAt/updatedAt come back as neo4j-driver DateTime values, not a
+    // JS Date — .toString() on those produces an ISO 8601 string directly.
+    createdAt: (props.createdAt as { toString(): string }).toString(),
+    updatedAt: (props.updatedAt as { toString(): string }).toString(),
+    dependsOn,
+    isBlocked: blockedBy.length > 0,
+    blockedBy,
+  };
+}
 
-  const pool = await getPool();
+/** The dependsOn/blockedBy list-comprehension fragment, reused by every read below. */
+const DEPENDENCY_PROJECTION = `
+  [(t)-[:DEPENDS_ON]->(dep:Task) | dep.id] AS dependsOn,
+  [(t)-[:DEPENDS_ON]->(dep:Task) WHERE dep.state <> 'done' | {id: dep.id, title: dep.title}] AS blockedBy
+`;
+
+/**
+ * Attach tab memberships to a list of tasks (batch lookup), mutating each
+ * task's `tabs` field in place — mirrors the original mssql-based
+ * attachTabs' shape exactly, including its simplifications: mcpConfig is
+ * always the default (never the tab's real config) and columns is always
+ * `[]`, matching the original's behavior of never fetching those two fields
+ * for this particular join. `userId` is resolved via the tab's OWNS
+ * relationship (no longer a stored property on :Tab).
+ */
+async function attachTabs(tx: ManagedTransaction, tasks: Task[]): Promise<void> {
+  if (tasks.length === 0) return;
+
   const taskIds = tasks.map((t) => t.id);
-
-  const result = await pool.request().query(`
-    SELECT tt.task_id, t.id, t.name, t.repository_url, t.git_provider, t.sort_order, t.user_id, t.created_at
-    FROM task_tabs tt
-    INNER JOIN tabs t ON t.id = tt.tab_id
-    WHERE tt.task_id IN (${taskIds.join(",")})
-  `);
+  const result = await tx.run(
+    `UNWIND $taskIds AS taskId
+     MATCH (t:Task {id: taskId})-[:IN_TAB]->(tab:Tab)
+     OPTIONAL MATCH (owner:User)-[:OWNS]->(tab)
+     RETURN taskId, tab{.*} AS tabProps, owner.id AS ownerId`,
+    { taskIds }
+  );
 
   const tabsByTask = new Map<number, Task["tabs"]>();
-  for (const row of result.recordset) {
-    const taskId = row.task_id as number;
+  for (const record of result.records) {
+    const taskId = record.get("taskId") as number;
+    const tabProps = record.get("tabProps") as Record<string, unknown>;
+    const ownerId = record.get("ownerId") as number | null;
     if (!tabsByTask.has(taskId)) tabsByTask.set(taskId, []);
+    const gitProvider = tabProps.gitProvider as string | null | undefined;
     tabsByTask.get(taskId)!.push({
-      id: row.id as number,
-      name: row.name as string,
-      repositoryUrl: (row.repository_url as string) || null,
-      gitProvider: isGitProvider(row.git_provider) ? row.git_provider : null,
+      id: tabProps.id as number,
+      name: tabProps.name as string,
+      repositoryUrl: (tabProps.repositoryUrl as string) || null,
+      gitProvider: isGitProvider(gitProvider) ? gitProvider : null,
       mcpConfig: { ...DEFAULT_MCP_CONFIG },
       columns: [],
-      sortOrder: (row.sort_order as number) ?? 0,
-      userId: row.user_id as number,
-      createdAt: (row.created_at as Date).toISOString(),
+      sortOrder: (tabProps.sortOrder as number) ?? 0,
+      userId: ownerId ?? 0,
+      createdAt: (tabProps.createdAt as { toString(): string }).toString(),
     });
   }
 
   for (const task of tasks) {
     task.tabs = tabsByTask.get(task.id) ?? [];
   }
+}
 
-  return tasks;
+/**
+ * Replaces ALL of a task's outgoing DEPENDS_ON edges with the given set of
+ * dependency IDs, rejecting the entire write (no partial application — this
+ * always runs inside the caller's writeQuery transaction, so a thrown error
+ * here rolls back everything, including the edge removal) if:
+ *   - a requested dependency ID doesn't refer to an existing task, or
+ *   - the task depends on itself, or
+ *   - adding any of the requested edges would close a cycle — i.e. the
+ *     candidate dependency can already reach this task via existing
+ *     DEPENDS_ON edges (checked via bounded-depth path search, run AFTER
+ *     this task's own stale edges are removed, so a task's own outgoing
+ *     edges can never count against itself in the check).
+ *
+ * Existing edges are removed unconditionally first (even for an empty
+ * `dependsOn`, which correctly clears all dependencies) — validation and
+ * recreation only run when there's something new to add.
+ */
+async function replaceDependencies(
+  tx: ManagedTransaction,
+  taskId: number,
+  dependsOn: number[]
+): Promise<void> {
+  await tx.run(`MATCH (a:Task {id: $taskId})-[r:DEPENDS_ON]->(:Task) DELETE r`, { taskId });
+
+  const depIds = Array.from(new Set(dependsOn));
+  if (depIds.length === 0) return;
+
+  if (depIds.includes(taskId)) {
+    throw new DependencyCycleError(taskId, taskId);
+  }
+
+  const existsResult = await tx.run(
+    `UNWIND $depIds AS depId
+     OPTIONAL MATCH (b:Task {id: depId})
+     WITH depId, b
+     WHERE b IS NULL
+     RETURN collect(depId) AS missingIds`,
+    { depIds }
+  );
+  const missingIds = existsResult.records[0].get("missingIds") as number[];
+  if (missingIds.length > 0) {
+    throw new Error(`Cannot depend on nonexistent task id(s): ${missingIds.join(", ")}`);
+  }
+
+  // Cycle check: for each candidate dependency b, adding a->b would close a
+  // cycle only if b can already reach a via existing DEPENDS_ON edges
+  // (evaluated against the graph as it stands after this task's own old
+  // edges were removed above).
+  const cycleResult = await tx.run(
+    `MATCH (a:Task {id: $taskId})
+     UNWIND $depIds AS depId
+     MATCH (b:Task {id: depId})
+     OPTIONAL MATCH path = (b)-[:DEPENDS_ON*1..50]->(a)
+     WITH depId, path
+     WHERE path IS NOT NULL
+     RETURN collect(depId) AS cyclicIds`,
+    { taskId, depIds }
+  );
+  const cyclicIds = cycleResult.records[0].get("cyclicIds") as number[];
+  if (cyclicIds.length > 0) {
+    throw new DependencyCycleError(taskId, cyclicIds[0]);
+  }
+
+  await tx.run(
+    `MATCH (a:Task {id: $taskId})
+     UNWIND $depIds AS depId
+     MATCH (b:Task {id: depId})
+     MERGE (a)-[:DEPENDS_ON]->(b)`,
+    { taskId, depIds }
+  );
+}
+
+/** Re-fetches a single task (props + dependsOn/blockedBy) within the caller's transaction. */
+async function fetchTaskCore(
+  tx: ManagedTransaction,
+  taskId: number
+): Promise<{ props: Record<string, unknown>; dependsOn: number[]; blockedBy: Array<{ id: number; title: string }> } | null> {
+  const result = await tx.run(
+    `MATCH (t:Task {id: $taskId}) RETURN t{.*} AS props, ${DEPENDENCY_PROJECTION}`,
+    { taskId }
+  );
+  if (result.records.length === 0) return null;
+  const record = result.records[0];
+  return {
+    props: record.get("props"),
+    dependsOn: record.get("dependsOn"),
+    blockedBy: record.get("blockedBy"),
+  };
 }
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
-export async function isTaskOwnedByUser(
-  taskId: number,
-  userId: number
-): Promise<boolean> {
-  const pool = await getPool();
-  const result = await pool
-    .request()
-    .input("taskId", sql.Int, taskId)
-    .input("userId", sql.Int, userId)
-    .query(`
-      SELECT 1 FROM task_tabs tt
-      INNER JOIN tabs t ON t.id = tt.tab_id
-      WHERE tt.task_id = @taskId AND t.user_id = @userId
-    `);
-  return result.recordset.length > 0;
+export async function isTaskOwnedByUser(taskId: number, userId: number): Promise<boolean> {
+  return readQuery(async (tx: ManagedTransaction) => {
+    const result = await tx.run(
+      `MATCH (t:Task {id: $taskId})-[:IN_TAB]->(:Tab)<-[:OWNS]-(:User {id: $userId}) RETURN t LIMIT 1`,
+      { taskId, userId }
+    );
+    return result.records.length > 0;
+  });
 }
 
 export async function getAllTasks(
   filters?: { state?: string; priority?: number; tabId?: number; userId?: number }
 ): Promise<Task[]> {
-  const pool = await getPool();
-  const request = pool.request();
-
-  const conditions: string[] = [];
-
-  if (filters?.state) {
-    request.input("state", sql.VarChar(50), filters.state);
-    conditions.push("t.state = @state");
-  }
-  if (filters?.priority) {
-    request.input("priority", sql.TinyInt, filters.priority);
-    conditions.push("t.priority = @priority");
-  }
-  if (filters?.tabId) {
-    request.input("tabId", sql.Int, filters.tabId);
-    conditions.push(
-      "EXISTS (SELECT 1 FROM task_tabs tt WHERE tt.task_id = t.id AND tt.tab_id = @tabId)"
+  return readQuery(async (tx: ManagedTransaction) => {
+    const result = await tx.run(
+      `MATCH (t:Task)
+       WHERE ($state IS NULL OR t.state = $state)
+         AND ($priority IS NULL OR t.priority = $priority)
+         AND ($tabId IS NULL OR EXISTS { (t)-[:IN_TAB]->(:Tab {id: $tabId}) })
+         AND ($userId IS NULL OR EXISTS { (t)-[:IN_TAB]->(:Tab)<-[:OWNS]-(:User {id: $userId}) })
+       RETURN t{.*} AS props, ${DEPENDENCY_PROJECTION}
+       ORDER BY t.priority ASC, t.createdAt DESC`,
+      {
+        state: filters?.state ?? null,
+        priority: filters?.priority ?? null,
+        tabId: filters?.tabId ?? null,
+        userId: filters?.userId ?? null,
+      }
     );
-  }
-  if (filters?.userId) {
-    request.input("userId", sql.Int, filters.userId);
-    conditions.push(
-      "EXISTS (SELECT 1 FROM task_tabs tt INNER JOIN tabs tab ON tab.id = tt.tab_id WHERE tt.task_id = t.id AND tab.user_id = @userId)"
+    const tasks = result.records.map((r) =>
+      mapNodeToTask(r.get("props"), r.get("dependsOn"), r.get("blockedBy"))
     );
-  }
-
-  const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-
-  const result = await request.query(`
-    SELECT t.* FROM tasks t ${where} ORDER BY t.priority ASC, t.created_at DESC
-  `);
-
-  const tasks = result.recordset.map(mapRowToTask);
-  return attachTabs(tasks);
+    await attachTabs(tx, tasks);
+    return tasks;
+  });
 }
 
 export async function getTaskById(id: number): Promise<Task | null> {
-  const pool = await getPool();
-  const result = await pool
-    .request()
-    .input("id", sql.Int, id)
-    .query("SELECT * FROM tasks WHERE id = @id");
-
-  if (result.recordset.length === 0) return null;
-
-  const task = mapRowToTask(result.recordset[0]);
-  await attachTabs([task]);
-  return task;
+  return readQuery(async (tx: ManagedTransaction) => {
+    const core = await fetchTaskCore(tx, id);
+    if (!core) return null;
+    const task = mapNodeToTask(core.props, core.dependsOn, core.blockedBy);
+    await attachTabs(tx, [task]);
+    return task;
+  });
 }
 
 export async function createTask(input: CreateTaskInput): Promise<Task> {
-  const pool = await getPool();
-
-  const filesJson = JSON.stringify(input.files ?? []);
+  const id = await getNextId("Task");
   const origin = input.origin ?? "user";
+  const originRank = computeOriginRank(origin);
 
-  const result = await pool
-    .request()
-    .input("title", sql.NVarChar(200), input.title)
-    .input("priority", sql.TinyInt, input.priority)
-    .input("type", sql.VarChar(20), input.type)
-    .input("description", sql.NVarChar(sql.MAX), input.description ?? "")
-    .input("files", sql.NVarChar(sql.MAX), filesJson)
-    .input("origin", sql.VarChar(20), origin)
-    .query(`
-      INSERT INTO tasks (title, priority, type, state, description, files, origin)
-      OUTPUT INSERTED.*
-      VALUES (@title, @priority, @type, 'todo', @description, @files, @origin)
-    `);
+  return writeQuery(async (tx: ManagedTransaction) => {
+    await tx.run(
+      `CREATE (t:Task {
+         id: $id, title: $title, priority: $priority, type: $type, state: 'todo',
+         description: $description, files: $files, origin: $origin, originRank: $originRank,
+         createdAt: datetime(), updatedAt: datetime()
+       })
+       WITH t
+       CALL (t) {
+         UNWIND $tabIds AS tabId
+         MATCH (tab:Tab {id: tabId})
+         CREATE (t)-[:IN_TAB]->(tab)
+       }`,
+      {
+        id,
+        title: input.title,
+        priority: input.priority,
+        type: input.type,
+        description: input.description ?? "",
+        files: input.files ?? [],
+        origin,
+        originRank,
+        tabIds: input.tabIds ?? [],
+      }
+    );
 
-  const task = mapRowToTask(result.recordset[0]);
+    if (input.dependsOn && input.dependsOn.length > 0) {
+      await replaceDependencies(tx, id, input.dependsOn);
+    }
 
-  if (input.tabIds && input.tabIds.length > 0) {
-    await assignTaskToTabs(task.id, input.tabIds);
-  }
-
-  await attachTabs([task]);
-  return task;
+    // Re-fetch within the same transaction so dependsOn/blockedBy reflect
+    // whatever replaceDependencies just did.
+    const core = await fetchTaskCore(tx, id);
+    // core is never null here — the CREATE above just committed this exact id.
+    const task = mapNodeToTask(core!.props, core!.dependsOn, core!.blockedBy);
+    await attachTabs(tx, [task]);
+    return task;
+  });
 }
 
-export async function updateTask(
-  id: number,
-  input: UpdateTaskInput
-): Promise<Task | null> {
-  const pool = await getPool();
-  const request = pool.request().input("id", sql.Int, id);
+export async function updateTask(id: number, input: UpdateTaskInput): Promise<Task | null> {
+  return writeQuery(async (tx: ManagedTransaction) => {
+    const setParts: string[] = ["t.updatedAt = datetime()"];
+    const params: Record<string, unknown> = { id };
 
-  const setClauses: string[] = ["updated_at = GETUTCDATE()"];
+    if (input.title !== undefined) {
+      setParts.push("t.title = $title");
+      params.title = input.title;
+    }
+    if (input.priority !== undefined) {
+      setParts.push("t.priority = $priority");
+      params.priority = input.priority;
+    }
+    if (input.type !== undefined) {
+      setParts.push("t.type = $type");
+      params.type = input.type;
+    }
+    if (input.state !== undefined) {
+      setParts.push("t.state = $state");
+      params.state = input.state;
+    }
+    if (input.description !== undefined) {
+      setParts.push("t.description = $description");
+      params.description = input.description;
+    }
+    if (input.files !== undefined) {
+      setParts.push("t.files = $files");
+      params.files = input.files;
+    }
+    if (input.branch !== undefined) {
+      setParts.push("t.branch = $branch");
+      params.branch = input.branch;
+    }
+    if (input.pullRequestUrl !== undefined) {
+      setParts.push("t.pullRequestUrl = $pullRequestUrl");
+      params.pullRequestUrl = input.pullRequestUrl;
+    }
 
-  if (input.title !== undefined) {
-    request.input("title", sql.NVarChar(200), input.title);
-    setClauses.push("title = @title");
-  }
-  if (input.priority !== undefined) {
-    request.input("priority", sql.TinyInt, input.priority);
-    setClauses.push("priority = @priority");
-  }
-  if (input.type !== undefined) {
-    request.input("type", sql.VarChar(20), input.type);
-    setClauses.push("type = @type");
-  }
-  if (input.state !== undefined) {
-    request.input("state", sql.VarChar(50), input.state);
-    setClauses.push("state = @state");
-  }
-  if (input.description !== undefined) {
-    request.input("description", sql.NVarChar(sql.MAX), input.description);
-    setClauses.push("description = @description");
-  }
-  if (input.files !== undefined) {
-    request.input("files", sql.NVarChar(sql.MAX), JSON.stringify(input.files));
-    setClauses.push("files = @files");
-  }
-  if (input.branch !== undefined) {
-    request.input("branch", sql.NVarChar(250), input.branch);
-    setClauses.push("branch = @branch");
-  }
-  if (input.pullRequestUrl !== undefined) {
-    request.input("pullRequestUrl", sql.NVarChar(500), input.pullRequestUrl);
-    setClauses.push("pull_request_url = @pullRequestUrl");
-  }
+    const updateResult = await tx.run(
+      `MATCH (t:Task {id: $id}) SET ${setParts.join(", ")} RETURN t`,
+      params
+    );
+    if (updateResult.records.length === 0) return null;
 
-  const result = await request.query(`
-    UPDATE tasks
-    SET ${setClauses.join(", ")}
-    OUTPUT INSERTED.*
-    WHERE id = @id
-  `);
+    if (input.dependsOn !== undefined) {
+      await replaceDependencies(tx, id, input.dependsOn);
+    }
 
-  if (result.recordset.length === 0) return null;
-
-  const task = mapRowToTask(result.recordset[0]);
-  await attachTabs([task]);
-  return task;
+    const core = await fetchTaskCore(tx, id);
+    const task = mapNodeToTask(core!.props, core!.dependsOn, core!.blockedBy);
+    await attachTabs(tx, [task]);
+    return task;
+  });
 }
 
 export async function deleteTask(id: number): Promise<boolean> {
-  const pool = await getPool();
-  const result = await pool
-    .request()
-    .input("id", sql.Int, id)
-    .query("DELETE FROM tasks WHERE id = @id");
-
-  return (result.rowsAffected[0] ?? 0) > 0;
+  return writeQuery(async (tx: ManagedTransaction) => {
+    // DETACH DELETE removes every relationship touching this node in both
+    // directions — including any OTHER task's DEPENDS_ON edge pointing AT
+    // this one, so nothing is left permanently blocked on a dependency that
+    // no longer exists.
+    const result = await tx.run(
+      `MATCH (t:Task {id: $id}) DETACH DELETE t RETURN count(t) AS deletedCount`,
+      { id }
+    );
+    return (result.records[0]?.get("deletedCount") as number) > 0;
+  });
 }
 
-export async function assignTaskToTabs(
-  taskId: number,
-  tabIds: number[]
-): Promise<Task | null> {
-  const pool = await getPool();
-  const transaction = new sql.Transaction(pool);
-  await transaction.begin();
+export async function assignTaskToTabs(taskId: number, tabIds: number[]): Promise<Task | null> {
+  return writeQuery(async (tx: ManagedTransaction) => {
+    const taskCheck = await tx.run(`MATCH (t:Task {id: $taskId}) RETURN t`, { taskId });
+    if (taskCheck.records.length === 0) return null;
 
-  try {
-    await new sql.Request(transaction)
-      .input("taskId", sql.Int, taskId)
-      .query("DELETE FROM task_tabs WHERE task_id = @taskId");
+    await tx.run(`MATCH (t:Task {id: $taskId})-[r:IN_TAB]->(:Tab) DELETE r`, { taskId });
+    await tx.run(
+      `MATCH (t:Task {id: $taskId})
+       UNWIND $tabIds AS tabId
+       MATCH (tab:Tab {id: tabId})
+       MERGE (t)-[:IN_TAB]->(tab)`,
+      { taskId, tabIds }
+    );
 
-    for (const tabId of tabIds) {
-      await new sql.Request(transaction)
-        .input("taskId", sql.Int, taskId)
-        .input("tabId", sql.Int, tabId)
-        .query("INSERT INTO task_tabs (task_id, tab_id) VALUES (@taskId, @tabId)");
-    }
-
-    await transaction.commit();
-  } catch (err) {
-    await transaction.rollback();
-    throw err;
-  }
-
-  return getTaskById(taskId);
+    const core = await fetchTaskCore(tx, taskId);
+    const task = mapNodeToTask(core!.props, core!.dependsOn, core!.blockedBy);
+    await attachTabs(tx, [task]);
+    return task;
+  });
 }
 
-export async function removeTaskFromTab(
-  taskId: number,
-  tabId: number
-): Promise<Task | null> {
-  const pool = await getPool();
-  const result = await pool
-    .request()
-    .input("taskId", sql.Int, taskId)
-    .input("tabId", sql.Int, tabId)
-    .query("DELETE FROM task_tabs WHERE task_id = @taskId AND tab_id = @tabId");
+export async function removeTaskFromTab(taskId: number, tabId: number): Promise<Task | null> {
+  return writeQuery(async (tx: ManagedTransaction) => {
+    const delResult = await tx.run(
+      `MATCH (t:Task {id: $taskId})-[r:IN_TAB]->(:Tab {id: $tabId})
+       DELETE r
+       RETURN count(r) AS deletedCount`,
+      { taskId, tabId }
+    );
+    if ((delResult.records[0]?.get("deletedCount") as number) === 0) return null;
 
-  if ((result.rowsAffected[0] ?? 0) === 0) return null;
-  return getTaskById(taskId);
+    const core = await fetchTaskCore(tx, taskId);
+    const task = mapNodeToTask(core!.props, core!.dependsOn, core!.blockedBy);
+    await attachTabs(tx, [task]);
+    return task;
+  });
 }
 
 export async function getChangedTasksSince(since: string): Promise<Task[]> {
-  const pool = await getPool();
-  const result = await pool
-    .request()
-    .input("since", sql.DateTime2, since)
-    .query("SELECT * FROM tasks WHERE updated_at > @since ORDER BY updated_at ASC");
-
-  const tasks = result.recordset.map(mapRowToTask);
-  return attachTabs(tasks);
+  return readQuery(async (tx: ManagedTransaction) => {
+    const result = await tx.run(
+      `MATCH (t:Task)
+       WHERE t.updatedAt > datetime($since)
+       RETURN t{.*} AS props, ${DEPENDENCY_PROJECTION}
+       ORDER BY t.updatedAt ASC`,
+      { since }
+    );
+    const tasks = result.records.map((r) =>
+      mapNodeToTask(r.get("props"), r.get("dependsOn"), r.get("blockedBy"))
+    );
+    await attachTabs(tx, tasks);
+    return tasks;
+  });
 }
 
 /**
@@ -297,15 +457,11 @@ export async function setTaskBranchAndPr(
   branch: string | null,
   pullRequestUrl: string | null
 ): Promise<void> {
-  const pool = await getPool();
-  await pool
-    .request()
-    .input("id", sql.Int, taskId)
-    .input("branch", sql.NVarChar(250), branch)
-    .input("pullRequestUrl", sql.NVarChar(500), pullRequestUrl)
-    .query(`
-      UPDATE tasks
-      SET branch = @branch, pull_request_url = @pullRequestUrl, updated_at = GETUTCDATE()
-      WHERE id = @id
-    `);
+  await writeQuery(async (tx: ManagedTransaction) => {
+    await tx.run(
+      `MATCH (t:Task {id: $taskId})
+       SET t.branch = $branch, t.pullRequestUrl = $pullRequestUrl, t.updatedAt = datetime()`,
+      { taskId, branch, pullRequestUrl }
+    );
+  });
 }

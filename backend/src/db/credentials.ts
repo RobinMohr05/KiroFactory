@@ -1,18 +1,21 @@
-import { getPool, sql } from "./connection.js";
+import type { ManagedTransaction, Node } from "neo4j-driver";
+import { readQuery, writeQuery } from "./connection.js";
 import { encrypt, decrypt } from "../crypto.js";
 import type { CredentialStatus, CredentialKey } from "../types.js";
 
 /**
  * All supported credential keys.
- * Maps to columns in the users table.
+ * Maps to camelCase properties on the :User node (see design.md — the six
+ * `cred_*` SQL columns become `cred*` properties directly on the User node,
+ * no separate credentials label/relationship).
  */
 const CREDENTIAL_COLUMNS: Record<CredentialKey, string> = {
-  azureDevOpsPat: "cred_azure_devops_pat",
-  atlassianApiToken: "cred_atlassian_api_token",
-  atlassianUsername: "cred_atlassian_username",
-  awsAccessKeyId: "cred_aws_access_key_id",
-  awsSecretAccessKey: "cred_aws_secret_access_key",
-  githubPat: "cred_github_pat",
+  azureDevOpsPat: "credAzureDevOpsPat",
+  atlassianApiToken: "credAtlassianApiToken",
+  atlassianUsername: "credAtlassianUsername",
+  awsAccessKeyId: "credAwsAccessKeyId",
+  awsSecretAccessKey: "credAwsSecretAccessKey",
+  githubPat: "credGithubPat",
 };
 
 /**
@@ -20,15 +23,12 @@ const CREDENTIAL_COLUMNS: Record<CredentialKey, string> = {
  * Never returns actual values — only booleans.
  */
 export async function getCredentialStatus(userId: number): Promise<CredentialStatus> {
-  const pool = await getPool();
-  const columns = Object.values(CREDENTIAL_COLUMNS).join(", ");
+  const records = await readQuery(async (tx: ManagedTransaction) => {
+    const result = await tx.run("MATCH (u:User {id: $userId}) RETURN u", { userId });
+    return result.records;
+  });
 
-  const result = await pool
-    .request()
-    .input("id", sql.Int, userId)
-    .query(`SELECT ${columns} FROM users WHERE id = @id`);
-
-  if (result.recordset.length === 0) {
+  if (records.length === 0) {
     return {
       azureDevOpsPat: false,
       atlassianApiToken: false,
@@ -39,11 +39,12 @@ export async function getCredentialStatus(userId: number): Promise<CredentialSta
     };
   }
 
-  const row = result.recordset[0];
+  const node = records[0].get("u") as Node;
   const status: CredentialStatus = {} as CredentialStatus;
 
-  for (const [key, col] of Object.entries(CREDENTIAL_COLUMNS)) {
-    status[key as CredentialKey] = row[col] != null && row[col] !== "";
+  for (const [key, prop] of Object.entries(CREDENTIAL_COLUMNS)) {
+    const value = node.properties[prop] as string | null | undefined;
+    status[key as CredentialKey] = value != null && value !== "";
   }
 
   return status;
@@ -57,35 +58,41 @@ export async function updateCredentials(
   userId: number,
   credentials: Partial<Record<CredentialKey, string | null>>
 ): Promise<void> {
-  const pool = await getPool();
-
-  // Build dynamic SET clause
+  // Build dynamic SET/REMOVE clauses
   const setClauses: string[] = [];
-  const request = pool.request().input("id", sql.Int, userId);
+  const removeClauses: string[] = [];
+  const params: Record<string, unknown> = { userId };
 
   let paramIdx = 0;
   for (const [key, value] of Object.entries(credentials)) {
-    const col = CREDENTIAL_COLUMNS[key as CredentialKey];
-    if (!col) continue;
+    const prop = CREDENTIAL_COLUMNS[key as CredentialKey];
+    if (!prop) continue;
 
-    const paramName = `p${paramIdx++}`;
     if (value === null || value === "") {
-      setClauses.push(`${col} = NULL`);
+      // Cypher has no property-level NULL assignment (`SET u.x = null` is
+      // invalid) — REMOVE is how a property is actually cleared, unlike
+      // SQL's `col = NULL`.
+      removeClauses.push(`u.${prop}`);
     } else {
-      const encrypted = encrypt(value);
-      request.input(paramName, sql.NVarChar(sql.MAX), encrypted);
-      setClauses.push(`${col} = @${paramName}`);
+      const paramName = `p${paramIdx++}`;
+      params[paramName] = encrypt(value);
+      setClauses.push(`u.${prop} = $${paramName}`);
     }
   }
 
-  if (setClauses.length === 0) return;
+  if (setClauses.length === 0 && removeClauses.length === 0) return;
 
-  // Always update updated_at
-  setClauses.push("updated_at = GETUTCDATE()");
+  // Always update updatedAt alongside any real change.
+  setClauses.push("u.updatedAt = datetime()");
 
-  await request.query(`
-    UPDATE users SET ${setClauses.join(", ")} WHERE id = @id
-  `);
+  const clauses = [`SET ${setClauses.join(", ")}`];
+  if (removeClauses.length > 0) {
+    clauses.push(`REMOVE ${removeClauses.join(", ")}`);
+  }
+
+  await writeQuery(async (tx: ManagedTransaction) => {
+    await tx.run(`MATCH (u:User {id: $userId}) ${clauses.join(" ")}`, params);
+  });
 }
 
 /**
@@ -96,18 +103,22 @@ export async function getDecryptedCredential(
   userId: number,
   key: CredentialKey
 ): Promise<string | null> {
-  const col = CREDENTIAL_COLUMNS[key];
-  if (!col) return null;
+  const prop = CREDENTIAL_COLUMNS[key];
+  if (!prop) return null;
 
-  const pool = await getPool();
-  const result = await pool
-    .request()
-    .input("id", sql.Int, userId)
-    .query(`SELECT ${col} FROM users WHERE id = @id`);
+  // `prop` only ever comes from the fixed CREDENTIAL_COLUMNS map above,
+  // never from request input, so interpolating it into the query string here
+  // is safe — the actual untrusted input (userId) stays parameterized.
+  const records = await readQuery(async (tx: ManagedTransaction) => {
+    const result = await tx.run(`MATCH (u:User {id: $userId}) RETURN u.${prop} AS value`, {
+      userId,
+    });
+    return result.records;
+  });
 
-  if (result.recordset.length === 0) return null;
+  if (records.length === 0) return null;
 
-  const encrypted = result.recordset[0][col] as string | null;
+  const encrypted = records[0].get("value") as string | null;
   if (!encrypted) return null;
 
   return decrypt(encrypted);
@@ -120,21 +131,18 @@ export async function getDecryptedCredential(
 export async function getAllDecryptedCredentials(
   userId: number
 ): Promise<Partial<Record<CredentialKey, string>>> {
-  const pool = await getPool();
-  const columns = Object.values(CREDENTIAL_COLUMNS).join(", ");
+  const records = await readQuery(async (tx: ManagedTransaction) => {
+    const result = await tx.run("MATCH (u:User {id: $userId}) RETURN u", { userId });
+    return result.records;
+  });
 
-  const result = await pool
-    .request()
-    .input("id", sql.Int, userId)
-    .query(`SELECT ${columns} FROM users WHERE id = @id`);
+  if (records.length === 0) return {};
 
-  if (result.recordset.length === 0) return {};
-
-  const row = result.recordset[0];
+  const node = records[0].get("u") as Node;
   const creds: Partial<Record<CredentialKey, string>> = {};
 
-  for (const [key, col] of Object.entries(CREDENTIAL_COLUMNS)) {
-    const encrypted = row[col] as string | null;
+  for (const [key, prop] of Object.entries(CREDENTIAL_COLUMNS)) {
+    const encrypted = node.properties[prop] as string | null | undefined;
     if (encrypted) {
       try {
         creds[key as CredentialKey] = decrypt(encrypted);

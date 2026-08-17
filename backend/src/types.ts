@@ -110,6 +110,20 @@ export interface Task {
   createdAt: string;
   updatedAt: string;
   tabs?: Tab[];
+  /**
+   * IDs of the other tasks this task depends on (DEPENDS_ON edges). Always
+   * populated by every db/tasks.ts read path (empty array if none) — see
+   * .kiro/specs/neo4j-migration/design.md, "Task dependencies".
+   */
+  dependsOn?: number[];
+  /**
+   * True if at least one dependency (see `dependsOn`) is not yet in the
+   * "done" state. Never stored — always computed at read time from the
+   * current state of this task's dependencies, so it can never go stale.
+   */
+  isBlocked?: boolean;
+  /** The specific dependencies causing `isBlocked` (empty if not blocked). */
+  blockedBy?: Array<{ id: number; title: string }>;
 }
 
 /** MCP server toggle configuration per tab/board */
@@ -246,6 +260,8 @@ export interface CreateTaskInput {
   files?: string[];
   origin?: "user" | "ai" | "user-assisted";
   tabIds?: number[];
+  /** IDs of other tasks this task depends on. Rejected if it would create a cycle. */
+  dependsOn?: number[];
 }
 
 export interface UpdateTaskInput {
@@ -259,6 +275,20 @@ export interface UpdateTaskInput {
   branch?: string | null;
   /** Editable only from the edit-task view — never accepted on task creation. */
   pullRequestUrl?: string | null;
+  /** IDs of other tasks this task depends on. Rejected if it would create a cycle. */
+  dependsOn?: number[];
+}
+
+/**
+ * Thrown by db/tasks.ts when a requested `dependsOn` write would introduce a
+ * dependency cycle (directly or transitively). Routes should catch this and
+ * respond 409, naming the conflicting task IDs.
+ */
+export class DependencyCycleError extends Error {
+  constructor(public readonly fromId: number, public readonly toId: number) {
+    super(`Adding a dependency from task ${fromId} to task ${toId} would create a cycle`);
+    this.name = "DependencyCycleError";
+  }
 }
 
 export interface CreateTabInput {

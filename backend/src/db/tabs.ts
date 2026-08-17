@@ -1,61 +1,119 @@
-import { getPool, sql } from "./connection.js";
-import type { Tab, CreateTabInput, Task, Session, TabMcpConfig, GitProvider } from "../types.js";
+/**
+ * Neo4j-backed implementation of the tabs data-access layer.
+ *
+ * Every exported function here keeps the exact name, parameter types, and
+ * return type it had under the previous mssql-based implementation — see
+ * .kiro/specs/neo4j-migration/design.md for the full :Tab node model and
+ * migration rationale. Only the internals (SQL -> Cypher, mssql pool ->
+ * neo4j-driver managed transactions) change.
+ *
+ * Node/relationship model (design.md):
+ *   (:Tab {id, name, repositoryUrl, gitProvider, columns, sortOrder, createdAt})
+ *   (:User)-[:OWNS]->(:Tab)                — 0 or 1 owner, not a stored property
+ *   (:Tab)-[:HAS_MCP_CONFIG]->(:McpConfig) — always present
+ *   (:Task)-[:IN_TAB]->(:Tab)              — read-only here, tasks.ts owns writes
+ *   (:Agent)-[:IN_TAB]->(:Tab)             — shared with db/agents.ts's own
+ *                                             tab-assignment helper; same
+ *                                             relationship type/direction,
+ *                                             no relationship properties.
+ *
+ * Per Neo4j's current query-writing guidance (avoid OPTIONAL MATCH chains
+ * for "0-or-1 related node"/"0-or-more related nodes, unordered" shapes),
+ * every 0-or-1/0-or-more traversal below uses a list comprehension
+ * (`[(pattern) | projection]`, optionally `[0]` for "at most one") instead
+ * of `OPTIONAL MATCH` + `collect()`. This was verified against the live
+ * AuraDB instance during implementation: `collect({id: dep.id, ...})` over
+ * an OPTIONAL MATCH that finds nothing produces `[{id: null, ...}]` (a
+ * false-positive non-empty list), not `[]` — the list-comprehension form
+ * used throughout this file does not have that bug, and also avoids the
+ * row-multiplication chained-OPTIONAL-MATCH is prone to.
+ */
+
+import { readQuery, writeQuery } from "./connection.js";
+import type { ManagedTransaction } from "neo4j-driver";
+import type { Tab, CreateTabInput, Task, TabMcpConfig, GitProvider } from "../types.js";
 import { DEFAULT_MCP_CONFIG, isGitProvider } from "../types.js";
+import { getNextId } from "./id-counter.js";
 import { getAllSessions } from "../session-manager.js";
 import { getAllErrors } from "../error-store.js";
 
 /**
- * Map a raw DB row to a Tab object.
+ * Minimal typed view of a Neo4j Node value pulled out of a query result
+ * record — just the bit every mapper here needs.
  */
-function mapRowToTab(row: Record<string, unknown>): Tab {
-  const DEFAULT_COLUMNS = ["todo", "in-progress", "developed", "in-code-review", "reviewed", "in-qa", "done"];
-  let columns: string[];
-  try {
-    columns = JSON.parse((row.columns_json as string) || "[]");
-    if (!Array.isArray(columns) || columns.length === 0) columns = DEFAULT_COLUMNS;
-  } catch {
-    columns = DEFAULT_COLUMNS;
-  }
+interface NodeResult {
+  properties: Record<string, unknown>;
+}
 
-  let mcpConfig: TabMcpConfig;
-  try {
-    mcpConfig = JSON.parse((row.mcp_config as string) || "null") ?? DEFAULT_MCP_CONFIG;
-  } catch {
-    mcpConfig = { ...DEFAULT_MCP_CONFIG };
-  }
+const DEFAULT_COLUMNS = ["todo", "in-progress", "developed", "in-code-review", "reviewed", "in-qa", "done"];
 
-  const gitProvider = row.git_provider as string | null | undefined;
+/**
+ * Map a :Tab node's properties, plus its resolved ownerId and McpConfig
+ * sub-node (both fetched in the same query via list comprehensions — see
+ * module comment), to a Tab object.
+ */
+function mapNodeToTab(
+  tabProps: Record<string, unknown>,
+  ownerId: number | null,
+  mcpConfigNode: NodeResult | null
+): Tab {
+  const columns = Array.isArray(tabProps.columns) && tabProps.columns.length > 0
+    ? (tabProps.columns as string[])
+    : DEFAULT_COLUMNS;
+
+  const mcpConfig: TabMcpConfig = mcpConfigNode
+    ? {
+        atlassian: !!mcpConfigNode.properties.atlassian,
+        azureDevops: !!mcpConfigNode.properties.azureDevops,
+        awsApi: !!mcpConfigNode.properties.awsApi,
+        awsDocs: !!mcpConfigNode.properties.awsDocs,
+      }
+    : { ...DEFAULT_MCP_CONFIG };
+
+  const gitProvider = tabProps.gitProvider as string | null | undefined;
 
   return {
-    id: row.id as number,
-    name: row.name as string,
-    repositoryUrl: (row.repository_url as string) || null,
+    id: tabProps.id as number,
+    name: tabProps.name as string,
+    repositoryUrl: (tabProps.repositoryUrl as string) || null,
     gitProvider: isGitProvider(gitProvider) ? gitProvider : null,
     mcpConfig,
     columns,
-    sortOrder: (row.sort_order as number) ?? 0,
-    userId: (row.user_id as number) ?? 0,
-    createdAt: (row.created_at as Date).toISOString(),
+    sortOrder: (tabProps.sortOrder as number) ?? 0,
+    userId: ownerId ?? 0,
+    // createdAt comes back as a neo4j-driver DateTime value, not a JS Date —
+    // .toString() on it produces an ISO 8601 string directly.
+    createdAt: (tabProps.createdAt as { toString(): string }).toString(),
   };
 }
 
 /**
- * Map a raw DB row to a Task object (used when populating tab tasks).
+ * Map a :Task node's properties (plus its blocked-by-dependency info) to a
+ * Task object, for the read-only join in getTabWithTasks. Mirrors the shape
+ * db/tasks.ts's own mapper produces, including the isBlocked/blockedBy
+ * fields tasks.ts is adding to every task read path (see design.md's task
+ * dependency section) — replicated here via the same list-comprehension
+ * pattern rather than N+1 queries.
  */
-function mapRowToTask(row: Record<string, unknown>): Task {
+function mapNodeToTaskWithBlocked(
+  props: Record<string, unknown>,
+  blockedBy: Array<{ id: number; title: string }>
+): Task & { isBlocked: boolean; blockedBy: Array<{ id: number; title: string }> } {
   return {
-    id: row.id as number,
-    title: row.title as string,
-    priority: row.priority as 1 | 2 | 3 | 4,
-    type: row.type as Task["type"],
-    state: row.state as string,
-    description: row.description as string,
-    files: JSON.parse((row.files as string) || "[]"),
-    origin: row.origin as Task["origin"],
-    branch: (row.branch as string) || null,
-    pullRequestUrl: (row.pull_request_url as string) || null,
-    createdAt: (row.created_at as Date).toISOString(),
-    updatedAt: (row.updated_at as Date).toISOString(),
+    id: props.id as number,
+    title: props.title as string,
+    priority: props.priority as 1 | 2 | 3 | 4,
+    type: props.type as Task["type"],
+    state: props.state as string,
+    description: props.description as string,
+    files: (props.files as string[]) ?? [],
+    origin: props.origin as Task["origin"],
+    branch: (props.branch as string) || null,
+    pullRequestUrl: (props.pullRequestUrl as string) || null,
+    createdAt: (props.createdAt as { toString(): string }).toString(),
+    updatedAt: (props.updatedAt as { toString(): string }).toString(),
+    isBlocked: blockedBy.length > 0,
+    blockedBy,
   };
 }
 
@@ -64,100 +122,121 @@ function mapRowToTask(row: Record<string, unknown>): Task {
 // ---------------------------------------------------------------------------
 
 export async function getAllTabs(userId?: number): Promise<Tab[]> {
-  const pool = await getPool();
-  if (userId) {
-    const result = await pool
-      .request()
-      .input("userId", sql.Int, userId)
-      .query("SELECT * FROM tabs WHERE user_id = @userId ORDER BY sort_order ASC, name ASC");
-    return result.recordset.map(mapRowToTab);
-  }
-  const result = await pool.request().query("SELECT * FROM tabs ORDER BY sort_order ASC, name ASC");
-  return result.recordset.map(mapRowToTab);
+  return readQuery(async (tx: ManagedTransaction) => {
+    const query = userId
+      ? `MATCH (u:User {id: $userId})-[:OWNS]->(t:Tab)
+         RETURN t,
+                $userId AS ownerId,
+                [(t)-[:HAS_MCP_CONFIG]->(m:McpConfig) | m][0] AS mcpNode
+         ORDER BY t.sortOrder ASC, t.name ASC`
+      : `MATCH (t:Tab)
+         RETURN t,
+                [(owner:User)-[:OWNS]->(t) | owner.id][0] AS ownerId,
+                [(t)-[:HAS_MCP_CONFIG]->(m:McpConfig) | m][0] AS mcpNode
+         ORDER BY t.sortOrder ASC, t.name ASC`;
+
+    const result = await tx.run(query, { userId });
+    return result.records.map((record) => {
+      const tabNode = record.get("t") as NodeResult;
+      const ownerId = record.get("ownerId") as number | null;
+      const mcpNode = record.get("mcpNode") as NodeResult | null;
+      return mapNodeToTab(tabNode.properties, ownerId, mcpNode);
+    });
+  });
 }
 
 /**
- * Reorder tabs by setting sort_order for each tab ID in the given order.
+ * Reorder tabs by setting sortOrder for each tab ID in the given order.
  * @param tabIds - Array of tab IDs in the desired display order
  */
 export async function reorderTabs(tabIds: number[]): Promise<void> {
-  const pool = await getPool();
   for (let i = 0; i < tabIds.length; i++) {
-    await pool
-      .request()
-      .input(`id${i}`, sql.Int, tabIds[i])
-      .input(`order${i}`, sql.Int, i)
-      .query(`UPDATE tabs SET sort_order = @order${i} WHERE id = @id${i}`);
+    await writeQuery(async (tx: ManagedTransaction) => {
+      await tx.run(`MATCH (t:Tab {id: $id}) SET t.sortOrder = $order`, {
+        id: tabIds[i],
+        order: i,
+      });
+    });
   }
 }
 
 export async function getTabById(id: number): Promise<Tab | null> {
-  const pool = await getPool();
-  const result = await pool
-    .request()
-    .input("id", sql.Int, id)
-    .query("SELECT * FROM tabs WHERE id = @id");
+  return readQuery(async (tx: ManagedTransaction) => {
+    const result = await tx.run(
+      `MATCH (t:Tab {id: $id})
+       RETURN t,
+              [(owner:User)-[:OWNS]->(t) | owner.id][0] AS ownerId,
+              [(t)-[:HAS_MCP_CONFIG]->(m:McpConfig) | m][0] AS mcpNode`,
+      { id }
+    );
+    if (result.records.length === 0) return null;
 
-  if (result.recordset.length === 0) return null;
-  return mapRowToTab(result.recordset[0]);
+    const tabNode = result.records[0].get("t") as NodeResult;
+    const ownerId = result.records[0].get("ownerId") as number | null;
+    const mcpNode = result.records[0].get("mcpNode") as NodeResult | null;
+    return mapNodeToTab(tabNode.properties, ownerId, mcpNode);
+  });
 }
 
 /**
  * Get a tab with all its related entities: tasks, sessions, and agents.
  */
 export async function getTabWithTasks(id: number): Promise<Tab | null> {
-  const pool = await getPool();
+  const tab = await getTabById(id);
+  if (!tab) return null;
 
-  const tabResult = await pool
-    .request()
-    .input("id", sql.Int, id)
-    .query("SELECT * FROM tabs WHERE id = @id");
+  // Populate tasks via IN_TAB, including isBlocked/blockedBy (see module
+  // comment — list comprehension, not OPTIONAL MATCH + collect, to avoid
+  // the null-placeholder bug that pattern has).
+  const tasks = await readQuery(async (tx: ManagedTransaction) => {
+    const result = await tx.run(
+      `MATCH (t:Task)-[:IN_TAB]->(:Tab {id: $id})
+       WITH t,
+            [(t)-[:DEPENDS_ON]->(dep:Task) WHERE dep.state <> 'done' | {id: dep.id, title: dep.title}] AS blockedBy
+       RETURN t, blockedBy
+       ORDER BY t.priority ASC, t.createdAt DESC`,
+      { id }
+    );
+    return result.records.map((record) => {
+      const taskNode = record.get("t") as NodeResult;
+      const blockedBy = record.get("blockedBy") as Array<{ id: number; title: string }>;
+      return mapNodeToTaskWithBlocked(taskNode.properties, blockedBy);
+    });
+  });
+  tab.tasks = tasks;
 
-  if (tabResult.recordset.length === 0) return null;
-
-  const tab = mapRowToTab(tabResult.recordset[0]);
-
-  // Populate tasks via task_tabs junction
-  const tasksResult = await pool
-    .request()
-    .input("tabId", sql.Int, id)
-    .query(`
-      SELECT t.*
-      FROM tasks t
-      INNER JOIN task_tabs tt ON tt.task_id = t.id
-      WHERE tt.tab_id = @tabId
-      ORDER BY t.priority ASC, t.created_at DESC
-    `);
-
-  tab.tasks = tasksResult.recordset.map(mapRowToTask);
-
-  // Populate sessions — sessions store tabIds in memory/JSON, so filter from session-manager
+  // Populate sessions — sessions store tabIds in memory/JSON, so filter from
+  // session-manager. Completely unrelated to which database backs persistent
+  // storage — left exactly as-is.
   const allSessions = getAllSessions();
   tab.sessions = allSessions
     .filter((s) => s.tabIds?.includes(id))
     .map((s) => ({ id: s.id, name: s.name, agent: s.agent, status: s.status }));
 
-  // Populate agents. Include agents directly assigned to this tab AND agents
-  // with no tab assignment at all (unassigned = usable on every board owned
-  // by the same user).
-  const agentsResult = await pool
-    .request()
-    .input("tabId2", sql.Int, id)
-    .query(`
-      SELECT DISTINCT a.name
-      FROM agents a
-      INNER JOIN tabs t ON t.id = @tabId2
-      WHERE a.user_id = t.user_id
-        AND (
-          a.id IN (SELECT agent_id FROM agent_tabs WHERE tab_id = @tabId2)
-          OR a.id NOT IN (SELECT agent_id FROM agent_tabs)
-        )
-      ORDER BY a.name ASC
-    `);
+  // Populate agents: directly assigned to this tab OR unassigned to any tab
+  // at all, restricted to the tab owner's own agents. An owner-less tab
+  // (t has no OWNS edge) matches the original SQL's ANSI-NULL semantics —
+  // `a.user_id = t.user_id` is never true when either side is NULL, so an
+  // unowned tab always sees zero agents, never "all unassigned agents
+  // regardless of owner." Confirmed against the live AuraDB instance.
+  const agents = await readQuery(async (tx: ManagedTransaction) => {
+    const result = await tx.run(
+      `MATCH (t:Tab {id: $id})
+       OPTIONAL MATCH (owner:User)-[:OWNS]->(t)
+       WITH t, owner
+       WHERE owner IS NOT NULL
+       MATCH (owner)-[:OWNS]->(a:Agent)
+       WHERE (a)-[:IN_TAB]->(t) OR NOT EXISTS { (a)-[:IN_TAB]->(:Tab) }
+       RETURN DISTINCT a.name AS name
+       ORDER BY name ASC`,
+      { id }
+    );
+    return result.records.map((record) => record.get("name") as string);
+  });
+  tab.agents = agents;
 
-  tab.agents = agentsResult.recordset.map((row: Record<string, unknown>) => row.name as string);
-
-  // Populate errors — errors store tabIds in memory, filter from error-store
+  // Populate errors — errors store tabIds in memory, filter from
+  // error-store. Left exactly as-is, same as sessions above.
   const allErrors = getAllErrors();
   tab.errors = allErrors.filter((e) => e.tabIds?.includes(id));
 
@@ -165,20 +244,64 @@ export async function getTabWithTasks(id: number): Promise<Tab | null> {
 }
 
 export async function createTab(input: CreateTabInput): Promise<Tab> {
-  const pool = await getPool();
-  const result = await pool
-    .request()
-    .input("name", sql.NVarChar(100), input.name)
-    .input("repositoryUrl", sql.NVarChar(500), input.repositoryUrl || null)
-    .input("gitProvider", sql.VarChar(20), input.gitProvider ?? null)
-    .input("userId", sql.Int, input.userId)
-    .query(`
-      INSERT INTO tabs (name, repository_url, git_provider, user_id)
-      OUTPUT INSERTED.*
-      VALUES (@name, @repositoryUrl, @gitProvider, @userId)
-    `);
+  const id = await getNextId("Tab");
 
-  return mapRowToTab(result.recordset[0]);
+  return writeQuery(async (tx: ManagedTransaction) => {
+    // Chained CREATE makes the Tab and its always-present McpConfig
+    // sub-node (seeded from DEFAULT_MCP_CONFIG) in one write — this
+    // replaces the old implicit "NULL mcp_config column falls back to
+    // DEFAULT_MCP_CONFIG at read time" behavior with an explicit
+    // always-present node, which is behaviorally equivalent from the
+    // caller's perspective (a freshly created tab's mcpConfig is always the
+    // default either way).
+    //
+    // The owner edge uses OPTIONAL MATCH + FOREACH(CASE ...) rather than a
+    // plain MATCH after the CREATE: verified against the live instance that
+    // a plain (non-optional) MATCH which finds nothing still leaves the
+    // earlier CREATE committed but returns zero result rows — which would
+    // make this function throw on "no rows" for a bad/missing userId
+    // instead of just creating an ownerless tab. FOREACH-CASE only performs
+    // the MERGE when a matching owner was actually found, and always
+    // returns the created nodes regardless.
+    const result = await tx.run(
+      `CREATE (t:Tab {
+         id: $id,
+         name: $name,
+         repositoryUrl: $repositoryUrl,
+         gitProvider: $gitProvider,
+         columns: $columns,
+         sortOrder: 0,
+         createdAt: datetime()
+       })-[:HAS_MCP_CONFIG]->(m:McpConfig {
+         atlassian: $atlassian,
+         azureDevops: $azureDevops,
+         awsApi: $awsApi,
+         awsDocs: $awsDocs
+       })
+       WITH t, m
+       OPTIONAL MATCH (owner:User {id: $userId})
+       FOREACH (_ IN CASE WHEN owner IS NOT NULL THEN [1] ELSE [] END |
+         MERGE (owner)-[:OWNS]->(t)
+       )
+       RETURN t, m`,
+      {
+        id,
+        name: input.name,
+        repositoryUrl: input.repositoryUrl ?? null,
+        gitProvider: input.gitProvider ?? null,
+        columns: DEFAULT_COLUMNS,
+        atlassian: DEFAULT_MCP_CONFIG.atlassian,
+        azureDevops: DEFAULT_MCP_CONFIG.azureDevops,
+        awsApi: DEFAULT_MCP_CONFIG.awsApi,
+        awsDocs: DEFAULT_MCP_CONFIG.awsDocs,
+        userId: input.userId ?? null,
+      }
+    );
+
+    const tabNode = result.records[0].get("t") as NodeResult;
+    const mcpNode = result.records[0].get("m") as NodeResult;
+    return mapNodeToTab(tabNode.properties, input.userId ?? null, mcpNode);
+  });
 }
 
 export async function updateTab(
@@ -188,36 +311,74 @@ export async function updateTab(
   mcpConfig?: TabMcpConfig | null,
   gitProvider?: GitProvider | null
 ): Promise<Tab | null> {
-  const pool = await getPool();
-  const result = await pool
-    .request()
-    .input("id", sql.Int, id)
-    .input("name", sql.NVarChar(100), name)
-    .input("repositoryUrl", sql.NVarChar(500), repositoryUrl ?? null)
-    .input("mcpConfig", sql.NVarChar(sql.MAX), mcpConfig ? JSON.stringify(mcpConfig) : null)
-    .input("gitProvider", sql.VarChar(20), gitProvider ?? null)
-    .query(`
-      UPDATE tabs
-      SET name = @name,
-          repository_url = @repositoryUrl,
-          mcp_config = COALESCE(@mcpConfig, mcp_config),
-          git_provider = @gitProvider
-      OUTPUT INSERTED.*
-      WHERE id = @id
-    `);
+  const hasMcpConfig = mcpConfig !== undefined && mcpConfig !== null;
 
-  if (result.recordset.length === 0) return null;
-  return mapRowToTab(result.recordset[0]);
+  return writeQuery(async (tx: ManagedTransaction) => {
+    // The FOREACH(CASE ...) guard only runs the MERGE/SET when mcpConfig was
+    // actually provided — matching the original's `COALESCE(@mcpConfig,
+    // mcp_config)` "leave the existing value alone if not provided"
+    // behavior. Verified against the live instance that MERGE on this exact
+    // relationship+label pattern (no property filter on `m`) correctly
+    // finds-or-creates exactly one sub-node per tab across repeated calls —
+    // it never creates a duplicate. The Cypher driver requires every
+    // referenced parameter to be bound even on a branch that doesn't
+    // execute, so the mcpConfig fields are always passed (defaulted to
+    // false when not updating) even though FOREACH skips using them.
+    const result = await tx.run(
+      `MATCH (t:Tab {id: $id})
+       SET t.name = $name,
+           t.repositoryUrl = $repositoryUrl,
+           t.gitProvider = $gitProvider
+       WITH t
+       FOREACH (_ IN CASE WHEN $hasMcpConfig THEN [1] ELSE [] END |
+         MERGE (t)-[:HAS_MCP_CONFIG]->(m:McpConfig)
+         SET m.atlassian = $atlassian,
+             m.azureDevops = $azureDevops,
+             m.awsApi = $awsApi,
+             m.awsDocs = $awsDocs
+       )
+       RETURN t,
+              [(owner:User)-[:OWNS]->(t) | owner.id][0] AS ownerId,
+              [(t)-[:HAS_MCP_CONFIG]->(m2:McpConfig) | m2][0] AS mcpNode`,
+      {
+        id,
+        name,
+        repositoryUrl: repositoryUrl ?? null,
+        gitProvider: gitProvider ?? null,
+        hasMcpConfig,
+        atlassian: hasMcpConfig ? mcpConfig!.atlassian : false,
+        azureDevops: hasMcpConfig ? mcpConfig!.azureDevops : false,
+        awsApi: hasMcpConfig ? mcpConfig!.awsApi : false,
+        awsDocs: hasMcpConfig ? mcpConfig!.awsDocs : false,
+      }
+    );
+
+    if (result.records.length === 0) return null;
+
+    const tabNode = result.records[0].get("t") as NodeResult;
+    const ownerId = result.records[0].get("ownerId") as number | null;
+    const mcpNode = result.records[0].get("mcpNode") as NodeResult | null;
+    return mapNodeToTab(tabNode.properties, ownerId, mcpNode);
+  });
 }
 
 export async function deleteTab(id: number): Promise<boolean> {
-  const pool = await getPool();
-  const result = await pool
-    .request()
-    .input("id", sql.Int, id)
-    .query("DELETE FROM tabs WHERE id = @id");
-
-  return (result.rowsAffected[0] ?? 0) > 0;
+  return writeQuery(async (tx: ManagedTransaction) => {
+    // Also deletes the linked McpConfig sub-node so it doesn't become an
+    // orphaned node with no path to it. Verified against the live instance
+    // that DETACH DELETE with a variable bound to null (from the OPTIONAL
+    // MATCH finding no McpConfig) is a safe no-op for that variable, not an
+    // error — so this is correct whether or not the McpConfig node exists.
+    const result = await tx.run(
+      `MATCH (t:Tab {id: $id})
+       OPTIONAL MATCH (t)-[:HAS_MCP_CONFIG]->(m:McpConfig)
+       WITH t, m, t.id AS deletedId
+       DETACH DELETE t, m
+       RETURN deletedId`,
+      { id }
+    );
+    return result.records.length > 0;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -228,12 +389,13 @@ export async function deleteTab(id: number): Promise<boolean> {
  * Get all tab IDs an agent belongs to.
  */
 export async function getAgentTabs(agentId: number): Promise<number[]> {
-  const pool = await getPool();
-  const result = await pool
-    .request()
-    .input("agentId", sql.Int, agentId)
-    .query("SELECT tab_id FROM agent_tabs WHERE agent_id = @agentId");
-  return result.recordset.map((row: Record<string, unknown>) => row.tab_id as number);
+  return readQuery(async (tx: ManagedTransaction) => {
+    const result = await tx.run(
+      `MATCH (a:Agent {id: $agentId})-[:IN_TAB]->(t:Tab) RETURN t.id AS tabId`,
+      { agentId }
+    );
+    return result.records.map((record) => record.get("tabId") as number);
+  });
 }
 
 /**
@@ -243,18 +405,17 @@ export async function assignAgentToTabs(
   agentId: number,
   tabIds: number[]
 ): Promise<void> {
-  const pool = await getPool();
   for (const tabId of tabIds) {
-    await pool
-      .request()
-      .input("agentId", sql.Int, agentId)
-      .input("tabId", sql.Int, tabId)
-      .query(`
-        IF NOT EXISTS (
-          SELECT 1 FROM agent_tabs WHERE agent_id = @agentId AND tab_id = @tabId
-        )
-        INSERT INTO agent_tabs (agent_id, tab_id) VALUES (@agentId, @tabId)
-      `);
+    await writeQuery(async (tx: ManagedTransaction) => {
+      // MERGE on the relationship pattern is naturally idempotent — it
+      // matches the existing edge if present instead of creating a
+      // duplicate, replacing the original's explicit `IF NOT EXISTS` guard.
+      await tx.run(
+        `MATCH (a:Agent {id: $agentId}), (t:Tab {id: $tabId})
+         MERGE (a)-[:IN_TAB]->(t)`,
+        { agentId, tabId }
+      );
+    });
   }
 }
 
@@ -265,13 +426,15 @@ export async function removeAgentFromTab(
   agentId: number,
   tabId: number
 ): Promise<boolean> {
-  const pool = await getPool();
-  const result = await pool
-    .request()
-    .input("agentId", sql.Int, agentId)
-    .input("tabId", sql.Int, tabId)
-    .query("DELETE FROM agent_tabs WHERE agent_id = @agentId AND tab_id = @tabId");
-  return (result.rowsAffected[0] ?? 0) > 0;
+  return writeQuery(async (tx: ManagedTransaction) => {
+    const result = await tx.run(
+      `MATCH (a:Agent {id: $agentId})-[r:IN_TAB]->(t:Tab {id: $tabId})
+       DELETE r
+       RETURN count(r) AS deletedCount`,
+      { agentId, tabId }
+    );
+    return (result.records[0]?.get("deletedCount") as number) > 0;
+  });
 }
 
 /**
@@ -281,21 +444,23 @@ export async function setAgentTabs(
   agentId: number,
   tabIds: number[]
 ): Promise<void> {
-  const pool = await getPool();
-  // Remove all existing
-  await pool
-    .request()
-    .input("agentId", sql.Int, agentId)
-    .query("DELETE FROM agent_tabs WHERE agent_id = @agentId");
-  // Add new ones
+  // Remove all existing IN_TAB edges for this agent.
+  await writeQuery(async (tx: ManagedTransaction) => {
+    await tx.run(
+      `MATCH (a:Agent {id: $agentId})-[r:IN_TAB]->(:Tab) DELETE r`,
+      { agentId }
+    );
+  });
+  // Add fresh edges to each requested tab (same idempotent pattern as
+  // assignAgentToTabs — MERGE, not CREATE, so no duplicates even if tabIds
+  // has repeats).
   for (const tabId of tabIds) {
-    await pool
-      .request()
-      .input("agentId", sql.Int, agentId)
-      .input("tabId", sql.Int, tabId)
-      .query("INSERT INTO agent_tabs (agent_id, tab_id) VALUES (@agentId, @tabId)");
+    await writeQuery(async (tx: ManagedTransaction) => {
+      await tx.run(
+        `MATCH (a:Agent {id: $agentId}), (t:Tab {id: $tabId})
+         MERGE (a)-[:IN_TAB]->(t)`,
+        { agentId, tabId }
+      );
+    });
   }
 }
-
-
-

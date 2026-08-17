@@ -14,6 +14,7 @@ import { broadcastToUser } from "../websocket-handler.js";
 import { notifyTaskAvailable } from "../agent/task-claimer.js";
 import { requireAuth, getUserId } from "../middleware/auth.js";
 import type { CreateTaskInput, UpdateTaskInput } from "../types.js";
+import { DependencyCycleError } from "../types.js";
 import { log, toErrorFields } from "../logger.js";
 
 const router = Router();
@@ -88,6 +89,10 @@ router.post("/", async (req: Request, res: Response) => {
     notifyTaskAvailable(); // wake any idle loop sessions immediately
     res.status(201).json(task);
   } catch (err) {
+    if (err instanceof DependencyCycleError) {
+      res.status(409).json({ error: err.message, fromId: err.fromId, toId: err.toId });
+      return;
+    }
     log.error("route-error", {
       component: "tasks",
       method: "POST",
@@ -163,9 +168,21 @@ router.put("/:id", async (req: Request, res: Response) => {
     // loop session is waiting on — wake it. Gated on state actually being
     // part of the request so plain title/description edits don't trigger a
     // pointless cache invalidation + wake across every loop session.
-    if (input.state !== undefined) notifyTaskAvailable();
+    //
+    // A dependsOn change can ALSO newly unblock a task (or, less usefully,
+    // block one) — either way, if there are any tasks now claimable that
+    // weren't before, a waiting loop should be woken the same way a state
+    // change would. Cheaper to just always notify on a dependsOn edit than
+    // to work out whether this particular change actually unblocked
+    // anything (edits to a task's dependencies are rare compared to state
+    // drags, so the extra wake is not a meaningful cost).
+    if (input.state !== undefined || input.dependsOn !== undefined) notifyTaskAvailable();
     res.json(task);
   } catch (err) {
+    if (err instanceof DependencyCycleError) {
+      res.status(409).json({ error: err.message, fromId: err.fromId, toId: err.toId });
+      return;
+    }
     log.error("route-error", {
       component: "tasks",
       method: "PUT",

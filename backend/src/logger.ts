@@ -140,31 +140,6 @@ export function logWorkerEvent(
   structuredLog(level, event, { component: "worker", sessionId, ...data });
 }
 
-/**
- * Log database connection pool metrics.
- *
- * This is intentionally NOT called on a fixed heartbeat — a per-minute "all is
- * well" snapshot is pure noise. Callers should only emit when the numbers carry
- * signal (activity, a change since the last sample, or back-pressure). Pass
- * `pressure: true` to escalate to a warning when the pool is saturated.
- */
-export function logPoolMetrics(
-  metrics: {
-    poolSize: number;
-    poolAvailable: number;
-    poolPending: number;
-    poolBorrowed: number;
-  },
-  opts?: { pressure?: boolean; reason?: string }
-): void {
-  structuredLog(opts?.pressure ? "warn" : "info", "db-pool", {
-    component: "db",
-    ...metrics,
-    ...(opts?.pressure ? { pressure: true } : {}),
-    ...(opts?.reason ? { reason: opts.reason } : {}),
-  });
-}
-
 /** Log an API error (5xx). */
 export function logApiError(
   statusCode: number,

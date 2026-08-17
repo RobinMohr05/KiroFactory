@@ -1,57 +1,222 @@
 /**
- * Sessions DB — Persists session metadata in SQL Server.
+ * Sessions DB — Persists session metadata in Neo4j (AuraDB).
  *
- * Replaces the file-based sessions.json approach. Sessions are scoped per user_id.
- * Output buffers remain in-memory (too large/ephemeral for DB storage).
- * Activity is stored as a JSON column for quick status snapshots.
+ * Replaces the mssql-backed implementation. Sessions are scoped per user via
+ * an (:User)-[:OWNS]->(:Session) relationship (0 or 1 owner in the graph,
+ * though the `Session.userId` field itself is REQUIRED on the TS type —
+ * every session created here gets an OWNS edge, see insertSession below).
+ * Output buffers remain in-memory (too large/ephemeral for DB storage) —
+ * `output` is always `[]` on the returned object, matching the original
+ * mssql-backed mapRowToSession.
+ *
+ * Graph model (see .kiro/specs/neo4j-migration/design.md):
+ *   (:Session) scalar properties: id, name, agent (plain string — NOT a
+ *     relationship, deliberate exception), status, prompt, interactive,
+ *     loop, runs, intervalSeconds, cwd, timeoutSeconds, model,
+ *     activityType/activityDetail (flattened from `currentActivity`),
+ *     currentTaskId (plain scalar — NOT a relationship, deliberate
+ *     exception, mirrors `agent`), pinned, isPermanent, sortOrder,
+ *     forceLocal, createdAt, startedAt.
+ *   (:User)-[:OWNS]->(:Session)
+ *   (:Session)-[:IN_TAB]->(:Tab)                                   0+
+ *   (:Session)-[:HAS_MCP_CONFIG_OVERRIDE]->(:McpConfig)            0 or 1
+ *   (:Session)-[:HAS_MCP_SERVER {position}]->(:McpServerConfig)    0+, ordered
+ *   (:Session)-[:HAS_RAW_MCP_SERVER {position}]->(:RawMcpServerConfig)  0+, ordered
+ *
+ * A few Cypher/driver behaviors this file relies on, confirmed empirically
+ * against the live AuraDB instance while writing it (not assumed from docs):
+ *   - Creating/setting a property to a `null`-valued parameter simply omits
+ *     that property from the node entirely (Neo4j has no concept of a
+ *     "null property" — non-existence and null are the same thing). This
+ *     is what lets optional scalars (model, startedAt, activityType, ...)
+ *     be written with a single unconditional CREATE/SET map rather than
+ *     conditional Cypher branches.
+ *   - `datetime($isoStringOrNull)` propagates null through (returns null
+ *     rather than erroring), so the same unconditional-map trick works for
+ *     the two datetime properties.
+ *   - `OPTIONAL MATCH` binds a variable to null (not "no row") when nothing
+ *     matches — so `collect()` of an expression built from that variable
+ *     does NOT automatically skip it as an empty list unless the collected
+ *     expression itself evaluates to null. Every ordered-list read below
+ *     therefore uses `collect(CASE WHEN x IS NOT NULL THEN {...} END)`
+ *     followed by a `[v IN list WHERE v IS NOT NULL]` filter, rather than
+ *     collecting the map literal directly.
+ *   - `CALL (s) { ... }` scoped subqueries preserve the row order
+ *     established by a preceding `WITH s ORDER BY ...` — confirmed so the
+ *     pinned/sortOrder ordering from the original SQL `ORDER BY` survives
+ *     resolving the sub-relationships afterward.
+ *   - `DETACH DELETE` tolerates being given the same node multiple times
+ *     (e.g. via a cross product from several `OPTIONAL MATCH` clauses) and
+ *     tolerates null operands from an `OPTIONAL MATCH` that found nothing —
+ *     both are safe no-ops, which is what makes the single-statement
+ *     multi-`OPTIONAL MATCH` + `DETACH DELETE` shape in deleteSessionFromDb
+ *     correct without needing per-relationship-type separate deletes.
+ *   - IMPORTANT ROW-MULTIPLICATION PITFALL (caught by a live smoke test,
+ *     not by `tsc` — this is exactly the kind of bug a clean TypeScript
+ *     build can't catch): `OPTIONAL MATCH (s)-[:REL]->(old:Label)` produces
+ *     one row PER MATCHED RELATIONSHIP, not one row per input `s`. If `s`
+ *     previously had, say, 2 `HAS_MCP_SERVER` relationships, that
+ *     `OPTIONAL MATCH` alone turns 1 incoming row into 2 rows, both still
+ *     bound to the same `s`. Chaining several such cleanup blocks
+ *     back-to-back without collapsing in between multiplies rows across
+ *     blocks (2 old mcpServers x 1 old rawMcpServer x ... ), and since a
+ *     trailing `CALL (s) { ... CREATE ... }` unit subquery runs once per
+ *     *incoming* row, that multiplication directly duplicates every newly
+ *     created node. `updateSessionMeta` therefore does `WITH DISTINCT s`
+ *     (not plain `WITH s`) after every `OPTIONAL MATCH ... DELETE`/
+ *     `DETACH DELETE` cleanup block, collapsing back to exactly one row
+ *     bound to the same session node before the next cleanup step or the
+ *     final recreate `CALL` blocks run.
  */
 
-import { getPool, sql } from "./connection.js";
-import type { Session, McpServerConfig, Activity } from "../types.js";
+import type { ManagedTransaction, Record as Neo4jRecord } from "neo4j-driver";
+import { readQuery, writeQuery } from "./connection.js";
+import { getNextId } from "./id-counter.js";
+import type { Session, McpServerConfig, Activity, TabMcpConfig } from "../types.js";
+
+// ---------------------------------------------------------------------------
+// Shared Cypher fragments
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolves every sub-relationship for an already-bound `s` (Session) and
+ * returns one row per session: `props` (flat scalar properties), `ownerId`,
+ * `tabIds`, `mcpConfigOverride`, `mcpServersRaw`, `rawMcpServersJson`.
+ *
+ * Callers must bind `s` first (and apply any ORDER BY before this fragment —
+ * row order survives through these CALL subqueries, confirmed empirically).
+ */
+const RESOLVE_SESSION_RELATIONSHIPS = `
+  OPTIONAL MATCH (owner:User)-[:OWNS]->(s)
+  CALL (s) {
+    OPTIONAL MATCH (s)-[:IN_TAB]->(tab:Tab)
+    RETURN collect(tab.id) AS tabIds
+  }
+  CALL (s) {
+    OPTIONAL MATCH (s)-[:HAS_MCP_CONFIG_OVERRIDE]->(cfg:McpConfig)
+    RETURN cfg {.*} AS mcpConfigOverride
+  }
+  CALL (s) {
+    OPTIONAL MATCH (s)-[hms:HAS_MCP_SERVER]->(mcp:McpServerConfig)
+    WITH hms, mcp ORDER BY hms.position ASC
+    WITH collect(CASE WHEN mcp IS NOT NULL THEN mcp {.*} END) AS raw
+    RETURN [x IN raw WHERE x IS NOT NULL] AS mcpServersRaw
+  }
+  CALL (s) {
+    OPTIONAL MATCH (s)-[hrms:HAS_RAW_MCP_SERVER]->(raw:RawMcpServerConfig)
+    WITH hrms, raw ORDER BY hrms.position ASC
+    WITH collect(CASE WHEN raw IS NOT NULL THEN raw.json END) AS rawList
+    RETURN [x IN rawList WHERE x IS NOT NULL] AS rawMcpServersJson
+  }
+  RETURN s {.*} AS props, owner.id AS ownerId, tabIds, mcpConfigOverride, mcpServersRaw, rawMcpServersJson
+`;
 
 // ---------------------------------------------------------------------------
 // Row mapping
 // ---------------------------------------------------------------------------
 
-function mapRowToSession(row: Record<string, unknown>): Session {
+interface McpServerRawRow {
+  name: string;
+  command: string;
+  args: string[];
+  envNames: string[];
+  envValues: string[];
+}
+
+/** Zips parallel envNames/envValues lists back into `Array<{name, value}>`. */
+function zipEnv(names: string[], values: string[]): Array<{ name: string; value: string }> {
+  return names.map((name, i) => ({ name, value: values[i] }));
+}
+
+/** Unzips `Array<{name, value}>` into parallel envNames/envValues lists. */
+function unzipEnv(env: Array<{ name: string; value: string }>): { envNames: string[]; envValues: string[] } {
   return {
-    id: row.id as number,
-    name: row.name as string,
-    agent: row.agent as string,
-    status: row.status as Session["status"],
-    prompt: row.prompt as string,
-    interactive: row.interactive as boolean,
-    loop: row.loop as boolean,
-    runs: row.runs as number,
-    intervalSeconds: row.interval_seconds as number,
-    cwd: row.cwd as string,
-    timeoutSeconds: row.timeout_seconds as number,
-    model: (row.model as string) || undefined,
-    mcpServers: row.mcp_servers
-      ? JSON.parse(row.mcp_servers as string)
-      : undefined,
-    mcpConfigOverride: row.mcp_config_override
-      ? JSON.parse(row.mcp_config_override as string)
-      : undefined,
-    rawMcpServers: row.raw_mcp_servers
-      ? JSON.parse(row.raw_mcp_servers as string)
-      : undefined,
-    tabIds: row.tab_ids ? JSON.parse(row.tab_ids as string) : undefined,
-    userId: row.user_id as number,
-    createdAt: (row.created_at as Date).toISOString(),
-    startedAt: row.started_at
-      ? (row.started_at as Date).toISOString()
-      : undefined,
-    currentTaskId: (row.current_task_id as number) || undefined,
-    currentActivity: row.current_activity
-      ? JSON.parse(row.current_activity as string)
-      : undefined,
-    pinned: !!row.pinned,
-    isPermanent: !!row.is_permanent,
-    sortOrder: (row.sort_order as number) ?? 0,
-    forceLocal: !!row.force_local,
-    output: [], // Output is in-memory only
+    envNames: env.map((e) => e.name),
+    envValues: env.map((e) => e.value),
   };
+}
+
+/**
+ * Maps one row produced by RESOLVE_SESSION_RELATIONSHIPS to a Session object.
+ */
+function mapRecordToSession(record: Neo4jRecord): Session {
+  const props = record.get("props") as Record<string, unknown>;
+  const ownerId = record.get("ownerId") as number | null;
+  const tabIdsRaw = (record.get("tabIds") as number[]) ?? [];
+  const mcpConfigOverrideRaw = record.get("mcpConfigOverride") as TabMcpConfig | null;
+  const mcpServersRaw = (record.get("mcpServersRaw") as McpServerRawRow[]) ?? [];
+  const rawMcpServersJson = (record.get("rawMcpServersJson") as string[]) ?? [];
+
+  const mcpServers: McpServerConfig[] | undefined =
+    mcpServersRaw.length > 0
+      ? mcpServersRaw.map((m) => ({
+          name: m.name,
+          command: m.command,
+          args: m.args ?? [],
+          env: zipEnv(m.envNames ?? [], m.envValues ?? []),
+        }))
+      : undefined;
+
+  const rawMcpServers: unknown[] | undefined =
+    rawMcpServersJson.length > 0 ? rawMcpServersJson.map((j) => JSON.parse(j)) : undefined;
+
+  let currentActivity: Activity | undefined;
+  const activityType = props.activityType as Activity["type"] | undefined;
+  if (activityType) {
+    currentActivity = {
+      type: activityType,
+      detail: (props.activityDetail as string) || undefined,
+    };
+  }
+
+  return {
+    id: props.id as number,
+    name: props.name as string,
+    agent: props.agent as string,
+    status: props.status as Session["status"],
+    prompt: props.prompt as string,
+    interactive: props.interactive as boolean,
+    loop: props.loop as boolean,
+    runs: props.runs as number,
+    intervalSeconds: props.intervalSeconds as number,
+    cwd: props.cwd as string,
+    timeoutSeconds: props.timeoutSeconds as number,
+    model: (props.model as string) || undefined,
+    mcpServers,
+    mcpConfigOverride: mcpConfigOverrideRaw ?? undefined,
+    rawMcpServers,
+    tabIds: tabIdsRaw.length > 0 ? tabIdsRaw : undefined,
+    userId: (ownerId ?? 0) as number,
+    createdAt: (props.createdAt as { toString(): string }).toString(),
+    startedAt: props.startedAt ? (props.startedAt as { toString(): string }).toString() : undefined,
+    currentTaskId: (props.currentTaskId as number) || undefined,
+    currentActivity,
+    pinned: !!props.pinned,
+    isPermanent: !!props.isPermanent,
+    sortOrder: (props.sortOrder as number) ?? 0,
+    forceLocal: !!props.forceLocal,
+    output: [], // Output is in-memory only — never persisted, matches the original.
+  };
+}
+
+/** Builds the ordered `$mcpServers` UNWIND param from a Session's mcpServers array. */
+function buildMcpServerParams(mcpServers: McpServerConfig[] | undefined) {
+  return (mcpServers ?? []).map((m, i) => {
+    const { envNames, envValues } = unzipEnv(m.env ?? []);
+    return {
+      position: i,
+      name: m.name,
+      command: m.command,
+      args: m.args ?? [],
+      envNames,
+      envValues,
+    };
+  });
+}
+
+/** Builds the ordered `$rawMcpServers` UNWIND param — each entry JSON.stringify'd (opaque, no fixed shape). */
+function buildRawMcpServerParams(rawMcpServers: unknown[] | undefined) {
+  return (rawMcpServers ?? []).map((entry, i) => ({ position: i, json: JSON.stringify(entry) }));
 }
 
 // ---------------------------------------------------------------------------
@@ -61,40 +226,38 @@ function mapRowToSession(row: Record<string, unknown>): Session {
 /**
  * Get all sessions for a given user. Returns session metadata without output buffers.
  */
-export async function getAllSessionsFromDb(
-  userId?: number
-): Promise<Session[]> {
-  const pool = await getPool();
-  let result;
-
-  if (userId) {
-    result = await pool
-      .request()
-      .input("userId", sql.Int, userId)
-      .query(
-        "SELECT * FROM sessions WHERE user_id = @userId ORDER BY pinned DESC, sort_order ASC"
-      );
-  } else {
-    result = await pool
-      .request()
-      .query("SELECT * FROM sessions ORDER BY pinned DESC, sort_order ASC");
-  }
-
-  return result.recordset.map(mapRowToSession);
+export async function getAllSessionsFromDb(userId?: number): Promise<Session[]> {
+  return readQuery(async (tx: ManagedTransaction) => {
+    const matchClause = userId
+      ? `MATCH (u:User {id: $userId})-[:OWNS]->(s:Session)`
+      : `MATCH (s:Session)`;
+    const result = await tx.run(
+      `
+        ${matchClause}
+        WITH s ORDER BY s.pinned DESC, s.sortOrder ASC
+        ${RESOLVE_SESSION_RELATIONSHIPS}
+      `,
+      { userId: userId ?? null }
+    );
+    return result.records.map(mapRecordToSession);
+  });
 }
 
 /**
  * Get a single session by ID.
  */
 export async function getSessionFromDb(id: number): Promise<Session | null> {
-  const pool = await getPool();
-  const result = await pool
-    .request()
-    .input("id", sql.Int, id)
-    .query("SELECT * FROM sessions WHERE id = @id");
-
-  if (result.recordset.length === 0) return null;
-  return mapRowToSession(result.recordset[0]);
+  return readQuery(async (tx: ManagedTransaction) => {
+    const result = await tx.run(
+      `
+        MATCH (s:Session {id: $id})
+        ${RESOLVE_SESSION_RELATIONSHIPS}
+      `,
+      { id }
+    );
+    if (result.records.length === 0) return null;
+    return mapRecordToSession(result.records[0]);
+  });
 }
 
 /**
@@ -102,96 +265,123 @@ export async function getSessionFromDb(id: number): Promise<Session | null> {
  * Used for auto-restart logic on server boot.
  */
 export async function getRunningSessionsFromDb(): Promise<Session[]> {
-  const pool = await getPool();
-  const result = await pool
-    .request()
-    .query("SELECT * FROM sessions WHERE status = 'running'");
-
-  return result.recordset.map(mapRowToSession);
+  return readQuery(async (tx: ManagedTransaction) => {
+    const result = await tx.run(`
+      MATCH (s:Session {status: 'running'})
+      ${RESOLVE_SESSION_RELATIONSHIPS}
+    `);
+    return result.records.map(mapRecordToSession);
+  });
 }
 
 /**
  * Insert a new session into the database.
- * Returns the auto-generated numeric id (IDENTITY column).
+ * Returns the auto-generated numeric id.
+ *
+ * `session.userId` is required on the Session type and every session must
+ * get an OWNS edge (see design.md's exception note — unlike Tab/Agent,
+ * Session ownership is not optional here). The owner MATCH below is
+ * therefore a strict (non-OPTIONAL) match: if no User with that id exists,
+ * the whole CREATE never runs and zero rows come back, mirroring the
+ * original schema's `user_id INT NULL REFERENCES users(id)` FK constraint
+ * (an insert referencing a nonexistent user would fail there too, rather
+ * than silently creating an ownerless row).
  */
 export async function insertSession(session: Session): Promise<number> {
-  const pool = await getPool();
-  const result = await pool
-    .request()
-    .input("name", sql.NVarChar(200), session.name)
-    .input("agent", sql.NVarChar(100), session.agent || "")
-    .input("status", sql.VarChar(20), session.status)
-    .input("prompt", sql.NVarChar(sql.MAX), session.prompt)
-    .input("interactive", sql.Bit, session.interactive ? 1 : 0)
-    .input("loop", sql.Bit, session.loop ? 1 : 0)
-    .input("runs", sql.Int, session.runs)
-    .input("intervalSeconds", sql.Int, session.intervalSeconds)
-    .input("cwd", sql.NVarChar(500), session.cwd)
-    .input("timeoutSeconds", sql.Int, session.timeoutSeconds)
-    .input("model", sql.NVarChar(100), session.model || null)
-    .input(
-      "mcpServers",
-      sql.NVarChar(sql.MAX),
-      session.mcpServers ? JSON.stringify(session.mcpServers) : null
-    )
-    .input(
-      "tabIds",
-      sql.NVarChar(sql.MAX),
-      session.tabIds ? JSON.stringify(session.tabIds) : null
-    )
-    .input("userId", sql.Int, session.userId)
-    .input("createdAt", sql.DateTime2, new Date(session.createdAt))
-    .input(
-      "startedAt",
-      sql.DateTime2,
-      session.startedAt ? new Date(session.startedAt) : null
-    )
-    .input("currentTaskId", sql.Int, session.currentTaskId || null)
-    .input(
-      "currentActivity",
-      sql.NVarChar(sql.MAX),
-      session.currentActivity
-        ? JSON.stringify(session.currentActivity)
-        : null
-    )
-    .input(
-      "mcpConfigOverride",
-      sql.NVarChar(sql.MAX),
-      session.mcpConfigOverride
-        ? JSON.stringify(session.mcpConfigOverride)
-        : null
-    )
-    .input("pinned", sql.Bit, session.pinned ? 1 : 0)
-    .input("isPermanent", sql.Bit, session.isPermanent ? 1 : 0)
-    .input("sortOrder", sql.Int, session.sortOrder ?? 0)
-    .input("forceLocal", sql.Bit, session.forceLocal ? 1 : 0)
-    .input(
-      "rawMcpServers",
-      sql.NVarChar(sql.MAX),
-      session.rawMcpServers ? JSON.stringify(session.rawMcpServers) : null
-    )
-    .query(`
-      INSERT INTO sessions (
-        name, agent, status, prompt, interactive, loop, runs,
-        interval_seconds, cwd, timeout_seconds, model, mcp_servers,
-        tab_ids, user_id, created_at, started_at, current_task_id, current_activity,
-        mcp_config_override, pinned, is_permanent, sort_order, force_local, raw_mcp_servers
-      )
-      OUTPUT INSERTED.id
-      VALUES (
-        @name, @agent, @status, @prompt, @interactive, @loop, @runs,
-        @intervalSeconds, @cwd, @timeoutSeconds, @model, @mcpServers,
-        @tabIds, @userId, @createdAt, @startedAt, @currentTaskId, @currentActivity,
-        @mcpConfigOverride, @pinned, @isPermanent, @sortOrder, @forceLocal, @rawMcpServers
-      )
-    `);
+  const id = await getNextId("Session");
 
-  return result.recordset[0].id as number;
+  return writeQuery(async (tx: ManagedTransaction) => {
+    const result = await tx.run(
+      `
+        MATCH (owner:User {id: $userId})
+        CREATE (s:Session {
+          id: $id, name: $name, agent: $agent, status: $status, prompt: $prompt,
+          interactive: $interactive, loop: $loop, runs: $runs, intervalSeconds: $intervalSeconds,
+          cwd: $cwd, timeoutSeconds: $timeoutSeconds, model: $model,
+          activityType: $activityType, activityDetail: $activityDetail, currentTaskId: $currentTaskId,
+          pinned: $pinned, isPermanent: $isPermanent, sortOrder: $sortOrder, forceLocal: $forceLocal,
+          createdAt: datetime($createdAt), startedAt: datetime($startedAt)
+        })
+        CREATE (owner)-[:OWNS]->(s)
+        WITH s
+        FOREACH (ignoreMe IN CASE WHEN $mcpConfigOverride IS NOT NULL THEN [1] ELSE [] END |
+          CREATE (s)-[:HAS_MCP_CONFIG_OVERRIDE]->(:McpConfig {
+            atlassian: $mcpConfigOverride.atlassian, azureDevops: $mcpConfigOverride.azureDevops,
+            awsApi: $mcpConfigOverride.awsApi, awsDocs: $mcpConfigOverride.awsDocs
+          })
+        )
+        WITH s
+        CALL (s) {
+          UNWIND $tabIds AS tabId
+          MATCH (tab:Tab {id: tabId})
+          CREATE (s)-[:IN_TAB]->(tab)
+        }
+        WITH s
+        CALL (s) {
+          UNWIND $mcpServers AS entry
+          CREATE (s)-[:HAS_MCP_SERVER {position: entry.position}]->(:McpServerConfig {
+            name: entry.name, command: entry.command, args: entry.args,
+            envNames: entry.envNames, envValues: entry.envValues
+          })
+        }
+        WITH s
+        CALL (s) {
+          UNWIND $rawMcpServers AS entry
+          CREATE (s)-[:HAS_RAW_MCP_SERVER {position: entry.position}]->(:RawMcpServerConfig {json: entry.json})
+        }
+        RETURN s.id AS id
+      `,
+      {
+        id,
+        name: session.name,
+        agent: session.agent || "",
+        status: session.status,
+        prompt: session.prompt,
+        interactive: session.interactive,
+        loop: session.loop,
+        runs: session.runs,
+        intervalSeconds: session.intervalSeconds,
+        cwd: session.cwd,
+        timeoutSeconds: session.timeoutSeconds,
+        model: session.model ?? null,
+        activityType: session.currentActivity?.type ?? null,
+        activityDetail: session.currentActivity?.detail ?? null,
+        currentTaskId: session.currentTaskId ?? null,
+        pinned: session.pinned ? true : false,
+        isPermanent: session.isPermanent ? true : false,
+        sortOrder: session.sortOrder ?? 0,
+        forceLocal: session.forceLocal ? true : false,
+        createdAt: session.createdAt,
+        startedAt: session.startedAt ?? null,
+        userId: session.userId,
+        tabIds: session.tabIds ?? [],
+        mcpConfigOverride: session.mcpConfigOverride ?? null,
+        mcpServers: buildMcpServerParams(session.mcpServers),
+        rawMcpServers: buildRawMcpServerParams(session.rawMcpServers),
+      }
+    );
+
+    if (result.records.length === 0) {
+      throw new Error(
+        `insertSession: no User found with id ${session.userId} — cannot create an owned session`
+      );
+    }
+    return result.records[0].get("id") as number;
+  });
 }
 
 /**
  * Update session status, started_at, current_task_id, and current_activity.
  * This is called frequently during session lifecycle changes.
+ *
+ * `status` is always set. `startedAt`/`currentTaskId`/`activityType`/
+ * `activityDetail` are written unconditionally from the (possibly-undefined,
+ * coalesced-to-null) arguments — matching the original's "set to NULL to
+ * clear" semantics. Setting a Neo4j property to a null-valued parameter is
+ * documented as exactly equivalent to REMOVE (confirmed empirically too:
+ * `SET s.prop = $x` with `x: null` leaves the property genuinely absent,
+ * not present-with-value-null), so this is a plain unconditional SET rather
+ * than conditionally choosing between SET and REMOVE per field.
  */
 export async function updateSessionStatus(
   id: number,
@@ -200,173 +390,184 @@ export async function updateSessionStatus(
   currentTaskId?: number,
   currentActivity?: Activity
 ): Promise<void> {
-  const pool = await getPool();
-  await pool
-    .request()
-    .input("id", sql.Int, id)
-    .input("status", sql.VarChar(20), status)
-    .input(
-      "startedAt",
-      sql.DateTime2,
-      startedAt ? new Date(startedAt) : null
-    )
-    .input("currentTaskId", sql.Int, currentTaskId || null)
-    .input(
-      "currentActivity",
-      sql.NVarChar(sql.MAX),
-      currentActivity ? JSON.stringify(currentActivity) : null
-    ).query(`
-      UPDATE sessions
-      SET status = @status,
-          started_at = @startedAt,
-          current_task_id = @currentTaskId,
-          current_activity = @currentActivity
-      WHERE id = @id
-    `);
+  await writeQuery(async (tx: ManagedTransaction) => {
+    await tx.run(
+      `
+        MATCH (s:Session {id: $id})
+        SET s.status = $status,
+            s.startedAt = datetime($startedAt),
+            s.currentTaskId = $currentTaskId,
+            s.activityType = $activityType,
+            s.activityDetail = $activityDetail
+      `,
+      {
+        id,
+        status,
+        startedAt: startedAt ?? null,
+        currentTaskId: currentTaskId ?? null,
+        activityType: currentActivity?.type ?? null,
+        activityDetail: currentActivity?.detail ?? null,
+      }
+    );
+  });
 }
 
 /**
  * Update session metadata fields (name, agent, prompt, cwd, etc.).
  * Used when session config is modified.
+ *
+ * This is a full replace-everything update, matching the original SQL
+ * UPDATE's "set every column to the new session object's current value"
+ * semantics: every scalar property is rewritten, and every relationship set
+ * (IN_TAB, HAS_MCP_CONFIG_OVERRIDE, HAS_MCP_SERVER, HAS_RAW_MCP_SERVER) is
+ * torn down and recreated from the incoming session object. Tab nodes
+ * themselves are shared (not owned by the session) so only the IN_TAB
+ * relationship is deleted, never the Tab node; the McpConfig/McpServerConfig/
+ * RawMcpServerConfig sub-nodes ARE exclusively owned by the session, so
+ * those are DETACH DELETEd outright before being recreated.
  */
 export async function updateSessionMeta(session: Session): Promise<void> {
-  const pool = await getPool();
-  await pool
-    .request()
-    .input("id", sql.Int, session.id)
-    .input("name", sql.NVarChar(200), session.name)
-    .input("agent", sql.NVarChar(100), session.agent || "")
-    .input("status", sql.VarChar(20), session.status)
-    .input("prompt", sql.NVarChar(sql.MAX), session.prompt)
-    .input("interactive", sql.Bit, session.interactive ? 1 : 0)
-    .input("loop", sql.Bit, session.loop ? 1 : 0)
-    .input("runs", sql.Int, session.runs)
-    .input("intervalSeconds", sql.Int, session.intervalSeconds)
-    .input("cwd", sql.NVarChar(500), session.cwd)
-    .input("timeoutSeconds", sql.Int, session.timeoutSeconds)
-    .input("model", sql.NVarChar(100), session.model || null)
-    .input(
-      "mcpServers",
-      sql.NVarChar(sql.MAX),
-      session.mcpServers ? JSON.stringify(session.mcpServers) : null
-    )
-    .input(
-      "tabIds",
-      sql.NVarChar(sql.MAX),
-      session.tabIds ? JSON.stringify(session.tabIds) : null
-    )
-    .input(
-      "startedAt",
-      sql.DateTime2,
-      session.startedAt ? new Date(session.startedAt) : null
-    )
-    .input("currentTaskId", sql.Int, session.currentTaskId || null)
-    .input(
-      "currentActivity",
-      sql.NVarChar(sql.MAX),
-      session.currentActivity
-        ? JSON.stringify(session.currentActivity)
-        : null
-    )
-    .input(
-      "mcpConfigOverride",
-      sql.NVarChar(sql.MAX),
-      session.mcpConfigOverride
-        ? JSON.stringify(session.mcpConfigOverride)
-        : null
-    )
-    .input("pinned", sql.Bit, session.pinned ? 1 : 0)
-    .input("sortOrder", sql.Int, session.sortOrder ?? 0)
-    .input("forceLocal", sql.Bit, session.forceLocal ? 1 : 0)
-    .input(
-      "rawMcpServers",
-      sql.NVarChar(sql.MAX),
-      session.rawMcpServers ? JSON.stringify(session.rawMcpServers) : null
-    )
-    .query(`
-      UPDATE sessions
-      SET name = @name,
-          agent = @agent,
-          status = @status,
-          prompt = @prompt,
-          interactive = @interactive,
-          loop = @loop,
-          runs = @runs,
-          interval_seconds = @intervalSeconds,
-          cwd = @cwd,
-          timeout_seconds = @timeoutSeconds,
-          model = @model,
-          mcp_servers = @mcpServers,
-          tab_ids = @tabIds,
-          started_at = @startedAt,
-          current_task_id = @currentTaskId,
-          current_activity = @currentActivity,
-          mcp_config_override = @mcpConfigOverride,
-          pinned = @pinned,
-          sort_order = @sortOrder,
-          force_local = @forceLocal,
-          raw_mcp_servers = @rawMcpServers
-      WHERE id = @id
-    `);
+  await writeQuery(async (tx: ManagedTransaction) => {
+    await tx.run(
+      `
+        MATCH (s:Session {id: $id})
+        SET s.name = $name, s.agent = $agent, s.status = $status, s.prompt = $prompt,
+            s.interactive = $interactive, s.loop = $loop, s.runs = $runs, s.intervalSeconds = $intervalSeconds,
+            s.cwd = $cwd, s.timeoutSeconds = $timeoutSeconds, s.model = $model,
+            s.activityType = $activityType, s.activityDetail = $activityDetail, s.currentTaskId = $currentTaskId,
+            s.pinned = $pinned, s.sortOrder = $sortOrder, s.forceLocal = $forceLocal,
+            s.startedAt = datetime($startedAt)
+        WITH s
+        OPTIONAL MATCH (s)-[oldTabRel:IN_TAB]->(:Tab)
+        DELETE oldTabRel
+        WITH DISTINCT s
+        OPTIONAL MATCH (s)-[:HAS_MCP_CONFIG_OVERRIDE]->(oldCfg:McpConfig)
+        DETACH DELETE oldCfg
+        WITH DISTINCT s
+        OPTIONAL MATCH (s)-[:HAS_MCP_SERVER]->(oldMcp:McpServerConfig)
+        DETACH DELETE oldMcp
+        WITH DISTINCT s
+        OPTIONAL MATCH (s)-[:HAS_RAW_MCP_SERVER]->(oldRaw:RawMcpServerConfig)
+        DETACH DELETE oldRaw
+        WITH DISTINCT s
+        FOREACH (ignoreMe IN CASE WHEN $mcpConfigOverride IS NOT NULL THEN [1] ELSE [] END |
+          CREATE (s)-[:HAS_MCP_CONFIG_OVERRIDE]->(:McpConfig {
+            atlassian: $mcpConfigOverride.atlassian, azureDevops: $mcpConfigOverride.azureDevops,
+            awsApi: $mcpConfigOverride.awsApi, awsDocs: $mcpConfigOverride.awsDocs
+          })
+        )
+        WITH s
+        CALL (s) {
+          UNWIND $tabIds AS tabId
+          MATCH (tab:Tab {id: tabId})
+          CREATE (s)-[:IN_TAB]->(tab)
+        }
+        WITH s
+        CALL (s) {
+          UNWIND $mcpServers AS entry
+          CREATE (s)-[:HAS_MCP_SERVER {position: entry.position}]->(:McpServerConfig {
+            name: entry.name, command: entry.command, args: entry.args,
+            envNames: entry.envNames, envValues: entry.envValues
+          })
+        }
+        WITH s
+        CALL (s) {
+          UNWIND $rawMcpServers AS entry
+          CREATE (s)-[:HAS_RAW_MCP_SERVER {position: entry.position}]->(:RawMcpServerConfig {json: entry.json})
+        }
+      `,
+      {
+        id: session.id,
+        name: session.name,
+        agent: session.agent || "",
+        status: session.status,
+        prompt: session.prompt,
+        interactive: session.interactive,
+        loop: session.loop,
+        runs: session.runs,
+        intervalSeconds: session.intervalSeconds,
+        cwd: session.cwd,
+        timeoutSeconds: session.timeoutSeconds,
+        model: session.model ?? null,
+        activityType: session.currentActivity?.type ?? null,
+        activityDetail: session.currentActivity?.detail ?? null,
+        currentTaskId: session.currentTaskId ?? null,
+        pinned: session.pinned ? true : false,
+        sortOrder: session.sortOrder ?? 0,
+        forceLocal: session.forceLocal ? true : false,
+        startedAt: session.startedAt ?? null,
+        tabIds: session.tabIds ?? [],
+        mcpConfigOverride: session.mcpConfigOverride ?? null,
+        mcpServers: buildMcpServerParams(session.mcpServers),
+        rawMcpServers: buildRawMcpServerParams(session.rawMcpServers),
+      }
+    );
+  });
 }
 
 /**
  * Delete a session from the database.
+ * Also deletes every sub-node exclusively owned by the session (McpConfig
+ * override, McpServerConfig/RawMcpServerConfig entries) so nothing is left
+ * orphaned. Tab/User nodes are never touched — DETACH DELETE only removes
+ * the relationships incident to the deleted nodes, not the nodes on the
+ * other end.
  */
 export async function deleteSessionFromDb(id: number): Promise<boolean> {
-  const pool = await getPool();
-  const result = await pool
-    .request()
-    .input("id", sql.Int, id)
-    .query("DELETE FROM sessions WHERE id = @id");
-
-  return (result.rowsAffected[0] ?? 0) > 0;
+  return writeQuery(async (tx: ManagedTransaction) => {
+    const result = await tx.run(
+      `
+        MATCH (s:Session {id: $id})
+        OPTIONAL MATCH (s)-[:HAS_MCP_CONFIG_OVERRIDE]->(cfg:McpConfig)
+        OPTIONAL MATCH (s)-[:HAS_MCP_SERVER]->(mcp:McpServerConfig)
+        OPTIONAL MATCH (s)-[:HAS_RAW_MCP_SERVER]->(raw:RawMcpServerConfig)
+        DETACH DELETE s, cfg, mcp, raw
+        RETURN count(DISTINCT s) AS deletedCount
+      `,
+      { id }
+    );
+    return (result.records[0]?.get("deletedCount") as number) > 0;
+  });
 }
 
 /**
  * Check if a session belongs to a specific user.
  */
-export async function isSessionOwnedByUser(
-  sessionId: number,
-  userId: number
-): Promise<boolean> {
-  const pool = await getPool();
-  const result = await pool
-    .request()
-    .input("id", sql.Int, sessionId)
-    .input("userId", sql.Int, userId)
-    .query("SELECT 1 FROM sessions WHERE id = @id AND user_id = @userId");
-
-  return result.recordset.length > 0;
+export async function isSessionOwnedByUser(sessionId: number, userId: number): Promise<boolean> {
+  return readQuery(async (tx: ManagedTransaction) => {
+    const result = await tx.run(
+      `MATCH (u:User {id: $userId})-[:OWNS]->(s:Session {id: $sessionId}) RETURN s`,
+      { sessionId, userId }
+    );
+    return result.records.length > 0;
+  });
 }
 
 /**
  * Bulk-update sort_order for a list of session IDs.
  * The array position determines the sort_order value.
+ *
+ * The original wraps this in an explicit mssql transaction for an
+ * all-or-nothing guarantee. A single UNWIND-based write here runs as one
+ * managed transaction already — atomic by construction, no manual rollback
+ * needed. Only sessions actually owned by `userId` are updated (mirrors the
+ * original's `WHERE ... AND user_id = @userId` guard); a sessionId in the
+ * list that isn't owned by this user is silently skipped, not an error.
  */
-export async function reorderSessionsInDb(
-  sessionIds: number[],
-  userId: number
-): Promise<void> {
-  const pool = await getPool();
-  const transaction = new sql.Transaction(pool);
-  await transaction.begin();
-  try {
-    for (let i = 0; i < sessionIds.length; i++) {
-      await transaction
-        .request()
-        .input("id", sql.Int, sessionIds[i])
-        .input("sortOrder", sql.Int, i)
-        .input("userId", sql.Int, userId)
-        .query(
-          "UPDATE sessions SET sort_order = @sortOrder WHERE id = @id AND user_id = @userId"
-        );
-    }
-    await transaction.commit();
-  } catch (err) {
-    await transaction.rollback();
-    throw err;
-  }
+export async function reorderSessionsInDb(sessionIds: number[], userId: number): Promise<void> {
+  await writeQuery(async (tx: ManagedTransaction) => {
+    await tx.run(
+      `
+        UNWIND $updates AS u
+        MATCH (owner:User {id: $userId})-[:OWNS]->(s:Session {id: u.id})
+        SET s.sortOrder = u.order
+      `,
+      {
+        updates: sessionIds.map((id, i) => ({ id, order: i })),
+        userId,
+      }
+    );
+  });
 }
 
 /**
@@ -377,13 +578,10 @@ export async function updateSessionPinInDb(
   pinned: boolean,
   sortOrder: number
 ): Promise<void> {
-  const pool = await getPool();
-  await pool
-    .request()
-    .input("id", sql.Int, sessionId)
-    .input("pinned", sql.Bit, pinned ? 1 : 0)
-    .input("sortOrder", sql.Int, sortOrder)
-    .query(
-      "UPDATE sessions SET pinned = @pinned, sort_order = @sortOrder WHERE id = @id"
+  await writeQuery(async (tx: ManagedTransaction) => {
+    await tx.run(
+      `MATCH (s:Session {id: $sessionId}) SET s.pinned = $pinned, s.sortOrder = $sortOrder`,
+      { sessionId, pinned, sortOrder }
     );
+  });
 }
