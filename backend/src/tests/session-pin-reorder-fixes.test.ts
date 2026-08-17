@@ -9,55 +9,38 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ============================================================================
-// Test 1: reorderSessionsInDb wraps updates in a transaction
+// Test 1: reorderSessionsInDb performs all updates atomically, scoped to the
+// requesting user's owned sessions
+//
+// The Neo4j implementation replaced the old mssql explicit
+// begin/request-per-update/commit/rollback transaction with a single
+// UNWIND-based Cypher statement run inside one writeQuery() (which itself
+// runs as one neo4j-driver managed transaction — atomic by construction,
+// with no application-level begin/commit/rollback calls to make or assert
+// on). These tests were rewritten to assert that new atomicity shape and
+// the preserved per-user ownership guarantee, instead of asserting on
+// begin/commit/rollback/request calls that no longer exist in this design.
 // ============================================================================
 describe("reorderSessionsInDb", () => {
   let reorderSessionsInDb: typeof import("../db/sessions.js").reorderSessionsInDb;
 
-  const mockRequest = {
-    input: vi.fn().mockReturnThis(),
-    query: vi.fn().mockResolvedValue({}),
+  // Mock ManagedTransaction — the callback passed to writeQuery() is
+  // invoked with this object and calls `.run(cypher, params)` on it.
+  const mockTx = {
+    run: vi.fn().mockResolvedValue({ records: [] }),
   };
 
-  const mockTransaction = {
-    begin: vi.fn().mockResolvedValue(undefined),
-    commit: vi.fn().mockResolvedValue(undefined),
-    rollback: vi.fn().mockResolvedValue(undefined),
-    request: vi.fn().mockReturnValue(mockRequest),
-  };
-
-  const mockPool = {
-    request: vi.fn().mockReturnValue(mockRequest),
-  };
-
-  // Create a class that returns our mock transaction when instantiated
-  class MockTransactionClass {
-    begin = mockTransaction.begin;
-    commit = mockTransaction.commit;
-    rollback = mockTransaction.rollback;
-    request = mockTransaction.request;
-    constructor(_pool: any) {}
-  }
+  let writeQueryMock: ReturnType<typeof vi.fn>;
 
   beforeEach(async () => {
     vi.resetModules();
 
-    // Reset mock call counts
-    mockRequest.input.mockClear();
-    mockRequest.query.mockClear().mockResolvedValue({});
-    mockTransaction.begin.mockClear();
-    mockTransaction.commit.mockClear();
-    mockTransaction.rollback.mockClear();
-    mockTransaction.request.mockClear().mockReturnValue(mockRequest);
-    mockPool.request.mockClear();
+    mockTx.run.mockReset().mockResolvedValue({ records: [] });
+    writeQueryMock = vi.fn((work: (tx: typeof mockTx) => unknown) => work(mockTx));
 
-    // Mock the connection module
+    // Mock the connection module with the current readQuery/writeQuery API.
     vi.doMock("../db/connection.js", () => ({
-      getPool: vi.fn().mockResolvedValue(mockPool),
-      sql: {
-        Int: "Int",
-        Transaction: MockTransactionClass,
-      },
+      writeQuery: writeQueryMock,
     }));
 
     const mod = await import("../db/sessions.js");
@@ -68,32 +51,40 @@ describe("reorderSessionsInDb", () => {
     vi.restoreAllMocks();
   });
 
-  it("should wrap all updates in a transaction (begin + commit)", async () => {
+  it("performs all updates atomically — one writeQuery call containing a single tx.run(), not one per session id", async () => {
     await reorderSessionsInDb([10, 20, 30], 1);
 
-    expect(mockTransaction.begin).toHaveBeenCalledOnce();
-    expect(mockTransaction.commit).toHaveBeenCalledOnce();
-    expect(mockTransaction.rollback).not.toHaveBeenCalled();
+    // A single managed write transaction (executeWrite handles atomicity
+    // internally, replacing the old explicit begin+commit), containing
+    // exactly one Cypher statement that UNWINDs every update together —
+    // not a separate request/transaction per session id.
+    expect(writeQueryMock).toHaveBeenCalledOnce();
+    expect(mockTx.run).toHaveBeenCalledOnce();
   });
 
-  it("should use transaction.request() for each update, not pool.request()", async () => {
-    await reorderSessionsInDb([10, 20, 30], 1);
+  it("scopes every update to sessions owned by the given userId", async () => {
+    await reorderSessionsInDb([10, 20, 30], 42);
 
-    // Should use transaction's request, not pool's
-    expect(mockTransaction.request).toHaveBeenCalledTimes(3);
-    expect(mockPool.request).not.toHaveBeenCalled();
+    expect(mockTx.run).toHaveBeenCalledOnce();
+    const [cypher, params] = mockTx.run.mock.calls[0];
+
+    // Preserves the original "AND user_id = @userId" guarantee: the query
+    // must match sessions via an ownership relationship scoped to $userId,
+    // not an unscoped id-only match — so a sessionId not owned by this user
+    // is silently skipped rather than updated.
+    expect(cypher).toMatch(/MATCH\s*\(owner:User\s*\{id:\s*\$userId\}\)-\[:OWNS\]->\(s:Session/);
+    expect(params.userId).toBe(42);
+    expect(params.updates).toEqual([
+      { id: 10, order: 0 },
+      { id: 20, order: 1 },
+      { id: 30, order: 2 },
+    ]);
   });
 
-  it("should rollback if a query fails midway", async () => {
-    mockRequest.query
-      .mockResolvedValueOnce({}) // first succeeds
-      .mockRejectedValueOnce(new Error("Connection lost")); // second fails
+  it("propagates the error (does not silently swallow) if the transaction fails", async () => {
+    mockTx.run.mockRejectedValueOnce(new Error("Connection lost"));
 
     await expect(reorderSessionsInDb([10, 20, 30], 1)).rejects.toThrow("Connection lost");
-
-    expect(mockTransaction.begin).toHaveBeenCalledOnce();
-    expect(mockTransaction.rollback).toHaveBeenCalledOnce();
-    expect(mockTransaction.commit).not.toHaveBeenCalled();
   });
 });
 

@@ -25,38 +25,38 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Builds a mock Neo4j Result for a single-row `RETURN count(t) AS count`
+ * query — the shape getAvailableTaskCount() reads via
+ * `result.records[0].get("count")`.
+ */
+function countResult(count: number) {
+  return { records: [{ get: (_key: string) => count }] };
+}
+
 // ============================================================================
 // Behavioral tests: backend/src/agent/task-claimer.ts
 // ============================================================================
 describe("task-claimer — idle loop wake-up fixes", () => {
   let taskClaimer: typeof import("../agent/task-claimer.js");
 
-  const mockRequest = {
-    input: vi.fn(),
-    query: vi.fn(),
-  };
-
-  const mockPool = {
-    request: vi.fn(),
+  // Mock ManagedTransaction — every readQuery/writeQuery callback in
+  // task-claimer.ts is handed this object and calls `.run(cypher, params)`
+  // on it exactly once per DB round trip, replacing the old mssql
+  // mockRequest.query() call this test used to assert on.
+  const mockTx = {
+    run: vi.fn(),
   };
 
   beforeEach(async () => {
     vi.resetModules();
     vi.useRealTimers();
 
-    mockRequest.input.mockReset().mockReturnThis();
-    mockRequest.query.mockReset();
-    mockPool.request.mockReset().mockReturnValue(mockRequest);
+    mockTx.run.mockReset();
 
     vi.doMock("../db/connection.js", () => ({
-      getPool: vi.fn().mockResolvedValue(mockPool),
-      sql: {
-        Int: "Int",
-        TinyInt: "TinyInt",
-        MAX: "MAX",
-        VarChar: (_len: number) => "VarChar",
-        NVarChar: (_len: number) => "NVarChar",
-      },
+      readQuery: vi.fn((work: (tx: typeof mockTx) => unknown) => work(mockTx)),
+      writeQuery: vi.fn((work: (tx: typeof mockTx) => unknown) => work(mockTx)),
     }));
 
     // task-claimer.ts imports getTaskById only to power the fire-and-forget
@@ -75,32 +75,32 @@ describe("task-claimer — idle loop wake-up fixes", () => {
   });
 
   it("caches getAvailableTaskCount results within the TTL (baseline behavior)", async () => {
-    mockRequest.query.mockResolvedValue({ recordset: [{ count: 0 }] });
+    mockTx.run.mockResolvedValue(countResult(0));
     const first = await taskClaimer.getAvailableTaskCount(undefined, "todo");
     expect(first).toBe(0);
 
     // The DB would now return a different count, but the cache should still
     // serve the stale value within the TTL window.
-    mockRequest.query.mockResolvedValue({ recordset: [{ count: 5 }] });
+    mockTx.run.mockResolvedValue(countResult(5));
     const second = await taskClaimer.getAvailableTaskCount(undefined, "todo");
     expect(second).toBe(0);
-    expect(mockRequest.query).toHaveBeenCalledTimes(1);
+    expect(mockTx.run).toHaveBeenCalledTimes(1);
   });
 
   it("notifyTaskAvailable invalidates the count cache so the next check sees fresh data", async () => {
-    mockRequest.query.mockResolvedValue({ recordset: [{ count: 0 }] });
+    mockTx.run.mockResolvedValue(countResult(0));
     await taskClaimer.getAvailableTaskCount(undefined, "todo"); // primes cache with a stale 0
 
-    mockRequest.query.mockResolvedValue({ recordset: [{ count: 3 }] });
+    mockTx.run.mockResolvedValue(countResult(3));
     taskClaimer.notifyTaskAvailable();
 
     const fresh = await taskClaimer.getAvailableTaskCount(undefined, "todo");
     expect(fresh).toBe(3);
-    expect(mockRequest.query).toHaveBeenCalledTimes(2); // cache bypassed, real query happened
+    expect(mockTx.run).toHaveBeenCalledTimes(2); // cache bypassed, real query happened
   });
 
   it("waitForTaskAvailable resolves once notifyTaskAvailable fires, not before", async () => {
-    mockRequest.query.mockResolvedValue({ recordset: [{ count: 0 }] });
+    mockTx.run.mockResolvedValue(countResult(0));
     const controller = new AbortController();
 
     let resolved = false;
@@ -117,7 +117,7 @@ describe("task-claimer — idle loop wake-up fixes", () => {
   });
 
   it("waitForTaskAvailable resolves when the AbortSignal fires", async () => {
-    mockRequest.query.mockResolvedValue({ recordset: [{ count: 0 }] });
+    mockTx.run.mockResolvedValue(countResult(0));
     const controller = new AbortController();
 
     let resolved = false;
@@ -135,7 +135,7 @@ describe("task-claimer — idle loop wake-up fixes", () => {
 
   it("waitForTaskAvailable resolves via the fallback timer if a wake-up signal is ever missed", async () => {
     vi.useFakeTimers();
-    mockRequest.query.mockResolvedValue({ recordset: [{ count: 0 }] });
+    mockTx.run.mockResolvedValue(countResult(0));
     const controller = new AbortController();
 
     let resolved = false;
@@ -158,7 +158,7 @@ describe("task-claimer — idle loop wake-up fixes", () => {
   it("resolveTask (the dev -> review -> qa handoff) wakes idle loops waiting on the next stage", async () => {
     // Prime the cache with a stale "0" for the reviewer's claim state,
     // exactly as if a review-agent loop had just gone idle.
-    mockRequest.query.mockResolvedValue({ recordset: [{ count: 0 }] });
+    mockTx.run.mockResolvedValue(countResult(0));
     await taskClaimer.getAvailableTaskCount(undefined, "developed");
 
     const controller = new AbortController();
@@ -170,11 +170,11 @@ describe("task-claimer — idle loop wake-up fixes", () => {
     await delay(20);
     expect(woken).toBe(false);
 
-    // resolveTask's own UPDATE, followed by the fresh COUNT once the cache
+    // resolveTask's own SET, followed by the fresh COUNT once the cache
     // has been invalidated.
-    mockRequest.query
-      .mockResolvedValueOnce({ rowsAffected: [1] })
-      .mockResolvedValue({ recordset: [{ count: 1 }] });
+    mockTx.run
+      .mockResolvedValueOnce({ records: [] })
+      .mockResolvedValue(countResult(1));
 
     await taskClaimer.resolveTask(42, "developed");
 
@@ -186,7 +186,7 @@ describe("task-claimer — idle loop wake-up fixes", () => {
   });
 
   it("resetTask still wakes idle loops (pre-existing behavior, guards against regression)", async () => {
-    mockRequest.query.mockResolvedValue({ recordset: [{ count: 0 }] });
+    mockTx.run.mockResolvedValue(countResult(0));
     await taskClaimer.getAvailableTaskCount(undefined, "todo");
 
     const controller = new AbortController();
@@ -198,9 +198,9 @@ describe("task-claimer — idle loop wake-up fixes", () => {
     await delay(20);
     expect(woken).toBe(false);
 
-    mockRequest.query
-      .mockResolvedValueOnce({ rowsAffected: [1] })
-      .mockResolvedValue({ recordset: [{ count: 1 }] });
+    mockTx.run
+      .mockResolvedValueOnce({ records: [] })
+      .mockResolvedValue(countResult(1));
 
     await taskClaimer.resetTask(7, "todo");
 
