@@ -25,9 +25,11 @@ been explicitly accepted for this application.
 - A visual UI for managing task dependencies (drag arrows between cards, graph view). A basic
   way to set dependencies (e.g. a list of task IDs) is in scope; richer visualization is deferred
   and will be scoped later.
-- Fixing the already-stale root `README.md` and `SPEC.md` — both predate this effort, describe a
-  `server/` layout and `boards` API that no longer exist, and are broken independently of this
-  migration. Not touched here.
+- Fixing `SPEC.md` — a stale planning artifact describing a `server/` layout and `boards` API
+  that no longer exist. It predates this effort, is broken independently of it, and isn't touched
+  here. (The root `README.md` is treated differently — see Requirement 8.3 — since it's the
+  first thing anyone new to the repo reads and should reflect reality once the database itself
+  changes.)
 - Any change to horizontal scaling of the orchestrator process itself (the in-process
   `EventEmitter`/task-count-cache in `task-claimer.ts` is per-instance today and remains so).
 - Any change to the credential encryption scheme (AES-256-GCM via `crypto.ts`). Encrypted values
@@ -63,10 +65,12 @@ settings) continues to work after the migration.
 5. WHEN the migration is complete THEN THE SYSTEM SHALL continue to store the six per-user
    encrypted credential values and the encrypted Kiro API key as opaque string properties on the
    `User` node, with no change to how they are encrypted, decrypted, or queried.
-6. IF a piece of data stored as a JSON string today (e.g. `tasks.files`, `tabs.columns_json`,
-   `sessions.mcp_servers`) has no query or filter ever run against its internal structure THEN
-   THE SYSTEM MAY store it as a native Neo4j list/array property instead of a JSON string,
-   at the implementer's discretion, provided existing read/write code is updated accordingly.
+6. WHEN a piece of data is stored as a JSON string today (e.g. `tasks.files`, `tabs.columns_json`,
+   `sessions.mcp_servers`) THEN THE SYSTEM SHALL convert it to a native Neo4j representation (a
+   list property, a relationship, or a linked sub-node, chosen by its shape) rather than carrying
+   it over as an opaque JSON string, favoring future-proof modeling even where it takes more
+   implementation work. IF a value has a genuinely unbounded/unknown shape with no fixed structure
+   to model (e.g. `sessions.raw_mcp_servers`) THEN it MAY remain an opaque string property.
 7. WHEN the migration is complete THEN THE SYSTEM SHALL NOT carry over the `boards` table (a
    confirmed-dead leftover from a prior rename, unreferenced by any foreign key, containing a
    single placeholder row) or the dead `tasks.retry_count` / `tasks.max_retries` columns (confirmed
@@ -103,7 +107,7 @@ that dependent tasks aren't picked up by an agent before their prerequisites are
 
 **User Story:** As the platform operator, I want multiple concurrent agent sessions to be able to
 claim tasks from the same board simultaneously without ever claiming the same task twice, so that
-the multi-stage agent pipeline (developer → code-reviewer → qa-improvement) continues to work
+the multi-stage agent pipeline (developer -> code-reviewer -> qa-improvement) continues to work
 correctly under concurrent load after the migration.
 
 #### Acceptance Criteria
@@ -222,9 +226,9 @@ locally against Neo4j, so that local development is possible without needing Azu
 ### Requirement 8: Azure SQL decommissioning
 
 **User Story:** As the platform operator, I want every reference to Azure SQL removed from the
-codebase, infrastructure, and actively-maintained documentation once the migration is verified,
-so that there's no confusion about which database is authoritative and no unused resources are
-left running.
+codebase, infrastructure, and documentation once the migration is verified, so that there's no
+confusion about which database is authoritative, while keeping the old resource intact as a
+safety net rather than deleting it outright.
 
 #### Acceptance Criteria
 
@@ -237,9 +241,13 @@ left running.
    and `infra/deploy-app.sh`'s `DB_SERVER`/`DB_USER`/`DB_PASSWORD` requirement checks, since
    VNET connectivity to Azure SQL will no longer be needed.
 3. WHEN the migration is verified complete THEN THE SYSTEM SHALL update `ARCHITECTURE.md` and
-   `backend/README.md` (the actively-maintained, currently-accurate docs) to describe the Neo4j
-   data model and connection setup in place of the Azure SQL sections, including the resource
-   table in `ARCHITECTURE.md` §4 and the "Running locally without Azure or Docker" section.
-4. WHEN the migration is verified complete THEN THE SYSTEM SHALL decommission the `rm-sandbox`
-   Azure SQL Server resource (or explicitly confirm with the operator that it should be kept
-   around temporarily as a rollback safety net before deletion).
+   `backend/README.md` to describe the Neo4j data model and connection setup in place of the
+   Azure SQL sections, including the resource table in `ARCHITECTURE.md` Section 4 and the
+   "Running locally without Azure or Docker" section, AND SHALL fully rewrite the root
+   `README.md` to match the project's actual current structure (the `backend`/`frontend`/`worker`
+   layout, `tabs` not `boards`, JWT auth, the ACA worker pipeline, and the Neo4j data layer),
+   since it currently describes an obsolete `server/` layout and a `boards` API that no longer
+   exist.
+4. WHEN the migration is verified complete THEN THE SYSTEM SHALL NOT decommission the `rm-sandbox`
+   Azure SQL Server resource as part of this migration — it SHALL be left running, unused, as a
+   rollback safety net, with deletion deferred to a separate, explicit future decision.
