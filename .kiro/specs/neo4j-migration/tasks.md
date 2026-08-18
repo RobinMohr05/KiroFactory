@@ -98,25 +98,25 @@ sequential (each group depends on the previous one landing first).
         shape instead, preserving each test's original behavioral intent.
     - _Requirements: 6.5_
 
-- [ ] 7. Infrastructure and documentation (parallel, independent of Groups 4-6)
-  - [ ] 7.1 Update `infra/modules/container-app.bicep` to replace Azure SQL connection
+- [x] 7. Infrastructure and documentation (parallel, independent of Groups 4-6)
+  - [x] 7.1 Update `infra/modules/container-app.bicep` to replace Azure SQL connection
         params/secrets/env vars with `NEO4J_URI`/`NEO4J_USERNAME`/`NEO4J_PASSWORD`/
         `NEO4J_DATABASE`; delete `infra/modules/vnet-peering.bicep` (confirmed unreferenced) and
         its wiring in `infra/main.bicep` after confirming against the live environment that
         nothing else depends on that VNET; update `infra/deploy.sh`/`infra/deploy-app.sh`'s
         required-env checks and firewall instructions accordingly.
     - _Requirements: 8.1, 8.2_
-  - [ ] 7.2 Update `infra/modules/monitoring.bicep` / `infra/workbook/kirofactory-dashboard.json`
+  - [x] 7.2 Update `infra/modules/monitoring.bicep` / `infra/workbook/kirofactory-dashboard.json`
         to remove the SQL-Server-specific connection-pool panel and adapt the generic
         connection-issue panel.
     - _Requirements: 8.1_
-  - [ ] 7.3 Rewrite `ARCHITECTURE.md` (§4 resources, §5 config, §8 failure modes, §9 data model,
+  - [x] 7.3 Rewrite `ARCHITECTURE.md` (§4 resources, §5 config, §8 failure modes, §9 data model,
         §11 local running) and `backend/README.md` (stack bullets, `db/` file table, "Database"
         section, "Run entirely on localhost" section) to describe Neo4j/AuraDB in place of Azure
         SQL/LocalDB, noting `rm-sandbox` as retained-but-inactive per the decision not to delete
         it yet.
     - _Requirements: 7.1, 7.2, 8.3_
-  - [ ] 7.4 Fully rewrite the root `README.md` to match the project's actual current state
+  - [x] 7.4 Fully rewrite the root `README.md` to match the project's actual current state
         (`backend`/`frontend`/`worker` layout, `tabs` not `boards`, JWT auth, the ACA pipeline,
         Neo4j data layer) — this doc currently describes a `server/` layout and `boards` API that
         no longer exist.
@@ -127,8 +127,8 @@ sequential (each group depends on the previous one landing first).
         failures surfaced by integrating all of Groups 1-6's changes together.
     - _Requirements: 6.1, 6.5_
 
-- [ ] 9. One-time data migration script
-  - [ ] 9.1 Write `backend/scripts/migrate-to-neo4j.ts`: read every row from the real Azure SQL
+- [x] 9. One-time data migration script
+  - [x] 9.1 Write `backend/scripts/migrate-to-neo4j.ts`: read every row from the real Azure SQL
         tables (explicitly excluding `boards` and the dead `retry_count`/`max_retries` columns),
         run the schema bootstrap, import in dependency order preserving IDs/timestamps exactly,
         coerce `status: 'running'` sessions to `'stopped'`, seed each `Counter` to the max
