@@ -230,30 +230,6 @@
       "type": 3,
       "content": {
         "version": "KqlItem/1.0",
-        "query": "ContainerAppConsoleLogs_CL\n| where TimeGenerated {TimeRange}\n| where ContainerAppName_s == \"kirofactory-orchestrator\"\n| where Log_s has \"pool\" or Log_s has \"connection\" or Log_s has \"mssql\"\n| where Log_s has_any (\"pool-size\", \"pool-available\", \"pool-pending\", \"connection-count\", \"db-pool\")\n| extend parsed = parse_json(Log_s)\n| extend poolSize = toint(parsed.poolSize), poolAvailable = toint(parsed.poolAvailable), poolPending = toint(parsed.poolPending)\n| where isnotnull(poolSize)\n| summarize AvgSize = avg(poolSize), AvgAvailable = avg(poolAvailable), AvgPending = avg(poolPending) by bin(TimeGenerated, 5m)\n| order by TimeGenerated asc",
-        "size": 1,
-        "title": "SQL Server Connection Pool Usage",
-        "timeContext": {
-          "durationMs": 0
-        },
-        "timeContextFromParameter": "TimeRange",
-        "queryType": 0,
-        "resourceType": "microsoft.operationalinsights/workspaces",
-        "visualization": "linechart",
-        "chartSettings": {
-          "seriesLabelSettings": [
-            { "series": "AvgSize", "label": "Pool Size" },
-            { "series": "AvgAvailable", "label": "Available" },
-            { "series": "AvgPending", "label": "Pending" }
-          ]
-        }
-      },
-      "name": "db-pool-chart"
-    },
-    {
-      "type": 3,
-      "content": {
-        "version": "KqlItem/1.0",
         "query": "ContainerAppConsoleLogs_CL\n| where TimeGenerated {TimeRange}\n| where ContainerAppName_s == \"kirofactory-orchestrator\"\n| where Log_s has \"Database\" and Log_s has_any (\"unavailable\", \"reconnect\", \"failed\", \"timeout\", \"ECONNREFUSED\")\n| project TimeGenerated, Message = Log_s\n| order by TimeGenerated desc\n| take 20",
         "size": 1,
         "title": "Recent Database Connection Issues",

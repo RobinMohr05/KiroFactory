@@ -13,7 +13,7 @@ frontend.
 
 - Node 20, TypeScript (ESM, `"type": "module"`)
 - Express 4 (REST) + `ws` (WebSocket)
-- `mssql` driver → Azure SQL (`TecFactory`)
+- `neo4j-driver` → Neo4j AuraDB Free
 - `bcrypt` (password hashing), `jsonwebtoken` (auth), AES-256-GCM (`crypto.ts`) for secrets
 - `@azure/identity` for managed-identity auth to the ACA Jobs API
 
@@ -42,7 +42,7 @@ Runs as part of the npm workspaces monorepo; the lockfile lives at the repo root
 | `websocket-handler.ts` | The client-facing `/ws` WebSocket. JWT-cookie auth, broadcasts task/session updates to browsers. |
 | `mcp-proxy-config.ts` | Builds the per-session MCP `servers.json` from tab config + session overrides + decrypted credentials. |
 | `crypto.ts` | AES-256-GCM encrypt/decrypt using `ENCRYPTION_KEY`. Used for all stored secrets. |
-| `logger.ts` | Structured JSON logging (session/worker events, pool metrics) for Azure Monitor. |
+| `logger.ts` | Structured JSON logging (session/worker events) for Azure Monitor. |
 | `error-store.ts` | In-memory ring buffer of agent errors surfaced in the UI Errors tab. |
 | `types.ts` | Shared TypeScript types (Session, Task, Tab, credentials, WS messages). |
 | `agent/` | Kiro agent integration (see below). |
@@ -66,11 +66,12 @@ for the full pipeline.
 ### `db/`
 | File | Responsibility |
 |------|----------------|
-| `connection.ts` | Connection pool, `tryConnect`, availability flag, pool stats. |
-| `migrate.ts` | Applies `sql/schema.sql` on startup. |
+| `connection.ts` | Neo4j `Driver` lifecycle: `tryConnect` (retry-then-give-up, never throws), `isDbAvailable()` (cheap sync flag), `getDriver()` (throw-if-unavailable), `closePool()`, plus the `readQuery`/`writeQuery` managed-transaction helpers and `runSchemaStatement` used by `migrate.ts`. No connection-pool stats API (no `neo4j-driver` equivalent to `mssql`'s pool introspection — see `ARCHITECTURE.md` §9 and the design doc's "known gap" note). |
+| `migrate.ts` | Applies the Neo4j constraint/index bootstrap on startup (replaces the old 26-step incremental SQL `ALTER`-based runner) — idempotent, safe to run every time. |
+| `id-counter.ts` | `getNextId(label)` / `ensureCounterAtLeast(label, min)` — atomic per-label ID allocation via `:Counter` nodes, replacing SQL `IDENTITY` columns. |
 | `users.ts` | User CRUD; encrypts Kiro API key; never returns secrets. |
 | `credentials.ts` | Per-user encrypted credential storage; `getAllDecryptedCredentials` used only when spawning workers. |
-| `tasks.ts` | Task CRUD + `getChangedTasksSince` (drives the change detector). **When the user says "tasks/items", they mean this table.** |
+| `tasks.ts` | Task CRUD + `getChangedTasksSince` (drives the change detector), plus `DEPENDS_ON` writes (cycle-checked) and `isBlocked`/`blockedBy` computation. **When the user says "tasks/items", they mean this table.** |
 | `tabs.ts` | Tab (board) CRUD + MCP config + repository URL. |
 | `sessions.ts` | Session persistence. |
 
@@ -97,85 +98,82 @@ For remote mode to activate, **all** required `ACA_*` env vars must be present (
 
 ## Database
 
-Azure SQL `TecFactory` on `REDACTED_DB_SERVER`. Schema in `sql/schema.sql`;
-applied automatically by `migrate.ts` on startup. The server tolerates a missing DB at boot
-(the UI loads, task features return 503 until the DB is reachable).
+Neo4j AuraDB Free, reached over the public Bolt protocol (`neo4j+s://...`). Connection details
+come from `NEO4J_URI`/`NEO4J_USERNAME`/`NEO4J_PASSWORD`/`NEO4J_DATABASE` (see `.env.example`).
+The constraint/index bootstrap in `migrate.ts` runs automatically and idempotently on every
+startup — no separate manual migration step. The server tolerates a missing DB at boot (the UI
+loads, task features return 503 until the DB is reachable).
 
-Firewall: the ACA environment's outbound IPs must be allowed on the SQL server, or enable
-"Allow Azure services". A local dev machine needs its own IP added to query the DB directly.
+No firewall/IP-whitelisting to manage — AuraDB's Bolt endpoint is public, secured by
+username/password rather than network allow-listing. The one operational quirk worth knowing:
+AuraDB Free auto-pauses after 72h of inactivity and takes a moment to resume on the next
+connection (`connection.ts` uses a 60s `connectionTimeout` to accommodate this).
 
 ---
 
 ## Local development
 
-### Quick start (using the shared Azure SQL database)
+### Quick start (using the shared AuraDB instance)
 
 ```bash
 # from repo root
 npm install
-# create backend/.env (see backend/.env.example) with DB_* and ENCRYPTION_KEY
+# create backend/.env (see backend/.env.example) with NEO4J_* and ENCRYPTION_KEY
 npm run dev -w backend
 ```
 
-`.env` keys of note: `DB_*`, `ENCRYPTION_KEY` (must match whatever encrypted the stored data),
-`WORKER_MODE=local` for local agent runs.
-
-Your machine's public IP must be allowed in the Azure SQL firewall.
+`.env` keys of note: `NEO4J_URI`/`NEO4J_USERNAME`/`NEO4J_PASSWORD`/`NEO4J_DATABASE`,
+`ENCRYPTION_KEY` (must match whatever encrypted the stored data), `WORKER_MODE=local` for local
+agent runs.
 
 ---
 
 ### Run entirely on localhost (no Azure, no Docker)
 
-You can run the full application on localhost with **zero external dependencies** — no Azure
-SQL, no Docker, no network connection required after initial setup. This uses SQL Server
-Express LocalDB, a lightweight on-demand SQL engine that speaks the same T-SQL dialect the app
-depends on.
+You can run the full application on localhost with no Docker and no direct Azure access. There's
+no local database engine to install anymore — everyone (production and every developer) connects
+to the **same shared Neo4j AuraDB Free instance**. This is an explicitly accepted tradeoff, not
+an oversight (Requirement 7.2 of the Neo4j migration spec): there's no per-developer data
+isolation, so a task you create or edit locally is visible to everyone else pointed at the same
+instance, and vice versa.
 
-> See also: the root [`ARCHITECTURE.md`](../ARCHITECTURE.md) §11 for an overview of this flow.
+> See also: the root [`ARCHITECTURE.md`](../ARCHITECTURE.md) §11 for a short summary of this flow.
 
 #### Prerequisites
 
 - **Node.js 20+**
-- **SQL Server Express LocalDB** (Windows only)
-  - Download: <https://www.microsoft.com/en-us/sql-server/sql-server-downloads>
-  - Or via winget: `winget install Microsoft.SQLServer.2022.Express` (select LocalDB feature)
-  - If you have Visual Studio installed, the default `(localdb)\MSSQLLocalDB` instance is likely
-    already present.
+- Shared AuraDB credentials — ask a teammate, or check the team's credential store. Don't put
+  the actual password in a doc; you just need the variable names, which are in
+  `backend/.env.example`: `NEO4J_URI`, `NEO4J_USERNAME`, `NEO4J_PASSWORD`, `NEO4J_DATABASE`.
 
 #### Step-by-step
 
-```powershell
-# 1. Ensure the LocalDB instance is running
-sqllocaldb start MSSQLLocalDB
-
-# 2. Create the database (one-time)
-sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE DATABASE TecFactory;"
-```
-
 ```bash
-# 3. Install dependencies (from repo root)
+# 1. Install dependencies (from repo root)
 npm install
 
-# 4. Configure environment
-cp backend/.env.local.example backend/.env
-# Edit backend/.env — generate and set ENCRYPTION_KEY:
-#   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+# 2. Configure environment
+cp backend/.env.example backend/.env
+# Edit backend/.env:
+#   - fill in NEO4J_URI / NEO4J_USERNAME / NEO4J_PASSWORD / NEO4J_DATABASE
+#     (obtained from a teammate or the team's credential store)
+#   - generate and set ENCRYPTION_KEY:
+#       node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 
-# 5. Run database migrations (creates all tables)
-npm run migrate -w backend
-
-# 6. Seed a test user and sample tasks
-npm run seed:local -w backend
-
-# 7. Start the server
+# 3. Start the server
 npm run dev -w backend
 ```
 
-Open <http://localhost:3500> and log in with:
-- **Email:** `local-dev@example.com`
-- **Password:** `localdev123`
+There's no separate migration step to run by hand — the constraint/index bootstrap
+(`src/db/migrate.ts`'s `runMigration()`) runs automatically and idempotently every time the
+server starts.
 
-You'll see a populated Kanban board with sample tasks across all types, priorities, and states.
+Open <http://localhost:3500> and log in with an existing account, or register a new one.
+
+> **`npm run seed:local -w backend` is currently broken** — it still imports the old, removed
+> `getPool`/`sql` mssql API from `connection.js` and will fail immediately. This is a known,
+> separate gap; it hasn't been rewritten for Neo4j yet. The `local-dev@example.com` /
+> `localdev123` test account it used to create doesn't exist until that script is rewritten.
 
 #### What works without `kiro-cli`
 
@@ -196,22 +194,12 @@ session will show a clear error in the Errors tab:
 
 Install `kiro-cli` from <https://cli.kiro.dev/install> only when you need to run agent sessions.
 
-#### Seed script details
-
-The `seed:local` script is idempotent — safe to re-run without duplicating data. It creates:
-- A test user (`local-dev@example.com` / `localdev123`)
-- A "Local Dev" tab
-- 7 sample tasks spanning bug/feature/improvement types, P1–P4 priorities, and
-  todo/in-progress/developed states
-
 #### Troubleshooting
 
 | Symptom | Fix |
 |---------|-----|
-| `sqlcmd` not found | Install [SQL Server command-line tools](https://learn.microsoft.com/en-us/sql/tools/sqlcmd/sqlcmd-utility) or use the `SqlLocalDB` utility directly. |
-| Connection refused / named pipe error | Run `sqllocaldb start MSSQLLocalDB` to ensure the instance is running. |
-| Login failed | LocalDB uses Windows auth by default — make sure `DB_USER` is empty in `.env`. |
-| `ENCRYPTION_KEY` error on startup | Generate and set a 64-char hex key (see step 4 above). |
+| `/api/health` shows `database: unavailable` | Double-check `NEO4J_URI`/`NEO4J_USERNAME`/`NEO4J_PASSWORD` against the credential store; if the instance has been idle, AuraDB Free auto-pauses after 72h and needs a moment to resume on the next connection. |
+| `ENCRYPTION_KEY` error on startup | Generate and set a 64-char hex key (see step 2 above). |
 
 ---
 

@@ -213,7 +213,10 @@ resource apiErrorRateAlert 'Microsoft.Insights/scheduledQueryRules@2023-03-15-pr
 //   - Worker spawn rate
 //   - Average session duration
 //   - Error/crash rate
-//   - SQL Server connection pool usage (inferred from app logs)
+//   - Recent database connection issues (inferred from app logs; there is no
+//     Neo4j-driver connection-pool introspection API equivalent to mssql's
+//     pool stats, so no pool-usage panel is included — see
+//     backend/src/db/connection.ts and design.md's "known gap" note)
 
 resource workbook 'Microsoft.Insights/workbooks@2023-06-01' = {
   name: workbookId

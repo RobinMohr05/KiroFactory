@@ -92,7 +92,7 @@ KiroFactory is split into three independently deployed pieces:
 ```
 Browser ──HTTPS/WSS──> kirofactory-api (Container App)
                             │
-                            ├── Azure SQL (TecFactory DB)
+                            ├── Neo4j AuraDB Free (Bolt, neo4j+s://)
                             │
                             └── triggers ──> kirofactory-worker (ACA Job, 1 per session)
                                                   │
@@ -117,9 +117,12 @@ region **Germany West Central**.
 | `managedEnvironment-SandboxForRM-8f71` | Container Apps Environment | Hosts the API container app and the worker job. |
 | `kirofactory-api` | Container App | The backend/orchestrator. External ingress, port 3500. |
 | `kirofactory-worker` | Container Apps Job | The Kiro session worker. Manual trigger. |
-| `rm-sandbox` | Azure SQL Server | Database server. `REDACTED_DB_SERVER`. |
-| `rm-sandbox/TecFactory` | Azure SQL Database | The application database (tasks, tabs, sessions, users, credentials). |
+| Neo4j AuraDB Free (`845e53c6.databases.neo4j.io`) | External managed service (Neo4j Aura Console, **not** in `SandboxForRM`) | The live application database (tasks, tabs, sessions, users, agents, credentials, settings) — a graph model, see §9. Reached over public Bolt (`neo4j+s://`). |
 | `workspacesandboxforrm86f0` | Log Analytics Workspace | Collects Container App logs (the one bound to the ACA environment). |
+
+> `rm-sandbox` (Azure SQL Server, formerly hosting the `TecFactory` database) is **retained but
+> no longer used** by the running app — kept as a rollback safety net per an explicit decision,
+> not deleted. It is not the application database anymore; see §9.
 
 > Note: `func-tecTactory-tasks`, `sandboxforrmaebf`, and the extra `workspace-*` items belong to
 > other experiments in the same resource group and are not part of KiroFactory.
@@ -184,7 +187,10 @@ later — see backlog).
 
 | Variable | Purpose |
 |----------|---------|
-| `DB_SERVER`, `DB_DATABASE`, `DB_USER`, `DB_PASSWORD`, `DB_PORT`, `DB_ENCRYPT`, `DB_TRUST_SERVER_CERTIFICATE` | Azure SQL connection. |
+| `NEO4J_URI` | Neo4j Bolt connection string, e.g. `neo4j+s://845e53c6.databases.neo4j.io`. |
+| `NEO4J_USERNAME` | Neo4j basic-auth username (default `neo4j`). |
+| `NEO4J_PASSWORD` | Neo4j basic-auth password. |
+| `NEO4J_DATABASE` | Optional database name within the instance. AuraDB Free provisions one database matching the instance ID; leave unset to let the driver use the server's default database. |
 | `PORT` | 3500. |
 | `NODE_ENV` | `production`. |
 | `ENCRYPTION_KEY` | AES-256-GCM master key for encrypting user credentials/API keys. **Must match across environments or stored secrets become unreadable.** |
@@ -244,7 +250,7 @@ apply env config, secrets, the worker Job, or the RBAC that lets the orchestrato
 For anything beyond an image bump, use the Bicep deploy so config can't drift:
 
 ```bash
-export DB_SERVER=REDACTED_DB_SERVER DB_USER=<user> DB_PASSWORD=<pw>
+export NEO4J_URI=neo4j+s://845e53c6.databases.neo4j.io NEO4J_PASSWORD=<pw>
 export JWT_SECRET=$(openssl rand -hex 32)
 export ENCRYPTION_KEY=<existing 64-char hex — must not change or stored secrets break>
 export ACA_WORKER_SECRET=$(openssl rand -hex 32)
@@ -306,7 +312,7 @@ The backend keeps a lightweight error log surfaced in the UI under the **Errors*
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| `/api/health` shows `database: unavailable` | Azure SQL firewall blocking ACA outbound IPs | Enable "Allow Azure services" on `rm-sandbox`, or add IPs. |
+| `/api/health` shows `database: unavailable` | Wrong/expired `NEO4J_PASSWORD`, the AuraDB instance was deleted/renamed, or (most common) the Free-tier instance auto-paused after 72h of inactivity and needs a moment to resume | Verify `NEO4J_URI`/`NEO4J_USERNAME`/`NEO4J_PASSWORD` are current in the Aura Console; on auto-pause, the first connection triggers a resume — `connection.ts` uses a generous 60s `connectionTimeout` for exactly this, so retry after ~a minute. |
 | Container crashes on boot with `spawn kiro-cli ENOENT` | Orchestrator tried to run kiro-cli locally (local mode) but it's not in the image | Set `WORKER_MODE=remote`. |
 | `Fatal: ACA mode enabled but configuration is missing` | An `ACA_*` env var is missing (often `ACA_WORKER_IMAGE`) | Add all required ACA vars, restart. |
 | `ACA job start was denied by Azure (HTTP 403 … AuthorizationFailed)` | Orchestrator managed identity lacks the role on the worker job (often after an `az containerapp update`-only deploy or an app recreation) | Grant **Container Apps Jobs Operator** scoped to `kirofactory-worker` — see §4 "Managed Identity & permissions". NOT a credential issue. |
@@ -321,16 +327,34 @@ The backend keeps a lightweight error log surfaced in the UI under the **Errors*
 
 ## 9. Data model (high level)
 
-Azure SQL database `TecFactory`. Core tables:
-- `users` — accounts; stores `password_hash` (bcrypt) and `kiro_api_key_encrypted` (AES-256-GCM).
-- `credentials` — per-user encrypted service credentials (ADO PAT, Atlassian, AWS).
-- `tasks` — the work items (title, description, priority 1–4, type, state, origin).
-- `tabs` — boards; each maps to a repository and holds MCP config.
-- `task_tabs` — many-to-many between tasks and tabs.
-- `sessions` — agent sessions (agent, status, tab assignment, loop config).
+Neo4j (AuraDB Free), a property graph — not relational tables. Core node labels:
+- `User` — accounts; stores `passwordHash` (bcrypt) and `kiroApiKeyEncrypted` (AES-256-GCM),
+  plus the per-user encrypted service credentials (ADO PAT, Atlassian, AWS) as opaque properties.
+- `Tab` — boards; each maps to a repository and holds MCP config via `HAS_MCP_CONFIG`.
+- `Task` — the work items (title, description, priority 1–4, type, state, origin), including a
+  task-dependency feature: a task can `DEPENDS_ON` other tasks, and the API computes `isBlocked`/
+  `blockedBy` at read time (never stored) so a task isn't claimable by an agent until its
+  dependencies are done.
+- `Agent` — agent definitions (prompt, tools, pipeline stage config).
+- `Session` — running/stopped Kiro agent instances.
+- Sub-nodes: `McpConfig`, `ToolsSettings`, `McpServerConfig`, `RawMcpServerConfig` (linked shapes
+  that used to be embedded JSON columns).
+- Infrastructure nodes (not domain entities): `Counter` (atomic ID allocation, replacing SQL
+  `IDENTITY` columns) and `Settings` (key/value app settings).
 
-See `backend/sql/schema.sql` for the authoritative definition and `backend/README.md` for
-details on the data-access layer.
+Key relationship types: `OWNS` (user → tab/agent/session), `IN_TAB` (task/agent/session → tab,
+replacing the old `task_tabs`/`agent_tabs` junction tables), `DEPENDS_ON` (task → task),
+`HAS_MCP_CONFIG` / `HAS_MCP_CONFIG_OVERRIDE`, `HAS_TOOLS_SETTINGS`, `HAS_MCP_SERVER` /
+`HAS_RAW_MCP_SERVER` (ordered, via a `position` property).
+
+Entity IDs are still plain, stable integers (not Neo4j's internal element IDs) — allocated
+atomically per label via the `Counter` nodes, so existing conventions that embed them (git branch
+names, PR titles, "Task #142") keep working unchanged.
+
+See each `backend/src/db/*.ts` file's header comment for the model it manages, and
+[`.kiro/specs/neo4j-migration/design.md`](.kiro/specs/neo4j-migration/design.md) ("Graph data
+model" section) for the full authoritative schema, including every node property and the
+concurrency-safe task-claiming design.
 
 ---
 
@@ -347,25 +371,32 @@ details on the data-access layer.
 
 ## 11. Running locally without Azure or Docker
 
-The entire application can run on localhost with no external dependencies. This is the
-recommended path for new developers or any environment where Azure SQL, Docker Desktop, or
-network access is unavailable.
+The entire application can run on localhost with no Azure access and no Docker. This is the
+recommended path for new developers or any environment without Azure access.
 
-**Requirements:** Node.js 20+, SQL Server Express LocalDB (Windows).
+Unlike the old SQL Server Express LocalDB setup, there's no per-developer database anymore.
+Everyone connects to the **same shared AuraDB Free instance** used in production — an explicitly
+accepted tradeoff (Requirement 7.2 of the Neo4j migration spec), not an oversight. That means
+your test data can show up in a teammate's local environment, and vice versa.
+
+**Requirements:** Node.js 20+. No database software to install.
 
 **Quick summary:**
 
-1. Install LocalDB → `sqllocaldb start MSSQLLocalDB`
-2. Create database → `sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE DATABASE TecFactory;"`
-3. `cp backend/.env.local.example backend/.env` (set `ENCRYPTION_KEY`)
-4. `npm install && npm run migrate -w backend && npm run seed:local -w backend`
-5. `npm run dev -w backend` → open <http://localhost:3500>
-6. Log in as `local-dev@example.com` / `localdev123`
+1. Get the shared Neo4j credentials from a teammate or the team's credential store (variable
+   names: `NEO4J_URI`, `NEO4J_USERNAME`, `NEO4J_PASSWORD`, `NEO4J_DATABASE` — see
+   `backend/.env.example`).
+2. `cp backend/.env.example backend/.env` and fill in the `NEO4J_*` vars + `ENCRYPTION_KEY`.
+3. `npm install`
+4. `npm run dev -w backend` → open <http://localhost:3500>
+
+There's no separate manual migration step — the constraint/index bootstrap in
+`backend/src/db/migrate.ts` runs automatically and idempotently on every startup.
 
 **What works without `kiro-cli`:** Everything except starting agent sessions. The full UI,
 task/board CRUD, auth, WebSocket sync, and drag-and-drop all work. Only the "Start session"
 action requires `kiro-cli` on PATH — if it's missing, the Errors tab shows a clear message
 instead of a raw Node.js error.
 
-For the detailed step-by-step with troubleshooting, see
+For more detail (including the current status of the local seed script), see
 [`backend/README.md` § "Run entirely on localhost"](backend/README.md#run-entirely-on-localhost-no-azure-no-docker).

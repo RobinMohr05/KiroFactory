@@ -6,7 +6,7 @@
 # Requires:
 #   - Infrastructure deployed (deploy.sh)
 #   - Image pushed to ACR (build-and-push.sh)
-#   - SQL Server credentials
+#   - Neo4j AuraDB credentials
 #
 # Usage:
 #   ./deploy-app.sh                         # Deploy with defaults
@@ -29,8 +29,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WHAT_IF=false
 
 # These should be set as environment variables or passed via --parameter flags
-# DB_SERVER, DB_USER, DB_PASSWORD, JWT_SECRET, ENCRYPTION_KEY, ACA_WORKER_SECRET
-# Optional: AZURE_DEVOPS_EXT_PAT (org-level git-clone fallback for workers)
+# NEO4J_URI, NEO4J_PASSWORD, JWT_SECRET, ENCRYPTION_KEY, ACA_WORKER_SECRET
+# Optional: NEO4J_USERNAME, NEO4J_DATABASE, AZURE_DEVOPS_EXT_PAT (org-level git-clone fallback for workers)
 
 # ─── Parse Arguments ──────────────────────────────────────────────────────────
 
@@ -75,17 +75,13 @@ if ! az account show &> /dev/null; then
 fi
 
 # Verify required secrets are set
-if [ -z "${DB_SERVER:-}" ]; then
-  echo "ERROR: DB_SERVER environment variable is required."
-  echo "  export DB_SERVER=your-server.database.windows.net"
+if [ -z "${NEO4J_URI:-}" ]; then
+  echo "ERROR: NEO4J_URI environment variable is required."
+  echo "  export NEO4J_URI=neo4j+s://xxxxx.databases.neo4j.io"
   exit 1
 fi
-if [ -z "${DB_USER:-}" ]; then
-  echo "ERROR: DB_USER environment variable is required."
-  exit 1
-fi
-if [ -z "${DB_PASSWORD:-}" ]; then
-  echo "ERROR: DB_PASSWORD environment variable is required."
+if [ -z "${NEO4J_PASSWORD:-}" ]; then
+  echo "ERROR: NEO4J_PASSWORD environment variable is required."
   exit 1
 fi
 if [ -z "${JWT_SECRET:-}" ]; then
@@ -152,10 +148,10 @@ if [ "$WHAT_IF" = true ]; then
                  imageTag="$IMAGE_TAG" \
                  workerImageTag="$WORKER_IMAGE_TAG" \
                  proxyImageTag="$PROXY_IMAGE_TAG" \
-                 dbServer="$DB_SERVER" \
-                 dbDatabase="${DB_DATABASE:-TecFactory}" \
-                 dbUser="$DB_USER" \
-                 dbPassword="$DB_PASSWORD" \
+                 neo4jUri="$NEO4J_URI" \
+                 neo4jUsername="${NEO4J_USERNAME:-neo4j}" \
+                 neo4jPassword="$NEO4J_PASSWORD" \
+                 neo4jDatabase="${NEO4J_DATABASE:-}" \
                  jwtSecret="$JWT_SECRET" \
                  encryptionKey="$ENCRYPTION_KEY" \
                  workerSecret="$ACA_WORKER_SECRET" \
@@ -174,10 +170,10 @@ else
                  imageTag="$IMAGE_TAG" \
                  workerImageTag="$WORKER_IMAGE_TAG" \
                  proxyImageTag="$PROXY_IMAGE_TAG" \
-                 dbServer="$DB_SERVER" \
-                 dbDatabase="${DB_DATABASE:-TecFactory}" \
-                 dbUser="$DB_USER" \
-                 dbPassword="$DB_PASSWORD" \
+                 neo4jUri="$NEO4J_URI" \
+                 neo4jUsername="${NEO4J_USERNAME:-neo4j}" \
+                 neo4jPassword="$NEO4J_PASSWORD" \
+                 neo4jDatabase="${NEO4J_DATABASE:-}" \
                  jwtSecret="$JWT_SECRET" \
                  encryptionKey="$ENCRYPTION_KEY" \
                  workerSecret="$ACA_WORKER_SECRET" \

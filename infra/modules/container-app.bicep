@@ -37,29 +37,19 @@ param enableMcpProxy bool = true
 @description('Azure region')
 param location string = resourceGroup().location
 
-@description('SQL Server hostname')
+@description('Neo4j AuraDB Bolt connection URI (e.g., neo4j+s://xxxxx.databases.neo4j.io)')
 @secure()
-param dbServer string
+param neo4jUri string
 
-@description('SQL Server database name')
-param dbDatabase string = 'TecFactory'
+@description('Neo4j username')
+param neo4jUsername string = 'neo4j'
 
-@description('SQL Server username')
+@description('Neo4j password')
 @secure()
-param dbUser string
+param neo4jPassword string
 
-@description('SQL Server password')
-@secure()
-param dbPassword string
-
-@description('SQL Server port')
-param dbPort string = '1433'
-
-@description('Use encrypted SQL connection')
-param dbEncrypt string = 'true'
-
-@description('Trust server certificate (false for Azure SQL)')
-param dbTrustServerCertificate string = 'false'
+@description('Neo4j database name (leave empty to let the driver use the server default database)')
+param neo4jDatabase string = ''
 
 @description('JWT secret for authentication tokens')
 @secure()
@@ -129,16 +119,12 @@ var baseSecrets = [
     value: acr.listCredentials().passwords[0].value
   }
   {
-    name: 'db-server'
-    value: dbServer
+    name: 'neo4j-uri'
+    value: neo4jUri
   }
   {
-    name: 'db-user'
-    value: dbUser
-  }
-  {
-    name: 'db-password'
-    value: dbPassword
+    name: 'neo4j-password'
+    value: neo4jPassword
   }
   {
     name: 'jwt-secret'
@@ -164,13 +150,10 @@ var patSecret = empty(azureDevOpsPat) ? [] : [
 var baseEnv = [
   { name: 'NODE_ENV', value: 'production' }
   { name: 'PORT', value: '3500' }
-  { name: 'DB_SERVER', secretRef: 'db-server' }
-  { name: 'DB_DATABASE', value: dbDatabase }
-  { name: 'DB_USER', secretRef: 'db-user' }
-  { name: 'DB_PASSWORD', secretRef: 'db-password' }
-  { name: 'DB_PORT', value: dbPort }
-  { name: 'DB_ENCRYPT', value: dbEncrypt }
-  { name: 'DB_TRUST_SERVER_CERTIFICATE', value: dbTrustServerCertificate }
+  { name: 'NEO4J_URI', secretRef: 'neo4j-uri' }
+  { name: 'NEO4J_USERNAME', value: neo4jUsername }
+  { name: 'NEO4J_PASSWORD', secretRef: 'neo4j-password' }
+  { name: 'NEO4J_DATABASE', value: neo4jDatabase }
   { name: 'JWT_SECRET', secretRef: 'jwt-secret' }
   { name: 'ENCRYPTION_KEY', secretRef: 'encryption-key' }
   // ── ACA worker (remote) mode ──

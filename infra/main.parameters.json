@@ -11,9 +11,6 @@
     "acrSku": {
       "value": "Basic"
     },
-    "enableVnet": {
-      "value": true
-    },
     "tags": {
       "value": {
         "project": "KiroFactory",
