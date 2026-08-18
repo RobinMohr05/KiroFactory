@@ -4,95 +4,95 @@ Execution groups below are ordered by dependency. Tasks within the same group ha
 dependencies on each other and are implemented in parallel via sub-agents. Groups themselves are
 sequential (each group depends on the previous one landing first).
 
-- [ ] 1. Foundation: connection, ID counter, schema bootstrap
-  - [ ] 1.1 Rewrite `backend/src/db/connection.ts` for `neo4j-driver`: replace the `mssql` pool
+- [x] 1. Foundation: connection, ID counter, schema bootstrap
+  - [x] 1.1 Rewrite `backend/src/db/connection.ts` for `neo4j-driver`: replace the `mssql` pool
         with a `Driver` instance; preserve the exact exported contract used elsewhere
         (`isDbAvailable()` cheap sync check, `tryConnect(retries, delayMs)` retry-then-give-up
         without throwing, `getDriver()` throw-if-unavailable for query code, `closePool()`
         equivalent). Drop `getPoolStats()` (no neo4j-driver equivalent) — confirm every caller
         (`index.ts`'s `samplePoolMetrics`) is updated to stop calling it, not left dangling.
     - _Requirements: 6.2, 6.4_
-  - [ ] 1.2 Implement the `Counter` node ID-allocation helper (`getNextId(label)` per the design's
+  - [x] 1.2 Implement the `Counter` node ID-allocation helper (`getNextId(label)` per the design's
         `MERGE`/`SET`-based counter query) as a shared utility every `db/*.ts` create function
         calls.
     - _Requirements: 4.1, 4.3_
-  - [ ] 1.3 Rewrite `backend/src/db/migrate.ts` as the constraint/index bootstrap from the design
+  - [x] 1.3 Rewrite `backend/src/db/migrate.ts` as the constraint/index bootstrap from the design
         doc (replacing the 26-step incremental runner), keeping the exported `runMigration()` name
         and its idempotent, non-throwing, standalone-CLI-callable behavior.
     - _Requirements: 1.4, 6.1_
-  - [ ] 1.4 Update `GET /api/health` in `backend/src/index.ts` to reflect Neo4j connectivity via
+  - [x] 1.4 Update `GET /api/health` in `backend/src/index.ts` to reflect Neo4j connectivity via
         the new `isDbAvailable()`, preserving the exact `{ status, database }` response shape.
     - _Requirements: 6.4_
 
-- [ ] 2. Data-access layer rewrite (parallel — independent modules, depends only on Group 1)
-  - [ ] 2.1 Rewrite `backend/src/db/users.ts` (User node CRUD, auth lookups, credential fields
+- [x] 2. Data-access layer rewrite (parallel — independent modules, depends only on Group 1)
+  - [x] 2.1 Rewrite `backend/src/db/users.ts` (User node CRUD, auth lookups, credential fields
         carried over verbatim) preserving every exported function's signature.
     - _Requirements: 1.1, 1.5, 6.1_
-  - [ ] 2.2 Rewrite `backend/src/db/credentials.ts` (encrypted credential get/set on `User` node
+  - [x] 2.2 Rewrite `backend/src/db/credentials.ts` (encrypted credential get/set on `User` node
         properties) — no change to the encryption scheme itself, only the query layer.
     - _Requirements: 1.5, 6.1_
-  - [ ] 2.3 Rewrite `backend/src/db/tabs.ts` (`Tab` node + `OWNS`/`HAS_MCP_CONFIG` relationships,
+  - [x] 2.3 Rewrite `backend/src/db/tabs.ts` (`Tab` node + `OWNS`/`HAS_MCP_CONFIG` relationships,
         `columns` as a native list) preserving exported signatures including tab-scoped task
         listing.
     - _Requirements: 1.1, 1.2, 1.3, 1.6, 6.1_
-  - [ ] 2.4 Rewrite `backend/src/db/agents.ts` (`Agent` node + `OWNS`/`IN_TAB`/
+  - [x] 2.4 Rewrite `backend/src/db/agents.ts` (`Agent` node + `OWNS`/`IN_TAB`/
         `HAS_TOOLS_SETTINGS`, `tools`/`allowedTools`/`resources` as native lists) preserving
         exported signatures including the "unassigned agent usable on every tab" business rule
         from `getAgentsForTab`.
     - _Requirements: 1.1, 1.2, 1.3, 1.6, 6.1_
-  - [ ] 2.5 Rewrite `backend/src/db/sessions.ts` (`Session` node + `OWNS`/`IN_TAB`/
+  - [x] 2.5 Rewrite `backend/src/db/sessions.ts` (`Session` node + `OWNS`/`IN_TAB`/
         `HAS_MCP_CONFIG_OVERRIDE`/ordered `HAS_MCP_SERVER`/`HAS_RAW_MCP_SERVER`, `agent` kept as a
         name-string, `currentTaskId` kept as a scalar per the design's stated exceptions)
         preserving exported signatures including `reorderSessionsInDb`'s transactional bulk
         update and pin/permanent-session handling.
     - _Requirements: 1.1, 1.3, 1.6, 6.1_
-  - [ ] 2.6 Rewrite `backend/src/db/settings.ts` (`Settings` node per key) and fix the
+  - [x] 2.6 Rewrite `backend/src/db/settings.ts` (`Settings` node per key) and fix the
         `registration_enabled` seed bug identified during design — store and read a real
         `registrationEnabled` boolean instead of the current ambiguous string convention.
     - _Requirements: 1.1, 1.4_
 
 - [ ] 3. Tasks and claiming (sequential, single-owner — concurrency-critical, not parallelized)
-  - [ ] 3.1 Rewrite `backend/src/db/tasks.ts`: `Task` node CRUD, `files` as a native list,
+  - [x] 3.1 Rewrite `backend/src/db/tasks.ts`: `Task` node CRUD, `files` as a native list,
         `originRank` maintained alongside `origin`, `IN_TAB` relationships replacing `task_tabs`,
         plus the new `DEPENDS_ON` write helper with cycle detection (reachability check before
         `MERGE`) and the batched `isBlocked`/`blockedBy` computation on every task read path.
     - _Requirements: 1.2, 1.6, 2.1, 2.4, 2.5, 4.1_
-  - [ ] 3.2 Rewrite `backend/src/agent/task-claimer.ts`: implement the two-step
+  - [x] 3.2 Rewrite `backend/src/agent/task-claimer.ts`: implement the two-step
         candidate-list-then-CAS-loop `claimTask` (excluding blocked tasks per Requirement 2.2),
         mechanical `resolveTask`/`resetTask`/`markTaskDone`/`resetOrphanedTasks`, and carry
         `notifyTaskAvailable`/`waitForTaskAvailable` over unchanged (no SQL-specific logic in
         either).
     - _Requirements: 2.2, 3.1, 3.2, 3.3, 3.4, 3.5_
-  - [ ] 3.3 Write the mandatory concurrency integration test against the real AuraDB instance:
+  - [x] 3.3 Write the mandatory concurrency integration test against the real AuraDB instance:
         seed N claimable tasks under a dedicated, clearly-namespaced test tab, fire concurrent
         `claimTask()` calls, assert no task is ever claimed twice, clean up all test nodes
         afterward.
     - _Requirements: 3.6_
-  - [ ] 3.4 Write cycle-detection tests (direct, transitive, self-dependency all rejected;
+  - [x] 3.4 Write cycle-detection tests (direct, transitive, self-dependency all rejected;
         non-cyclic multi-dependency accepted) and `isBlocked`/`blockedBy` correctness tests.
     - _Requirements: 2.4, 2.5_
 
-- [ ] 4. API surface for dependencies
-  - [ ] 4.1 Add `dependsOn` to `CreateTaskInput`/`UpdateTaskInput` and `isBlocked`/`blockedBy` to
+- [x] 4. API surface for dependencies
+  - [x] 4.1 Add `dependsOn` to `CreateTaskInput`/`UpdateTaskInput` and `isBlocked`/`blockedBy` to
         the `Task` response type in `backend/src/types.ts`; wire `routes/tasks.ts` to accept/
         return them, returning a 409-style error with the conflicting task IDs when the
         cycle-detection helper rejects a write.
     - _Requirements: 2.1, 2.4_
 
-- [ ] 5. Frontend (parallel with Group 4, depends on Group 3's field names being final)
-  - [ ] 5.1 Add blocked-task styling: `data-blocked` attribute in `renderTaskCard`
+- [x] 5. Frontend (parallel with Group 4, depends on Group 3's field names being final)
+  - [x] 5.1 Add blocked-task styling: `data-blocked` attribute in `renderTaskCard`
         (`frontend/public/app.js`), the `--blocked-color` CSS variable and
         `.task-card[data-blocked="true"]` rules (including a dark-mode override) in
         `frontend/public/style.css`, plus a badge/tooltip so the signal isn't color-only.
     - _Requirements: 2.6_
-  - [ ] 5.2 Add an in-card dependency editor to the task form (`index.html`'s `taskForm`,
+  - [x] 5.2 Add an in-card dependency editor to the task form (`index.html`'s `taskForm`,
         `app.js`'s `showTaskForm`/submit handler): a `<select multiple>` populated from other
         tasks (excluding the task itself), pre-selected from `task.dependsOn`, read back on
         submit, with cycle-rejection errors from the API surfaced in the form.
     - _Requirements: 2.1_
 
-- [ ] 6. Test-mock updates (parallel with Groups 4-5, depends on Groups 1-3's final shapes)
-  - [ ] 6.1 Update every test currently mocking `db/connection.js`'s `mssql`-shaped surface
+- [x] 6. Test-mock updates (parallel with Groups 4-5, depends on Groups 1-3's final shapes)
+  - [x] 6.1 Update every test currently mocking `db/connection.js`'s `mssql`-shaped surface
         (`sessions.test.ts`, `task-planner-image.test.ts`, `session-pin-reorder-fixes.test.ts`,
         `idle-loop-task-visibility-fixes.test.ts`) to mock the `neo4j-driver` session/transaction
         shape instead, preserving each test's original behavioral intent.
@@ -122,8 +122,8 @@ sequential (each group depends on the previous one landing first).
         no longer exist.
     - _Requirements: 8.3_
 
-- [ ] 8. Integration checkpoint
-  - [ ] 8.1 Run `npm run build -w backend` and the full test suite; fix any type errors or test
+- [x] 8. Integration checkpoint
+  - [x] 8.1 Run `npm run build -w backend` and the full test suite; fix any type errors or test
         failures surfaced by integrating all of Groups 1-6's changes together.
     - _Requirements: 6.1, 6.5_
 
