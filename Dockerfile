@@ -51,9 +51,6 @@ COPY --from=build /app/backend/dist ./backend/dist
 # Copy frontend static files
 COPY frontend/public ./frontend/public
 
-# Copy SQL migrations
-COPY backend/sql ./backend/sql
-
 ENV NODE_ENV=production
 ENV PORT=3500
 EXPOSE 3500

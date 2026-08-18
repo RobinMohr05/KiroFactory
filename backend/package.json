@@ -11,7 +11,6 @@
     "seed:agents": "tsx scripts/seed-agents.ts",
     "seed:local": "tsx scripts/seed-local-dev.ts",
     "verify:neo4j": "tsx scripts/verify-neo4j.ts",
-    "migrate:to-neo4j": "tsx scripts/migrate-to-neo4j.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -24,7 +23,6 @@
     "dotenv": "^16.4.5",
     "express": "^4.21.0",
     "jsonwebtoken": "^9.0.2",
-    "mssql": "^11.0.1",
     "neo4j-driver": "6.2.0",
     "ws": "^8.18.0"
   },
@@ -34,7 +32,6 @@
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.0",
     "@types/jsonwebtoken": "^9.0.7",
-    "@types/mssql": "^12.3.0",
     "@types/node": "^22.10.0",
     "@types/ws": "^8.5.13",
     "tsx": "^4.19.0",

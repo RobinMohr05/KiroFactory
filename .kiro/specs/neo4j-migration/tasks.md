@@ -137,16 +137,36 @@ sequential (each group depends on the previous one landing first).
         completing a silent partial import.
     - _Requirements: 5.1, 5.2, 5.3, 5.4, 5.5_
 
-- [ ] 10. GATE — do not proceed without explicit user confirmation
-  - [ ] 10.1 Present the migration script's dry-run output/plan and get explicit confirmation
+- [x] 10. GATE — do not proceed without explicit user confirmation
+  - [x] 10.1 Present the migration script's dry-run output/plan and get explicit confirmation
         before running it against the real production Azure SQL data (143 tasks, 6 users, etc.).
         This is a one-way read of production data into a new system of record — irreversible in
         effect even though the source data isn't modified.
     - _Requirements: 5.1, 5.2, 5.6_
+    - Run against real data 2026-08-18. Parity confirmed: users 6/6, settings 1/1, tabs 6/6,
+      tasks 143/143, agents 7/7, agent_tabs 2/2, sessions 16/16 (0 left `running`), task_tabs
+      140 read / 137 created (3 skipped — pre-existing dangling `task_id`→`tab_id` refs to tabs
+      5/12/14, which don't exist in source `tabs` either; a source-data quality issue, not a
+      migration defect). Spot-checked files/columns_json→native list, mcp_config→sub-node,
+      `registration_enabled` "1"→`enabled:true` (the exact bug this migration fixes), and
+      verbatim credential copy — all correct. Azure SQL (`rm-sandbox`) untouched, not deleted,
+      still fully readable, per explicit instruction.
 
-- [ ] 11. GATE — do not proceed without explicit user confirmation
-  - [ ] 11.1 After the real migration is verified (per-entity counts match, spot checks pass),
+- [x] 11. GATE — do not proceed without explicit user confirmation
+  - [x] 11.1 After the real migration is verified (per-entity counts match, spot checks pass),
         get explicit confirmation before the final cutover: removing `mssql`/`@types/mssql` from
         `backend/package.json`, removing `DB_*` env var usage, and deploying the updated infra
         (bicep changes affect the live Container App).
     - _Requirements: 6.6, 8.1, 8.2, 8.4_
+    - Confirmed 2026-08-18. Removed `mssql`/`@types/mssql` from `backend/package.json`, deleted
+      `backend/scripts/migrate-to-neo4j.ts` (one-time script, job done — Gate 10.1) and the now-dead
+      `backend/sql/` directory (schema.sql + migrations/, unreferenced by any Neo4j code), dropped
+      the Dockerfile's `COPY backend/sql` step, and removed the stale `DB_*`/SQL-Server section from
+      `backend/.env.example`. `npm run build -w backend` and the full test suite pass (108/111 —
+      the 3 failures are pre-existing test-isolation flakiness in `planner-session-pool.test.ts`/
+      `idle-loop-task-visibility-fixes.test.ts`, unrelated to this change and confirmed passing
+      33/33 when run in isolation). Infra (`infra/deploy.sh`, `deploy-app.sh`, `monitoring.bicep`,
+      the workbook dashboard) already referenced only `NEO4J_*`/Neo4j from earlier Group 7 work —
+      no further infra changes needed here. Bicep deploy against the live Container App happens as
+      part of the cutover itself (build image → deploy Bicep atomically → verify health), tracked
+      outside this spec's task list.

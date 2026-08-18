@@ -47,8 +47,7 @@ VibecodeHeaven/
 │
 ├── backend/                   ← the orchestrator (Express + WebSocket + DB)
 │   ├── README.md              ← backend-specific guide
-│   ├── src/                   ← TypeScript source
-│   └── sql/schema.sql         ← database schema
+│   └── src/                   ← TypeScript source (db/ holds the Neo4j data-access layer)
 │
 ├── frontend/                  ← the static web UI
 │   ├── README.md              ← frontend-specific guide
