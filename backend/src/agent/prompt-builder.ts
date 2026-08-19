@@ -90,10 +90,9 @@ ${task.pullRequestUrl
 - If the task cannot be completed (missing dependencies, unclear requirements), explain why and exit.
 - Do NOT introduce unrelated refactoring or improvements beyond what the task requires.
 - Do NOT modify test files unless the task specifically asks for test changes.
-- Do NOT run git commit, git push, or create pull requests. The orchestrator handles git operations automatically after your work is complete.
 ${task.branch
-  ? "- You MUST run the git commands described in the BRANCH SETUP section above (checkout, merge, ls-remote). Do NOT run git commit, git push, or create pull requests — those are still handled by the orchestrator."
-  : "- Do NOT run any git commands at all (no git add, commit, push, branch, checkout, pull request). The orchestrator manages ALL git operations.\n- Do NOT create or switch branches. You are already on the correct branch."}
+  ? "- You MUST run the git commands described in the BRANCH SETUP section above (checkout, merge, ls-remote, and committing merge conflict resolutions). Do NOT run git commit for your own implementation work, git push, or create pull requests — those are still handled by the orchestrator."
+  : "- Do NOT run git commit, git push, or create pull requests. The orchestrator handles git operations automatically after your work is complete.\n- Do NOT run any git commands at all (no git add, commit, push, branch, checkout, pull request). The orchestrator manages ALL git operations.\n- Do NOT create or switch branches. You are already on the correct branch."}
 
 ## WORKING DIRECTORY
 
