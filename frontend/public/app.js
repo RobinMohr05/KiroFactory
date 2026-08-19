@@ -1370,16 +1370,10 @@ async function populateTaskDependsOnSelect(task) {
   const list = document.getElementById('taskDependsOnList');
   const chipsContainer = document.getElementById('taskDependsOnChips');
 
-  // Fetch all user tasks across all tabs for cross-board dependency support
-  let allUserTasks = [];
-  try {
-    const res = await apiFetch('/api/tasks');
-    if (res.ok) {
-      allUserTasks = await res.json();
-    }
-  } catch { /* fall back to empty — chips/search won't work but form still functions */ }
-
   // State: set of currently-selected dependency IDs
+  // Initialized BEFORE the async fetch so that _getSelectedIds is always
+  // callable immediately — prevents TypeError if the user submits the form
+  // before the fetch resolves (race condition).
   const selected = new Set(task && task.dependsOn ? task.dependsOn : []);
   // Store the editing task's own ID to exclude from results
   const currentTaskId = task ? task.id : null;
@@ -1388,6 +1382,15 @@ async function populateTaskDependsOnSelect(task) {
 
   // Expose selected set for form submission (read by submit handler)
   wrapper._getSelectedIds = () => Array.from(selected);
+
+  // Fetch all user tasks across all tabs for cross-board dependency support
+  let allUserTasks = [];
+  try {
+    const res = await apiFetch('/api/tasks');
+    if (res.ok) {
+      allUserTasks = await res.json();
+    }
+  } catch { /* fall back to empty — chips/search won't work but form still functions */ }
 
   function renderChips() {
     chipsContainer.innerHTML = '';
