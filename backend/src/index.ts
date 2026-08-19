@@ -40,7 +40,8 @@ app.use(cors({ origin: corsOrigin }));
 app.use(express.json());
 app.use(cookieParser());
 
-// Serve static files from frontend/public directory
+// Serve static files: Vite build output first, then legacy public/ (login.html, impressum.html, etc.)
+app.use(express.static(path.join(__dirname, "../../frontend/dist")));
 app.use(express.static(path.join(__dirname, "../../frontend/public")));
 
 // API error logger — attaches a `finish` listener to detect 5xx responses for Azure Monitor
@@ -91,6 +92,17 @@ app.use("/api/task-planner", requireDb, taskPlannerRouter);
 // Error-handling middleware — catches unhandled errors from route handlers and logs them
 // as structured JSON for Azure Monitor (must be registered AFTER all route handlers).
 app.use(uncaughtErrorLogger);
+
+// SPA catch-all: serve the React app's index.html for any non-API, non-static GET request.
+// This must be AFTER all API routes and static middleware, but BEFORE the HTTP server setup.
+app.get("*", (req, res) => {
+  // Don't intercept API paths or known static files (login.html, impressum.html)
+  if (req.path.startsWith("/api/") || req.path.startsWith("/internal/")) {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
+  res.sendFile(path.join(__dirname, "../../frontend/dist/index.html"));
+});
 
 // Create HTTP server and WebSocket servers.
 //
