@@ -49,7 +49,7 @@ import { EventEmitter } from "node:events";
 import neo4j, { type ManagedTransaction } from "neo4j-driver";
 import { readQuery, writeQuery } from "../db/connection.js";
 import type { Task } from "../types.js";
-import { getTaskById } from "../db/tasks.js";
+import { getTaskById, getTasksByBranch, getTasksByGroupId } from "../db/tasks.js";
 
 // ---------------------------------------------------------------------------
 // Task-available event bus
@@ -185,6 +185,8 @@ export interface ClaimedTask {
   branch: string | null;
   /** Existing pull request URL from a previous stage (null if first stage) */
   pullRequestUrl: string | null;
+  /** Group identifier — tasks sharing the same groupId are worked on the same branch/PR (AC2) */
+  groupId: string | null;
   /** Repository URL from the task's associated tab (null if not set) */
   repositoryUrl: string | null;
   /** User ID of the tab owner (for credential lookup) */
@@ -259,6 +261,7 @@ async function attemptClaim(
       origin: props.origin as ClaimedTask["origin"],
       branch: (props.branch as string) || null,
       pullRequestUrl: (props.pullRequestUrl as string) || null,
+      groupId: (props.groupId as string) || null,
       repositoryUrl: tabInfo?.repositoryUrl ?? null,
       userId: tabInfo?.userId ?? null,
     };
@@ -276,8 +279,11 @@ async function attemptClaim(
  * - `taskId` omitted: fetches up to CANDIDATE_BATCH_SIZE claimable
  *   candidates ordered by priority ASC, then origin rank ASC (user >
  *   user-assisted > ai > else), then creation time ASC — excluding any task
- *   blocked by an incomplete DEPENDS_ON dependency — and attempts them in
- *   order via attemptClaim() until one succeeds or the batch is exhausted.
+ *   blocked by an incomplete DEPENDS_ON dependency, and excluding any task
+ *   whose `groupId` matches another task already in `workingState` (shared
+ *   branch/PR grouping, task #163 — prevents two workers from creating
+ *   independent branches for the same group) — and attempts them in order
+ *   via attemptClaim() until one succeeds or the batch is exhausted.
  *
  * @param taskId Optional specific task ID to claim (skips priority ordering)
  * @param tabIds Optional tab IDs to filter by — only tasks belonging to at least one of these tabs are eligible. If empty/undefined, all tasks in claimState are eligible.
@@ -307,6 +313,19 @@ export async function claimTask(
       `MATCH (t:Task {state: $claimState})
        WHERE NOT EXISTS { MATCH (t)-[:DEPENDS_ON]->(dep:Task) WHERE dep.state <> 'done' }
          AND ($tabIds IS NULL OR EXISTS { MATCH (t)-[:IN_TAB]->(tab:Tab) WHERE tab.id IN $tabIds })
+         // Prevent concurrent claims of tasks in the same group (shared
+         // branch/PR feature, task #163): skip any task whose groupId
+         // matches a task already in workingState. This avoids two workers
+         // creating independent branches for the same group. Short-circuits
+         // on "no groupId" first, so ungrouped tasks (the common case) never
+         // pay for the subquery at all.
+         AND (
+           t.groupId IS NULL OR
+           NOT EXISTS {
+             MATCH (g:Task {state: $workingState})
+             WHERE g.groupId = t.groupId AND g.id <> t.id
+           }
+         )
        RETURN t.id AS id
        ORDER BY t.priority ASC, t.originRank ASC, t.createdAt ASC
        LIMIT $limit`,
@@ -316,7 +335,7 @@ export async function claimTask(
       // makes *results* come back as plain numbers elsewhere in this driver
       // config. neo4j.int() is required specifically for LIMIT/SKIP-position
       // parameters. Confirmed via a live smoke test, not assumed from docs.
-      { claimState, tabIds: effectiveTabIds, limit: neo4j.int(CANDIDATE_BATCH_SIZE) }
+      { claimState, workingState, tabIds: effectiveTabIds, limit: neo4j.int(CANDIDATE_BATCH_SIZE) }
     );
     return result.records.map((r) => r.get("id") as number);
   });
@@ -535,4 +554,49 @@ export async function markTaskDone(
   });
 
   broadcastTaskUpdate(taskId);
+}
+
+/**
+ * Find sibling tasks that share the same `branch` value in the DB.
+ *
+ * Used for AC1/AC5: when a claimed task already has a branch, look up other
+ * tasks sharing that branch to include them in PR content and to propagate
+ * the shared PR URL.
+ *
+ * Note: this only works when the task already has a branch set (since it
+ * queries by branch name). For tasks with no branch, AC2 discovery is handled
+ * by `findSiblingTasksByGroupId()` using the `group_id` column instead.
+ *
+ * @param branch The branch name to look for siblings of
+ * @param excludeTaskId The current task ID (excluded from results)
+ * @returns Sibling tasks with their metadata, or empty array if none found
+ */
+export async function findSiblingTasks(
+  branch: string,
+  excludeTaskId: number
+): Promise<Array<{ id: number; title: string; type: string; description: string; branch: string | null; pullRequestUrl: string | null }>> {
+  return getTasksByBranch(branch, excludeTaskId);
+}
+
+/**
+ * Find sibling tasks by group_id (AC2 implementation).
+ *
+ * When a task has no `branch` value but has a `groupId`, this function finds
+ * other tasks in the same group. If any of those siblings already has a branch
+ * (because an earlier task in the group was processed and had a branch assigned),
+ * the caller can use that branch for the current task.
+ *
+ * This is the missing piece for AC2: "When the dev-agent picks up a task that
+ * has no `branch` value but other tasks in the same group do, it looks up the
+ * shared branch name from sibling tasks."
+ *
+ * @param groupId The group identifier to look up siblings for
+ * @param excludeTaskId The current task ID (excluded from results)
+ * @returns Sibling tasks with their metadata, or empty array if none found
+ */
+export async function findSiblingTasksByGroupId(
+  groupId: string,
+  excludeTaskId: number
+): Promise<Array<{ id: number; title: string; type: string; description: string; branch: string | null; pullRequestUrl: string | null }>> {
+  return getTasksByGroupId(groupId, excludeTaskId);
 }
