@@ -2447,6 +2447,12 @@ function handlePrompt(text, taskMeta) {
     // If task metadata is provided and we have a git repo, create a task-specific branch
     currentTaskMeta = taskMeta;
 
+    // Clear stale values from any previous task — never leak a prior task's PR/branch
+    // to the pr-complete MCP server (risk: merging the wrong PR if the current task
+    // lacks a pullRequestUrl or branch for any reason).
+    process.env.TASK_PR_URL = "";
+    process.env.PR_BRANCH = "";
+
     // Make the task's PR URL available in process.env for child processes
     // (e.g. the pr-review MCP server reads it at tool-call time).
     if (taskMeta.pullRequestUrl) {
