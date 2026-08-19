@@ -33,6 +33,7 @@ import {
 import { getUserKiroApiKey, getUserById } from "./db/users.js";
 import { getAllDecryptedCredentials, getDecryptedCredential } from "./db/credentials.js";
 import { isDbAvailable } from "./db/connection.js";
+import { getTaskAutoMergePrs, areAllGroupTasksDone } from "./db/tasks.js";
 import { recordError } from "./error-store.js";
 import { log, logSessionEvent, logWorkerEvent, toErrorFields } from "./logger.js";
 import { getAgentTabs, getTabById } from "./db/tabs.js";
@@ -2044,13 +2045,13 @@ interface WorkerPromptResult {
 /**
  * Send a prompt to an ACA worker and wait for prompt-done response.
  */
-async function streamPromptAca(managed: ManagedSession, text: string, taskMeta?: { id: number; title: string; type: string; description: string; files: string[]; branch?: string | null; pullRequestUrl?: string | null; siblingTasks?: Array<{ id: number; title: string; type: string; description: string; pullRequestUrl: string | null }> }): Promise<WorkerPromptResult> {
+async function streamPromptAca(managed: ManagedSession, text: string, taskMeta?: { id: number; title: string; type: string; description: string; files: string[]; branch?: string | null; pullRequestUrl?: string | null; siblingTasks?: Array<{ id: number; title: string; type: string; description: string; pullRequestUrl: string | null }>; autoMergePrs?: boolean; allGroupTasksDone?: boolean }): Promise<WorkerPromptResult> {
   if (!isWorkerConnected(managed.meta.id)) {
     throw new Error("Worker is not connected");
   }
 
   // Send the prompt to the worker (with optional task metadata for branch/commit/PR)
-  const workerTaskMeta = taskMeta ? { id: taskMeta.id, title: taskMeta.title, type: taskMeta.type, description: taskMeta.description, files: taskMeta.files, branch: taskMeta.branch ?? null, pullRequestUrl: taskMeta.pullRequestUrl ?? null, siblingTasks: taskMeta.siblingTasks } : undefined;
+  const workerTaskMeta = taskMeta ? { id: taskMeta.id, title: taskMeta.title, type: taskMeta.type, description: taskMeta.description, files: taskMeta.files, branch: taskMeta.branch ?? null, pullRequestUrl: taskMeta.pullRequestUrl ?? null, siblingTasks: taskMeta.siblingTasks, autoMergePrs: taskMeta.autoMergePrs, allGroupTasksDone: taskMeta.allGroupTasksDone } : undefined;
   const sent = sendWorkerPrompt(managed.meta.id, text, workerTaskMeta);
   if (!sent) {
     throw new Error("Failed to send prompt to worker");
@@ -2377,8 +2378,28 @@ async function runLoopModeAca(
       }
     }
 
+    // Compute autoMergePrs and allGroupTasksDone for the pr-complete MCP server.
+    // Only relevant for inspector-kind agents (QA), but computed unconditionally
+    // so the metadata is available regardless of agent kind.
+    let autoMergePrs = false;
+    let allGroupTasksDone = true;
     try {
-      promptResult = await streamPromptAca(managed, prompt, { id: task.id, title: task.title, type: task.type, description: task.description, files: task.files, branch: task.branch, pullRequestUrl: task.pullRequestUrl, siblingTasks });
+      autoMergePrs = await getTaskAutoMergePrs(task.id);
+      if (task.groupId) {
+        allGroupTasksDone = await areAllGroupTasksDone(task.groupId, task.id);
+      }
+    } catch (err) {
+      // Non-critical — if lookup fails, default to no auto-merge
+      const msg = err instanceof Error ? err.message : String(err);
+      appendOutput(managed, {
+        timestamp: now(),
+        stream: "stderr",
+        text: `Warning: could not look up autoMergePrs/group status: ${msg}`,
+      });
+    }
+
+    try {
+      promptResult = await streamPromptAca(managed, prompt, { id: task.id, title: task.title, type: task.type, description: task.description, files: task.files, branch: task.branch, pullRequestUrl: task.pullRequestUrl, siblingTasks, autoMergePrs, allGroupTasksDone });
     } catch (err) {
       success = false;
       const msg = err instanceof Error ? err.message : String(err);

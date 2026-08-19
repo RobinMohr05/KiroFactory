@@ -1870,6 +1870,35 @@ function buildMcpServers() {
     });
   }
 
+  // Include the pr-complete MCP server for inspector-kind sessions where
+  // auto-merge is enabled. The tool merges the PR and deletes the source
+  // branch — called explicitly by the QA agent after verifying code quality.
+  if (AGENT_KIND === "inspector" && process.env.AUTO_MERGE_ENABLED === "true") {
+    const prCompleteEnv = [
+      { name: "PR_URL", value: process.env.TASK_PR_URL || "" },
+      { name: "PR_BRANCH", value: process.env.PR_BRANCH || "" },
+      { name: "REPO_URL", value: REPO_URL || "" },
+      { name: "ALL_GROUP_TASKS_DONE", value: process.env.ALL_GROUP_TASKS_DONE || "true" },
+    ];
+    if (process.env.GITHUB_PAT) {
+      prCompleteEnv.push({ name: "GITHUB_PAT", value: process.env.GITHUB_PAT });
+    }
+    if (AZURE_DEVOPS_PAT) {
+      prCompleteEnv.push({ name: "AZURE_DEVOPS_PAT", value: AZURE_DEVOPS_PAT });
+    }
+    servers.push({
+      name: "pr-complete",
+      command: "node",
+      args: ["/app/pr-complete-mcp-server.js"],
+      env: prCompleteEnv,
+    });
+    logInfo("Including pr-complete MCP server", {
+      prUrl: process.env.TASK_PR_URL || "(not yet set)",
+      prBranch: process.env.PR_BRANCH || "(not yet set)",
+      allGroupTasksDone: process.env.ALL_GROUP_TASKS_DONE || "true",
+    });
+  }
+
   for (const name of MCP_SIDECAR_SERVER_NAMES) {
     servers.push({
       name,
@@ -2420,6 +2449,16 @@ function handlePrompt(text, taskMeta) {
     // (e.g. the pr-review MCP server reads it at tool-call time).
     if (taskMeta.pullRequestUrl) {
       process.env.TASK_PR_URL = taskMeta.pullRequestUrl;
+    }
+
+    // Make auto-merge settings available for buildMcpServers() — the
+    // pr-complete MCP server is only included when both the agent is an
+    // inspector AND the tab has autoMergePrs enabled.
+    process.env.AUTO_MERGE_ENABLED = (taskMeta.autoMergePrs && AGENT_KIND === "inspector") ? "true" : "false";
+    process.env.ALL_GROUP_TASKS_DONE = taskMeta.allGroupTasksDone !== false ? "true" : "false";
+    // PR_BRANCH for the pr-complete MCP server (the branch to delete after merge)
+    if (taskMeta.branch) {
+      process.env.PR_BRANCH = taskMeta.branch;
     }
 
     // Always re-fetch DEV_BRANCH from origin before deciding what to branch
