@@ -1750,7 +1750,7 @@ function setupEventListeners() {
     if (e.key === 'Escape' && !taskModal.hidden) {
       hideTaskForm();
     }
-    if (e.key === 'Escape' && !tabModal.hidden) {
+    if (e.key === 'Escape' && !tabModal.hidden && confirmAutoMergeModal.hidden) {
       hideTabModal();
     }
   });

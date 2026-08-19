@@ -128,7 +128,9 @@ async function githubMergePr(owner, repo, number, method) {
  * Delete a branch on GitHub.
  */
 async function githubDeleteBranch(owner, repo, branch) {
-  const url = `https://api.github.com/repos/${owner}/${repo}/git/refs/heads/${encodeURIComponent(branch)}`;
+  // Encode each path segment individually to preserve slashes (e.g. "feature/#544_...")
+  const refPath = branch.split("/").map(encodeURIComponent).join("/");
+  const url = `https://api.github.com/repos/${owner}/${repo}/git/refs/heads/${refPath}`;
   const response = await fetch(url, {
     method: "DELETE",
     headers: githubHeaders(),
@@ -138,13 +140,13 @@ async function githubDeleteBranch(owner, repo, branch) {
 
 /**
  * Full GitHub merge flow: squash → merge → rebase fallback.
- * Retries up to 2 times on transient failures.
+ * Retries up to 2 times on transient failures per method.
  */
 async function completeGitHubPr(owner, repo, number, branch) {
   const methods = ["squash", "merge", "rebase"];
 
-  for (let attempt = 0; attempt < 3; attempt++) {
-    for (const method of methods) {
+  for (const method of methods) {
+    for (let attempt = 0; attempt < 3; attempt++) {
       const result = await githubMergePr(owner, repo, number, method);
 
       if (result.success) {
@@ -158,7 +160,7 @@ async function completeGitHubPr(owner, repo, number, branch) {
         };
       }
 
-      // 409 = merge conflict — not retryable
+      // 409 = merge conflict — not retryable, not method-dependent
       if (result.status === 409) {
         return {
           success: false,
@@ -167,23 +169,15 @@ async function completeGitHubPr(owner, repo, number, branch) {
         };
       }
 
-      // 405 = method not allowed — try next method
+      // 405 = method not allowed — skip to next method immediately
       if (result.status === 405) {
-        continue;
-      }
-
-      // Other errors (403, 422, etc.) — break inner loop to retry
-      if (attempt < 2) {
-        await sleep(5000);
         break;
       }
 
-      // Final attempt failed
-      return {
-        success: false,
-        error: "merge_failed",
-        message: `Failed to merge PR #${number}: HTTP ${result.status} — ${JSON.stringify(result.body)}`,
-      };
+      // Other errors (403, 422, etc.) — retry this method
+      if (attempt < 2) {
+        await sleep(5000);
+      }
     }
   }
 
@@ -213,8 +207,8 @@ function azureDevOpsHeaders() {
 async function completeAzureDevOpsPr(org, project, repo, prId) {
   const strategies = ["squash", "noFastForward"];
 
-  for (let attempt = 0; attempt < 3; attempt++) {
-    for (const strategy of strategies) {
+  for (const strategy of strategies) {
+    for (let attempt = 0; attempt < 3; attempt++) {
       const url =
         `https://dev.azure.com/${encodeURIComponent(org)}/${encodeURIComponent(project)}` +
         `/_apis/git/repositories/${encodeURIComponent(repo)}/pullrequests/${prId}` +
@@ -273,22 +267,15 @@ async function completeAzureDevOpsPr(org, project, repo, prId) {
         };
       }
 
-      // If the strategy was rejected, try the next one
-      if (response.status === 400 && strategy === "squash") {
-        continue;
-      }
-
-      // Other errors — retry
-      if (attempt < 2) {
-        await sleep(5000);
+      // If the strategy was rejected (400), skip to next strategy
+      if (response.status === 400) {
         break;
       }
 
-      return {
-        success: false,
-        error: "merge_failed",
-        message: `Failed to complete PR #${prId}: HTTP ${response.status} — ${JSON.stringify(responseBody)}`,
-      };
+      // Other errors — retry this strategy
+      if (attempt < 2) {
+        await sleep(5000);
+      }
     }
   }
 
@@ -330,7 +317,7 @@ function notify(method, params) {
 // Request handling
 // ---------------------------------------------------------------------------
 
-function handleRequest(msg) {
+async function handleRequest(msg) {
   const { id, method, params } = msg;
 
   switch (method) {
@@ -349,7 +336,11 @@ function handleRequest(msg) {
       break;
 
     case "tools/call":
-      handleToolCall(id, params);
+      try {
+        await handleToolCall(id, params);
+      } catch (err) {
+        respondError(id, -32603, `Internal error: ${err?.message || err}`);
+      }
       break;
 
     case "ping":
@@ -512,7 +503,9 @@ rl.on("line", (line) => {
   try {
     const msg = JSON.parse(trimmed);
     if (msg.method && msg.id !== undefined) {
-      handleRequest(msg);
+      handleRequest(msg).catch((err) => {
+        respondError(msg.id, -32603, `Internal error: ${err?.message || err}`);
+      });
     }
     // Notifications (no id) — ignore silently
   } catch {
