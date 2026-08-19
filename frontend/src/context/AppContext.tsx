@@ -329,13 +329,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     connectWebSocket();
     fetchTabs();
     fetchSessions();
+    fetchAgents();
     fetchErrors();
 
     return () => {
       if (wsRef.current) wsRef.current.close();
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
     };
-  }, [connectWebSocket, fetchTabs, fetchSessions, fetchErrors]);
+  }, [connectWebSocket, fetchTabs, fetchSessions, fetchAgents, fetchErrors]);
 
   // Fetch tasks when tab changes
   useEffect(() => {
