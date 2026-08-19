@@ -11,7 +11,7 @@ export function AgentsPanel() {
 
   useEffect(() => {
     fetchAgents();
-  }, []);
+  }, [fetchAgents]);
 
   useEffect(() => {
     if (!activeAgentId && agents.length > 0) {
