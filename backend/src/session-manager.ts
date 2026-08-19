@@ -2391,7 +2391,11 @@ async function runLoopModeAca(
     // Only relevant for the QA agent (final pipeline stage) — the code-reviewer
     // should never get the auto-merge prompt section or the pr-complete tool.
     let autoMergePrs = false;
-    let allGroupTasksDone = true;
+    // Default: ungrouped tasks can merge freely (true); grouped tasks must verify
+    // all siblings are done before merging (false). This ensures that if
+    // areAllGroupTasksDone() throws, a grouped task's merge is safely deferred
+    // rather than prematurely allowed.
+    let allGroupTasksDone = !task.groupId;
     if (meta.agent === "qa-improvement-agent") {
       try {
         autoMergePrs = await getTaskAutoMergePrs(task.id);
@@ -2399,7 +2403,9 @@ async function runLoopModeAca(
           allGroupTasksDone = await areAllGroupTasksDone(task.groupId, task.id);
         }
       } catch (err) {
-        // Non-critical — if lookup fails, default to no auto-merge
+        // Non-critical — if lookup fails, default to no auto-merge for grouped
+        // tasks (allGroupTasksDone stays false), which defers the merge safely.
+        // For ungrouped tasks, autoMergePrs stays false so no merge is attempted.
         const msg = err instanceof Error ? err.message : String(err);
         appendOutput(managed, {
           timestamp: now(),
