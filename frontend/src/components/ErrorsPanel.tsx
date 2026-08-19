@@ -19,7 +19,7 @@ export function ErrorsPanel() {
     }
   };
 
-  const handleDismiss = async (errorId: number) => {
+  const handleDismiss = async (errorId: string) => {
     try {
       const res = await apiFetch(`/api/errors/${errorId}`, { method: 'DELETE' });
       if (!res.ok) return;
@@ -29,7 +29,7 @@ export function ErrorsPanel() {
     }
   };
 
-  const handleCreateBugTask = async (errorId: number) => {
+  const handleCreateBugTask = async (errorId: string) => {
     try {
       const res = await apiFetch(`/api/errors/${errorId}/create-task`, {
         method: 'POST',

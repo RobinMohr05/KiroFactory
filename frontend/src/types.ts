@@ -92,7 +92,7 @@ export interface Agent {
 }
 
 export interface AgentError {
-  id: number;
+  id: string;
   message: string;
   context: string;
   agent: string;
@@ -128,6 +128,6 @@ export type WsMessage =
   | { type: 'session-output'; sessionId: number; entry: OutputEntry }
   | { type: 'session-activity'; sessionId: number; activity: SessionActivity }
   | { type: 'error-created'; error: AgentError }
-  | { type: 'error-dismissed'; errorId: number }
+  | { type: 'error-dismissed'; errorId: string }
   | { type: 'errors-cleared' }
   | { type: 'connected' };

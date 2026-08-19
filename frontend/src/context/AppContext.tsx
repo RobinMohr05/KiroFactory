@@ -338,6 +338,38 @@ export function AppProvider({ children }: { children: ReactNode }) {
     };
   }, [connectWebSocket, fetchTabs, fetchSessions, fetchAgents, fetchErrors]);
 
+  // Polling fallback: refetch tasks every 3s while WebSocket is disconnected
+  useEffect(() => {
+    if (connected) return;
+    const interval = setInterval(() => {
+      if (currentTabId) fetchTabTasks(currentTabId);
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [connected, currentTabId, fetchTabTasks]);
+
+  // Reconnect refetch: when WS reconnects (not initial connect), refetch current data
+  const prevConnectedRef = useRef(false);
+  useEffect(() => {
+    if (connected && prevConnectedRef.current === false && wsHasConnectedOnce.current) {
+      // Reconnected after a disconnect — refetch to catch up on missed messages
+      if (currentTabId) fetchTabTasks(currentTabId);
+      fetchSessions();
+      fetchErrors();
+    }
+    prevConnectedRef.current = connected;
+  }, [connected, currentTabId, fetchTabTasks, fetchSessions, fetchErrors]);
+
+  // Reconciliation timer: refetch all data every 20 minutes as a safety net
+  useEffect(() => {
+    const interval = setInterval(() => {
+      fetchTabs();
+      if (currentTabId) fetchTabTasks(currentTabId);
+      fetchSessions();
+      fetchErrors();
+    }, 20 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [fetchTabs, currentTabId, fetchTabTasks, fetchSessions, fetchErrors]);
+
   // Fetch tasks when tab changes
   useEffect(() => {
     if (currentTabId) {
