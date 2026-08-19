@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useApp } from '../context/AppContext';
 import { SessionModal } from './SessionModal';
 import { apiFetch } from '../utils/api';
+import { useConfirmAction } from '../hooks/useConfirmAction';
 import type { Session, OutputEntry, SessionActivity } from '../types';
 
 export function SessionsPanel() {
@@ -106,6 +107,8 @@ export function SessionsPanel() {
     setActiveSessionId(null);
   };
 
+  const { isPending: deleteConfirmPending, handleClick: handleDeleteClick } = useConfirmAction(handleDelete);
+
   const handleEdit = () => {
     if (!activeSession) return;
     if (activeSession.status === 'running') {
@@ -122,6 +125,65 @@ export function SessionsPanel() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text }),
     });
+  };
+
+  // Session pin/unpin via right-click context menu
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; session: Session } | null>(null);
+
+  const handleContextMenu = (e: React.MouseEvent, session: Session) => {
+    if (session.isPermanent) return; // permanent sessions cannot be unpinned
+    e.preventDefault();
+    setContextMenu({ x: e.clientX, y: e.clientY, session });
+  };
+
+  const handlePinToggle = async () => {
+    if (!contextMenu) return;
+    const session = contextMenu.session;
+    const newPinned = !session.pinned;
+    setContextMenu(null);
+
+    pendingOps.current.add('sessions-reordered');
+    setSessions(prev => prev.map(s => s.id === session.id ? { ...s, pinned: newPinned } : s));
+
+    try {
+      await apiFetch(`/api/sessions/${session.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pinned: newPinned }),
+      });
+    } catch {
+      pendingOps.current.delete('sessions-reordered');
+    }
+  };
+
+  // Close context menu on any click
+  useEffect(() => {
+    if (!contextMenu) return;
+    const handler = () => setContextMenu(null);
+    document.addEventListener('click', handler);
+    return () => document.removeEventListener('click', handler);
+  }, [contextMenu]);
+
+  // Container-level drop handler for pinned section (enables pinning by dropping into empty area)
+  const handlePinnedContainerDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    const draggedId = dragIdRef.current;
+    if (!draggedId) return;
+    const draggedSession = sessions.find(s => s.id === draggedId);
+    if (!draggedSession || draggedSession.pinned) return;
+
+    pendingOps.current.add('sessions-reordered');
+    setSessions(prev => prev.map(s => s.id === draggedId ? { ...s, pinned: true } : s));
+
+    try {
+      await apiFetch(`/api/sessions/${draggedId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pinned: true }),
+      });
+    } catch {
+      pendingOps.current.delete('sessions-reordered');
+    }
   };
 
   // Session drag-and-drop reordering
@@ -221,7 +283,14 @@ export function SessionsPanel() {
           <div className="toolbar" role="toolbar" aria-label="Session actions">
             <button id="newSessionBtn" className="btn btn-primary" onClick={() => setShowCreateModal(true)}>+ New Session</button>
           </div>
-          <ul className="session-list-pinned" id="sessionListPinned" aria-label="Pinned sessions">
+          <ul
+            className="session-list-pinned"
+            id="sessionListPinned"
+            aria-label="Pinned sessions"
+            onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; }}
+            onDrop={handlePinnedContainerDrop}
+            style={{ minHeight: '24px' }}
+          >
             {sortedSessions.filter(s => s.pinned).map(session => (
               <SessionListItem
                 key={session.id}
@@ -232,6 +301,7 @@ export function SessionsPanel() {
                 onDragEnd={handleDragEnd}
                 onDragOver={handleDragOver}
                 onDrop={(e) => handleDrop(e, session)}
+                onContextMenu={(e) => handleContextMenu(e, session)}
               />
             ))}
           </ul>
@@ -246,6 +316,7 @@ export function SessionsPanel() {
                 onDragEnd={handleDragEnd}
                 onDragOver={handleDragOver}
                 onDrop={(e) => handleDrop(e, session)}
+                onContextMenu={(e) => handleContextMenu(e, session)}
               />
             ))}
             {sortedSessions.length === 0 && (
@@ -271,7 +342,7 @@ export function SessionsPanel() {
                   <button className="btn btn-danger btn-sm" disabled={!isRunning} onClick={handleStop}>Stop</button>
                   <button className="btn btn-secondary btn-sm" id="sessionEditBtn" disabled={isRunning} title={isRunning ? 'Stop the session to edit its settings' : 'Edit session settings'} onClick={handleEdit}>Edit</button>
                   <button className="btn btn-secondary btn-sm" onClick={() => setOutput([])}>Clear</button>
-                  <button className="btn btn-secondary btn-sm" disabled={!!activeSession.isPermanent} onClick={handleDelete}>Delete</button>
+                  <button className={`btn btn-secondary btn-sm${deleteConfirmPending ? ' btn-confirm-pending' : ''}`} disabled={!!activeSession.isPermanent} onClick={handleDeleteClick}>{deleteConfirmPending ? 'Confirm?' : 'Delete'}</button>
                 </div>
               </div>
               <div className="session-tabs-bar">
@@ -324,11 +395,23 @@ export function SessionsPanel() {
           onClose={() => { setShowCreateModal(false); setEditingSession(null); }}
         />
       )}
+
+      {contextMenu && (
+        <div
+          className="session-context-menu"
+          style={{ left: contextMenu.x, top: contextMenu.y, position: 'fixed', zIndex: 9999 }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button className="session-context-item" onClick={handlePinToggle}>
+            {contextMenu.session.pinned ? '📌 Unpin' : '📌 Pin to top'}
+          </button>
+        </div>
+      )}
     </section>
   );
 }
 
-function SessionListItem({ session, active, onClick, onDragStart, onDragEnd, onDragOver, onDrop }: {
+function SessionListItem({ session, active, onClick, onDragStart, onDragEnd, onDragOver, onDrop, onContextMenu }: {
   session: Session;
   active: boolean;
   onClick: () => void;
@@ -336,6 +419,7 @@ function SessionListItem({ session, active, onClick, onDragStart, onDragEnd, onD
   onDragEnd: (e: React.DragEvent) => void;
   onDragOver: (e: React.DragEvent) => void;
   onDrop: (e: React.DragEvent) => void;
+  onContextMenu: (e: React.MouseEvent) => void;
 }) {
   const statusClass = `status-dot-sm status-${session.status}`;
   const activityDetail = session.currentActivity?.detail || session.currentActivity?.type || '';
@@ -346,6 +430,7 @@ function SessionListItem({ session, active, onClick, onDragStart, onDragEnd, onD
       data-session-id={session.id}
       draggable
       onClick={onClick}
+      onContextMenu={onContextMenu}
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
       onDragOver={onDragOver}

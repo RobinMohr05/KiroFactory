@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { apiFetch } from '../utils/api';
+import { useConfirmAction } from '../hooks/useConfirmAction';
 import { AgentModal } from './AgentModal';
 import type { Agent } from '../types';
 
@@ -32,6 +33,8 @@ export function AgentsPanel() {
       console.error('Failed to delete agent:', e);
     }
   };
+
+  const { isPending: deleteConfirmPending, handleClick: handleDeleteClick } = useConfirmAction(handleDelete);
 
   const handleExport = () => {
     if (!activeAgent) return;
@@ -91,7 +94,7 @@ export function AgentsPanel() {
                 <div className="agent-controls">
                   <button className="btn btn-secondary btn-sm" onClick={handleExport}>Export</button>
                   <button className="btn btn-secondary btn-sm" onClick={() => setEditingAgent(activeAgent)}>Edit</button>
-                  <button className="btn btn-danger btn-sm" onClick={handleDelete}>Delete</button>
+                  <button className={`btn btn-danger btn-sm${deleteConfirmPending ? ' btn-confirm-pending' : ''}`} onClick={handleDeleteClick}>{deleteConfirmPending ? 'Confirm?' : 'Delete'}</button>
                 </div>
               </div>
               <div className="agent-detail-body">

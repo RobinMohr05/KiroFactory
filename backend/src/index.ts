@@ -6,6 +6,7 @@ import cors from "cors";
 import cookieParser from "cookie-parser";
 import { createServer } from "http";
 import path from "path";
+import fs from "fs";
 import { fileURLToPath } from "url";
 
 import { setupWebSocket } from "./websocket-handler.js";
@@ -181,6 +182,15 @@ async function start(): Promise<void> {
       port: PORT,
       msg: `Vibecode Heaven server running on http://localhost:${PORT}`,
     });
+
+    // Check if the React frontend build exists
+    const distIndex = path.join(__dirname, "../../frontend/dist/index.html");
+    if (!fs.existsSync(distIndex)) {
+      log.warn("frontend-dist-missing", {
+        component: "startup",
+        msg: "frontend/dist/index.html not found — serving legacy frontend/public/index.html as fallback. Run 'npm run build -w frontend' to build the React frontend.",
+      });
+    }
   });
 
   // ACA preflight: verify the managed identity can operate the worker job.

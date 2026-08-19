@@ -1,8 +1,26 @@
 import { useRef, useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { apiFetch } from '../utils/api';
+import { useConfirmAction } from '../hooks/useConfirmAction';
 import { TabModal } from './TabModal';
 import type { Tab } from '../types';
+
+function TabDeleteButton({ tab, onDelete }: { tab: Tab; onDelete: (id: number) => void }) {
+  const { isPending, handleClick } = useConfirmAction(() => onDelete(tab.id));
+  return (
+    <button
+      className={`board-item-action board-item-delete${isPending ? ' btn-confirm-pending' : ''}`}
+      title={isPending ? 'Confirm?' : 'Delete tab'}
+      aria-label={isPending ? 'Confirm delete?' : `Delete tab ${tab.name}`}
+      onClick={(e) => { e.stopPropagation(); handleClick(e); }}
+    >
+      {isPending
+        ? <span style={{ fontSize: '9px' }}>Confirm?</span>
+        : <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>
+      }
+    </button>
+  );
+}
 
 export function TabBar() {
   const { tabs, currentTabId, setCurrentTabId, setTabs, fetchTabs, fetchTabTasks } = useApp();
@@ -111,14 +129,7 @@ export function TabBar() {
                 >
                   <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M8.5 1.5l2 2-7 7H1.5V8.5l7-7z" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
                 </button>
-                <button
-                  className="board-item-action board-item-delete"
-                  title="Delete tab"
-                  aria-label={`Delete tab ${tab.name}`}
-                  onClick={(e) => { e.stopPropagation(); handleDelete(tab.id); }}
-                >
-                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>
-                </button>
+                <TabDeleteButton tab={tab} onDelete={handleDelete} />
               </span>
             </li>
           ))}

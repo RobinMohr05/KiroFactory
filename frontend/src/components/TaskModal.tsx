@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useApp } from '../context/AppContext';
 import { apiFetch } from '../utils/api';
+import { useConfirmAction } from '../hooks/useConfirmAction';
 import type { Task } from '../types';
 
 interface TaskModalProps {
@@ -172,6 +173,8 @@ export function TaskModal({ task, onClose }: TaskModalProps) {
     }
   };
 
+  const { isPending: deleteConfirmPending, handleClick: handleDeleteClick } = useConfirmAction(handleDelete);
+
   return (
     <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="modal modal-wide" role="dialog" aria-labelledby="modalTitle">
@@ -296,7 +299,7 @@ export function TaskModal({ task, onClose }: TaskModalProps) {
 
           {error && <div className="form-error">{error}</div>}
           <div className="form-actions">
-            {isEditing && <button type="button" className="btn btn-danger" onClick={handleDelete}>Delete</button>}
+            {isEditing && <button type="button" className={`btn btn-danger${deleteConfirmPending ? ' btn-confirm-pending' : ''}`} onClick={handleDeleteClick}>{deleteConfirmPending ? 'Confirm?' : 'Delete'}</button>}
             <div className="form-actions-right">
               <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
               <button type="submit" className="btn btn-primary">{isEditing ? 'Update Task' : 'Create Task'}</button>
