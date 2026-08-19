@@ -17,7 +17,7 @@ is needed during execution.
 
 ## The pipeline is stage-chained, not fixed
 
-Each **agent** (a DB row in the `agents` table, `backend/src/db/agents.ts`) declares four fields
+Each **agent** (a `:Agent` node in Neo4j, `backend/src/db/agents.ts`) declares four fields
 that make it a pipeline *stage*:
 
 | Field | Meaning |
@@ -36,7 +36,7 @@ DB row the session is running.
 
 The production pipeline (seeded by `backend/scripts/seed-pipeline-agents.ts`) chains three agents
 across a 7-column board (`todo → in-progress → developed → in-code-review → reviewed → in-qa →
-done`, see `backend/sql/schema.sql` and migration "Upgrade 22" in `backend/src/db/migrate.ts`):
+done`, see constraints in `backend/src/db/migrate.ts`):
 
 ```
 ┌────────────────┐  resolveState       ┌─────────────────────┐  resolveState      ┌──────────────────────┐
@@ -61,25 +61,20 @@ PR — it only reads the diff and posts comments.
 ## 1. Claim (atomic, concurrent-safe)
 
 `claimTask(taskId?, tabIds?, claimState, workingState)` in `backend/src/agent/task-claimer.ts`
-runs inside a SQL transaction using row-level locking:
+uses a two-step CAS (compare-and-swap) retry loop against Neo4j:
 
-```sql
-UPDATE tasks SET state = @workingState, updated_at = GETUTCDATE()
-OUTPUT INSERTED.*
-WHERE id = (
-  SELECT TOP 1 id FROM tasks WITH (UPDLOCK, READPAST)
-  WHERE state = @claimState
-  ORDER BY priority ASC,
-    CASE origin WHEN 'user' THEN 0 WHEN 'user-assisted' THEN 1 WHEN 'ai' THEN 2 ELSE 3 END ASC,
-    created_at ASC
-)
-```
+1. A read query fetches up to 20 candidate `:Task` node IDs ordered by `priority ASC`,
+   `originRank ASC` (user > user-assisted > ai > else), `createdAt ASC` — excluding tasks
+   blocked by incomplete `[:DEPENDS_ON]` dependencies, and excluding tasks whose `groupId`
+   matches another task already in `workingState`.
+2. Each candidate is attempted in order via `attemptClaim()` — its own managed write
+   transaction. The Cypher forces a write lock unconditionally first (`SET t._touch = true`),
+   then re-checks `state = claimState` under the lock, then conditionally sets
+   `state = workingState` via `FOREACH(CASE...)`. First success wins; losers move to the next
+   candidate.
 
-- **UPDLOCK** locks the selected row for the transaction.
-- **READPAST** makes any other concurrent claimer skip that locked row instead of waiting —
-  so N sessions claiming simultaneously each get a distinct task with no contention or retries.
-- If the session has `tabIds` set, the query adds a `task_tabs` join so it only claims tasks
-  belonging to its assigned board(s); otherwise any board is eligible.
+- If the session has `tabIds` set, the candidate query adds a `[:IN_TAB]` relationship filter
+  so it only claims tasks belonging to its assigned tab(s); otherwise any tab is eligible.
 - `claimState`/`workingState` are parameters (not hardcoded), which is what lets each pipeline
   stage claim from and write to different columns.
 
@@ -188,7 +183,8 @@ on an environment/credential problem it can't fix by retrying.
 
 ## Concurrency & recovery
 
-- UPDLOCK + READPAST guarantees no two sessions claim the same task, with no deadlocks.
+- The CAS retry loop with lock-forcing writes guarantees no two sessions claim the same task
+  (verified by a dedicated concurrency integration test against the real AuraDB instance).
 - If the orchestrator process crashes mid-task, `resetOrphanedTasks()` (called once on startup,
   `session-manager.ts`'s `initSessions()`) resets any task stuck in `"in-progress"` back to
   `"todo"` so it can be retried. This is a blunt, non-stage-aware safety net — it only recovers
