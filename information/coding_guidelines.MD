@@ -1,6 +1,6 @@
 # Research: Coding Guidelines, Workflows, Best Practices & Security
 
-Last Updated: 2026-08-19 (expanded with sections 25–29: AI guardrails, concurrency, incidents, tech debt, schema evolution)
+Last Updated: 2026-08-19 (expanded with sections 30–31: code ownership, data privacy)
 
 This document collects coding guidelines, workflows, security practices, and quality standards relevant to the KiroFactory project — a TypeScript/Node.js monorepo with Express backend, vanilla JS frontend, Neo4j database, WebSocket real-time communication, Docker containers on Azure Container Apps, and autonomous AI agent orchestration.
 
@@ -42,6 +42,8 @@ Each section is rated for relevance to this project:
 27. [Incident Response & Postmortems](#27-incident-response--postmortems)
 28. [Technical Debt Management](#28-technical-debt-management)
 29. [Database Schema Evolution](#29-database-schema-evolution)
+30. [Code Ownership & Knowledge Sharing](#30-code-ownership--knowledge-sharing)
+31. [Data Privacy & PII Handling](#31-data-privacy--pii-handling)
 
 ---
 
@@ -1445,6 +1447,130 @@ Phase 4: Remove old property/index (cleanup)
 
 ---
 
+## 30. Code Ownership & Knowledge Sharing
+
+**Relevance: HIGH**
+
+### Sources
+- https://www.aviator.co/blog/code-ownership-using-codeowners-strategically/
+- https://crashoverride.com/resources/knowledge-base/code-ownership/code-ownership-coding-agents
+- https://www.technical-leaders.com/post/collective-code-ownership-best-practices
+
+### Why This Matters for AI-Agent-Modified Codebases
+
+When autonomous agents modify code, ownership becomes ambiguous. The agent wrote it, but which human is accountable for it in production? Without explicit ownership, agent-generated code becomes "nobody's code" — unreviewed, unmaintained, and risky.
+
+### Code Ownership Models
+
+| Model | Pros | Cons | Fit for this project |
+|-------|------|------|---------------------|
+| **Strong ownership** (person owns module) | Clear accountability, deep expertise | Bottlenecks, bus factor = 1 | Not ideal — too small a team |
+| **Weak ownership** (person is primary, others can modify) | Balance of accountability + flexibility | Can drift toward no ownership | ✓ Good fit |
+| **Collective ownership** (everyone owns everything) | No bottlenecks, broad knowledge | Diffusion of responsibility | Risk with AI agents |
+
+### CODEOWNERS File (GitHub)
+
+```
+# .github/CODEOWNERS
+# These owners will be automatically requested for review on PRs
+
+# Core orchestration — most critical paths
+backend/src/session-manager.ts    @owner
+backend/src/agent/                @owner
+worker/                           @owner
+
+# Infrastructure
+infra/                            @owner
+Dockerfile                        @owner
+worker/Dockerfile                 @owner
+
+# Database layer
+backend/src/db/                   @owner
+
+# Frontend
+frontend/                         @owner
+```
+
+**For this project:** Since it's primarily single-developer with AI agents doing the implementation, CODEOWNERS serves as:
+1. A signal to the review agent about which files are high-risk
+2. A reminder for the human to review certain critical paths more carefully
+3. Documentation of who to ask when something breaks
+
+### Reducing Bus Factor
+
+- **Architecture documentation** — `ARCHITECTURE.md` already exists (good)
+- **Steering files** — `.kiro/steering/` documents system behavior (good)
+- **Self-documenting code** — prefer clear names and structure over comments
+- **Decision records** — document WHY, not just WHAT (commit messages, PR descriptions)
+- **No tribal knowledge** — if it's only in your head, it doesn't exist for the agents or future contributors
+
+### Agent Authorship
+
+- Agent-created PRs should attribute the task that spawned them
+- The human reviewer is the owner of merged agent code — not the agent
+- Inspector agents (code-reviewer, qa) provide accountability checks
+- If no human reviewed it, treat it as higher-risk in production
+
+---
+
+## 31. Data Privacy & PII Handling
+
+**Relevance: MEDIUM**
+
+### Sources
+- https://gist.github.com/ryuno2525/a361a2c60a6c1f46357f71a64d563a0c
+- https://reintech.io/blog/gdpr-compliance-for-developers-technical-implementation-guide
+- https://guidelines.ryanharrison.co.uk/domain/data-privacy
+
+### What PII Exists in This System
+
+| Data | Where stored | Risk level |
+|------|-------------|------------|
+| User email addresses | `users` table | Medium |
+| Hashed passwords | `users` table | Medium (hashed) |
+| Git PATs (Personal Access Tokens) | `credentials` table (encrypted) | **High** |
+| Repository URLs | `tabs` table | Low |
+| Task descriptions | `tasks` table | Low |
+| Agent session output | In-memory + logs | Medium (may contain repo code) |
+
+### Key Principles
+
+**Data Minimization:**
+- Only collect what's needed for the feature to work
+- Don't log full request bodies — they may contain credentials or PII
+- Agent output logs should not persist sensitive file contents indefinitely
+
+**Encryption:**
+- Credentials at rest: already encrypted with `ENCRYPTION_KEY` (good)
+- Transport: HTTPS/WSS in production (TLS)
+- Database connection: encrypted connection to Neo4j AuraDB
+
+**Access Control:**
+- Users can only see/modify their own data (enforced at route level)
+- Agent sessions operate on behalf of users — respect the same boundaries
+- Admin routes are separate and protected
+
+**Retention & Deletion:**
+- Define how long session output/logs are kept
+- Provide ability to delete user data on request (GDPR right to erasure)
+- When a user account is deleted, cascade to their tasks, credentials, sessions
+
+**Logging Safety:**
+- Never log: passwords, tokens, PATs, encryption keys, full request bodies with auth headers
+- Reference secrets by key name, never by value
+- Redact email addresses in logs if possible (or use user IDs instead)
+- Agent output forwarded to logs may contain code — ensure it's not publicly accessible
+
+### For This Project Specifically
+
+- The `ENCRYPTION_KEY` env var protects stored credentials — never log its value
+- Git PATs are write-only from the browser's perspective (correct — already implemented)
+- Session output (streamed via WebSocket) lives in-memory only — acceptable for now
+- Azure Log Analytics stores container logs — ensure proper access controls on the workspace
+- If the service were to be offered to external users, a full GDPR data processing agreement and privacy policy would be needed
+
+---
+
 ## Summary: Priority Order for This Project
 
 The following are the most impactful areas to enforce first, given the project's current state (autonomous AI agents modifying code, production deployments, multi-stage pipeline):
@@ -1462,10 +1588,12 @@ The following are the most impactful areas to enforce first, given the project's
 11. **Observability & monitoring** (health checks, agent metrics, tracing across worker sessions)
 12. **WebSocket security** (authenticated connections, message validation)
 13. **Testing strategy** (confidence that agent-created code works)
-14. **Rate limiting & DoS prevention** (protect the orchestrator API)
-15. **Technical debt management** (AI agents generate 1.7x more issues — actively manage quality)
-16. **Configuration management** (validate env vars on startup, fail fast on missing config)
-17. **Incident response & postmortems** (structured learning from failures like the `env: []` bug)
-18. **Database schema evolution** (safe migrations, backward compatibility)
-19. **Accessibility** (keyboard/screen reader basics for the web UI)
-20. **Feature flags** (gradual agent strategy rollouts)
+14. **Code ownership** (clear accountability for agent-authored code, CODEOWNERS for critical paths)
+15. **Rate limiting & DoS prevention** (protect the orchestrator API)
+16. **Technical debt management** (AI agents generate 1.7x more issues — actively manage quality)
+17. **Configuration management** (validate env vars on startup, fail fast on missing config)
+18. **Data privacy & PII handling** (encrypted credentials, log safety, retention policies)
+19. **Incident response & postmortems** (structured learning from failures like the `env: []` bug)
+20. **Database schema evolution** (safe migrations, backward compatibility)
+21. **Accessibility** (keyboard/screen reader basics for the web UI)
+22. **Feature flags** (gradual agent strategy rollouts)
