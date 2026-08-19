@@ -150,13 +150,28 @@ async function completeGitHubPr(owner, repo, number, branch) {
       const result = await githubMergePr(owner, repo, number, method);
 
       if (result.success) {
-        // Merge succeeded — delete the branch
+        // Merge succeeded — attempt to delete the branch
         if (branch) {
-          await githubDeleteBranch(owner, repo, branch);
+          try {
+            const deleteResult = await githubDeleteBranch(owner, repo, branch);
+            const branchMsg = deleteResult.success
+              ? `Branch "${branch}" deleted.`
+              : `Branch "${branch}" could not be deleted (HTTP ${deleteResult.status}).`;
+            return {
+              success: true,
+              message: `PR #${number} merged successfully (method: ${method}). ${branchMsg}`,
+            };
+          } catch (err) {
+            // Branch deletion failed (network error, etc.) but merge already succeeded
+            return {
+              success: true,
+              message: `PR #${number} merged successfully (method: ${method}). Branch "${branch}" could not be deleted (${err?.message || "unknown error"}).`,
+            };
+          }
         }
         return {
           success: true,
-          message: `PR #${number} merged successfully (method: ${method}). Branch "${branch}" deleted.`,
+          message: `PR #${number} merged successfully (method: ${method}).`,
         };
       }
 
