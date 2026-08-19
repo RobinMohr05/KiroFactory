@@ -2953,6 +2953,10 @@ textarea:focus {
   max-width: 100%;
 }
 
+.task-planner-attachment[hidden] {
+  display: none;
+}
+
 .task-planner-attachment::before {
   content: "🖼️";
   font-size: 0.9rem;
