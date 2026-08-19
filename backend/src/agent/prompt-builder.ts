@@ -40,9 +40,28 @@ Once all comments are addressed and resolved, the implementation will be re-revi
 `
     : "";
 
+  // Branch setup section: when the task has a branch name, instruct the agent to
+  // manage its own branch (create or checkout+merge). This gives the editor agent
+  // control over branch state, enabling intelligent conflict resolution.
+  const branchSetupSection = task.branch
+    ? `
+## BRANCH SETUP
+
+Your task branch is: \`${task.branch}\`
+Base branch: \`develop\` (or detect with \`git symbolic-ref refs/remotes/origin/HEAD\`)
+
+Before starting any work:
+1. Check if the branch already exists remotely: \`git ls-remote --heads origin ${task.branch}\`
+2. If it exists: \`git checkout ${task.branch}\` then \`git merge origin/develop\` — if there are merge conflicts, resolve them intelligently by reading both sides and choosing the correct resolution, then commit the merge.
+3. If it does NOT exist: \`git checkout -b ${task.branch}\` (creates a new branch from your current position, which is the latest develop).
+
+Always ensure you're on \`${task.branch}\` before making any changes for the task.
+`
+    : "";
+
   return `You are the Developer Implementation Agent. You have been ASSIGNED a specific task.
 Do NOT pick a task yourself — this task has already been selected and claimed for you.
-${reworkSection}
+${branchSetupSection}${reworkSection}
 ## YOUR ASSIGNED TASK
 
 **Task ID:** ${task.id}
@@ -72,8 +91,9 @@ ${task.pullRequestUrl
 - Do NOT introduce unrelated refactoring or improvements beyond what the task requires.
 - Do NOT modify test files unless the task specifically asks for test changes.
 - Do NOT run git commit, git push, or create pull requests. The orchestrator handles git operations automatically after your work is complete.
-- Do NOT run any git commands at all (no git add, commit, push, branch, checkout, pull request). The orchestrator manages ALL git operations.
-- Do NOT create or switch branches. You are already on the correct branch.
+${task.branch
+  ? "- You MUST run the git commands described in the BRANCH SETUP section above (checkout, merge, ls-remote). Do NOT run git commit, git push, or create pull requests — those are still handled by the orchestrator."
+  : "- Do NOT run any git commands at all (no git add, commit, push, branch, checkout, pull request). The orchestrator manages ALL git operations.\n- Do NOT create or switch branches. You are already on the correct branch."}
 
 ## WORKING DIRECTORY
 

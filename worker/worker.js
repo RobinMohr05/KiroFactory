@@ -2467,90 +2467,75 @@ function handlePrompt(text, taskMeta) {
     refreshDevBranch();
 
     try {
-      // If the task already has a branch from a previous pipeline stage,
-      // fetch and check it out instead of creating a new one.
-      if (taskMeta.branch) {
-        resetWorkingTree();
-        execFileArgs("git", ["fetch", authRemoteUrl || "origin", taskMeta.branch], { cwd: WORKSPACE });
-        // checkout -B <branch> FETCH_HEAD — not a plain `checkout <branch>` and
-        // NOT `origin/<branch>` — for two separate reasons:
-        //
-        // 1. This worker container is reused across many claimed tasks in a loop
-        //    (see refreshDevBranch()'s doc comment for the same rationale). If
-        //    this exact branch was already checked out locally earlier in the
-        //    container's lifetime (e.g. the code-reviewer-agent reviewing the same
-        //    task twice across a review → rework → re-review cycle), a plain
-        //    `checkout` is a no-op on content: it switches to the existing local
-        //    ref as-is and never picks up commits pushed in between. `-B`
-        //    force-resets the local branch every time, so we always see the
-        //    latest state.
-        // 2. FETCH_HEAD, not refs/remotes/origin/<branch> — fetching from a raw
-        //    authenticated URL (not the "origin" remote name, same reasoning as
-        //    syncPersistentBranch()/setupPersistentBranch() above) only updates
-        //    FETCH_HEAD. `origin/<branch>` is whatever it was at container clone
-        //    time (or an even earlier fetch) and is NEVER refreshed by this fetch
-        //    — using it here silently reset the branch to a stale snapshot that
-        //    predated commits already pushed by an earlier round on this same
-        //    task, so the next round's commit landed on a stale base and its
-        //    push was rejected as non-fast-forward (the task then got wrongly
-        //    classified as an unretryable credential/permission failure).
-        execFileArgs("git", ["checkout", "-B", taskMeta.branch, "FETCH_HEAD"], { cwd: WORKSPACE });
-        currentBranchName = taskMeta.branch;
-        sendOutput(`Checked out existing branch: ${taskMeta.branch} (reset to origin's latest)`, "system");
-      } else {
-        // taskMeta.branch is empty — this normally means no prior stage has
-        // pushed anything yet. But the DB's branch column can also be lost
-        // independently of the actual git history (e.g. an editor's
-        // no_action_needed resolution wiping it — see task-claimer.ts
-        // resolveTask's preserveBranchInfo). createTaskBranch() does
-        // `checkout -B <name> DEV_BRANCH`, which — if a branch with that
-        // deterministic name already exists on the remote — silently
-        // discards its real commits and leaves an empty diff. An inspector
-        // would then "review" that empty diff and wrongly report
-        // no_action_needed / no issues found on code it never saw.
-        //
-        // So: probe the remote for the deterministic branch name first. If
-        // it exists, treat it exactly like the taskMeta.branch-provided path
-        // above instead of fabricating a fresh one from DEV_BRANCH.
-        const deterministicBranch = buildBranchName(taskMeta.type || "task", taskMeta.id, taskMeta.title);
-        const remoteRef = execFileArgs(
-          "git",
-          ["ls-remote", "--heads", authRemoteUrl || "origin", deterministicBranch],
-          { cwd: WORKSPACE }
-        );
+      if (AGENT_KIND === "editor") {
+        // Editor-kind agents handle their own branch management via prompt
+        // instructions (BRANCH SETUP section in buildDevPrompt). The worker
+        // just ensures all remote refs are available and sets currentBranchName
+        // so commitAndPush() knows where to push after the prompt finishes.
+        // The agent is expected to leave the working tree on the correct branch.
+        execFileArgs("git", ["fetch", authRemoteUrl || "origin"], { cwd: WORKSPACE });
 
-        if (remoteRef) {
-          resetWorkingTree();
-          execFileArgs("git", ["fetch", authRemoteUrl || "origin", deterministicBranch], { cwd: WORKSPACE });
-          // -B against FETCH_HEAD, same reasoning as the taskMeta.branch path
-          // above: force the local ref to match the just-fetched remote tip
-          // rather than reusing whatever was checked out locally before —
-          // and NOT origin/<branch>, which this raw-URL fetch never updates.
-          execFileArgs("git", ["checkout", "-B", deterministicBranch, "FETCH_HEAD"], { cwd: WORKSPACE });
-          currentBranchName = deterministicBranch;
-          sendOutput(
-            `Task had no branch on record, but ${deterministicBranch} already exists on the remote — ` +
-            `checked it out instead of creating a fresh one (recovered from a stale/lost DB branch pointer).`,
-            "system"
-          );
-          logInfo("Recovered existing remote branch for task with no DB branch pointer", {
-            branch: deterministicBranch,
-            taskId: taskMeta.id,
-          });
-        } else if (AGENT_KIND === "inspector") {
-          // An inspector with no branch to review and no recoverable remote
-          // branch has nothing to inspect. Do NOT fabricate one — that would
-          // manufacture an empty diff for the agent to "approve". Surface
-          // this as an explicit condition instead.
-          sendOutput(
-            `No branch found for task ${taskMeta.id} (checked DB and remote ${deterministicBranch}) — ` +
-            "nothing to review yet.",
-            "stderr"
-          );
-          logError("Inspector agent has no branch to review", { taskId: taskMeta.id, deterministicBranch });
-          currentBranchName = null;
+        if (taskMeta.branch) {
+          currentBranchName = taskMeta.branch;
         } else {
-          currentBranchName = createTaskBranch(taskMeta);
+          // Compute the deterministic branch name so commitAndPush() has
+          // a target, and the agent prompt receives it via taskMeta.branch
+          // (which the orchestrator sends). If taskMeta.branch is empty, the
+          // prompt's BRANCH SETUP section won't render — the agent won't know
+          // to create a branch. Set currentBranchName to the deterministic name
+          // here so the post-prompt push still targets the right ref.
+          currentBranchName = buildBranchName(taskMeta.type || "task", taskMeta.id, taskMeta.title);
+        }
+        sendOutput(
+          `Editor agent will manage branch: ${currentBranchName} (worker stays on ${DEV_BRANCH})`,
+          "system"
+        );
+        logInfo("Editor-kind: skipping branch checkout — agent handles branch setup", {
+          branch: currentBranchName,
+          taskId: taskMeta.id,
+        });
+      } else {
+        // Inspector-kind: checkout the task branch as before (they need to be
+        // on it for git diff). This is the unchanged original logic.
+        if (taskMeta.branch) {
+          resetWorkingTree();
+          execFileArgs("git", ["fetch", authRemoteUrl || "origin", taskMeta.branch], { cwd: WORKSPACE });
+          execFileArgs("git", ["checkout", "-B", taskMeta.branch, "FETCH_HEAD"], { cwd: WORKSPACE });
+          currentBranchName = taskMeta.branch;
+          sendOutput(`Checked out existing branch: ${taskMeta.branch} (reset to origin's latest)`, "system");
+        } else {
+          const deterministicBranch = buildBranchName(taskMeta.type || "task", taskMeta.id, taskMeta.title);
+          const remoteRef = execFileArgs(
+            "git",
+            ["ls-remote", "--heads", authRemoteUrl || "origin", deterministicBranch],
+            { cwd: WORKSPACE }
+          );
+
+          if (remoteRef) {
+            resetWorkingTree();
+            execFileArgs("git", ["fetch", authRemoteUrl || "origin", deterministicBranch], { cwd: WORKSPACE });
+            execFileArgs("git", ["checkout", "-B", deterministicBranch, "FETCH_HEAD"], { cwd: WORKSPACE });
+            currentBranchName = deterministicBranch;
+            sendOutput(
+              `Task had no branch on record, but ${deterministicBranch} already exists on the remote — ` +
+              `checked it out instead of creating a fresh one (recovered from a stale/lost DB branch pointer).`,
+              "system"
+            );
+            logInfo("Recovered existing remote branch for task with no DB branch pointer", {
+              branch: deterministicBranch,
+              taskId: taskMeta.id,
+            });
+          } else {
+            // An inspector with no branch to review and no recoverable remote
+            // branch has nothing to inspect.
+            sendOutput(
+              `No branch found for task ${taskMeta.id} (checked DB and remote ${deterministicBranch}) — ` +
+              "nothing to review yet.",
+              "stderr"
+            );
+            logError("Inspector agent has no branch to review", { taskId: taskMeta.id, deterministicBranch });
+            currentBranchName = null;
+          }
         }
       }
     } catch (err) {
