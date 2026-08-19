@@ -52,7 +52,7 @@ Base branch: \`develop\` (or detect with \`git symbolic-ref refs/remotes/origin/
 
 Before starting any work:
 1. Check if the branch already exists remotely: \`git ls-remote --heads origin ${task.branch}\`
-2. If it exists: \`git checkout ${task.branch}\` then \`git merge origin/develop\` — if there are merge conflicts, resolve them intelligently by reading both sides and choosing the correct resolution, then commit the merge.
+2. If it exists: \`git fetch origin ${task.branch}\` then \`git checkout -B ${task.branch} origin/${task.branch}\` (this ensures you have the latest remote version, even if a stale local branch exists from a previous attempt in this container). Then run \`git merge origin/develop\` — if there are merge conflicts, resolve them intelligently by reading both sides and choosing the correct resolution, then commit the merge.
 3. If it does NOT exist: \`git checkout -B ${task.branch}\` (creates or resets the branch from your current position, which is the latest develop).
 
 Always ensure you're on \`${task.branch}\` before making any changes for the task.
@@ -91,7 +91,7 @@ ${task.pullRequestUrl
 - Do NOT introduce unrelated refactoring or improvements beyond what the task requires.
 - Do NOT modify test files unless the task specifically asks for test changes.
 ${task.branch
-  ? "- You MUST run the git commands described in the BRANCH SETUP section above (checkout, merge, ls-remote, and committing merge conflict resolutions). Do NOT run git commit for your own implementation work, git push, or create pull requests — those are still handled by the orchestrator."
+  ? "- You MUST run the git commands described in the BRANCH SETUP section above (ls-remote, fetch, checkout, merge). If `git merge origin/develop` results in conflicts, resolve them and run `git add` + `git commit` to finalize the merge — this is the ONLY situation where you should commit. Do NOT run `git commit` for your own implementation work, `git push`, or create pull requests — those are handled by the orchestrator after your turn ends."
   : "- Do NOT run git commit, git push, or create pull requests. The orchestrator handles git operations automatically after your work is complete.\n- Do NOT run any git commands at all (no git add, commit, push, branch, checkout, pull request). The orchestrator manages ALL git operations.\n- Do NOT create or switch branches. You are already on the correct branch."}
 
 ## WORKING DIRECTORY

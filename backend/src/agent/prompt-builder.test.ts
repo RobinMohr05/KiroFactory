@@ -88,7 +88,8 @@ describe("buildDevPrompt", () => {
     it("includes instructions to checkout and merge develop if branch exists", () => {
       const task = makeTask({ branch: "feature/#100_test-task" });
       const prompt = buildDevPrompt(task, "/workspace");
-      expect(prompt).toContain("git checkout feature/#100_test-task");
+      expect(prompt).toContain("git fetch origin feature/#100_test-task");
+      expect(prompt).toContain("git checkout -B feature/#100_test-task origin/feature/#100_test-task");
       expect(prompt).toContain("git merge origin/develop");
     });
 
@@ -115,8 +116,8 @@ describe("buildDevPrompt", () => {
     it("still tells the agent not to commit or push (orchestrator handles that)", () => {
       const task = makeTask({ branch: "feature/#100_test-task" });
       const prompt = buildDevPrompt(task, "/workspace");
-      // Should still prohibit commit/push
-      expect(prompt).toContain("Do NOT run git commit");
+      // Should still prohibit commit/push for implementation work
+      expect(prompt).toContain("Do NOT run `git commit` for your own implementation work");
       expect(prompt).toContain("git push");
       expect(prompt).toContain("orchestrator");
     });

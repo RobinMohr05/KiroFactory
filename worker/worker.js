@@ -817,6 +817,40 @@ function commitAndPush() {
     return { pushed: false, hasChanges: false }; // not a git workspace
   }
   if (!status) {
+    // No uncommitted changes — but the agent may have committed work itself
+    // (e.g. a merge conflict resolution from the BRANCH SETUP instructions).
+    // Check if there are local commits ahead of the remote that need pushing.
+    const branchName = currentBranchName || `vibecode-heaven/${SESSION_ID}`;
+    let localAhead = false;
+    try {
+      // Check if we have commits that the remote doesn't — git rev-list will
+      // output commit hashes if local is ahead, empty if not.
+      const ahead = exec(`git rev-list origin/${branchName}..HEAD 2>/dev/null || echo ""`, { cwd: WORKSPACE });
+      localAhead = Boolean(ahead.trim());
+    } catch {
+      // If origin/branchName doesn't exist yet, check if we're NOT on the
+      // base branch (develop/main) — any commits on a new task branch are
+      // pushable even without a remote tracking ref.
+      try {
+        const currentBranch = exec("git rev-parse --abbrev-ref HEAD", { cwd: WORKSPACE });
+        localAhead = currentBranch === branchName;
+      } catch { /* noop */ }
+    }
+
+    if (localAhead) {
+      // There are already-committed changes (e.g. merge resolutions) to push.
+      sendOutput(`No uncommitted changes, but local branch has commits to push.`, "system");
+      logInfo("No uncommitted changes, pushing existing local commits", { branch: branchName });
+      const pushResult = pushWithRebaseRetry(branchName);
+      if (!pushResult.pushed) {
+        logError("git push of existing commits failed", { branchName, error: pushResult.pushError });
+        sendOutput(`Push of existing commits to ${branchName} failed: ${pushResult.pushError}`, "stderr");
+        return { pushed: false, hasChanges: true, committed: true, branchName, pushError: pushResult.pushError };
+      }
+      sendOutput(`Pushed existing commits on branch ${branchName}`, "system");
+      return { pushed: true, hasChanges: true, committed: true, branchName };
+    }
+
     // Report the branch and HEAD too, so "the agent produced nothing" can be
     // told apart from "we were on the wrong branch" or "the repo was reset".
     let branch = "?";
