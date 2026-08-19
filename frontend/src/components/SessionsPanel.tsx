@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useApp } from '../context/AppContext';
 import { SessionModal } from './SessionModal';
 import { apiFetch } from '../utils/api';
@@ -10,7 +10,6 @@ export function SessionsPanel() {
   const [output, setOutput] = useState<OutputEntry[]>([]);
   const [autoScroll, setAutoScroll] = useState(true);
   const [activity, setActivity] = useState<SessionActivity | null>(null);
-  const [showSettingsEditor, setShowSettingsEditor] = useState(false);
   const outputRef = useRef<HTMLDivElement>(null);
 
   // Filter sessions for current tab

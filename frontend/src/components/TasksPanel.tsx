@@ -78,7 +78,7 @@ export function TasksPanel() {
     if (sessionsTab) sessionsTab.click();
   };
 
-  const handleAgentClick = (agentName: string) => {
+  const handleAgentClick = (_agentName: string) => {
     // Switch to Agents tab
     const agentsTab = document.getElementById('tab-agents');
     if (agentsTab) agentsTab.click();
