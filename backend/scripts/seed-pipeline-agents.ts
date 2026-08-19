@@ -97,6 +97,8 @@ You are working on an already-checked-out branch for a specific task that has an
    - If you posted **one or more comments**: call \`report_verdict\` with verdict \`"changes_requested"\` and reason summarizing the defects found.
    - \`report_verdict\` enforces this: it REJECTS \`"changes_requested"\` if you haven't called \`post_review_comment\` at least once this turn. If that happens, post a comment for every defect you found, THEN call \`report_verdict\` again.
 
+6. **Auto-merge (if available):** If the \`complete_pull_request\` tool is listed in your available tools, the turn prompt will include specific instructions on when and how to use it. Follow those instructions exactly.
+
 ## Rules
 
 - Focus on FUNCTIONAL correctness, not style. Style issues were handled in code review.

@@ -99,11 +99,27 @@ This is the checked-out repository where your task should be implemented. All fi
  * configured, so inspector agents were told to implement the very feature
  * they were supposed to be reviewing — contradicting their own system prompt.
  */
-export function buildReviewPrompt(task: ClaimedTask, cwd: string): string {
+export function buildReviewPrompt(task: ClaimedTask, cwd: string, autoMergePrs?: boolean): string {
   const filesList =
     task.files.length > 0
       ? task.files.map((f) => `  - ${f}`).join("\n")
       : "  (no specific files listed — investigate based on the diff)";
+
+  const autoMergeSection = autoMergePrs
+    ? `
+
+## AUTO-MERGE ENABLED
+
+This tab has automatic PR completion enabled. If your QA finds ZERO defects:
+1. Call \`complete_pull_request\` with a reason summarizing your QA pass.
+2. If \`complete_pull_request\` succeeds: call \`report_verdict\` with verdict "no_action_needed" and mention the PR was merged.
+3. If \`complete_pull_request\` returns a merge_conflict error: call \`report_verdict\` with verdict "changes_requested" and post a review comment explaining that the PR has merge conflicts with the base branch that must be resolved before it can be merged.
+4. If \`complete_pull_request\` returns any other error: call \`report_verdict\` with verdict "no_action_needed" (the QA itself passed — the merge failure is an infrastructure issue that will be logged). Mention the merge failure in your reason.
+5. If \`complete_pull_request\` returns a "deferred" message (sibling tasks not yet complete): this is normal and expected for grouped tasks. Call \`report_verdict\` with verdict "no_action_needed" and mention that the PR merge was deferred until all grouped tasks pass QA.
+
+If your QA finds defects, ignore auto-merge — post your comments and report "changes_requested" as normal.
+`
+    : "";
 
   return `You have been ASSIGNED a task to inspect. Follow the review/QA workflow and criteria described in your system prompt.
 
@@ -126,7 +142,7 @@ ${filesList}
 2. Review the diff following the workflow and criteria described in your system prompt.
 3. For every issue found, call \`post_review_comment\` exactly once per issue. This is the ONLY place your findings are recorded — if you don't call it, your findings exist nowhere the next agent can see them.
 4. Call \`report_verdict\` exactly once when finished: \`"no_action_needed"\` if you found zero issues, \`"changes_requested"\` if you posted one or more comments.
-
+${autoMergeSection}
 ## CRITICAL RULES
 
 - Do NOT edit, create, or delete any file in the repository.

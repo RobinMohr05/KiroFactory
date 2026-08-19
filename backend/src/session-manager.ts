@@ -1051,8 +1051,8 @@ async function getAgentStageStates(agentName: string): Promise<AgentStageStates>
  * implementation prompt regardless of kind — see buildReviewPrompt's doc
  * comment for the bug this fixes.
  */
-function buildTurnPrompt(kind: "editor" | "inspector", task: ClaimedTask, cwd: string): string {
-  return kind === "inspector" ? buildReviewPrompt(task, cwd) : buildDevPrompt(task, cwd);
+function buildTurnPrompt(kind: "editor" | "inspector", task: ClaimedTask, cwd: string, autoMergePrs?: boolean): string {
+  return kind === "inspector" ? buildReviewPrompt(task, cwd, autoMergePrs) : buildDevPrompt(task, cwd);
 }
 
 async function runLoopMode(
@@ -1163,7 +1163,16 @@ async function runLoopMode(
     }
 
     // Build and send the prompt (review prompt for inspector agents, dev prompt otherwise)
-    const prompt = buildTurnPrompt(stages.kind, task, meta.cwd);
+    // Look up autoMergePrs for inspector agents (needed for the auto-merge prompt section)
+    let autoMergePrs = false;
+    if (stages.kind === "inspector") {
+      try {
+        autoMergePrs = await getTaskAutoMergePrs(task.id);
+      } catch {
+        // Non-critical — default to no auto-merge
+      }
+    }
+    const prompt = buildTurnPrompt(stages.kind, task, meta.cwd, autoMergePrs);
 
     // Reset per-turn verdict tracking before each prompt
     managed.turnVerdict = null;
@@ -2283,7 +2292,6 @@ async function runLoopModeAca(
 
     setActivity(managed, { type: "working", detail: `Working on: ${task.title}` });
 
-    const prompt = buildTurnPrompt(stages.kind, task, ACA_WORKSPACE_PATH);
     let success = true;
     let promptResult: WorkerPromptResult = {};
     let failureReason = "";
@@ -2397,6 +2405,9 @@ async function runLoopModeAca(
         text: `Warning: could not look up autoMergePrs/group status: ${msg}`,
       });
     }
+
+    // Build the prompt after autoMergePrs is known (inspector agents need it for the auto-merge section)
+    const prompt = buildTurnPrompt(stages.kind, task, ACA_WORKSPACE_PATH, autoMergePrs);
 
     try {
       promptResult = await streamPromptAca(managed, prompt, { id: task.id, title: task.title, type: task.type, description: task.description, files: task.files, branch: task.branch, pullRequestUrl: task.pullRequestUrl, siblingTasks, autoMergePrs, allGroupTasksDone });
