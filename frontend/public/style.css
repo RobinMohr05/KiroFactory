@@ -2954,7 +2954,7 @@ textarea:focus {
 }
 
 .task-planner-attachment::before {
-  content: "📄";
+  content: "🖼️";
   font-size: 0.9rem;
   flex-shrink: 0;
 }
@@ -2983,6 +2983,11 @@ textarea:focus {
 .task-planner-attachment .attachment-remove:hover {
   color: var(--ta-rapid-red);
   background: rgba(210, 38, 48, 0.1);
+}
+
+.task-planner-attachment .attachment-remove:focus-visible {
+  outline: 2px solid var(--ta-mango);
+  outline-offset: 2px;
 }
 
 .btn-icon {
@@ -3081,6 +3086,14 @@ textarea:focus {
 
 [data-theme="dark"] .task-planner-input-row {
   background: var(--bg-tertiary);
+}
+
+[data-theme="dark"] .task-planner-input-row .btn-icon {
+  background: var(--bg-secondary);
+}
+
+[data-theme="dark"] .task-planner-input-row .btn-icon:hover {
+  background: var(--bg-primary);
 }
 
 [data-theme="dark"] .task-planner-actions {
