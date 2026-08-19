@@ -67,6 +67,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const wsHasConnectedOnce = useRef(false);
+  const currentTabIdRef = useRef<number | null>(null);
 
   // --- Auth check ---
   useEffect(() => {
@@ -163,6 +164,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (key && pendingOps.current.has(key)) { pendingOps.current.delete(key); return; }
         setTasks(prev => {
           if (prev.find(t => t.id === message.task.id)) return prev;
+          const belongsToTab = message.task.tabs?.some((b: { id: number }) => b.id === currentTabIdRef.current);
+          if (!belongsToTab) return prev;
           return [...prev, message.task];
         });
         break;
@@ -177,6 +180,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
             next[idx] = message.task;
             return next;
           }
+          // Only add if it belongs to the current tab
+          const belongsToTab = message.task.tabs?.some((b: { id: number }) => b.id === currentTabIdRef.current);
+          if (!belongsToTab) return prev;
           return [...prev, message.task];
         });
         break;
@@ -376,6 +382,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       fetchTabTasks(currentTabId);
     }
   }, [currentTabId, fetchTabTasks]);
+
+  // Keep currentTabIdRef in sync for WS message filtering
+  useEffect(() => {
+    currentTabIdRef.current = currentTabId;
+  }, [currentTabId]);
 
   const value: AppContextValue = {
     user,

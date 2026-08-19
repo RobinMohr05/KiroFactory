@@ -29,9 +29,9 @@ export function TasksPanel() {
     columnTasks.sort((a, b) => {
       switch (currentSort) {
         case 'updated':
-          return new Date(b.updatedAt || '0').getTime() - new Date(a.updatedAt || '0').getTime();
+          return new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime();
         case 'created':
-          return new Date(b.createdAt || '0').getTime() - new Date(a.createdAt || '0').getTime();
+          return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
         case 'priority':
         default:
           return (a.priority || 4) - (b.priority || 4);
