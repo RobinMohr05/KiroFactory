@@ -19,7 +19,7 @@ export function TabBar() {
 
   const handleDelete = async (id: number) => {
     try {
-      const res = await fetch(`/api/tabs/${id}`, { method: 'DELETE' });
+      const res = await apiFetch(`/api/tabs/${id}`, { method: 'DELETE' });
       if (!res.ok) return;
       setTabs(prev => prev.filter(b => b.id !== id));
       if (currentTabId === id) {
@@ -46,7 +46,7 @@ export function TabBar() {
     setEditingTabId(null);
     if (!newName || newName === tab.name) return;
     try {
-      const res = await fetch(`/api/tabs/${tab.id}`, {
+      const res = await apiFetch(`/api/tabs/${tab.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: newName, repositoryUrl: tab.repositoryUrl }),
@@ -65,7 +65,7 @@ export function TabBar() {
     setCreateValue('');
     if (!name) return;
     try {
-      const res = await fetch('/api/tabs', {
+      const res = await apiFetch('/api/tabs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name }),
@@ -103,7 +103,7 @@ export function TabBar() {
     setTabs(newTabs);
 
     try {
-      await fetch('/api/tabs/reorder', {
+      await apiFetch('/api/tabs/reorder', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tabIds: newTabs.map(b => b.id) }),

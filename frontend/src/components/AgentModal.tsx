@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useApp } from '../context/AppContext';
+import { apiFetch } from '../utils/api';
 import type { Agent } from '../types';
 
 interface AgentModalProps {
@@ -59,7 +60,7 @@ export function AgentModal({ agent, onClose }: AgentModalProps) {
 
     try {
       if (isEditing) {
-        const res = await fetch(`/api/agents/${agent.id}`, {
+        const res = await apiFetch(`/api/agents/${agent.id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(data),
@@ -68,7 +69,7 @@ export function AgentModal({ agent, onClose }: AgentModalProps) {
         const updated = await res.json();
         setAgents(prev => prev.map(a => a.id === agent.id ? updated : a));
       } else {
-        const res = await fetch('/api/agents', {
+        const res = await apiFetch('/api/agents', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(data),

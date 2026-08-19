@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
+import { apiFetch } from '../utils/api';
 import type { Agent } from '../types';
 
 interface SessionModalProps {
@@ -22,7 +23,7 @@ export function SessionModal({ onClose }: SessionModalProps) {
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch('/api/agents');
+        const res = await apiFetch('/api/agents');
         if (res.ok) setAgentsList(await res.json());
       } catch { /* ignore */ }
     })();
@@ -55,7 +56,7 @@ export function SessionModal({ onClose }: SessionModalProps) {
       };
       if (agent) body.agent = agent;
 
-      const res = await fetch('/api/sessions', {
+      const res = await apiFetch('/api/sessions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -69,7 +70,7 @@ export function SessionModal({ onClose }: SessionModalProps) {
       setActiveSessionId(session.id);
 
       // Auto-start
-      await fetch(`/api/sessions/${session.id}/start`, { method: 'POST' });
+      await apiFetch(`/api/sessions/${session.id}/start`, { method: 'POST' });
       onClose();
     } catch (e) {
       console.error('Failed to create session:', e);

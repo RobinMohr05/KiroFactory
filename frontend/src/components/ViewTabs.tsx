@@ -17,6 +17,7 @@ export function ViewTabs({ activeView, setActiveView }: ViewTabsProps) {
       <button
         className={`tab${activeView === 'boards' ? ' active' : ''}`}
         role="tab"
+        id="tab-boards"
         aria-selected={activeView === 'boards'}
         aria-controls="panel-boards"
         onClick={() => setActiveView('boards')}
@@ -26,6 +27,7 @@ export function ViewTabs({ activeView, setActiveView }: ViewTabsProps) {
       <button
         className={`tab${activeView === 'sessions' ? ' active' : ''}`}
         role="tab"
+        id="tab-sessions"
         aria-selected={activeView === 'sessions'}
         aria-controls="panel-sessions"
         onClick={() => setActiveView('sessions')}
@@ -35,6 +37,7 @@ export function ViewTabs({ activeView, setActiveView }: ViewTabsProps) {
       <button
         className={`tab${activeView === 'agents' ? ' active' : ''}`}
         role="tab"
+        id="tab-agents"
         aria-selected={activeView === 'agents'}
         aria-controls="panel-agents"
         onClick={() => setActiveView('agents')}
@@ -44,6 +47,7 @@ export function ViewTabs({ activeView, setActiveView }: ViewTabsProps) {
       <button
         className={`tab${activeView === 'errors' ? ' active' : ''}`}
         role="tab"
+        id="tab-errors"
         aria-selected={activeView === 'errors'}
         aria-controls="panel-errors"
         onClick={() => setActiveView('errors')}

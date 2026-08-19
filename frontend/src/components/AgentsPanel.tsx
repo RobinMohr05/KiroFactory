@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
+import { apiFetch } from '../utils/api';
 import { AgentModal } from './AgentModal';
 import type { Agent } from '../types';
 
@@ -9,19 +10,21 @@ export function AgentsPanel() {
   const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
 
   useEffect(() => {
-    fetchAgents().then(() => {
-      if (!activeAgentId && agents.length > 0) {
-        setActiveAgentId(agents[0].id);
-      }
-    });
+    fetchAgents();
   }, []);
+
+  useEffect(() => {
+    if (!activeAgentId && agents.length > 0) {
+      setActiveAgentId(agents[0].id);
+    }
+  }, [agents, activeAgentId, setActiveAgentId]);
 
   const activeAgent = agents.find(a => a.id === activeAgentId);
 
   const handleDelete = async () => {
     if (!activeAgent) return;
     try {
-      const res = await fetch(`/api/agents/${activeAgent.id}`, { method: 'DELETE' });
+      const res = await apiFetch(`/api/agents/${activeAgent.id}`, { method: 'DELETE' });
       if (!res.ok) return;
       setAgents(prev => prev.filter(a => a.id !== activeAgent.id));
       setActiveAgentId(null);

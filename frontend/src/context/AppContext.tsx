@@ -14,6 +14,8 @@ interface AppState {
   activeSessionId: number | null;
   activeAgentId: number | null;
   currentSort: 'priority' | 'updated' | 'created';
+  boardSessions: { id: number; name: string; agent?: string; status: string }[];
+  boardAgents: string[];
 }
 
 interface AppContextValue extends AppState {
@@ -55,6 +57,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [activeSessionId, setActiveSessionId] = useState<number | null>(null);
   const [activeAgentId, setActiveAgentId] = useState<number | null>(null);
   const [currentSort, setCurrentSort] = useState<'priority' | 'updated' | 'created'>('priority');
+  const [boardSessions, setBoardSessions] = useState<{ id: number; name: string; agent?: string; status: string }[]>([]);
+  const [boardAgents, setBoardAgents] = useState<string[]>([]);
 
   const pendingOps = useRef<Set<string>>(new Set());
   const wsRef = useRef<WebSocket | null>(null);
@@ -87,20 +91,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!res.ok) return;
       const data: Tab[] = await res.json();
       setTabs(data);
-      if (data.length > 0 && currentTabId === null) {
-        setCurrentTabId(data[0].id);
-      }
+      setCurrentTabId(prev => prev === null && data.length > 0 ? data[0].id : prev);
     } catch (e) {
       console.error('Failed to fetch tabs:', e);
     }
-  }, [currentTabId]);
+  }, []);
 
   const fetchTabTasks = useCallback(async (tabId: number) => {
     try {
-      const res = await fetch(`/api/tabs/${tabId}`);
+      const res = await apiFetch(`/api/tabs/${tabId}`);
       if (!res.ok) return;
       const data = await res.json();
       setTasks(data.tasks || []);
+      setBoardSessions(data.sessions || []);
+      setBoardAgents(data.agents || []);
     } catch (e) {
       console.error('Failed to fetch tab tasks:', e);
     }
@@ -108,7 +112,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const fetchSessions = useCallback(async () => {
     try {
-      const res = await fetch('/api/sessions');
+      const res = await apiFetch('/api/sessions');
       if (!res.ok) return;
       const data: Session[] = await res.json();
       setSessions(data);
@@ -119,7 +123,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const fetchAgents = useCallback(async () => {
     try {
-      const res = await fetch('/api/agents');
+      const res = await apiFetch('/api/agents');
       if (!res.ok) return;
       const data: Agent[] = await res.json();
       setAgents(data);
@@ -349,6 +353,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     activeSessionId,
     activeAgentId,
     currentSort,
+    boardSessions,
+    boardAgents,
     setCurrentTabId,
     setActiveSessionId,
     setActiveAgentId,

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useApp } from '../context/AppContext';
 import { SessionModal } from './SessionModal';
+import { apiFetch } from '../utils/api';
 import type { Session, OutputEntry, SessionActivity } from '../types';
 
 export function SessionsPanel() {
@@ -40,7 +41,7 @@ export function SessionsPanel() {
     setAutoScroll(true);
     (async () => {
       try {
-        const res = await fetch(`/api/sessions/${activeSessionId}/output`);
+        const res = await apiFetch(`/api/sessions/${activeSessionId}/output`);
         if (!res.ok) return;
         const data: OutputEntry[] = await res.json();
         setOutput(data);
@@ -89,24 +90,24 @@ export function SessionsPanel() {
 
   const handleStart = async () => {
     if (!activeSessionId) return;
-    await fetch(`/api/sessions/${activeSessionId}/start`, { method: 'POST' });
+    await apiFetch(`/api/sessions/${activeSessionId}/start`, { method: 'POST' });
   };
 
   const handleStop = async () => {
     if (!activeSessionId) return;
-    await fetch(`/api/sessions/${activeSessionId}/stop`, { method: 'POST' });
+    await apiFetch(`/api/sessions/${activeSessionId}/stop`, { method: 'POST' });
   };
 
   const handleDelete = async () => {
     if (!activeSessionId) return;
-    await fetch(`/api/sessions/${activeSessionId}`, { method: 'DELETE' });
+    await apiFetch(`/api/sessions/${activeSessionId}`, { method: 'DELETE' });
     setSessions(prev => prev.filter(s => s.id !== activeSessionId));
     setActiveSessionId(null);
   };
 
   const handleSendPrompt = async (text: string) => {
     if (!text.trim() || !activeSessionId) return;
-    await fetch(`/api/sessions/${activeSessionId}/prompt`, {
+    await apiFetch(`/api/sessions/${activeSessionId}/prompt`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text }),

@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useApp } from '../context/AppContext';
+import { apiFetch } from '../utils/api';
 import type { Task } from '../types';
 
 interface TaskModalProps {
@@ -27,7 +28,7 @@ export function TaskModal({ task, onClose }: TaskModalProps) {
 
     try {
       if (isEditing) {
-        const res = await fetch(`/api/tasks/${task.id}`, {
+        const res = await apiFetch(`/api/tasks/${task.id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -48,7 +49,7 @@ export function TaskModal({ task, onClose }: TaskModalProps) {
         pendingOps.current.add(`task-updated-${updated.id}`);
         setTasks(prev => prev.map(t => t.id === updated.id ? updated : t));
       } else {
-        const res = await fetch('/api/tasks', {
+        const res = await apiFetch('/api/tasks', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -78,7 +79,7 @@ export function TaskModal({ task, onClose }: TaskModalProps) {
   const handleDelete = async () => {
     if (!task) return;
     try {
-      const res = await fetch(`/api/tasks/${task.id}`, { method: 'DELETE' });
+      const res = await apiFetch(`/api/tasks/${task.id}`, { method: 'DELETE' });
       if (!res.ok) return;
       pendingOps.current.add(`task-deleted-${task.id}`);
       setTasks(prev => prev.filter(t => t.id !== task.id));
