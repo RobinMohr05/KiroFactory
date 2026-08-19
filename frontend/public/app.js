@@ -102,6 +102,14 @@ const mcpAzureDevops = document.getElementById('mcpAzureDevops');
 const mcpAwsApi = document.getElementById('mcpAwsApi');
 const mcpAwsDocs = document.getElementById('mcpAwsDocs');
 
+// Auto-merge PRs toggle (in tab modal)
+const tabAutoMergePrs = document.getElementById('tabAutoMergePrs');
+
+// Confirm Auto-Merge PRs modal
+const confirmAutoMergeModal = document.getElementById('confirmAutoMergeModal');
+const confirmAutoMergeBtn = document.getElementById('confirmAutoMergeBtn');
+const cancelAutoMergeBtn = document.getElementById('cancelAutoMergeBtn');
+
 // Tabs
 const tabBoards = document.getElementById('tab-boards');
 const tabSessions = document.getElementById('tab-sessions');
@@ -997,6 +1005,8 @@ function showTabModal(board = null) {
     mcpAzureDevops.checked = mcp.azureDevops !== false;
     mcpAwsApi.checked = mcp.awsApi === true;
     mcpAwsDocs.checked = mcp.awsDocs !== false;
+    // Populate auto-merge toggle
+    tabAutoMergePrs.checked = board.autoMergePrs === true;
   } else {
     tabModalTitle.textContent = 'New Tab';
     submitTabBtn.textContent = 'Create Tab';
@@ -1009,6 +1019,8 @@ function showTabModal(board = null) {
     mcpAzureDevops.checked = defaultMcp.azureDevops;
     mcpAwsApi.checked = defaultMcp.awsApi;
     mcpAwsDocs.checked = defaultMcp.awsDocs;
+    // Default: auto-merge disabled
+    tabAutoMergePrs.checked = false;
   }
 
   tabFormName.focus();
@@ -1031,12 +1043,27 @@ async function handleTabFormSubmit() {
     awsApi: mcpAwsApi.checked,
     awsDocs: mcpAwsDocs.checked,
   };
+  const autoMergePrs = tabAutoMergePrs.checked;
 
   if (!name) return;
 
+  // If toggling autoMergePrs from false to true, require confirmation
+  if (id && autoMergePrs) {
+    const currentBoard = boards.find(b => b.id === Number(id));
+    if (currentBoard && currentBoard.autoMergePrs !== true) {
+      // Show confirmation modal and wait for user decision
+      const confirmed = await showAutoMergeConfirmation();
+      if (!confirmed) {
+        // Revert the checkbox
+        tabAutoMergePrs.checked = false;
+        return;
+      }
+    }
+  }
+
   if (id) {
     // Update existing tab
-    await updateBoard(Number(id), name, repositoryUrl, mcpConfig, gitProvider);
+    await updateBoard(Number(id), name, repositoryUrl, mcpConfig, gitProvider, autoMergePrs);
   } else {
     // Create new tab
     await createBoard(name, repositoryUrl, gitProvider);
@@ -1046,12 +1073,43 @@ async function handleTabFormSubmit() {
 }
 
 /**
+ * Show the auto-merge confirmation modal and return a Promise that resolves
+ * to true (confirmed) or false (cancelled).
+ */
+function showAutoMergeConfirmation() {
+  return new Promise((resolve) => {
+    confirmAutoMergeModal.hidden = false;
+
+    function onConfirm() {
+      cleanup();
+      confirmAutoMergeModal.hidden = true;
+      resolve(true);
+    }
+
+    function onCancel() {
+      cleanup();
+      confirmAutoMergeModal.hidden = true;
+      resolve(false);
+    }
+
+    function cleanup() {
+      confirmAutoMergeBtn.removeEventListener('click', onConfirm);
+      cancelAutoMergeBtn.removeEventListener('click', onCancel);
+    }
+
+    confirmAutoMergeBtn.addEventListener('click', onConfirm);
+    cancelAutoMergeBtn.addEventListener('click', onCancel);
+  });
+}
+
+/**
  * Update a board's name and repository URL.
  */
-async function updateBoard(id, name, repositoryUrl, mcpConfig, gitProvider = null) {
+async function updateBoard(id, name, repositoryUrl, mcpConfig, gitProvider = null, autoMergePrs = undefined) {
   try {
     const body = { name, repositoryUrl, gitProvider };
     if (mcpConfig) body.mcpConfig = mcpConfig;
+    if (autoMergePrs !== undefined) body.autoMergePrs = autoMergePrs;
     const res = await apiFetch(`/api/tabs/${id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },

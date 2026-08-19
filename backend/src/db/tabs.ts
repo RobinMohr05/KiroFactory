@@ -78,6 +78,7 @@ function mapNodeToTab(
     repositoryUrl: (tabProps.repositoryUrl as string) || null,
     gitProvider: isGitProvider(gitProvider) ? gitProvider : null,
     mcpConfig,
+    autoMergePrs: !!(tabProps.autoMergePrs),
     columns,
     sortOrder: (tabProps.sortOrder as number) ?? 0,
     userId: ownerId ?? 0,
@@ -274,6 +275,7 @@ export async function createTab(input: CreateTabInput): Promise<Tab> {
          name: $name,
          repositoryUrl: $repositoryUrl,
          gitProvider: $gitProvider,
+         autoMergePrs: $autoMergePrs,
          columns: $columns,
          sortOrder: 0,
          createdAt: datetime()
@@ -294,6 +296,7 @@ export async function createTab(input: CreateTabInput): Promise<Tab> {
         name: input.name,
         repositoryUrl: input.repositoryUrl ?? null,
         gitProvider: input.gitProvider ?? null,
+        autoMergePrs: false,
         columns: DEFAULT_COLUMNS,
         atlassian: DEFAULT_MCP_CONFIG.atlassian,
         azureDevops: DEFAULT_MCP_CONFIG.azureDevops,
@@ -314,9 +317,11 @@ export async function updateTab(
   name: string,
   repositoryUrl?: string | null,
   mcpConfig?: TabMcpConfig | null,
-  gitProvider?: GitProvider | null
+  gitProvider?: GitProvider | null,
+  autoMergePrs?: boolean
 ): Promise<Tab | null> {
   const hasMcpConfig = mcpConfig !== undefined && mcpConfig !== null;
+  const hasAutoMergePrs = autoMergePrs !== undefined;
 
   return writeQuery(async (tx: ManagedTransaction) => {
     // The FOREACH(CASE ...) guard only runs the MERGE/SET when mcpConfig was
@@ -329,11 +334,18 @@ export async function updateTab(
     // referenced parameter to be bound even on a branch that doesn't
     // execute, so the mcpConfig fields are always passed (defaulted to
     // false when not updating) even though FOREACH skips using them.
+    //
+    // autoMergePrs uses the same FOREACH(CASE ...) pattern: only update the
+    // property when the caller explicitly provided a value.
     const result = await tx.run(
       `MATCH (t:Tab {id: $id})
        SET t.name = $name,
            t.repositoryUrl = $repositoryUrl,
            t.gitProvider = $gitProvider
+       WITH t
+       FOREACH (_ IN CASE WHEN $hasAutoMergePrs THEN [1] ELSE [] END |
+         SET t.autoMergePrs = $autoMergePrs
+       )
        WITH t
        FOREACH (_ IN CASE WHEN $hasMcpConfig THEN [1] ELSE [] END |
          MERGE (t)-[:HAS_MCP_CONFIG]->(m:McpConfig)
@@ -350,6 +362,8 @@ export async function updateTab(
         name,
         repositoryUrl: repositoryUrl ?? null,
         gitProvider: gitProvider ?? null,
+        hasAutoMergePrs,
+        autoMergePrs: hasAutoMergePrs ? autoMergePrs : false,
         hasMcpConfig,
         atlassian: hasMcpConfig ? mcpConfig!.atlassian : false,
         azureDevops: hasMcpConfig ? mcpConfig!.azureDevops : false,

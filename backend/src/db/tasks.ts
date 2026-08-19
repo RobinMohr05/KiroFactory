@@ -127,6 +127,7 @@ async function attachTabs(tx: ManagedTransaction, tasks: Task[]): Promise<void> 
       repositoryUrl: (tabProps.repositoryUrl as string) || null,
       gitProvider: isGitProvider(gitProvider) ? gitProvider : null,
       mcpConfig: { ...DEFAULT_MCP_CONFIG },
+      autoMergePrs: !!(tabProps.autoMergePrs),
       columns: [],
       sortOrder: (tabProps.sortOrder as number) ?? 0,
       userId: ownerId ?? 0,
