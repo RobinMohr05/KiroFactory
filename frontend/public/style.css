@@ -3079,6 +3079,10 @@ textarea:focus {
   background: var(--bg-secondary);
 }
 
+[data-theme="dark"] .task-planner-input-row {
+  background: var(--bg-tertiary);
+}
+
 [data-theme="dark"] .task-planner-actions {
   background: var(--bg-tertiary);
 }
