@@ -1102,14 +1102,22 @@ function showAutoMergeConfirmation() {
       }
     }
 
+    function onBackdropClick(e) {
+      if (e.target === confirmAutoMergeModal) {
+        onCancel();
+      }
+    }
+
     function cleanup() {
       confirmAutoMergeBtn.removeEventListener('click', onConfirm);
       cancelAutoMergeBtn.removeEventListener('click', onCancel);
+      confirmAutoMergeModal.removeEventListener('click', onBackdropClick);
       document.removeEventListener('keydown', onKeydown, true);
     }
 
     confirmAutoMergeBtn.addEventListener('click', onConfirm);
     cancelAutoMergeBtn.addEventListener('click', onCancel);
+    confirmAutoMergeModal.addEventListener('click', onBackdropClick);
     document.addEventListener('keydown', onKeydown, true); // capture phase to intercept before bubbling handlers
   });
 }
