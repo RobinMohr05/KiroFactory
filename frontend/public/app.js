@@ -1383,7 +1383,10 @@ function populateTaskDependsOnSelect(task) {
       if (!t) return;
       const chip = document.createElement('span');
       chip.className = 'combobox-chip';
-      chip.textContent = `#${t.id} — ${t.title}`;
+      const chipText = document.createElement('span');
+      chipText.className = 'combobox-chip-text';
+      chipText.textContent = `#${t.id} — ${t.title}`;
+      chip.appendChild(chipText);
       const removeBtn = document.createElement('button');
       removeBtn.type = 'button';
       removeBtn.className = 'combobox-chip-remove';
@@ -1416,6 +1419,7 @@ function populateTaskDependsOnSelect(task) {
   function renderList(filtered) {
     list.innerHTML = '';
     highlightIndex = -1;
+    input.removeAttribute('aria-activedescendant');
     if (filtered.length === 0) {
       list.hidden = true;
       input.setAttribute('aria-expanded', 'false');
@@ -1424,7 +1428,9 @@ function populateTaskDependsOnSelect(task) {
     filtered.forEach((t, idx) => {
       const li = document.createElement('li');
       li.className = 'combobox-option';
+      li.id = `taskDep-option-${t.id}`;
       li.setAttribute('role', 'option');
+      li.setAttribute('aria-selected', 'false');
       li.setAttribute('data-task-id', t.id);
       li.textContent = `#${t.id} — ${t.title}`;
       li.addEventListener('mousedown', (e) => {
@@ -1448,16 +1454,22 @@ function populateTaskDependsOnSelect(task) {
     renderChips();
     list.hidden = true;
     input.setAttribute('aria-expanded', 'false');
+    input.removeAttribute('aria-activedescendant');
     input.focus();
   }
 
   function updateHighlight() {
     const options = list.querySelectorAll('.combobox-option');
     options.forEach((opt, idx) => {
-      opt.classList.toggle('combobox-option-highlighted', idx === highlightIndex);
+      const isActive = idx === highlightIndex;
+      opt.classList.toggle('combobox-option-highlighted', isActive);
+      opt.setAttribute('aria-selected', isActive ? 'true' : 'false');
     });
     if (highlightIndex >= 0 && options[highlightIndex]) {
       options[highlightIndex].scrollIntoView({ block: 'nearest' });
+      input.setAttribute('aria-activedescendant', options[highlightIndex].id);
+    } else {
+      input.removeAttribute('aria-activedescendant');
     }
   }
 
@@ -1493,6 +1505,7 @@ function populateTaskDependsOnSelect(task) {
     } else if (e.key === 'Escape') {
       list.hidden = true;
       input.setAttribute('aria-expanded', 'false');
+      input.removeAttribute('aria-activedescendant');
       highlightIndex = -1;
     }
   }
@@ -1502,6 +1515,7 @@ function populateTaskDependsOnSelect(task) {
     setTimeout(() => {
       list.hidden = true;
       input.setAttribute('aria-expanded', 'false');
+      input.removeAttribute('aria-activedescendant');
       highlightIndex = -1;
     }, 150);
   }

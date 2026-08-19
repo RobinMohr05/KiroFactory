@@ -1051,6 +1051,9 @@ textarea:focus {
   padding: 0.2rem 0.45rem;
   font-size: 0.75rem;
   max-width: 100%;
+}
+
+.combobox-chip-text {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
