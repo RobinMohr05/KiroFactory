@@ -1,5 +1,4 @@
 import { Router, type Request, type Response } from "express";
-import express from "express";
 import {
   createSession,
   startSession,
@@ -38,10 +37,6 @@ const router = Router();
 
 // All task planner routes require authentication
 router.use(requireAuth);
-
-// Override the global body-parser limit (100KB) for this router — image uploads
-// send base64-encoded data inside the JSON body which easily exceeds the default.
-router.use(express.json({ limit: "15mb" }));
 
 // ---------------------------------------------------------------------------
 // Warm Session Pool
