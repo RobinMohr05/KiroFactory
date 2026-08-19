@@ -1356,30 +1356,202 @@ function showTaskForm(task = null) {
 }
 
 /**
- * Populates the "Depends on" <select multiple> from the module-level
- * `tasks` array (already kept in sync via WebSocket — no separate fetch),
- * excluding the task currently being edited from its own options list, and
- * pre-selecting whatever is in `task.dependsOn`. Mirrors the exact
- * populate pattern used for sessionTabsSelect/editSessionBoards elsewhere
- * in this file (plain <option> elements, .selected set directly) — this
- * codebase has no other multi-select/autocomplete component to reuse.
+ * Initializes the "Depends on" searchable combobox. Manages a set of selected
+ * dependency IDs, renders them as removable chips, and provides a filtered
+ * dropdown as the user types. Replaces the previous <select multiple>.
+ *
+ * Fetches all user tasks across all tabs (via GET /api/tasks) so that
+ * dependencies on tasks from other boards are both searchable and visible
+ * as chips — the board-scoped `tasks` array is not used here.
  */
-function populateTaskDependsOnSelect(task) {
-  const select = document.getElementById('taskDependsOn');
-  select.innerHTML = '';
+async function populateTaskDependsOnSelect(task) {
+  const wrapper = document.getElementById('taskDependsOnWrapper');
+  const input = document.getElementById('taskDependsOnInput');
+  const list = document.getElementById('taskDependsOnList');
+  const chipsContainer = document.getElementById('taskDependsOnChips');
 
-  const currentDependsOn = new Set(task && task.dependsOn ? task.dependsOn : []);
+  // State: set of currently-selected dependency IDs
+  // Initialized BEFORE the async fetch so that _getSelectedIds is always
+  // callable immediately — prevents TypeError if the user submits the form
+  // before the fetch resolves (race condition).
+  const selected = new Set(task && task.dependsOn ? task.dependsOn : []);
+  // Store the editing task's own ID to exclude from results
+  const currentTaskId = task ? task.id : null;
+  // Track the highlighted index for keyboard navigation
+  let highlightIndex = -1;
 
-  tasks
-    .filter(t => !task || t.id !== task.id) // a task can't depend on itself
-    .sort((a, b) => a.title.localeCompare(b.title))
-    .forEach(t => {
-      const opt = document.createElement('option');
-      opt.value = t.id;
-      opt.textContent = `#${t.id} — ${t.title}`;
-      if (currentDependsOn.has(t.id)) opt.selected = true;
-      select.appendChild(opt);
+  // Expose selected set for form submission (read by submit handler)
+  wrapper._getSelectedIds = () => Array.from(selected);
+
+  // Fetch all user tasks across all tabs for cross-board dependency support
+  let allUserTasks = [];
+  try {
+    const res = await apiFetch('/api/tasks');
+    if (res.ok) {
+      allUserTasks = await res.json();
+    }
+  } catch { /* fall back to empty — chips/search won't work but form still functions */ }
+
+  function renderChips() {
+    chipsContainer.innerHTML = '';
+    selected.forEach(id => {
+      const t = allUserTasks.find(tk => tk.id === id);
+      if (!t) return;
+      const chip = document.createElement('span');
+      chip.className = 'combobox-chip';
+      const chipText = document.createElement('span');
+      chipText.className = 'combobox-chip-text';
+      chipText.textContent = `#${t.id} — ${t.title}`;
+      chip.appendChild(chipText);
+      const removeBtn = document.createElement('button');
+      removeBtn.type = 'button';
+      removeBtn.className = 'combobox-chip-remove';
+      removeBtn.textContent = '×';
+      removeBtn.setAttribute('aria-label', `Remove dependency #${t.id}`);
+      removeBtn.addEventListener('click', () => {
+        selected.delete(id);
+        renderChips();
+        filterAndShow();
+      });
+      chip.appendChild(removeBtn);
+      chipsContainer.appendChild(chip);
     });
+  }
+
+  function getFilteredTasks(query) {
+    const q = query.toLowerCase().trim();
+    if (!q) return [];
+    // Strip leading # for ID matching (placeholder shows "#id" format)
+    const idQuery = q.startsWith('#') ? q.slice(1) : q;
+    return allUserTasks
+      .filter(t => {
+        if (t.id === currentTaskId) return false; // can't depend on self
+        if (selected.has(t.id)) return false; // already selected
+        // Match against title (case-insensitive substring) or ID
+        return t.title.toLowerCase().includes(q) || String(t.id).includes(idQuery);
+      })
+      .sort((a, b) => a.id - b.id)
+      .slice(0, 20); // limit results for performance
+  }
+
+  function renderList(filtered) {
+    list.innerHTML = '';
+    highlightIndex = -1;
+    input.removeAttribute('aria-activedescendant');
+    if (filtered.length === 0) {
+      list.hidden = true;
+      input.setAttribute('aria-expanded', 'false');
+      return;
+    }
+    filtered.forEach((t, idx) => {
+      const li = document.createElement('li');
+      li.className = 'combobox-option';
+      li.id = `taskDep-option-${t.id}`;
+      li.setAttribute('role', 'option');
+      li.setAttribute('aria-selected', 'false');
+      li.setAttribute('data-task-id', t.id);
+      li.textContent = `#${t.id} — ${t.title}`;
+      li.addEventListener('mousedown', (e) => {
+        e.preventDefault(); // prevent input blur
+        selectTask(t.id);
+      });
+      list.appendChild(li);
+    });
+    list.hidden = false;
+    input.setAttribute('aria-expanded', 'true');
+  }
+
+  function filterAndShow() {
+    const filtered = getFilteredTasks(input.value);
+    renderList(filtered);
+  }
+
+  function selectTask(id) {
+    selected.add(id);
+    input.value = '';
+    renderChips();
+    list.hidden = true;
+    input.setAttribute('aria-expanded', 'false');
+    input.removeAttribute('aria-activedescendant');
+    input.focus();
+  }
+
+  function updateHighlight() {
+    const options = list.querySelectorAll('.combobox-option');
+    options.forEach((opt, idx) => {
+      const isActive = idx === highlightIndex;
+      opt.classList.toggle('combobox-option-highlighted', isActive);
+      opt.setAttribute('aria-selected', isActive ? 'true' : 'false');
+    });
+    if (highlightIndex >= 0 && options[highlightIndex]) {
+      options[highlightIndex].scrollIntoView({ block: 'nearest' });
+      input.setAttribute('aria-activedescendant', options[highlightIndex].id);
+    } else {
+      input.removeAttribute('aria-activedescendant');
+    }
+  }
+
+  // Clean up previous listeners if re-invoked (modal reopen)
+  if (wrapper._cleanup) wrapper._cleanup();
+
+  function onInput() {
+    filterAndShow();
+  }
+
+  function onKeydown(e) {
+    const options = list.querySelectorAll('.combobox-option');
+    const count = options.length;
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (list.hidden && input.value.trim()) {
+        filterAndShow();
+        return;
+      }
+      highlightIndex = Math.min(highlightIndex + 1, count - 1);
+      updateHighlight();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      highlightIndex = Math.max(highlightIndex - 1, 0);
+      updateHighlight();
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (highlightIndex >= 0 && options[highlightIndex]) {
+        const id = Number(options[highlightIndex].getAttribute('data-task-id'));
+        selectTask(id);
+      }
+    } else if (e.key === 'Escape') {
+      list.hidden = true;
+      input.setAttribute('aria-expanded', 'false');
+      input.removeAttribute('aria-activedescendant');
+      highlightIndex = -1;
+    }
+  }
+
+  function onBlur() {
+    // Small delay so mousedown on option fires before hide
+    setTimeout(() => {
+      list.hidden = true;
+      input.setAttribute('aria-expanded', 'false');
+      input.removeAttribute('aria-activedescendant');
+      highlightIndex = -1;
+    }, 150);
+  }
+
+  input.addEventListener('input', onInput);
+  input.addEventListener('keydown', onKeydown);
+  input.addEventListener('blur', onBlur);
+
+  wrapper._cleanup = () => {
+    input.removeEventListener('input', onInput);
+    input.removeEventListener('keydown', onKeydown);
+    input.removeEventListener('blur', onBlur);
+  };
+
+  // Initial render
+  input.value = '';
+  list.hidden = true;
+  renderChips();
 }
 
 function hideTaskForm() {
@@ -1517,7 +1689,7 @@ function setupEventListeners() {
     const state = document.getElementById('taskState').value;
     const branch = document.getElementById('taskBranch').value.trim();
     const pullRequestUrl = document.getElementById('taskPullRequestUrl').value.trim();
-    const dependsOn = Array.from(document.getElementById('taskDependsOn').selectedOptions).map(opt => Number(opt.value));
+    const dependsOn = document.getElementById('taskDependsOnWrapper')._getSelectedIds();
 
     if (!title) {
       document.getElementById('taskTitle').focus();
