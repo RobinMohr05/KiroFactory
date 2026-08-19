@@ -1,6 +1,6 @@
 # Research: Coding Guidelines, Workflows, Best Practices & Security
 
-Last Updated: 2026-08-19
+Last Updated: 2026-08-19 (expanded with sections 18–24)
 
 This document collects coding guidelines, workflows, security practices, and quality standards relevant to the KiroFactory project — a TypeScript/Node.js monorepo with Express backend, vanilla JS frontend, Neo4j database, WebSocket real-time communication, Docker containers on Azure Container Apps, and autonomous AI agent orchestration.
 
@@ -30,6 +30,13 @@ Each section is rated for relevance to this project:
 15. [WebSocket Security](#15-websocket-security)
 16. [Secrets Management](#16-secrets-management)
 17. [Monorepo Best Practices](#17-monorepo-best-practices)
+18. [Observability & Monitoring](#18-observability--monitoring)
+19. [Resilience Patterns](#19-resilience-patterns)
+20. [Input Validation & Schema Enforcement](#20-input-validation--schema-enforcement)
+21. [Linting & Formatting](#21-linting--formatting)
+22. [Configuration Management (12-Factor App)](#22-configuration-management-12-factor-app)
+23. [Accessibility (Frontend)](#23-accessibility-frontend)
+24. [Feature Flags & Progressive Rollout](#24-feature-flags--progressive-rollout)
 
 ---
 
@@ -723,17 +730,361 @@ class AppError extends Error {
 
 ---
 
+## 18. Observability & Monitoring
+
+**Relevance: HIGH**
+
+### Sources
+- https://grizzlypeaksoftware.com/library/observability-for-ai-agent-systems-tpbnn8xp
+- https://axiom-experiment.hashnode.dev/the-nodejs-observability-stack-in-2026-opentelemetry-prometheus-and-distributed-tracing
+- https://betterstack.com/community/guides/observability/opentelemetry-nodejs-tracing/
+- https://developers.redhat.com/articles/2025/06/12/how-implement-observability-nodejs-and-llama-stack
+
+### Three Pillars of Observability
+
+| Pillar | What it answers | Tools |
+|--------|----------------|-------|
+| **Logs** | What happened? (discrete events) | Structured JSON → Azure Log Analytics / KQL |
+| **Metrics** | How is the system performing? (aggregates over time) | Prometheus, Azure Monitor metrics |
+| **Traces** | Where did time go in a request? (distributed causality) | OpenTelemetry, Azure Application Insights |
+
+### Key Practices
+
+**Health Checks:**
+- `/health` endpoint: returns 200 if the service can serve requests
+- `/health/ready` (readiness): also checks downstream dependencies (DB, external services)
+- Used by Azure Container Apps for liveness/readiness probes
+- Keep health checks cheap — don't run expensive queries
+
+**Metrics to Track (for AI agent orchestration):**
+- Task completion rate, average time per task
+- Agent credit consumption per task/session
+- Error rate by agent kind (editor vs inspector)
+- Queue depth (tasks waiting in each pipeline state)
+- Worker container start time, execution duration
+- WebSocket connection count (active clients)
+
+**Distributed Tracing (future — as system grows):**
+- OpenTelemetry is the industry standard (vendor-neutral)
+- Auto-instruments HTTP, database drivers, etc.
+- Propagate trace context through worker WebSocket messages
+- Enables "follow a task from creation → claim → execution → resolution"
+
+**AI Agent Observability (specific to this project):**
+- Track token consumption and cost per step
+- Monitor tool call frequency and failure rates
+- Log agent decision points (what prompt was sent, what verdict came back)
+- Detect stuck agents (same task retried N times without progress)
+
+---
+
+## 19. Resilience Patterns
+
+**Relevance: HIGH**
+
+### Sources
+- https://oneuptime.com/blog/post/2026-01-06-nodejs-retry-exponential-backoff/view
+- https://generalistprogrammer.com/tutorials/circuit-breaker-pattern-complete-guide
+- https://grizzlypeaksoftware.com/library/llm-api-error-handling-and-retry-patterns-bpk0jmvq
+
+### Graceful Shutdown
+
+```typescript
+process.on('SIGTERM', async () => {
+  // 1. Stop accepting new connections
+  server.close();
+  // 2. Finish in-flight requests (with timeout)
+  await drainConnections(30_000);
+  // 3. Close database connections
+  await db.close();
+  // 4. Exit cleanly
+  process.exit(0);
+});
+```
+
+- Handle both `SIGTERM` (container orchestrator) and `SIGINT` (Ctrl+C in dev)
+- Set a maximum shutdown timeout (30s typical) — force-exit if exceeded
+- Critical for Azure Container Apps: ACA sends SIGTERM before killing containers
+
+### Retry with Exponential Backoff
+
+```typescript
+async function withRetry<T>(fn: () => Promise<T>, opts: {
+  maxAttempts: number;
+  baseDelayMs: number;
+  maxDelayMs: number;
+}): Promise<T> {
+  for (let attempt = 1; attempt <= opts.maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (attempt === opts.maxAttempts) throw err;
+      const delay = Math.min(
+        opts.baseDelayMs * 2 ** (attempt - 1),
+        opts.maxDelayMs
+      );
+      await sleep(delay + Math.random() * delay * 0.1); // jitter
+    }
+  }
+}
+```
+
+- Always add jitter to prevent thundering herd
+- Set a maximum delay cap
+- Only retry idempotent operations
+- Know when NOT to retry (4xx client errors, auth failures)
+- Respect `Retry-After` headers from rate-limited APIs
+
+### Circuit Breaker (for external service calls)
+
+Three states: **Closed** (normal) → **Open** (fail-fast) → **Half-Open** (probe)
+
+- Monitor failure rate over a rolling window
+- When failures exceed threshold → trip to Open → return fallback/error immediately
+- After cooldown period → allow one probe request (Half-Open)
+- If probe succeeds → close circuit; if fails → stay open
+
+**When to use in this project:**
+- Neo4j database calls (connection pool exhaustion, network issues)
+- GitHub API calls (rate limiting, outages)
+- kiro-cli process spawning (repeated immediate failures)
+- Azure Container Apps Job API calls
+
+### Timeout Everything
+
+- Database queries: 30s max (prevent hung connections)
+- HTTP calls to external services: 10-30s
+- Worker task execution: 15min default (already enforced)
+- WebSocket idle timeout: 5min heartbeat
+
+---
+
+## 20. Input Validation & Schema Enforcement
+
+**Relevance: HIGH**
+
+### Sources
+- https://techinsights.manisuec.com/nodejs/input-validation-and-sanitization-joi-vs-zod/
+- https://oneuptime.com/blog/post/2026-01-25-zod-validation-typescript/view
+- https://stevekinney.com/courses/full-stack-typescript/using-zod-with-express
+
+### Runtime Schema Validation (Zod recommended for TypeScript)
+
+**Why runtime validation matters:**
+- TypeScript types disappear at runtime — they don't protect against bad HTTP input
+- User input, API responses, and environment variables all need runtime checks
+- A single unvalidated field can lead to injection, crashes, or data corruption
+
+**Zod Pattern for Express routes:**
+```typescript
+import { z } from 'zod';
+
+const CreateTaskSchema = z.object({
+  title: z.string().min(1).max(200),
+  description: z.string().max(5000).optional(),
+  priority: z.number().int().min(1).max(4),
+  type: z.enum(['bug', 'feature', 'improvement']),
+  tabIds: z.array(z.number().int().positive()).min(1),
+});
+
+// In route handler:
+const parsed = CreateTaskSchema.safeParse(req.body);
+if (!parsed.success) {
+  return res.status(400).json({ error: parsed.error.flatten() });
+}
+// parsed.data is fully typed and validated
+```
+
+**Validation Rules:**
+1. Validate at the API boundary (route handlers) — before data reaches business logic
+2. Fail closed: reject anything that doesn't match the schema
+3. Return clear, structured validation errors (field-level, not just "bad request")
+4. Validate path/query params too, not just bodies
+5. Coerce types explicitly (query params arrive as strings)
+6. Sanitize after validation: trim strings, normalize unicode where appropriate
+7. Define schemas once, infer TypeScript types from them (`z.infer<typeof Schema>`)
+
+---
+
+## 21. Linting & Formatting
+
+**Relevance: HIGH**
+
+### Sources
+- https://oneuptime.com/blog/post/2026-02-03-eslint-prettier-typescript/view
+- https://medium.com/@gabrieldrouin/node-js-2025-guide-how-to-setup-express-js-with-typescript-eslint-and-prettier-b342cd21c30d
+
+### ESLint + Prettier (separation of concerns)
+
+| Tool | Responsibility |
+|------|---------------|
+| **ESLint** | Code quality: bugs, best practices, unused variables, type-aware rules |
+| **Prettier** | Code formatting: spacing, indentation, line breaks, quotes |
+
+**Do not mix them** — use `eslint-config-prettier` to disable ESLint's formatting rules, let Prettier handle formatting exclusively.
+
+### Recommended ESLint Configuration
+
+```
+@typescript-eslint/eslint-plugin → type-aware rules
+@typescript-eslint/parser → TypeScript parsing
+eslint-config-prettier → turn off formatting rules
+eslint-plugin-import → import ordering and validation
+```
+
+**Key rules to enable:**
+- `@typescript-eslint/no-explicit-any` (error)
+- `@typescript-eslint/no-unused-vars` (error, with `_` prefix exception)
+- `@typescript-eslint/strict-boolean-expressions` (warn)
+- `@typescript-eslint/no-floating-promises` (error) — critical for async safety
+- `no-console` (warn in production code, off in tests)
+- `eqeqeq` (error) — always `===`
+- `no-return-await` (error)
+
+**Integration:**
+- Run ESLint + Prettier on pre-commit (husky + lint-staged)
+- Run in CI as a gate (fail the build on lint errors)
+- Auto-fix formatting on save in IDE (configure `.vscode/settings.json`)
+
+---
+
+## 22. Configuration Management (12-Factor App)
+
+**Relevance: HIGH**
+
+### Sources
+- https://nodejsdesignpatterns.com/blog/nodejs-environment-variables/
+- https://oneuptime.com/blog/post/2026-01-06-nodejs-production-environment-variables/view
+- https://reintech.io/blog/nodejs-environment-variables-best-practices-security
+
+### The 12-Factor Principle
+
+> Configuration that varies between deploys belongs in the environment, not in the code.
+
+**Litmus test:** Could this codebase be open-sourced without compromising any credentials or environment-specific settings?
+
+### Best Practices
+
+1. **Use `.env` files for local dev only** — never in production
+2. **Validate all environment variables on startup:**
+   ```typescript
+   const config = z.object({
+     NEO4J_URI: z.string().url(),
+     NEO4J_PASSWORD: z.string().min(1),
+     PORT: z.coerce.number().default(3500),
+     NODE_ENV: z.enum(['development', 'production', 'test']),
+   }).parse(process.env);
+   ```
+   Fail fast with a clear error message listing ALL missing vars — not one at a time
+
+3. **Don't scatter `process.env.X` throughout the codebase** — read config once at startup, pass it explicitly
+4. **Provide sensible defaults for non-sensitive config** (port, timeouts, feature flags)
+5. **Never provide defaults for secrets** — force them to be explicitly set
+6. **Document every environment variable** in `.env.example` with descriptions
+7. **Use different config per environment** — dev, staging, production should have different database URLs, keys, etc.
+8. **Treat config as immutable after startup** — don't reload `.env` at runtime
+
+---
+
+## 23. Accessibility (Frontend)
+
+**Relevance: MEDIUM**
+
+### Sources
+- https://dynomapper.com/blog/accessibility-testing/how-to-develop-for-web-accessibility/
+- https://developer.mozilla.org/en-US/docs/Learn_web_development/Core/Accessibility/CSS_and_JavaScript
+- https://namastedev.com/blog/building-accessible-components-with-vanilla-js/
+
+### WCAG 2.2 AA Target (Legal Compliance)
+
+The KiroFactory frontend is a vanilla HTML/CSS/JS application with drag-and-drop Kanban board. Key accessibility concerns:
+
+**Keyboard Navigation:**
+- All interactive elements must be reachable and operable via keyboard
+- Drag-and-drop must have a keyboard alternative (e.g., arrow keys or a "move to" menu)
+- Visible focus indicators on all focusable elements (`:focus-visible`)
+- No keyboard traps — users can always Tab/Escape away
+
+**Semantic HTML:**
+- Use native elements (`<button>`, `<a>`, `<input>`) over `<div>` with click handlers
+- Proper heading hierarchy (`h1` → `h2` → `h3`, no skipped levels)
+- Use `<main>`, `<nav>`, `<aside>` landmarks
+- Use `<ul>`/`<li>` for lists (including Kanban columns as lists of tasks)
+
+**ARIA (when semantic HTML isn't sufficient):**
+- `role="listbox"` / `role="option"` for custom dropdowns
+- `aria-live="polite"` for dynamic content updates (task moved, new task created)
+- `aria-label` or `aria-labelledby` for non-text interactive elements
+- `aria-expanded` for collapsible sections
+
+**Color & Contrast:**
+- 4.5:1 contrast ratio for normal text, 3:1 for large text
+- Don't convey information by color alone (priority colors need text/icon too)
+- Ensure dark mode also meets contrast requirements
+
+**Dynamic Content:**
+- Announce state changes to screen readers (task moved, error occurred)
+- When WebSocket pushes an update, announce it without disrupting current focus
+- Modal dialogs: trap focus, return focus on close
+
+---
+
+## 24. Feature Flags & Progressive Rollout
+
+**Relevance: MEDIUM**
+
+### Sources
+- https://configcat.com/blog/feature-flags-explained/
+- https://designrevision.com/blog/feature-flags-best-practices
+- https://datadoghq.com/knowledge-center/feature-flags/best-practices-ai-teams/
+
+### When Feature Flags Are Useful for This Project
+
+- **New agent capabilities** — test a new prompt strategy on one task before rolling to all
+- **UI experiments** — try a new board layout without deploying a separate branch
+- **Kill switches** — disable a misbehaving feature in production without redeploying
+- **Gradual migration** — switch database backends, validate per-request
+
+### Best Practices
+
+1. **Every flag has an owner and an expiry date** — prevent flag debt
+2. **Clean up flags after rollout** — a flag that's been 100% "on" for 2 weeks should be removed
+3. **Limit total active flags** — >20 simultaneous flags is a smell
+4. **Test both paths** — off and on
+5. **Use environment-level flags for simple cases** (environment variable), external service for complex targeting
+6. **Don't nest flags** — `if (flagA && flagB && !flagC)` is unmaintainable
+7. **Log flag evaluation** — know which path was taken when debugging
+
+### Simple Implementation (for this project's scale)
+
+```typescript
+// config/feature-flags.ts
+export const flags = {
+  NEW_PROMPT_STRATEGY: process.env.FF_NEW_PROMPT === 'true',
+  PARALLEL_WORKERS: process.env.FF_PARALLEL_WORKERS === 'true',
+} as const;
+```
+
+No need for a third-party service at this project's current scale.
+
+---
+
 ## Summary: Priority Order for This Project
 
 The following are the most impactful areas to enforce first, given the project's current state (autonomous AI agents modifying code, production deployments, multi-stage pipeline):
 
-1. **Input validation & injection prevention** (Cypher injection, command injection in worker)
+1. **Input validation & injection prevention** (Cypher injection, command injection in worker, Zod schemas at API boundaries)
 2. **Dependency supply chain security** (lockfile discipline, `npm ci`, audit)
 3. **Secrets management** (never in code, rotate, encrypt)
 4. **Docker container security** (non-root, multi-stage, scan)
 5. **Structured error handling & logging** (essential for debugging autonomous agent runs)
-6. **Conventional commits & PR discipline** (agents create PRs autonomously)
-7. **TypeScript strict mode** (catch bugs at compile time, not in production)
-8. **WebSocket security** (authenticated connections, message validation)
-9. **Testing strategy** (confidence that agent-created code works)
-10. **Rate limiting & DoS prevention** (protect the orchestrator API)
+6. **Resilience patterns** (graceful shutdown, retry with backoff, circuit breakers for external calls)
+7. **Conventional commits & PR discipline** (agents create PRs autonomously)
+8. **TypeScript strict mode + linting** (catch bugs at compile time, not in production)
+9. **Observability & monitoring** (health checks, agent metrics, tracing across worker sessions)
+10. **WebSocket security** (authenticated connections, message validation)
+11. **Testing strategy** (confidence that agent-created code works)
+12. **Rate limiting & DoS prevention** (protect the orchestrator API)
+13. **Configuration management** (validate env vars on startup, fail fast on missing config)
+14. **Accessibility** (important for a web UI, even if internal — ensure keyboard/screen reader basics)
+15. **Feature flags** (useful as the agent system grows — gradual prompt/strategy rollouts)
