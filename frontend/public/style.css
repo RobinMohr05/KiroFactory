@@ -3010,7 +3010,7 @@ textarea:focus {
 .task-planner-input-area {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 0.75rem;
   padding: 1rem 1.5rem;
   border-top: 1px solid var(--border-color);
   flex-shrink: 0;
@@ -3021,18 +3021,33 @@ textarea:focus {
   display: flex;
   gap: 0.5rem;
   align-items: flex-end;
+  padding: 0.5rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
 }
 
 .task-planner-attachment {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 0.5rem;
-  padding: 0.25rem 0.5rem;
-  background: var(--bg-secondary);
+  padding: 0.4rem 0.75rem;
+  background: var(--bg-tertiary);
   border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  font-size: 0.8rem;
+  border-radius: var(--radius);
+  font-size: 0.78rem;
   color: var(--text-secondary);
+  max-width: 100%;
+}
+
+.task-planner-attachment[hidden] {
+  display: none;
+}
+
+.task-planner-attachment::before {
+  content: "🖼️";
+  font-size: 0.9rem;
+  flex-shrink: 0;
 }
 
 .task-planner-attachment .attachment-filename {
@@ -3040,24 +3055,34 @@ textarea:focus {
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 200px;
+  font-weight: 500;
+  color: var(--text-primary);
 }
 
 .task-planner-attachment .attachment-remove {
   background: none;
   border: none;
-  color: var(--text-secondary);
+  color: var(--text-muted);
   cursor: pointer;
-  font-size: 1rem;
+  font-size: 1.1rem;
   line-height: 1;
-  padding: 0 0.25rem;
+  padding: 0.1rem 0.3rem;
+  border-radius: var(--radius-sm);
+  transition: background 0.15s, color 0.15s;
 }
 
 .task-planner-attachment .attachment-remove:hover {
-  color: var(--text-primary);
+  color: var(--ta-rapid-red);
+  background: rgba(210, 38, 48, 0.1);
+}
+
+.task-planner-attachment .attachment-remove:focus-visible {
+  outline: 2px solid var(--ta-mango);
+  outline-offset: 2px;
 }
 
 .btn-icon {
-  background: none;
+  background: var(--bg-tertiary);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
   cursor: pointer;
@@ -3065,26 +3090,29 @@ textarea:focus {
   font-size: 1rem;
   line-height: 1;
   color: var(--text-secondary);
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
 
 .btn-icon:hover {
   background: var(--bg-secondary);
   color: var(--text-primary);
+  border-color: var(--ta-mango);
 }
 
 .task-planner-input-area textarea {
   flex: 1;
   resize: none;
-  border: 1px solid var(--border-color);
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
   padding: 0.5rem 0.75rem;
   font-family: 'Inter', sans-serif;
   font-size: 0.85rem;
-  background: var(--bg-secondary);
+  background: var(--bg-primary);
   color: var(--text-primary);
   line-height: 1.4;
   max-height: 80px;
   min-height: 58px;
+  transition: border-color 0.15s;
 }
 
 .task-planner-input-area textarea:focus {
@@ -3098,7 +3126,7 @@ textarea:focus {
 
 .task-planner-actions {
   display: flex;
-  gap: 0.5rem;
+  gap: 0.75rem;
   padding: 0.75rem 1.5rem;
   border-top: 1px solid var(--border-color);
   flex-shrink: 0;
@@ -3108,6 +3136,7 @@ textarea:focus {
 
 .task-planner-actions .btn {
   font-size: 0.8rem;
+  padding: 0.5rem 1.25rem;
 }
 
 /* AI Planner button in task form */
@@ -3144,6 +3173,18 @@ textarea:focus {
 
 [data-theme="dark"] .task-planner-input-area {
   background: var(--bg-secondary);
+}
+
+[data-theme="dark"] .task-planner-input-row {
+  background: var(--bg-tertiary);
+}
+
+[data-theme="dark"] .task-planner-input-row .btn-icon {
+  background: var(--bg-secondary);
+}
+
+[data-theme="dark"] .task-planner-input-row .btn-icon:hover {
+  background: var(--bg-primary);
 }
 
 [data-theme="dark"] .task-planner-actions {
