@@ -1359,12 +1359,25 @@ function showTaskForm(task = null) {
  * Initializes the "Depends on" searchable combobox. Manages a set of selected
  * dependency IDs, renders them as removable chips, and provides a filtered
  * dropdown as the user types. Replaces the previous <select multiple>.
+ *
+ * Fetches all user tasks across all tabs (via GET /api/tasks) so that
+ * dependencies on tasks from other boards are both searchable and visible
+ * as chips — the board-scoped `tasks` array is not used here.
  */
-function populateTaskDependsOnSelect(task) {
+async function populateTaskDependsOnSelect(task) {
   const wrapper = document.getElementById('taskDependsOnWrapper');
   const input = document.getElementById('taskDependsOnInput');
   const list = document.getElementById('taskDependsOnList');
   const chipsContainer = document.getElementById('taskDependsOnChips');
+
+  // Fetch all user tasks across all tabs for cross-board dependency support
+  let allUserTasks = [];
+  try {
+    const res = await apiFetch('/api/tasks');
+    if (res.ok) {
+      allUserTasks = await res.json();
+    }
+  } catch { /* fall back to empty — chips/search won't work but form still functions */ }
 
   // State: set of currently-selected dependency IDs
   const selected = new Set(task && task.dependsOn ? task.dependsOn : []);
@@ -1379,7 +1392,7 @@ function populateTaskDependsOnSelect(task) {
   function renderChips() {
     chipsContainer.innerHTML = '';
     selected.forEach(id => {
-      const t = tasks.find(tk => tk.id === id);
+      const t = allUserTasks.find(tk => tk.id === id);
       if (!t) return;
       const chip = document.createElement('span');
       chip.className = 'combobox-chip';
@@ -1405,7 +1418,7 @@ function populateTaskDependsOnSelect(task) {
   function getFilteredTasks(query) {
     const q = query.toLowerCase().trim();
     if (!q) return [];
-    return tasks
+    return allUserTasks
       .filter(t => {
         if (t.id === currentTaskId) return false; // can't depend on self
         if (selected.has(t.id)) return false; // already selected
