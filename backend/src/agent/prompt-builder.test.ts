@@ -95,7 +95,7 @@ describe("buildDevPrompt", () => {
     it("includes instructions to create a new branch if it does not exist", () => {
       const task = makeTask({ branch: "feature/#100_test-task" });
       const prompt = buildDevPrompt(task, "/workspace");
-      expect(prompt).toContain("git checkout -b feature/#100_test-task");
+      expect(prompt).toContain("git checkout -B feature/#100_test-task");
     });
 
     it("does NOT include BRANCH SETUP section when branch is null", () => {

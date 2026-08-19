@@ -1163,9 +1163,10 @@ async function runLoopMode(
     }
 
     // Build and send the prompt (review prompt for inspector agents, dev prompt otherwise)
-    // Look up autoMergePrs for inspector agents (needed for the auto-merge prompt section)
+    // Look up autoMergePrs only for the QA agent (final pipeline stage) — the code-reviewer
+    // should never see the auto-merge prompt section or have the pr-complete tool.
     let autoMergePrs = false;
-    if (stages.kind === "inspector") {
+    if (stages.kind === "inspector" && meta.agent === "qa-improvement-agent") {
       try {
         autoMergePrs = await getTaskAutoMergePrs(task.id);
       } catch {
@@ -2387,23 +2388,25 @@ async function runLoopModeAca(
     }
 
     // Compute autoMergePrs and allGroupTasksDone for the pr-complete MCP server.
-    // Only relevant for inspector-kind agents (QA), but computed unconditionally
-    // so the metadata is available regardless of agent kind.
+    // Only relevant for the QA agent (final pipeline stage) — the code-reviewer
+    // should never get the auto-merge prompt section or the pr-complete tool.
     let autoMergePrs = false;
     let allGroupTasksDone = true;
-    try {
-      autoMergePrs = await getTaskAutoMergePrs(task.id);
-      if (task.groupId) {
-        allGroupTasksDone = await areAllGroupTasksDone(task.groupId, task.id);
+    if (meta.agent === "qa-improvement-agent") {
+      try {
+        autoMergePrs = await getTaskAutoMergePrs(task.id);
+        if (task.groupId) {
+          allGroupTasksDone = await areAllGroupTasksDone(task.groupId, task.id);
+        }
+      } catch (err) {
+        // Non-critical — if lookup fails, default to no auto-merge
+        const msg = err instanceof Error ? err.message : String(err);
+        appendOutput(managed, {
+          timestamp: now(),
+          stream: "stderr",
+          text: `Warning: could not look up autoMergePrs/group status: ${msg}`,
+        });
       }
-    } catch (err) {
-      // Non-critical — if lookup fails, default to no auto-merge
-      const msg = err instanceof Error ? err.message : String(err);
-      appendOutput(managed, {
-        timestamp: now(),
-        stream: "stderr",
-        text: `Warning: could not look up autoMergePrs/group status: ${msg}`,
-      });
     }
 
     // Build the prompt after autoMergePrs is known (inspector agents need it for the auto-merge section)

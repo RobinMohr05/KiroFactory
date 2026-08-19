@@ -1873,7 +1873,9 @@ function buildMcpServers() {
   // Include the pr-complete MCP server for inspector-kind sessions where
   // auto-merge is enabled. The tool merges the PR and deletes the source
   // branch — called explicitly by the QA agent after verifying code quality.
-  if (AGENT_KIND === "inspector" && process.env.AUTO_MERGE_ENABLED === "true") {
+  // Only injected for the qa-improvement-agent (final pipeline stage) to prevent
+  // the code-reviewer-agent from merging PRs before QA has run.
+  if (AGENT_KIND === "inspector" && process.env.AUTO_MERGE_ENABLED === "true" && AGENT_NAME === "qa-improvement-agent") {
     const prCompleteEnv = [
       { name: "PR_URL", value: process.env.TASK_PR_URL || "" },
       { name: "PR_BRANCH", value: process.env.PR_BRANCH || "" },
@@ -2473,7 +2475,14 @@ function handlePrompt(text, taskMeta) {
         // just ensures all remote refs are available and sets currentBranchName
         // so commitAndPush() knows where to push after the prompt finishes.
         // The agent is expected to leave the working tree on the correct branch.
-        execFileArgs("git", ["fetch", authRemoteUrl || "origin"], { cwd: WORKSPACE });
+        // Fetch all refs and update refs/remotes/origin/* tracking refs.
+        // Using "origin" (not authRemoteUrl) ensures tracking refs are updated —
+        // fetching from a raw URL only updates FETCH_HEAD. The origin remote URL
+        // is the unauthenticated REPO_URL set during clone; for public repos this
+        // is sufficient for reads. If auth is needed for reads, set-url origin to
+        // authRemoteUrl temporarily — but for KiroFactory's supported cases (public
+        // GitHub repos), unauthenticated fetch works fine.
+        execFileArgs("git", ["fetch", "origin"], { cwd: WORKSPACE });
 
         if (taskMeta.branch) {
           currentBranchName = taskMeta.branch;

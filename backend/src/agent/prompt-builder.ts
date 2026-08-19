@@ -53,7 +53,7 @@ Base branch: \`develop\` (or detect with \`git symbolic-ref refs/remotes/origin/
 Before starting any work:
 1. Check if the branch already exists remotely: \`git ls-remote --heads origin ${task.branch}\`
 2. If it exists: \`git checkout ${task.branch}\` then \`git merge origin/develop\` — if there are merge conflicts, resolve them intelligently by reading both sides and choosing the correct resolution, then commit the merge.
-3. If it does NOT exist: \`git checkout -b ${task.branch}\` (creates a new branch from your current position, which is the latest develop).
+3. If it does NOT exist: \`git checkout -B ${task.branch}\` (creates or resets the branch from your current position, which is the latest develop).
 
 Always ensure you're on \`${task.branch}\` before making any changes for the task.
 `
@@ -133,7 +133,7 @@ export function buildReviewPrompt(task: ClaimedTask, cwd: string, autoMergePrs?:
 This tab has automatic PR completion enabled. If your QA finds ZERO defects:
 1. Call \`complete_pull_request\` with a reason summarizing your QA pass.
 2. If \`complete_pull_request\` succeeds: call \`report_verdict\` with verdict "no_action_needed" and mention the PR was merged.
-3. If \`complete_pull_request\` returns a merge_conflict error: call \`report_verdict\` with verdict "changes_requested" and post a review comment explaining that the PR has merge conflicts with the base branch that must be resolved before it can be merged.
+3. If \`complete_pull_request\` returns a merge_conflict error: first post a review comment explaining that the PR has merge conflicts with the base branch that must be resolved before it can be merged, then call \`report_verdict\` with verdict "changes_requested".
 4. If \`complete_pull_request\` returns any other error: call \`report_verdict\` with verdict "no_action_needed" (the QA itself passed — the merge failure is an infrastructure issue that will be logged). Mention the merge failure in your reason.
 5. If \`complete_pull_request\` returns a "deferred" message (sibling tasks not yet complete): this is normal and expected for grouped tasks. Call \`report_verdict\` with verdict "no_action_needed" and mention that the PR merge was deferred until all grouped tasks pass QA.
 
