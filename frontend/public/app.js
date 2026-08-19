@@ -104,6 +104,7 @@ const mcpAwsDocs = document.getElementById('mcpAwsDocs');
 
 // Auto-merge PRs toggle (in tab modal)
 const tabAutoMergePrs = document.getElementById('tabAutoMergePrs');
+const tabAutoMergeGroup = document.getElementById('tabAutoMergeGroup');
 
 // Confirm Auto-Merge PRs modal
 const confirmAutoMergeModal = document.getElementById('confirmAutoMergeModal');
@@ -1007,6 +1008,7 @@ function showTabModal(board = null) {
     mcpAwsDocs.checked = mcp.awsDocs !== false;
     // Populate auto-merge toggle
     tabAutoMergePrs.checked = board.autoMergePrs === true;
+    tabAutoMergeGroup.hidden = false;
   } else {
     tabModalTitle.textContent = 'New Tab';
     submitTabBtn.textContent = 'Create Tab';
@@ -1019,8 +1021,9 @@ function showTabModal(board = null) {
     mcpAzureDevops.checked = defaultMcp.azureDevops;
     mcpAwsApi.checked = defaultMcp.awsApi;
     mcpAwsDocs.checked = defaultMcp.awsDocs;
-    // Default: auto-merge disabled
+    // Hide auto-merge toggle for new tabs (only available after creation)
     tabAutoMergePrs.checked = false;
+    tabAutoMergeGroup.hidden = true;
   }
 
   tabFormName.focus();
@@ -1092,13 +1095,22 @@ function showAutoMergeConfirmation() {
       resolve(false);
     }
 
+    function onKeydown(e) {
+      if (e.key === 'Escape') {
+        e.stopPropagation(); // prevent tabModal's Escape handler from firing
+        onCancel();
+      }
+    }
+
     function cleanup() {
       confirmAutoMergeBtn.removeEventListener('click', onConfirm);
       cancelAutoMergeBtn.removeEventListener('click', onCancel);
+      document.removeEventListener('keydown', onKeydown, true);
     }
 
     confirmAutoMergeBtn.addEventListener('click', onConfirm);
     cancelAutoMergeBtn.addEventListener('click', onCancel);
+    document.addEventListener('keydown', onKeydown, true); // capture phase to intercept before bubbling handlers
   });
 }
 
