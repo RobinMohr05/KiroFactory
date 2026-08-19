@@ -1,5 +1,4 @@
-import { useState } from 'react';
-import { AppProvider } from './context/AppContext';
+import { AppProvider, useApp } from './context/AppContext';
 import { Header } from './components/Header';
 import { TabBar } from './components/TabBar';
 import { ViewTabs } from './components/ViewTabs';
@@ -9,16 +8,14 @@ import { AgentsPanel } from './components/AgentsPanel';
 import { ErrorsPanel } from './components/ErrorsPanel';
 import './style.css';
 
-type ViewTab = 'boards' | 'sessions' | 'agents' | 'errors';
-
 function AppInner() {
-  const [activeView, setActiveView] = useState<ViewTab>('boards');
+  const { activeView } = useApp();
 
   return (
     <>
       <Header />
       <TabBar />
-      <ViewTabs activeView={activeView} setActiveView={setActiveView} />
+      <ViewTabs />
       {activeView === 'boards' && <TasksPanel />}
       {activeView === 'sessions' && <SessionsPanel />}
       {activeView === 'agents' && <AgentsPanel />}

@@ -1,14 +1,7 @@
 import { useApp } from '../context/AppContext';
 
-type ViewTab = 'boards' | 'sessions' | 'agents' | 'errors';
-
-interface ViewTabsProps {
-  activeView: ViewTab;
-  setActiveView: (view: ViewTab) => void;
-}
-
-export function ViewTabs({ activeView, setActiveView }: ViewTabsProps) {
-  const { errors } = useApp();
+export function ViewTabs() {
+  const { errors, activeView, setActiveView } = useApp();
 
   const unreadErrorCount = errors.filter(e => !e.taskCreated).length;
 

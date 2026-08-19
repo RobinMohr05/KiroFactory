@@ -101,7 +101,16 @@ app.get("*", (req, res) => {
     res.status(404).json({ error: "Not found" });
     return;
   }
-  res.sendFile(path.join(__dirname, "../../frontend/dist/index.html"));
+  const distIndex = path.join(__dirname, "../../frontend/dist/index.html");
+  res.sendFile(distIndex, (err) => {
+    if (err) {
+      // Fallback to legacy public/index.html if Vite build not available
+      const publicIndex = path.join(__dirname, "../../frontend/public/index.html");
+      res.sendFile(publicIndex, (err2) => {
+        if (err2) res.status(404).send("Not found");
+      });
+    }
+  });
 });
 
 // Create HTTP server and WebSocket servers.

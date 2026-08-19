@@ -20,9 +20,11 @@ describe('ViewTabs', () => {
         { id: 1, message: 'err', context: '', agent: 'a', sessionName: 's', timestamp: '', taskCreated: false },
         { id: 2, message: 'err2', context: '', agent: 'a', sessionName: 's', timestamp: '', taskCreated: true },
       ],
+      activeView: 'boards',
+      setActiveView: mockSetActiveView,
     } as any);
 
-    render(<ViewTabs activeView="boards" setActiveView={mockSetActiveView} />);
+    render(<ViewTabs />);
     // Only 1 error has taskCreated=false
     expect(screen.getByText('1')).toBeInTheDocument();
   });
@@ -32,24 +34,34 @@ describe('ViewTabs', () => {
       errors: [
         { id: 1, message: 'err', context: '', agent: 'a', sessionName: 's', timestamp: '', taskCreated: true },
       ],
+      activeView: 'boards',
+      setActiveView: mockSetActiveView,
     } as any);
 
-    render(<ViewTabs activeView="boards" setActiveView={mockSetActiveView} />);
+    render(<ViewTabs />);
     expect(screen.queryByText('1')).not.toBeInTheDocument();
   });
 
   it('calls setActiveView when a tab is clicked', () => {
-    vi.mocked(AppContext.useApp).mockReturnValue({ errors: [] } as any);
+    vi.mocked(AppContext.useApp).mockReturnValue({
+      errors: [],
+      activeView: 'boards',
+      setActiveView: mockSetActiveView,
+    } as any);
 
-    render(<ViewTabs activeView="boards" setActiveView={mockSetActiveView} />);
+    render(<ViewTabs />);
     fireEvent.click(screen.getByRole('tab', { name: /sessions/i }));
     expect(mockSetActiveView).toHaveBeenCalledWith('sessions');
   });
 
   it('marks the active tab with the active class', () => {
-    vi.mocked(AppContext.useApp).mockReturnValue({ errors: [] } as any);
+    vi.mocked(AppContext.useApp).mockReturnValue({
+      errors: [],
+      activeView: 'agents',
+      setActiveView: mockSetActiveView,
+    } as any);
 
-    render(<ViewTabs activeView="agents" setActiveView={mockSetActiveView} />);
+    render(<ViewTabs />);
     const agentsTab = screen.getByRole('tab', { name: /agents/i });
     expect(agentsTab.classList.contains('active')).toBe(true);
   });

@@ -17,7 +17,7 @@ const COLUMNS: { state: TaskState; label: string }[] = [
 ];
 
 export function TasksPanel() {
-  const { tasks, setTasks, currentSort, setCurrentSort, currentTabId, tabs, fetchTabTasks, pendingOps, boardSessions, boardAgents, setActiveSessionId } = useApp();
+  const { tasks, setTasks, currentSort, setCurrentSort, currentTabId, tabs, fetchTabTasks, pendingOps, boardSessions, boardAgents, setActiveSessionId, setActiveView } = useApp();
   const [editingTask, setEditingTask] = useState<Task | null | undefined>(undefined);
   const [showPlanner, setShowPlanner] = useState(false);
   // undefined = no modal, null = create new, Task = editing
@@ -73,15 +73,11 @@ export function TasksPanel() {
 
   const handleSessionClick = (sessionId: number) => {
     setActiveSessionId(sessionId);
-    // Switch to Sessions tab
-    const sessionsTab = document.getElementById('tab-sessions');
-    if (sessionsTab) sessionsTab.click();
+    setActiveView('sessions');
   };
 
   const handleAgentClick = (_agentName: string) => {
-    // Switch to Agents tab
-    const agentsTab = document.getElementById('tab-agents');
-    if (agentsTab) agentsTab.click();
+    setActiveView('agents');
   };
 
   return (

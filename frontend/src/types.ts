@@ -111,6 +111,8 @@ export interface User {
   defaultGitProvider?: string | null;
 }
 
+export type ViewTab = 'boards' | 'sessions' | 'agents' | 'errors';
+
 export type WsMessage =
   | { type: 'task-created'; task: Task }
   | { type: 'task-updated'; task: Task }

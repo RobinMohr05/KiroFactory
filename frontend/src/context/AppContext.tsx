@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState, useCallback, type ReactNode } from 'react';
-import type { Tab, Task, Session, Agent, AgentError, OutputEntry, SessionActivity, User, WsMessage } from '../types';
+import type { Tab, Task, Session, Agent, AgentError, OutputEntry, SessionActivity, User, ViewTab, WsMessage } from '../types';
 import { apiFetch } from '../utils/api';
 
 interface AppState {
@@ -13,6 +13,7 @@ interface AppState {
   connected: boolean;
   activeSessionId: number | null;
   activeAgentId: number | null;
+  activeView: ViewTab;
   currentSort: 'priority' | 'updated' | 'created';
   boardSessions: { id: number; name: string; agent?: string; status: string }[];
   boardAgents: string[];
@@ -22,6 +23,7 @@ interface AppContextValue extends AppState {
   setCurrentTabId: (id: number | null) => void;
   setActiveSessionId: (id: number | null) => void;
   setActiveAgentId: (id: number | null) => void;
+  setActiveView: (view: ViewTab) => void;
   setCurrentSort: (sort: 'priority' | 'updated' | 'created') => void;
   setTabs: React.Dispatch<React.SetStateAction<Tab[]>>;
   setTasks: React.Dispatch<React.SetStateAction<Task[]>>;
@@ -57,6 +59,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [activeSessionId, setActiveSessionId] = useState<number | null>(null);
   const [activeAgentId, setActiveAgentId] = useState<number | null>(null);
   const [currentSort, setCurrentSort] = useState<'priority' | 'updated' | 'created'>('priority');
+  const [activeView, setActiveView] = useState<ViewTab>('boards');
   const [boardSessions, setBoardSessions] = useState<{ id: number; name: string; agent?: string; status: string }[]>([]);
   const [boardAgents, setBoardAgents] = useState<string[]>([]);
 
@@ -352,12 +355,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     connected,
     activeSessionId,
     activeAgentId,
+    activeView,
     currentSort,
     boardSessions,
     boardAgents,
     setCurrentTabId,
     setActiveSessionId,
     setActiveAgentId,
+    setActiveView,
     setCurrentSort,
     setTabs,
     setTasks,
