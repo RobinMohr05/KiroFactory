@@ -14,7 +14,7 @@ import { KiroRunner } from "./agent/kiro-runner.js";
 import type { SessionUpdateChunk } from "./agent/kiro-runner.js";
 import { broadcastToUser } from "./websocket-handler.js";
 import { sanitizeSessionForClient } from "./session-sanitize.js";
-import { claimTask, resolveTask, resetTask, getAvailableTaskCount, waitForTaskAvailable, markTaskDone } from "./agent/task-claimer.js";
+import { claimTask, resolveTask, resetTask, getAvailableTaskCount, waitForTaskAvailable, markTaskDone, findSiblingTasks, findSiblingTasksByGroupId } from "./agent/task-claimer.js";
 import type { ClaimedTask } from "./agent/task-claimer.js";
 import { buildDevPrompt, buildReviewPrompt } from "./agent/prompt-builder.js";
 import { buildPersistentBranchName } from "./agent/repo-url-parser.js";
@@ -2044,13 +2044,13 @@ interface WorkerPromptResult {
 /**
  * Send a prompt to an ACA worker and wait for prompt-done response.
  */
-async function streamPromptAca(managed: ManagedSession, text: string, taskMeta?: { id: number; title: string; type: string; description: string; files: string[]; branch?: string | null; pullRequestUrl?: string | null }): Promise<WorkerPromptResult> {
+async function streamPromptAca(managed: ManagedSession, text: string, taskMeta?: { id: number; title: string; type: string; description: string; files: string[]; branch?: string | null; pullRequestUrl?: string | null; siblingTasks?: Array<{ id: number; title: string; type: string; description: string; pullRequestUrl: string | null }> }): Promise<WorkerPromptResult> {
   if (!isWorkerConnected(managed.meta.id)) {
     throw new Error("Worker is not connected");
   }
 
   // Send the prompt to the worker (with optional task metadata for branch/commit/PR)
-  const workerTaskMeta = taskMeta ? { id: taskMeta.id, title: taskMeta.title, type: taskMeta.type, description: taskMeta.description, files: taskMeta.files, branch: taskMeta.branch ?? null, pullRequestUrl: taskMeta.pullRequestUrl ?? null } : undefined;
+  const workerTaskMeta = taskMeta ? { id: taskMeta.id, title: taskMeta.title, type: taskMeta.type, description: taskMeta.description, files: taskMeta.files, branch: taskMeta.branch ?? null, pullRequestUrl: taskMeta.pullRequestUrl ?? null, siblingTasks: taskMeta.siblingTasks } : undefined;
   const sent = sendWorkerPrompt(managed.meta.id, text, workerTaskMeta);
   if (!sent) {
     throw new Error("Failed to send prompt to worker");
@@ -2289,8 +2289,96 @@ async function runLoopModeAca(
     /** Set when the agent succeeded but the push failed — not worth retrying. */
     let deliveryFailure = false;
 
+    // Sibling task lookup for shared branch/PR support (AC1, AC2, AC3, AC5).
+    //
+    // Two paths:
+    //   1. task.branch IS set → look up siblings sharing that branch (AC1/AC5)
+    //   2. task.branch is NULL but task.groupId IS set → look up siblings by
+    //      group_id to discover a shared branch from an earlier task (AC2).
+    //
+    // AC2 requires that tasks share an explicit `group_id` column value. Without
+    // a groupId, there is no way to discover siblings when the task has no branch
+    // (since "sibling by branch" requires a branch to search for). The groupId is
+    // the grouping mechanism; the first task in a group that runs creates the
+    // branch, and subsequent tasks discover it via this lookup.
+    //
+    // Race conditions between tasks in the same group are prevented by the
+    // NOT EXISTS clause in claimTask() — only one task per group can be in a
+    // workingState at any time.
+    let siblingTasks: Array<{ id: number; title: string; type: string; description: string; pullRequestUrl: string | null }> | undefined;
+    if (task.branch) {
+      try {
+        const siblings = await findSiblingTasks(task.branch, task.id);
+        if (siblings.length > 0) {
+          siblingTasks = siblings.map(s => ({ id: s.id, title: s.title, type: s.type, description: s.description, pullRequestUrl: s.pullRequestUrl }));
+          // Propagate sibling's PR URL to the current task if the task itself
+          // doesn't have one yet. This ensures the worker receives the PR URL
+          // directly on `currentTaskMeta.pullRequestUrl` (instead of relying on
+          // the worker-side `findSiblingPrUrl` fallback), which is required for
+          // Azure DevOps where there's no 422-based duplicate PR recovery.
+          if (!task.pullRequestUrl) {
+            const siblingPrUrl = siblings.find(s => s.pullRequestUrl)?.pullRequestUrl;
+            if (siblingPrUrl) {
+              task.pullRequestUrl = siblingPrUrl;
+            }
+          }
+          appendOutput(managed, {
+            timestamp: now(),
+            stream: "system",
+            text: `Task shares branch "${task.branch}" with ${siblings.length} sibling task(s): ${siblings.map(s => `#${s.id}`).join(", ")}`,
+          });
+        }
+      } catch (err) {
+        // Non-critical — proceed without sibling info
+        const msg = err instanceof Error ? err.message : String(err);
+        appendOutput(managed, {
+          timestamp: now(),
+          stream: "stderr",
+          text: `Warning: could not look up sibling tasks: ${msg}`,
+        });
+      }
+    } else if (task.groupId) {
+      // AC2: task has no branch yet, but has a groupId — look up siblings by
+      // group_id to discover a shared branch from an earlier task in the group.
+      try {
+        const groupSiblings = await findSiblingTasksByGroupId(task.groupId, task.id);
+        if (groupSiblings.length > 0) {
+          // Find a sibling that already has a branch assigned
+          const siblingWithBranch = groupSiblings.find(s => s.branch);
+          if (siblingWithBranch && siblingWithBranch.branch) {
+            // Inherit the branch (and PR URL) from the sibling
+            task.branch = siblingWithBranch.branch;
+            task.pullRequestUrl = siblingWithBranch.pullRequestUrl || task.pullRequestUrl;
+            siblingTasks = groupSiblings.map(s => ({ id: s.id, title: s.title, type: s.type, description: s.description, pullRequestUrl: s.pullRequestUrl }));
+            appendOutput(managed, {
+              timestamp: now(),
+              stream: "system",
+              text: `AC2: Task has no branch but shares group "${task.groupId}" with ${groupSiblings.length} sibling(s). Inherited branch "${task.branch}" from sibling #${siblingWithBranch.id}.`,
+            });
+          } else {
+            // Siblings exist but none have a branch yet — this is the first task in the group to run.
+            // Provide siblings for PR content generation but don't set a branch.
+            siblingTasks = groupSiblings.map(s => ({ id: s.id, title: s.title, type: s.type, description: s.description, pullRequestUrl: s.pullRequestUrl }));
+            appendOutput(managed, {
+              timestamp: now(),
+              stream: "system",
+              text: `Task is in group "${task.groupId}" with ${groupSiblings.length} sibling(s), but no sibling has a branch yet — this task will create one.`,
+            });
+          }
+        }
+      } catch (err) {
+        // Non-critical — proceed without sibling info
+        const msg = err instanceof Error ? err.message : String(err);
+        appendOutput(managed, {
+          timestamp: now(),
+          stream: "stderr",
+          text: `Warning: could not look up group siblings: ${msg}`,
+        });
+      }
+    }
+
     try {
-      promptResult = await streamPromptAca(managed, prompt, { id: task.id, title: task.title, type: task.type, description: task.description, files: task.files, branch: task.branch, pullRequestUrl: task.pullRequestUrl });
+      promptResult = await streamPromptAca(managed, prompt, { id: task.id, title: task.title, type: task.type, description: task.description, files: task.files, branch: task.branch, pullRequestUrl: task.pullRequestUrl, siblingTasks });
     } catch (err) {
       success = false;
       const msg = err instanceof Error ? err.message : String(err);

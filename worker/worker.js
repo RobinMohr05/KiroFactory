@@ -20,6 +20,7 @@
 import { spawn, execSync, execFileSync } from "node:child_process";
 import { WebSocket } from "ws";
 import { mkdirSync, existsSync, writeFileSync, appendFileSync } from "node:fs";
+import { buildGroupPrContent, findSiblingPrUrl } from "./shared-branch-utils.js";
 
 // ---------------------------------------------------------------------------
 // Configuration (from environment variables injected by orchestrator)
@@ -980,6 +981,15 @@ function buildPrContent() {
   const taskDescription = currentTaskMeta?.description || "";
   const taskType = currentTaskMeta?.type || "task";
 
+  // If sibling tasks are provided (shared branch group), generate a grouped PR
+  const siblings = currentTaskMeta?.siblingTasks;
+  if (siblings && siblings.length > 0) {
+    return buildGroupPrContent(
+      { id: taskId, title: taskTitle, type: taskType, description: taskDescription },
+      siblings
+    );
+  }
+
   return {
     title: `${taskTitle} [KiroFactory #${taskId}]`,
     body: [
@@ -1057,6 +1067,111 @@ async function fetchExistingGitHubPullRequest(owner, repo, branchName) {
   }
 }
 
+/**
+ * Update an existing GitHub PR's title and body.
+ * Used to add references to newly-completed sibling tasks in a shared branch group.
+ *
+ * @param {string} prUrl The full PR URL (e.g. https://github.com/owner/repo/pull/123)
+ * @param {string} title New PR title
+ * @param {string} body New PR body
+ */
+async function updateGitHubPullRequest(prUrl, title, body) {
+  if (!GITHUB_PAT) return;
+
+  // Parse PR number from URL: https://github.com/owner/repo/pull/123
+  const prMatch = prUrl.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
+  if (!prMatch) {
+    logError("Cannot parse PR URL for update", { url: prUrl });
+    return;
+  }
+  const [, owner, repo, prNumber] = prMatch;
+
+  try {
+    const response = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}`,
+      {
+        method: "PATCH",
+        headers: {
+          "Authorization": `Bearer ${GITHUB_PAT}`,
+          "Accept": "application/vnd.github+json",
+          "Content-Type": "application/json",
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+        body: JSON.stringify({ title, body }),
+      }
+    );
+
+    if (response.ok) {
+      sendOutput(`PR #${prNumber} updated with grouped task references`, "system");
+      logInfo("Updated GitHub PR body for shared branch group", { prNumber, prUrl });
+    } else {
+      const errorData = await response.json().catch(() => ({}));
+      logError("GitHub PR update failed", {
+        status: response.status,
+        error: errorData.message || `HTTP ${response.status}`,
+      });
+    }
+  } catch (err) {
+    logError("GitHub PR update network error", { error: err?.message || String(err) });
+  }
+}
+
+/**
+ * Update an existing Azure DevOps PR's title and description.
+ * Used to add references to newly-completed sibling tasks in a shared branch group.
+ *
+ * @param {string} prUrl The full PR URL
+ * @param {string} title New PR title
+ * @param {string} description New PR description
+ */
+async function updateAzureDevOpsPullRequest(prUrl, title, description) {
+  if (!AZURE_DEVOPS_PAT) return;
+
+  const parsed = parseAzureDevOpsUrl(REPO_URL);
+  if (!parsed) return;
+
+  // Extract PR ID from the URL (e.g. .../pullrequest/42)
+  const prIdMatch = prUrl.match(/pullrequest\/(\d+)/);
+  if (!prIdMatch) {
+    logError("Cannot parse PR ID from Azure DevOps URL for update", { url: prUrl });
+    return;
+  }
+  const prId = prIdMatch[1];
+
+  const { org, project, repo } = parsed;
+  // Azure DevOps caps the PR description at 4000 characters.
+  const truncatedDesc = description.length > 4000 ? `${description.slice(0, 3990)}\n…` : description;
+
+  const apiUrl =
+    `https://dev.azure.com/${encodeURIComponent(org)}/${encodeURIComponent(project)}` +
+    `/_apis/git/repositories/${encodeURIComponent(repo)}/pullrequests/${prId}?api-version=7.1`;
+
+  try {
+    const response = await fetch(apiUrl, {
+      method: "PATCH",
+      headers: {
+        "Authorization": `Basic ${Buffer.from(`:${AZURE_DEVOPS_PAT}`).toString("base64")}`,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+      },
+      body: JSON.stringify({ title, description: truncatedDesc }),
+    });
+
+    if (response.ok) {
+      sendOutput(`PR updated with grouped task references`, "system");
+      logInfo("Updated Azure DevOps PR body for shared branch group", { prId, prUrl });
+    } else {
+      const errorData = await response.json().catch(() => ({}));
+      logError("Azure DevOps PR update failed", {
+        status: response.status,
+        error: errorData.message || `HTTP ${response.status}`,
+      });
+    }
+  } catch (err) {
+    logError("Azure DevOps PR update network error", { error: err?.message || String(err) });
+  }
+}
+
 /** Create a Pull Request via the GitHub REST API. */
 async function createGitHubPullRequest(branchName) {
   const match = REPO_URL.match(/github\.com[/:]([^/]+)\/([^/.]+)/);
@@ -1102,6 +1217,11 @@ async function createGitHubPullRequest(branchName) {
       if (existingUrl) {
         sendOutput(`PR already exists: ${existingUrl}`, "system");
         logInfo("Using existing GitHub PR", { url: existingUrl, branch: branchName });
+        // If this is a grouped task (has siblings), update the existing PR's
+        // title and body to reference all tasks in the group (AC5).
+        if (currentTaskMeta?.siblingTasks?.length > 0) {
+          await updateGitHubPullRequest(existingUrl, title, body);
+        }
         return existingUrl;
       }
     }
@@ -1133,6 +1253,42 @@ function parseAzureDevOpsUrl(url) {
     return { org: legacy[1], project: legacy[2], repo: legacy[3].replace(/\.git$/, "") };
   }
   return null;
+}
+
+/**
+ * Fetch an existing active Azure DevOps PR for the given branch, or null if none.
+ * Used as a recovery path when PR creation returns 409 (conflict — PR already exists).
+ */
+async function fetchExistingAzureDevOpsPullRequest(org, project, repo, branchName) {
+  if (!AZURE_DEVOPS_PAT) return null;
+
+  const apiUrl =
+    `https://dev.azure.com/${encodeURIComponent(org)}/${encodeURIComponent(project)}` +
+    `/_apis/git/repositories/${encodeURIComponent(repo)}/pullrequests` +
+    `?searchCriteria.sourceRefName=refs/heads/${encodeURIComponent(branchName)}` +
+    `&searchCriteria.status=active&$top=1&api-version=7.1`;
+
+  try {
+    const response = await fetch(apiUrl, {
+      headers: {
+        "Authorization": `Basic ${Buffer.from(`:${AZURE_DEVOPS_PAT}`).toString("base64")}`,
+        "Accept": "application/json",
+      },
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    const prs = data?.value;
+    if (Array.isArray(prs) && prs.length > 0) {
+      const pr = prs[0];
+      return pr?._links?.web?.href ||
+        (pr?.repository?.webUrl && pr?.pullRequestId
+          ? `${pr.repository.webUrl}/pullrequest/${pr.pullRequestId}`
+          : null);
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 /** Create a Pull Request via the Azure DevOps REST API. */
@@ -1189,6 +1345,24 @@ async function createAzureDevOpsPullRequest(branchName) {
 
     const errorData = await response.json().catch(() => ({}));
     const errorMsg = errorData.message || `HTTP ${response.status}`;
+
+    // Azure DevOps returns 409 Conflict when a PR for this branch already
+    // exists. Mirror the GitHub 422 recovery: fetch the existing PR URL
+    // instead of failing and leaving prUrl null in the DB.
+    if (response.status === 409) {
+      const existingUrl = await fetchExistingAzureDevOpsPullRequest(org, project, repo, branchName);
+      if (existingUrl) {
+        sendOutput(`PR already exists: ${existingUrl}`, "system");
+        logInfo("Using existing Azure DevOps PR", { url: existingUrl, branch: branchName });
+        // If this is a grouped task (has siblings), update the existing PR's
+        // title and body to reference all tasks in the group (AC5).
+        if (currentTaskMeta?.siblingTasks?.length > 0) {
+          await updateAzureDevOpsPullRequest(existingUrl, title, description);
+        }
+        return existingUrl;
+      }
+    }
+
     sendOutput(`PR creation failed: ${errorMsg}`, "stderr");
     logError("Azure DevOps PR creation failed", { status: response.status, error: errorMsg });
     return null;
@@ -1850,7 +2024,27 @@ function finishPromptTurn(msg) {
         committed = !!gitResult.committed;
         if (gitResult.pushError) gitError = gitResult.pushError;
         if (gitResult.pushed && gitResult.branchName && !PERSISTENT_BRANCH_NAME) {
-          prUrl = await createPullRequest(gitResult.branchName);
+          // If a PR URL is already known (shared branch group — sibling already
+          // created the PR), skip PR creation (the push already updated the PR's
+          // branch automatically). Instead, update the PR title/body to include
+          // all tasks in the group (AC5).
+          // Check both the current task's own pullRequestUrl AND sibling PR URLs,
+          // because the second+ task in a group won't have its own PR URL persisted.
+          const groupPrUrl = currentTaskMeta?.pullRequestUrl
+            || (currentTaskMeta?.siblingTasks?.length > 0 ? findSiblingPrUrl(currentTaskMeta.siblingTasks) : null);
+          if (groupPrUrl && currentTaskMeta?.siblingTasks?.length > 0) {
+            prUrl = groupPrUrl;
+            const { title, body } = buildPrContent();
+            const provider = detectGitProvider(REPO_URL);
+            if (provider === "github") {
+              await updateGitHubPullRequest(prUrl, title, body);
+            } else if (provider === "azure-devops") {
+              await updateAzureDevOpsPullRequest(prUrl, title, body);
+            }
+            sendOutput(`PR already exists (shared branch): ${prUrl}`, "system");
+          } else {
+            prUrl = await createPullRequest(gitResult.branchName);
+          }
         }
       } catch (err) {
         gitError = redactSecrets(err?.message || String(err));

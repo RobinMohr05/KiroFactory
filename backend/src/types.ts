@@ -107,6 +107,8 @@ export interface Task {
   origin: "user" | "ai" | "user-assisted";
   branch: string | null;
   pullRequestUrl: string | null;
+  /** Optional group identifier — tasks sharing the same groupId are worked on the same branch/PR. */
+  groupId: string | null;
   createdAt: string;
   updatedAt: string;
   tabs?: Tab[];
@@ -262,6 +264,8 @@ export interface CreateTaskInput {
   tabIds?: number[];
   /** IDs of other tasks this task depends on. Rejected if it would create a cycle. */
   dependsOn?: number[];
+  /** Group identifier — tasks sharing the same groupId are worked on the same branch/PR. */
+  groupId?: string | null;
 }
 
 export interface UpdateTaskInput {
@@ -277,6 +281,8 @@ export interface UpdateTaskInput {
   pullRequestUrl?: string | null;
   /** IDs of other tasks this task depends on. Rejected if it would create a cycle. */
   dependsOn?: number[];
+  /** Group identifier — tasks sharing the same groupId are worked on the same branch/PR. */
+  groupId?: string | null;
 }
 
 /**

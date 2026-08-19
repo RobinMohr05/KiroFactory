@@ -111,6 +111,7 @@ function mapNodeToTaskWithBlocked(
     origin: props.origin as Task["origin"],
     branch: (props.branch as string) || null,
     pullRequestUrl: (props.pullRequestUrl as string) || null,
+    groupId: (props.groupId as string) || null,
     createdAt: (props.createdAt as { toString(): string }).toString(),
     updatedAt: (props.updatedAt as { toString(): string }).toString(),
     dependsOn,

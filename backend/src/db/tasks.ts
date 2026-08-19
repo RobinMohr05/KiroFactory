@@ -76,6 +76,7 @@ function mapNodeToTask(
     origin: props.origin as Task["origin"],
     branch: (props.branch as string) || null,
     pullRequestUrl: (props.pullRequestUrl as string) || null,
+    groupId: (props.groupId as string) || null,
     // createdAt/updatedAt come back as neo4j-driver DateTime values, not a
     // JS Date — .toString() on those produces an ISO 8601 string directly.
     createdAt: (props.createdAt as { toString(): string }).toString(),
@@ -289,7 +290,7 @@ export async function createTask(input: CreateTaskInput): Promise<Task> {
       `CREATE (t:Task {
          id: $id, title: $title, priority: $priority, type: $type, state: 'todo',
          description: $description, files: $files, origin: $origin, originRank: $originRank,
-         createdAt: datetime(), updatedAt: datetime()
+         groupId: $groupId, createdAt: datetime(), updatedAt: datetime()
        })
        WITH t
        CALL (t) {
@@ -306,6 +307,7 @@ export async function createTask(input: CreateTaskInput): Promise<Task> {
         files: input.files ?? [],
         origin,
         originRank,
+        groupId: input.groupId ?? null,
         tabIds: input.tabIds ?? [],
       }
     );
@@ -360,6 +362,10 @@ export async function updateTask(id: number, input: UpdateTaskInput): Promise<Ta
     if (input.pullRequestUrl !== undefined) {
       setParts.push("t.pullRequestUrl = $pullRequestUrl");
       params.pullRequestUrl = input.pullRequestUrl;
+    }
+    if (input.groupId !== undefined) {
+      setParts.push("t.groupId = $groupId");
+      params.groupId = input.groupId;
     }
 
     const updateResult = await tx.run(
@@ -463,5 +469,78 @@ export async function setTaskBranchAndPr(
        SET t.branch = $branch, t.pullRequestUrl = $pullRequestUrl, t.updatedAt = datetime()`,
       { taskId, branch, pullRequestUrl }
     );
+  });
+}
+
+/**
+ * Find all tasks that share the same branch value as a given task.
+ * Used for the shared branch/PR feature (task #163) — when multiple tasks
+ * are grouped on the same branch, the dev-agent should use the existing
+ * branch and PR instead of creating new ones.
+ *
+ * @param branch The branch name to look for
+ * @param excludeTaskId Optional task ID to exclude (typically the current task)
+ * @returns Tasks sharing that branch (minimal fields: id, title, type, description, branch, pullRequestUrl)
+ */
+export async function getTasksByBranch(
+  branch: string,
+  excludeTaskId?: number
+): Promise<Array<{ id: number; title: string; type: string; description: string; branch: string | null; pullRequestUrl: string | null }>> {
+  return readQuery(async (tx: ManagedTransaction) => {
+    const result = await tx.run(
+      `MATCH (t:Task {branch: $branch})
+       WHERE $excludeTaskId IS NULL OR t.id <> $excludeTaskId
+       RETURN t{.*} AS props
+       ORDER BY t.id ASC`,
+      { branch, excludeTaskId: excludeTaskId ?? null }
+    );
+    return result.records.map((r) => {
+      const props = r.get("props") as Record<string, unknown>;
+      return {
+        id: props.id as number,
+        title: props.title as string,
+        type: props.type as string,
+        description: (props.description as string) ?? "",
+        branch: (props.branch as string) || null,
+        pullRequestUrl: (props.pullRequestUrl as string) || null,
+      };
+    });
+  });
+}
+
+/**
+ * Find sibling tasks by group_id.
+ *
+ * Used for AC2 of the shared branch/PR feature: when a task has no `branch`
+ * value but has a `group_id`, we can look up other tasks in the same group
+ * to discover the shared branch that an earlier task already created.
+ *
+ * @param groupId The group identifier to search for
+ * @param excludeTaskId Optional task ID to exclude from results (the current task)
+ * @returns Tasks sharing that group_id (minimal fields: id, title, type, description, branch, pullRequestUrl)
+ */
+export async function getTasksByGroupId(
+  groupId: string,
+  excludeTaskId?: number
+): Promise<Array<{ id: number; title: string; type: string; description: string; branch: string | null; pullRequestUrl: string | null }>> {
+  return readQuery(async (tx: ManagedTransaction) => {
+    const result = await tx.run(
+      `MATCH (t:Task {groupId: $groupId})
+       WHERE $excludeTaskId IS NULL OR t.id <> $excludeTaskId
+       RETURN t{.*} AS props
+       ORDER BY t.id ASC`,
+      { groupId, excludeTaskId: excludeTaskId ?? null }
+    );
+    return result.records.map((r) => {
+      const props = r.get("props") as Record<string, unknown>;
+      return {
+        id: props.id as number,
+        title: props.title as string,
+        type: props.type as string,
+        description: (props.description as string) ?? "",
+        branch: (props.branch as string) || null,
+        pullRequestUrl: (props.pullRequestUrl as string) || null,
+      };
+    });
   });
 }

@@ -54,6 +54,11 @@ const SCHEMA_STATEMENTS: string[] = [
   // Neo4j has no partial/filtered index equivalent, so this indexes the full
   // property — the query predicate still filters to 'running' as before.
   "CREATE INDEX session_status_idx IF NOT EXISTS FOR (s:Session) ON (s.status)",
+  // Supports sibling lookup by groupId for the shared branch/PR feature
+  // (task #163) — direct replacement for SQL Server's filtered
+  // IX_tasks_group_id (group_id IS NOT NULL). As above, Neo4j indexes the
+  // full property; tasks with no groupId simply aren't queried by it.
+  "CREATE INDEX task_group_id_idx IF NOT EXISTS FOR (t:Task) ON (t.groupId)",
 ];
 
 /**
