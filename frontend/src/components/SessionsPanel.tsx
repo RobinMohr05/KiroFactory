@@ -5,12 +5,14 @@ import { apiFetch } from '../utils/api';
 import type { Session, OutputEntry, SessionActivity } from '../types';
 
 export function SessionsPanel() {
-  const { sessions, setSessions, currentTabId, activeSessionId, setActiveSessionId, tabs } = useApp();
+  const { sessions, setSessions, currentTabId, activeSessionId, setActiveSessionId, tabs, pendingOps } = useApp();
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [editingSession, setEditingSession] = useState<Session | null>(null);
   const [output, setOutput] = useState<OutputEntry[]>([]);
   const [autoScroll, setAutoScroll] = useState(true);
   const [activity, setActivity] = useState<SessionActivity | null>(null);
   const outputRef = useRef<HTMLDivElement>(null);
+  const dragIdRef = useRef<number | null>(null);
 
   // Filter sessions for current tab
   const visibleSessions = currentTabId
@@ -104,6 +106,15 @@ export function SessionsPanel() {
     setActiveSessionId(null);
   };
 
+  const handleEdit = () => {
+    if (!activeSession) return;
+    if (activeSession.status === 'running') {
+      alert('Stop the session to edit its settings.');
+      return;
+    }
+    setEditingSession(activeSession);
+  };
+
   const handleSendPrompt = async (text: string) => {
     if (!text.trim() || !activeSessionId) return;
     await apiFetch(`/api/sessions/${activeSessionId}/prompt`, {
@@ -111,6 +122,86 @@ export function SessionsPanel() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text }),
     });
+  };
+
+  // Session drag-and-drop reordering
+  const handleDragStart = (e: React.DragEvent, session: Session) => {
+    dragIdRef.current = session.id;
+    e.dataTransfer.setData('application/x-session-id', String(session.id));
+    e.dataTransfer.effectAllowed = 'move';
+    (e.currentTarget as HTMLElement).classList.add('session-dragging');
+  };
+
+  const handleDragEnd = (e: React.DragEvent) => {
+    (e.currentTarget as HTMLElement).classList.remove('session-dragging');
+    dragIdRef.current = null;
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  };
+
+  const handleDrop = async (e: React.DragEvent, targetSession: Session) => {
+    e.preventDefault();
+    const draggedId = dragIdRef.current;
+    if (!draggedId || draggedId === targetSession.id) return;
+
+    const draggedSession = sessions.find(s => s.id === draggedId);
+    if (!draggedSession) return;
+
+    // Handle pin/unpin if dragging between sections
+    const targetPinned = targetSession.pinned ?? false;
+    const draggedPinned = draggedSession.pinned ?? false;
+
+    if (draggedPinned !== targetPinned) {
+      // Pin/unpin the dragged session to match target section
+      pendingOps.current.add('sessions-reordered');
+      try {
+        await apiFetch(`/api/sessions/${draggedId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pinned: targetPinned }),
+        });
+      } catch { /* ignore */ }
+    }
+
+    // Reorder within same section
+    const sectionSessions = sessions
+      .filter(s => (s.pinned ?? false) === targetPinned && s.id !== draggedId);
+    const targetIdx = sectionSessions.findIndex(s => s.id === targetSession.id);
+    sectionSessions.splice(targetIdx, 0, { ...draggedSession, pinned: targetPinned });
+
+    const orderedIds = sectionSessions.map(s => s.id);
+    pendingOps.current.add('sessions-reordered');
+
+    // Update local state
+    setSessions(prev => {
+      const updated = [...prev];
+      orderedIds.forEach((id, i) => {
+        const idx = updated.findIndex(s => s.id === id);
+        if (idx !== -1) {
+          updated[idx] = { ...updated[idx], sortOrder: i, pinned: targetPinned || updated[idx].pinned };
+        }
+      });
+      // Update the dragged session's pinned state
+      const dragIdx = updated.findIndex(s => s.id === draggedId);
+      if (dragIdx !== -1) {
+        updated[dragIdx] = { ...updated[dragIdx], pinned: targetPinned };
+      }
+      return updated;
+    });
+
+    try {
+      await apiFetch('/api/sessions/reorder', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionIds: orderedIds }),
+      });
+    } catch (e) {
+      console.error('Failed to reorder sessions:', e);
+      pendingOps.current.delete('sessions-reordered');
+    }
   };
 
   const isRunning = activeSession?.status === 'running';
@@ -132,12 +223,30 @@ export function SessionsPanel() {
           </div>
           <ul className="session-list-pinned" id="sessionListPinned" aria-label="Pinned sessions">
             {sortedSessions.filter(s => s.pinned).map(session => (
-              <SessionListItem key={session.id} session={session} active={session.id === activeSessionId} onClick={() => setActiveSessionId(session.id)} />
+              <SessionListItem
+                key={session.id}
+                session={session}
+                active={session.id === activeSessionId}
+                onClick={() => setActiveSessionId(session.id)}
+                onDragStart={(e) => handleDragStart(e, session)}
+                onDragEnd={handleDragEnd}
+                onDragOver={handleDragOver}
+                onDrop={(e) => handleDrop(e, session)}
+              />
             ))}
           </ul>
           <ul className="session-list" id="sessionList" aria-label="Agent sessions">
             {sortedSessions.filter(s => !s.pinned).map(session => (
-              <SessionListItem key={session.id} session={session} active={session.id === activeSessionId} onClick={() => setActiveSessionId(session.id)} />
+              <SessionListItem
+                key={session.id}
+                session={session}
+                active={session.id === activeSessionId}
+                onClick={() => setActiveSessionId(session.id)}
+                onDragStart={(e) => handleDragStart(e, session)}
+                onDragEnd={handleDragEnd}
+                onDragOver={handleDragOver}
+                onDrop={(e) => handleDrop(e, session)}
+              />
             ))}
             {sortedSessions.length === 0 && (
               <li className="session-empty-hint">No sessions for this tab. Create one with + New Session.</li>
@@ -160,6 +269,7 @@ export function SessionsPanel() {
                 <div className="session-controls">
                   <button className="btn btn-success btn-sm" disabled={isRunning} onClick={handleStart}>Start</button>
                   <button className="btn btn-danger btn-sm" disabled={!isRunning} onClick={handleStop}>Stop</button>
+                  <button className="btn btn-secondary btn-sm" id="sessionEditBtn" disabled={isRunning} title={isRunning ? 'Stop the session to edit its settings' : 'Edit session settings'} onClick={handleEdit}>Edit</button>
                   <button className="btn btn-secondary btn-sm" onClick={() => setOutput([])}>Clear</button>
                   <button className="btn btn-secondary btn-sm" disabled={!!activeSession.isPermanent} onClick={handleDelete}>Delete</button>
                 </div>
@@ -208,14 +318,25 @@ export function SessionsPanel() {
         </div>
       </div>
 
-      {showCreateModal && (
-        <SessionModal onClose={() => setShowCreateModal(false)} />
+      {(showCreateModal || editingSession) && (
+        <SessionModal
+          session={editingSession}
+          onClose={() => { setShowCreateModal(false); setEditingSession(null); }}
+        />
       )}
     </section>
   );
 }
 
-function SessionListItem({ session, active, onClick }: { session: Session; active: boolean; onClick: () => void }) {
+function SessionListItem({ session, active, onClick, onDragStart, onDragEnd, onDragOver, onDrop }: {
+  session: Session;
+  active: boolean;
+  onClick: () => void;
+  onDragStart: (e: React.DragEvent) => void;
+  onDragEnd: (e: React.DragEvent) => void;
+  onDragOver: (e: React.DragEvent) => void;
+  onDrop: (e: React.DragEvent) => void;
+}) {
   const statusClass = `status-dot-sm status-${session.status}`;
   const activityDetail = session.currentActivity?.detail || session.currentActivity?.type || '';
 
@@ -223,7 +344,12 @@ function SessionListItem({ session, active, onClick }: { session: Session; activ
     <li
       className={`session-item${active ? ' active' : ''}${session.pinned ? ' session-item-pinned' : ''}`}
       data-session-id={session.id}
+      draggable
       onClick={onClick}
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
     >
       <span className={statusClass} aria-hidden="true"></span>
       <div className="session-item-info">

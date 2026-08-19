@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useApp } from '../context/AppContext';
 import { apiFetch } from '../utils/api';
 import type { Task } from '../types';
@@ -8,6 +8,11 @@ interface TaskModalProps {
   onClose: () => void;
 }
 
+interface AllTask {
+  id: number;
+  title: string;
+}
+
 export function TaskModal({ task, onClose }: TaskModalProps) {
   const { setTasks, currentTabId, pendingOps } = useApp();
   const [title, setTitle] = useState(task?.title || '');
@@ -15,16 +20,90 @@ export function TaskModal({ task, onClose }: TaskModalProps) {
   const [type, setType] = useState(task?.type || 'improvement');
   const [priority, setPriority] = useState(String(task?.priority || 4));
   const [state, setState] = useState(task?.state || 'todo');
+  const [origin, setOrigin] = useState<string>(task?.origin || 'user');
   const [branch, setBranch] = useState(task?.branch || '');
   const [pullRequestUrl, setPullRequestUrl] = useState(task?.pullRequestUrl || '');
   const [error, setError] = useState('');
 
+  // Dependency management state
+  const [selectedDeps, setSelectedDeps] = useState<Set<number>>(new Set(task?.dependsOn || []));
+  const [allTasks, setAllTasks] = useState<AllTask[]>([]);
+  const [depQuery, setDepQuery] = useState('');
+  const [depListVisible, setDepListVisible] = useState(false);
+  const [highlightIndex, setHighlightIndex] = useState(-1);
+  const depInputRef = useRef<HTMLInputElement>(null);
+  const depListRef = useRef<HTMLUListElement>(null);
+
   const isEditing = !!task;
+
+  // Fetch all tasks for dependency picker
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await apiFetch('/api/tasks');
+        if (res.ok) {
+          const data: AllTask[] = await res.json();
+          setAllTasks(data);
+        }
+      } catch { /* ignore */ }
+    })();
+  }, []);
+
+  const getFilteredTasks = useCallback(() => {
+    const q = depQuery.toLowerCase().trim();
+    if (!q) return [];
+    const idQuery = q.startsWith('#') ? q.slice(1) : q;
+    return allTasks
+      .filter(t => {
+        if (task && t.id === task.id) return false;
+        if (selectedDeps.has(t.id)) return false;
+        return t.title.toLowerCase().includes(q) || String(t.id).includes(idQuery);
+      })
+      .sort((a, b) => a.id - b.id)
+      .slice(0, 20);
+  }, [depQuery, allTasks, selectedDeps, task]);
+
+  const filteredTasks = getFilteredTasks();
+
+  const selectDep = (id: number) => {
+    setSelectedDeps(prev => new Set([...prev, id]));
+    setDepQuery('');
+    setDepListVisible(false);
+    setHighlightIndex(-1);
+  };
+
+  const removeDep = (id: number) => {
+    setSelectedDeps(prev => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+  };
+
+  const handleDepKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setHighlightIndex(prev => Math.min(prev + 1, filteredTasks.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setHighlightIndex(prev => Math.max(prev - 1, 0));
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (highlightIndex >= 0 && highlightIndex < filteredTasks.length) {
+        selectDep(filteredTasks[highlightIndex].id);
+      }
+    } else if (e.key === 'Escape') {
+      setDepListVisible(false);
+      setHighlightIndex(-1);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim()) return;
     setError('');
+
+    const dependsOn = Array.from(selectedDeps);
 
     try {
       if (isEditing) {
@@ -37,8 +116,10 @@ export function TaskModal({ task, onClose }: TaskModalProps) {
             type,
             priority: parseInt(priority, 10),
             state,
+            origin,
             branch: branch.trim() || null,
             pullRequestUrl: pullRequestUrl.trim() || null,
+            dependsOn,
           }),
         });
         if (!res.ok) {
@@ -57,7 +138,9 @@ export function TaskModal({ task, onClose }: TaskModalProps) {
             description: description.trim(),
             type,
             priority: parseInt(priority, 10),
+            origin,
             tabIds: currentTabId ? [currentTabId] : [],
+            dependsOn,
           }),
         });
         if (!res.ok) {
@@ -120,6 +203,14 @@ export function TaskModal({ task, onClose }: TaskModalProps) {
                 <option value="4">P4 — Low</option>
               </select>
             </div>
+            <div className="form-group">
+              <label htmlFor="taskOrigin">Origin</label>
+              <select id="taskOrigin" value={origin} onChange={(e) => setOrigin(e.target.value)}>
+                <option value="user">User</option>
+                <option value="ai">AI</option>
+                <option value="user-assisted">User-Assisted</option>
+              </select>
+            </div>
           </div>
           {isEditing && (
             <>
@@ -149,6 +240,60 @@ export function TaskModal({ task, onClose }: TaskModalProps) {
               </div>
             </>
           )}
+
+          {/* Dependency picker */}
+          <div className="form-group">
+            <label htmlFor="taskDependsOnInput">Depends on</label>
+            <div className="combobox-wrapper" id="taskDependsOnWrapper">
+              <div className="combobox-chips" id="taskDependsOnChips">
+                {Array.from(selectedDeps).map(depId => {
+                  const t = allTasks.find(x => x.id === depId);
+                  return (
+                    <span key={depId} className="combobox-chip">
+                      <span className="combobox-chip-text">#{depId} — {t?.title || 'Unknown'}</span>
+                      <button type="button" className="combobox-chip-remove" aria-label={`Remove dependency #${depId}`} onClick={() => removeDep(depId)}>×</button>
+                    </span>
+                  );
+                })}
+              </div>
+              <input
+                ref={depInputRef}
+                type="text"
+                id="taskDependsOnInput"
+                className="combobox-input"
+                placeholder="Search by title or #id..."
+                autoComplete="off"
+                role="combobox"
+                aria-expanded={depListVisible}
+                aria-controls="taskDependsOnList"
+                value={depQuery}
+                onChange={(e) => {
+                  setDepQuery(e.target.value);
+                  setDepListVisible(e.target.value.trim().length > 0);
+                  setHighlightIndex(-1);
+                }}
+                onFocus={() => { if (depQuery.trim()) setDepListVisible(true); }}
+                onBlur={() => { setTimeout(() => setDepListVisible(false), 150); }}
+                onKeyDown={handleDepKeyDown}
+              />
+              {depListVisible && filteredTasks.length > 0 && (
+                <ul ref={depListRef} className="combobox-listbox" id="taskDependsOnList" role="listbox">
+                  {filteredTasks.map((t, idx) => (
+                    <li
+                      key={t.id}
+                      className={`combobox-option${idx === highlightIndex ? ' highlighted' : ''}`}
+                      role="option"
+                      aria-selected={idx === highlightIndex}
+                      onMouseDown={(e) => { e.preventDefault(); selectDep(t.id); }}
+                    >
+                      #{t.id} — {t.title}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+
           {error && <div className="form-error">{error}</div>}
           <div className="form-actions">
             {isEditing && <button type="button" className="btn btn-danger" onClick={handleDelete}>Delete</button>}

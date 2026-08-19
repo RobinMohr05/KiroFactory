@@ -8,19 +8,15 @@ export function Header() {
   const { toggleTheme } = useTheme();
   const [showSettings, setShowSettings] = useState(false);
 
-  const isLocalhost = ['localhost', '127.0.0.1', '::1'].includes(window.location.hostname);
-
   return (
     <>
       <header className="header">
         <span className="logo">Vibe<span className="logo-accent">code</span> Heaven</span>
         <div className="header-actions">
-          {isLocalhost && (
-            <div className="connection-status" id="connectionStatus" title={connected ? 'Connected' : 'Disconnected'}>
-              <span className={`status-dot${connected ? ' connected' : ''}`} id="statusDot"></span>
-              <span className="status-text" id="statusText">{connected ? 'Connected' : 'Disconnected'}</span>
-            </div>
-          )}
+          <div className="connection-status" id="connectionStatus" title={connected ? 'Connected' : 'Disconnected'}>
+            <span className={`status-dot${connected ? ' connected' : ''}`} id="statusDot"></span>
+            <span className="status-text" id="statusText">{connected ? 'Connected' : 'Disconnected'}</span>
+          </div>
           <button className="theme-toggle" onClick={toggleTheme} title="Toggle dark mode" aria-label="Toggle dark mode">
             <svg className="theme-icon-light" width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
             <svg className="theme-icon-dark" width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
