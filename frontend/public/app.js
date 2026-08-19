@@ -1421,12 +1421,14 @@ async function populateTaskDependsOnSelect(task) {
   function getFilteredTasks(query) {
     const q = query.toLowerCase().trim();
     if (!q) return [];
+    // Strip leading # for ID matching (placeholder shows "#id" format)
+    const idQuery = q.startsWith('#') ? q.slice(1) : q;
     return allUserTasks
       .filter(t => {
         if (t.id === currentTaskId) return false; // can't depend on self
         if (selected.has(t.id)) return false; // already selected
         // Match against title (case-insensitive substring) or ID
-        return t.title.toLowerCase().includes(q) || String(t.id).includes(q);
+        return t.title.toLowerCase().includes(q) || String(t.id).includes(idQuery);
       })
       .sort((a, b) => a.id - b.id)
       .slice(0, 20); // limit results for performance
