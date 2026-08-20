@@ -222,6 +222,68 @@ describe("GET /api/usage — route validation", () => {
   });
 });
 
+describe("GET /api/usage — response shape matches frontend expectations", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns dailyBreakdown and sessionBreakdown fields (not 'daily' and 'sessions')", async () => {
+    const mockData = [
+      { sessionId: 1, sessionName: "Dev Agent", date: "2026-08-20", totalCredits: 1.5, totalCostEur: 0.06, turnCount: 10 },
+    ];
+    (getTurnsByUserAndPeriod as any).mockResolvedValue(mockData);
+
+    const app = createApp();
+    const res = await request(app).get("/api/usage?from=2026-08-20&to=2026-08-21");
+    expect(res.status).toBe(200);
+
+    // The frontend (UsagePanel.tsx) expects these exact field names
+    expect(res.body).toHaveProperty("dailyBreakdown");
+    expect(res.body).toHaveProperty("sessionBreakdown");
+    expect(res.body).toHaveProperty("totalCredits");
+    expect(res.body).toHaveProperty("totalCostEur");
+
+    // Must NOT have the old field names that cause the frontend to crash
+    expect(res.body).not.toHaveProperty("daily");
+    expect(res.body).not.toHaveProperty("sessions");
+  });
+
+  it("dailyBreakdown items have date, credits, and costEur fields", async () => {
+    const mockData = [
+      { sessionId: 1, sessionName: "Dev Agent", date: "2026-08-20", totalCredits: 1.5, totalCostEur: 0.06, turnCount: 10 },
+    ];
+    (getTurnsByUserAndPeriod as any).mockResolvedValue(mockData);
+
+    const app = createApp();
+    const res = await request(app).get("/api/usage?from=2026-08-20&to=2026-08-21");
+    expect(res.status).toBe(200);
+
+    expect(res.body.dailyBreakdown).toHaveLength(1);
+    expect(res.body.dailyBreakdown[0]).toHaveProperty("date", "2026-08-20");
+    expect(res.body.dailyBreakdown[0]).toHaveProperty("credits");
+    expect(res.body.dailyBreakdown[0]).toHaveProperty("costEur");
+  });
+
+  it("sessionBreakdown items have expected fields for frontend rendering", async () => {
+    const mockData = [
+      { sessionId: 1, sessionName: "Dev Agent", date: "2026-08-20", totalCredits: 1.5, totalCostEur: 0.06, turnCount: 10 },
+    ];
+    (getTurnsByUserAndPeriod as any).mockResolvedValue(mockData);
+
+    const app = createApp();
+    const res = await request(app).get("/api/usage?from=2026-08-20&to=2026-08-21");
+    expect(res.status).toBe(200);
+
+    expect(res.body.sessionBreakdown).toHaveLength(1);
+    const session = res.body.sessionBreakdown[0];
+    expect(session).toHaveProperty("sessionId", 1);
+    expect(session).toHaveProperty("sessionName", "Dev Agent");
+    expect(session).toHaveProperty("credits");
+    expect(session).toHaveProperty("costEur");
+    expect(session).toHaveProperty("turns");
+  });
+});
+
 describe("GET /api/usage/current-month", () => {
   beforeEach(() => {
     vi.clearAllMocks();

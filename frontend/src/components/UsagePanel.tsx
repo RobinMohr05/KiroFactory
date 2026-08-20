@@ -11,13 +11,13 @@ interface DailyBreakdown {
 interface SessionBreakdown {
   sessionId: number;
   sessionName: string;
-  agent: string;
-  tabName: string | null;
+  agent?: string;
+  tabName?: string | null;
   credits: number;
   costEur: number;
   turns: number;
-  firstTurn: string;
-  lastTurn: string;
+  firstTurn?: string;
+  lastTurn?: string;
 }
 
 interface UsageData {
@@ -80,16 +80,16 @@ export function UsagePanel() {
   }, [fetchUsage]);
 
   const sortedSessions = useMemo(() => {
-    if (!usageData) return [];
+    if (!usageData || !usageData.sessionBreakdown) return [];
     const sorted = [...usageData.sessionBreakdown];
     sorted.sort((a, b) => {
       let cmp = 0;
       switch (sortKey) {
         case 'sessionName':
-          cmp = a.sessionName.localeCompare(b.sessionName);
+          cmp = (a.sessionName ?? '').localeCompare(b.sessionName ?? '');
           break;
         case 'agent':
-          cmp = a.agent.localeCompare(b.agent);
+          cmp = (a.agent ?? '').localeCompare(b.agent ?? '');
           break;
         case 'tabName':
           cmp = (a.tabName ?? '').localeCompare(b.tabName ?? '');
@@ -104,7 +104,7 @@ export function UsagePanel() {
           cmp = a.turns - b.turns;
           break;
         case 'firstTurn':
-          cmp = a.firstTurn.localeCompare(b.firstTurn);
+          cmp = (a.firstTurn ?? '').localeCompare(b.firstTurn ?? '');
           break;
       }
       return sortDir === 'asc' ? cmp : -cmp;
@@ -127,7 +127,7 @@ export function UsagePanel() {
   };
 
   const maxCreditsPerDay = useMemo(() => {
-    if (!usageData || usageData.dailyBreakdown.length === 0) return 1;
+    if (!usageData || !usageData.dailyBreakdown || usageData.dailyBreakdown.length === 0) return 1;
     return Math.max(...usageData.dailyBreakdown.map(d => d.credits));
   }, [usageData]);
 
@@ -139,7 +139,7 @@ export function UsagePanel() {
   }, []);
 
   const dailyCreditsMap = useMemo(() => {
-    if (!usageData) return new Map<number, DailyBreakdown>();
+    if (!usageData || !usageData.dailyBreakdown) return new Map<number, DailyBreakdown>();
     const map = new Map<number, DailyBreakdown>();
     for (const d of usageData.dailyBreakdown) {
       // Parse day directly from YYYY-MM-DD string to avoid timezone issues
@@ -205,7 +205,7 @@ export function UsagePanel() {
         {/* Daily Bar Chart */}
         <div className="usage-chart-section">
           <h3 className="usage-section-title">Daily Breakdown</h3>
-          {(!usageData || usageData.dailyBreakdown.length === 0) ? (
+          {(!usageData || !usageData.dailyBreakdown || usageData.dailyBreakdown.length === 0) ? (
             <div className="usage-empty-chart">No usage data for this period.</div>
           ) : (
             <div className="usage-chart" role="img" aria-label="Daily credit consumption chart">
@@ -279,13 +279,15 @@ export function UsagePanel() {
                       onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') handleSessionClick(session.sessionId); }}
                     >
                       <td>{session.sessionName}</td>
-                      <td>{session.agent}</td>
+                      <td>{session.agent ?? '—'}</td>
                       <td>{session.tabName ?? '—'}</td>
                       <td>{session.credits.toFixed(2)}</td>
                       <td>EUR {session.costEur.toFixed(2)}</td>
                       <td>{session.turns}</td>
                       <td className="usage-date-range">
-                        {formatDateShort(session.firstTurn)} → {formatDateShort(session.lastTurn)}
+                        {session.firstTurn && session.lastTurn
+                          ? `${formatDateShort(session.firstTurn)} → ${formatDateShort(session.lastTurn)}`
+                          : '—'}
                       </td>
                     </tr>
                   ))}

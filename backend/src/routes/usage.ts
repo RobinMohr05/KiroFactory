@@ -92,19 +92,26 @@ router.get("/", async (req: Request, res: Response) => {
       }
     }
 
-    const daily = Array.from(dailyMap.entries()).map(([date, data]) => ({
+    const dailyBreakdown = Array.from(dailyMap.entries()).map(([date, data]) => ({
       date,
-      ...data,
+      credits: data.credits,
+      costEur: data.costEur,
     }));
 
-    const sessions = Array.from(sessionMap.values());
+    const sessionBreakdown = Array.from(sessionMap.values()).map((s) => ({
+      sessionId: s.sessionId,
+      sessionName: s.sessionName,
+      credits: s.credits,
+      costEur: s.costEur,
+      turns: s.turnCount,
+    }));
 
     res.json({
       totalCredits,
       totalCostEur,
       totalTurns,
-      daily,
-      sessions,
+      dailyBreakdown,
+      sessionBreakdown,
     });
   } catch (err) {
     log.error("route-error", {
