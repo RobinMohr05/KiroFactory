@@ -50,6 +50,16 @@ export function ViewTabs() {
           <span className="error-badge">{unreadErrorCount > 99 ? '99+' : unreadErrorCount}</span>
         )}
       </button>
+      <button
+        className={`tab${activeView === 'usage' ? ' active' : ''}`}
+        role="tab"
+        id="tab-usage"
+        aria-selected={activeView === 'usage'}
+        aria-controls="panel-usage"
+        onClick={() => setActiveView('usage')}
+      >
+        Usage
+      </button>
     </nav>
   );
 }
