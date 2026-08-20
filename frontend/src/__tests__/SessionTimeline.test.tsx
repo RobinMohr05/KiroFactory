@@ -379,4 +379,100 @@ describe('SessionTimeline', () => {
 
     expect(mockedApiFetch).toHaveBeenCalledWith('/api/sessions/2/turns');
   });
+
+  it('tool call header with output has tabIndex and responds to keyboard Enter', async () => {
+    mockedApiFetch.mockResolvedValue({
+      ok: true,
+      json: async () => [],
+    } as any);
+
+    const { container } = await act(async () => {
+      return render(<SessionTimeline sessionId={1} sessionStatus="running" />);
+    });
+
+    // Simulate a turn-start event
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('ws-session-turn-start', {
+        detail: { sessionId: 1, turnNumber: 1, startedAt: '2026-08-15T10:00:00Z' },
+      }));
+    });
+
+    // Simulate a tool call event with completion and output
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('ws-session-tool-call', {
+        detail: {
+          sessionId: 1,
+          turnNumber: 1,
+          toolCallId: 'tc-kb',
+          label: 'read_file',
+          icon: '📄',
+          status: 'running',
+        },
+      }));
+    });
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('ws-session-tool-call-update', {
+        detail: {
+          sessionId: 1,
+          turnNumber: 1,
+          toolCallId: 'tc-kb',
+          status: 'completed',
+          output: 'Some file output',
+          durationMs: 100,
+        },
+      }));
+    });
+
+    // The tool-call-header with output should have tabIndex=0
+    const header = container.querySelector('.tool-call-header[role="button"]');
+    expect(header).not.toBeNull();
+    expect(header!.getAttribute('tabindex')).toBe('0');
+
+    // Should expand on Enter keypress
+    fireEvent.keyDown(header!, { key: 'Enter' });
+    await waitFor(() => {
+      const expandedOutput = container.querySelector('.tool-call-output.expanded');
+      expect(expandedOutput).not.toBeNull();
+    });
+  });
+
+  it('does not wipe live turn data when initial fetch resolves after a turn-start event', async () => {
+    // Simulate a slow fetch that resolves AFTER a live turn-start event
+    let resolveFetch: (value: unknown) => void;
+    const fetchPromise = new Promise(resolve => { resolveFetch = resolve; });
+
+    mockedApiFetch.mockReturnValue(fetchPromise as any);
+
+    await act(async () => {
+      render(<SessionTimeline sessionId={1} sessionStatus="running" />);
+    });
+
+    // A live turn-start arrives while the fetch is still pending
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('ws-session-turn-start', {
+        detail: { sessionId: 1, turnNumber: 5, startedAt: '2026-08-20T10:00:00Z', taskTitle: 'Live turn' },
+      }));
+    });
+
+    // The live turn should be visible
+    expect(screen.getByText(/Turn 5/)).toBeInTheDocument();
+
+    // Now the fetch resolves with historical turns (1-4)
+    await act(async () => {
+      resolveFetch!({
+        ok: true,
+        json: async () => [
+          { number: 1, startedAt: '2026-08-20T09:00:00Z', endedAt: '2026-08-20T09:01:00Z', credits: 0.5, costEur: 0.02, verdict: null, taskId: null, taskTitle: null, toolCallCount: 1, hasChanges: false, prUrl: null, branchName: null, durationMs: 60000, sessionId: 1 },
+          { number: 2, startedAt: '2026-08-20T09:01:00Z', endedAt: '2026-08-20T09:02:00Z', credits: 0.5, costEur: 0.02, verdict: null, taskId: null, taskTitle: null, toolCallCount: 1, hasChanges: false, prUrl: null, branchName: null, durationMs: 60000, sessionId: 1 },
+        ],
+      });
+    });
+
+    // The live turn (Turn 5) should still be present — not wiped
+    expect(screen.getByText(/Turn 5/)).toBeInTheDocument();
+    // Historical turns should also be present
+    expect(screen.getByText(/Turn 1/)).toBeInTheDocument();
+    expect(screen.getByText(/Turn 2/)).toBeInTheDocument();
+  });
 });

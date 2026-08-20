@@ -174,6 +174,34 @@ describe('SessionsPanel - Session detail header enhancements', () => {
     expect(screen.getByText(/7 turns/i)).toBeInTheDocument();
   });
 
+  it('shows current task as a clickable element with onClick handler', () => {
+    const mockSetActiveView = vi.fn();
+    mockUseApp({
+      sessions: [{
+        id: 1,
+        name: 'Dev Agent',
+        agent: 'developer-agent',
+        status: 'running',
+        currentTaskId: 42,
+        currentTaskTitle: 'Fix the login bug',
+        totalCreditsUsed: 1.0,
+        turnCount: 3,
+        tabIds: [1],
+      }],
+      activeSessionId: 1,
+      setActiveView: mockSetActiveView,
+    });
+
+    render(<SessionsPanel />);
+
+    const taskLink = screen.getByTestId('session-current-task-link');
+    expect(taskLink).toBeInTheDocument();
+
+    // The task link should have an onClick handler and be keyboard accessible
+    taskLink.click();
+    expect(mockSetActiveView).toHaveBeenCalledWith('boards');
+  });
+
   it('shows total credits in the session detail header', () => {
     mockUseApp({
       sessions: [{

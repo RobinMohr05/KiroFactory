@@ -7,7 +7,7 @@ import { useConfirmAction } from '../hooks/useConfirmAction';
 import type { Session, OutputEntry, SessionActivity } from '../types';
 
 export function SessionsPanel() {
-  const { sessions, setSessions, currentTabId, activeSessionId, setActiveSessionId, tabs, pendingOps, errors } = useApp();
+  const { sessions, setSessions, currentTabId, activeSessionId, setActiveSessionId, tabs, pendingOps, errors, setActiveView } = useApp();
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [editingSession, setEditingSession] = useState<Session | null>(null);
   const [output, setOutput] = useState<OutputEntry[]>([]);
@@ -364,7 +364,14 @@ export function SessionsPanel() {
                     </span>
                   )}
                   {activeSession.currentTaskId && activeSession.currentTaskTitle && (
-                    <span className="session-meta-task" data-testid="session-current-task-link">
+                    <span
+                      className="session-meta-task"
+                      data-testid="session-current-task-link"
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setActiveView('boards')}
+                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setActiveView('boards'); } }}
+                    >
                       📋 <strong>#{activeSession.currentTaskId}</strong> {activeSession.currentTaskTitle}
                     </span>
                   )}

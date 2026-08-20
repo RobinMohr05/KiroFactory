@@ -47,7 +47,13 @@ export function SessionTimeline({ sessionId, sessionStatus }: SessionTimelinePro
           toolCalls: [],
           isActive: false,
         }));
-        setTurns(mapped);
+        // Merge fetched historical turns with any live turns that arrived
+        // while the fetch was in-flight (avoiding duplicates by turn number).
+        setTurns(prev => {
+          const fetchedNumbers = new Set(mapped.map(t => t.number));
+          const liveTurns = prev.filter(t => !fetchedNumbers.has(t.number));
+          return [...mapped, ...liveTurns];
+        });
       } catch {
         // ignore fetch errors
       }
@@ -78,7 +84,10 @@ export function SessionTimeline({ sessionId, sessionStatus }: SessionTimelinePro
       isActive: true,
     };
 
-    setTurns(prev => [...prev, newTurn]);
+    setTurns(prev => {
+      if (prev.some(t => t.number === newTurn.number)) return prev;
+      return [...prev, newTurn];
+    });
   }, [sessionId]);
 
   // Handle turn-end events
@@ -190,7 +199,7 @@ export function SessionTimeline({ sessionId, sessionStatus }: SessionTimelinePro
     });
   };
 
-  if (loading) {
+  if (loading && turns.length === 0) {
     return <div className="timeline-container"><div className="timeline-loading">Loading timeline...</div></div>;
   }
 
@@ -261,7 +270,9 @@ export function SessionTimeline({ sessionId, sessionStatus }: SessionTimelinePro
                 <div
                   className="tool-call-header"
                   onClick={() => tc.output && toggleToolCallOutput(tc.id)}
+                  onKeyDown={(e) => { if (tc.output && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); toggleToolCallOutput(tc.id); } }}
                   role={tc.output ? 'button' : undefined}
+                  tabIndex={tc.output ? 0 : undefined}
                   aria-expanded={tc.output ? expandedToolCalls.has(tc.id) : undefined}
                 >
                   <span className="tool-call-icon">{tc.icon}</span>

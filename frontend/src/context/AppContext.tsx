@@ -290,7 +290,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           const next = [...prev];
           next[idx] = {
             ...next[idx],
-            turnCount: message.turnNumber,
+            turnCount: (next[idx].turnCount ?? 0) + 1,
             ...(message.taskTitle ? { currentTaskTitle: message.taskTitle } : {}),
             ...(message.taskId ? { currentTaskId: message.taskId } : {}),
           };
