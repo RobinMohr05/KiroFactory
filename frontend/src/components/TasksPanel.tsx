@@ -4,6 +4,8 @@ import { apiFetch, truncateUrl } from '../utils/api';
 import { TaskCard } from './TaskCard';
 import { TaskModal } from './TaskModal';
 import { TaskPlannerModal } from './TaskPlannerModal';
+import { MobileTaskList } from './MobileTaskList';
+import { useMobileBreakpoint } from '../hooks/useMobileBreakpoint';
 import type { Task, TaskState } from '../types';
 
 const COLUMNS: { state: TaskState; label: string }[] = [
@@ -20,6 +22,7 @@ export function TasksPanel() {
   const { tasks, setTasks, currentSort, setCurrentSort, currentTabId, tabs, fetchTabTasks, pendingOps, boardSessions, boardAgents, setActiveSessionId, setActiveView, highlightedTaskId, setHighlightedTaskId } = useApp();
   const [editingTask, setEditingTask] = useState<Task | null | undefined>(undefined);
   const [showPlanner, setShowPlanner] = useState(false);
+  const isMobile = useMobileBreakpoint();
   // undefined = no modal, null = create new, Task = editing
 
   // Auto-clear highlighted task after animation (2s)
@@ -119,31 +122,35 @@ export function TasksPanel() {
         )}
       </div>
 
-      <div className="kanban">
-        {COLUMNS.map(({ state, label }) => {
-          const columnTasks = sortedTasks(state);
-          return (
-            <div
-              key={state}
-              className="column"
-              data-state={state}
-              onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; e.currentTarget.classList.add('drag-over'); }}
-              onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) e.currentTarget.classList.remove('drag-over'); }}
-              onDrop={(e) => { e.currentTarget.classList.remove('drag-over'); handleDrop(e, state); }}
-            >
-              <div className="column-header">
-                <h2>{label}</h2>
-                <span className="column-count" id={`count-${state}`}>{columnTasks.length}</span>
+      {isMobile ? (
+        <MobileTaskList tasks={tasks} onTaskClick={(task) => setEditingTask(task)} />
+      ) : (
+        <div className="kanban">
+          {COLUMNS.map(({ state, label }) => {
+            const columnTasks = sortedTasks(state);
+            return (
+              <div
+                key={state}
+                className="column"
+                data-state={state}
+                onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; e.currentTarget.classList.add('drag-over'); }}
+                onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) e.currentTarget.classList.remove('drag-over'); }}
+                onDrop={(e) => { e.currentTarget.classList.remove('drag-over'); handleDrop(e, state); }}
+              >
+                <div className="column-header">
+                  <h2>{label}</h2>
+                  <span className="column-count" id={`count-${state}`}>{columnTasks.length}</span>
+                </div>
+                <div className="column-cards" id={`cards-${state}`}>
+                  {columnTasks.map(task => (
+                    <TaskCard key={task.id} task={task} onClick={() => setEditingTask(task)} highlighted={highlightedTaskId === task.id} />
+                  ))}
+                </div>
               </div>
-              <div className="column-cards" id={`cards-${state}`}>
-                {columnTasks.map(task => (
-                  <TaskCard key={task.id} task={task} onClick={() => setEditingTask(task)} highlighted={highlightedTaskId === task.id} />
-                ))}
-              </div>
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      )}
 
       {(boardSessions.length > 0 || boardAgents.length > 0) && (
         <div className="board-members">
