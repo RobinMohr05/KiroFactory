@@ -33,6 +33,7 @@ import {
 import { getUserKiroApiKey, getUserById } from "./db/users.js";
 import { getAllDecryptedCredentials, getDecryptedCredential } from "./db/credentials.js";
 import { isDbAvailable } from "./db/connection.js";
+import { getTaskAutoMergePrs, areAllGroupTasksDone } from "./db/tasks.js";
 import { recordError } from "./error-store.js";
 import { log, logSessionEvent, logWorkerEvent, toErrorFields } from "./logger.js";
 import { getAgentTabs, getTabById } from "./db/tabs.js";
@@ -1050,8 +1051,8 @@ async function getAgentStageStates(agentName: string): Promise<AgentStageStates>
  * implementation prompt regardless of kind — see buildReviewPrompt's doc
  * comment for the bug this fixes.
  */
-function buildTurnPrompt(kind: "editor" | "inspector", task: ClaimedTask, cwd: string): string {
-  return kind === "inspector" ? buildReviewPrompt(task, cwd) : buildDevPrompt(task, cwd);
+function buildTurnPrompt(kind: "editor" | "inspector", task: ClaimedTask, cwd: string, autoMergePrs?: boolean): string {
+  return kind === "inspector" ? buildReviewPrompt(task, cwd, autoMergePrs) : buildDevPrompt(task, cwd);
 }
 
 async function runLoopMode(
@@ -1162,7 +1163,17 @@ async function runLoopMode(
     }
 
     // Build and send the prompt (review prompt for inspector agents, dev prompt otherwise)
-    const prompt = buildTurnPrompt(stages.kind, task, meta.cwd);
+    // Look up autoMergePrs only for the QA agent (final pipeline stage) — the code-reviewer
+    // should never see the auto-merge prompt section or have the pr-complete tool.
+    let autoMergePrs = false;
+    if (stages.kind === "inspector" && meta.agent === "qa-improvement-agent") {
+      try {
+        autoMergePrs = await getTaskAutoMergePrs(task.id);
+      } catch {
+        // Non-critical — default to no auto-merge
+      }
+    }
+    const prompt = buildTurnPrompt(stages.kind, task, meta.cwd, autoMergePrs);
 
     // Reset per-turn verdict tracking before each prompt
     managed.turnVerdict = null;
@@ -2044,13 +2055,13 @@ interface WorkerPromptResult {
 /**
  * Send a prompt to an ACA worker and wait for prompt-done response.
  */
-async function streamPromptAca(managed: ManagedSession, text: string, taskMeta?: { id: number; title: string; type: string; description: string; files: string[]; branch?: string | null; pullRequestUrl?: string | null; siblingTasks?: Array<{ id: number; title: string; type: string; description: string; pullRequestUrl: string | null }> }): Promise<WorkerPromptResult> {
+async function streamPromptAca(managed: ManagedSession, text: string, taskMeta?: { id: number; title: string; type: string; description: string; files: string[]; branch?: string | null; pullRequestUrl?: string | null; siblingTasks?: Array<{ id: number; title: string; type: string; description: string; pullRequestUrl: string | null }>; autoMergePrs?: boolean; allGroupTasksDone?: boolean }): Promise<WorkerPromptResult> {
   if (!isWorkerConnected(managed.meta.id)) {
     throw new Error("Worker is not connected");
   }
 
   // Send the prompt to the worker (with optional task metadata for branch/commit/PR)
-  const workerTaskMeta = taskMeta ? { id: taskMeta.id, title: taskMeta.title, type: taskMeta.type, description: taskMeta.description, files: taskMeta.files, branch: taskMeta.branch ?? null, pullRequestUrl: taskMeta.pullRequestUrl ?? null, siblingTasks: taskMeta.siblingTasks } : undefined;
+  const workerTaskMeta = taskMeta ? { id: taskMeta.id, title: taskMeta.title, type: taskMeta.type, description: taskMeta.description, files: taskMeta.files, branch: taskMeta.branch ?? null, pullRequestUrl: taskMeta.pullRequestUrl ?? null, siblingTasks: taskMeta.siblingTasks, autoMergePrs: taskMeta.autoMergePrs, allGroupTasksDone: taskMeta.allGroupTasksDone } : undefined;
   const sent = sendWorkerPrompt(managed.meta.id, text, workerTaskMeta);
   if (!sent) {
     throw new Error("Failed to send prompt to worker");
@@ -2282,7 +2293,6 @@ async function runLoopModeAca(
 
     setActivity(managed, { type: "working", detail: `Working on: ${task.title}` });
 
-    const prompt = buildTurnPrompt(stages.kind, task, ACA_WORKSPACE_PATH);
     let success = true;
     let promptResult: WorkerPromptResult = {};
     let failureReason = "";
@@ -2377,8 +2387,39 @@ async function runLoopModeAca(
       }
     }
 
+    // Compute autoMergePrs and allGroupTasksDone for the pr-complete MCP server.
+    // Only relevant for the QA agent (final pipeline stage) — the code-reviewer
+    // should never get the auto-merge prompt section or the pr-complete tool.
+    let autoMergePrs = false;
+    // Default: ungrouped tasks can merge freely (true); grouped tasks must verify
+    // all siblings are done before merging (false). This ensures that if
+    // areAllGroupTasksDone() throws, a grouped task's merge is safely deferred
+    // rather than prematurely allowed.
+    let allGroupTasksDone = !task.groupId;
+    if (meta.agent === "qa-improvement-agent") {
+      try {
+        autoMergePrs = await getTaskAutoMergePrs(task.id);
+        if (task.groupId) {
+          allGroupTasksDone = await areAllGroupTasksDone(task.groupId, task.id);
+        }
+      } catch (err) {
+        // Non-critical — if lookup fails, default to no auto-merge for grouped
+        // tasks (allGroupTasksDone stays false), which defers the merge safely.
+        // For ungrouped tasks, autoMergePrs stays false so no merge is attempted.
+        const msg = err instanceof Error ? err.message : String(err);
+        appendOutput(managed, {
+          timestamp: now(),
+          stream: "stderr",
+          text: `Warning: could not look up autoMergePrs/group status: ${msg}`,
+        });
+      }
+    }
+
+    // Build the prompt after autoMergePrs is known (inspector agents need it for the auto-merge section)
+    const prompt = buildTurnPrompt(stages.kind, task, ACA_WORKSPACE_PATH, autoMergePrs);
+
     try {
-      promptResult = await streamPromptAca(managed, prompt, { id: task.id, title: task.title, type: task.type, description: task.description, files: task.files, branch: task.branch, pullRequestUrl: task.pullRequestUrl, siblingTasks });
+      promptResult = await streamPromptAca(managed, prompt, { id: task.id, title: task.title, type: task.type, description: task.description, files: task.files, branch: task.branch, pullRequestUrl: task.pullRequestUrl, siblingTasks, autoMergePrs, allGroupTasksDone });
     } catch (err) {
       success = false;
       const msg = err instanceof Error ? err.message : String(err);
