@@ -2,13 +2,17 @@ import { useState, useEffect, useCallback } from 'react';
 import { useApp } from '../context/AppContext';
 import { useTheme } from '../hooks/useTheme';
 import { SettingsModal } from './SettingsModal';
+import { MobileDrawer } from './MobileDrawer';
 import { apiFetch } from '../utils/api';
 
 export function Header() {
-  const { connected, logout, setActiveView } = useApp();
+  const { logout, setActiveView } = useApp();
   const { toggleTheme } = useTheme();
   const [showSettings, setShowSettings] = useState(false);
   const [monthlyCredits, setMonthlyCredits] = useState<number>(0);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+
+  const handleDrawerClose = useCallback(() => setDrawerOpen(false), []);
 
   const fetchMonthlyCredits = useCallback(async () => {
     try {
@@ -44,12 +48,19 @@ export function Header() {
   return (
     <>
       <header className="header">
-        <span className="logo">Vibe<span className="logo-accent">code</span> Heaven</span>
+        <div className="header-left">
+          <button
+            className="hamburger-btn"
+            onClick={() => setDrawerOpen(true)}
+            aria-label="Open menu"
+          >
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M3 6h18M3 12h18M3 18h18" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+            </svg>
+          </button>
+          <span className="logo">Vibe<span className="logo-accent">code</span> Heaven</span>
+        </div>
         <div className="header-actions">
-          <div className="connection-status" id="connectionStatus" title={connected ? 'Connected' : 'Disconnected'}>
-            <span className={`status-dot${connected ? ' connected' : ''}`} id="statusDot"></span>
-            <span className="status-text" id="statusText">{connected ? 'Connected' : 'Disconnected'}</span>
-          </div>
           <button
             className="usage-badge"
             onClick={handleUsageClick}
@@ -73,6 +84,11 @@ export function Header() {
           </button>
         </div>
       </header>
+      <MobileDrawer
+        open={drawerOpen}
+        onClose={handleDrawerClose}
+        monthlyCredits={monthlyCredits}
+      />
       {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
     </>
   );
