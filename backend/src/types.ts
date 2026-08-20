@@ -153,6 +153,11 @@ export interface Tab {
    */
   gitProvider: GitProvider | null;
   mcpConfig: TabMcpConfig;
+  /**
+   * Whether the QA agent should automatically merge approved PRs and delete
+   * their source branches. Defaults to false.
+   */
+  autoMergePrs: boolean;
   columns: string[];
   sortOrder: number;
   userId: number;

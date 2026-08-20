@@ -127,6 +127,7 @@ async function attachTabs(tx: ManagedTransaction, tasks: Task[]): Promise<void> 
       repositoryUrl: (tabProps.repositoryUrl as string) || null,
       gitProvider: isGitProvider(gitProvider) ? gitProvider : null,
       mcpConfig: { ...DEFAULT_MCP_CONFIG },
+      autoMergePrs: !!(tabProps.autoMergePrs),
       columns: [],
       sortOrder: (tabProps.sortOrder as number) ?? 0,
       userId: ownerId ?? 0,
@@ -542,5 +543,48 @@ export async function getTasksByGroupId(
         pullRequestUrl: (props.pullRequestUrl as string) || null,
       };
     });
+  });
+}
+
+/**
+ * Check if a task's tab has autoMergePrs enabled.
+ * Returns true if ANY of the task's tabs has autoMergePrs = true.
+ */
+export async function getTaskAutoMergePrs(taskId: number): Promise<boolean> {
+  return readQuery(async (tx: ManagedTransaction) => {
+    const result = await tx.run(
+      `MATCH (t:Task {id: $taskId})-[:IN_TAB]->(tab:Tab)
+       WHERE tab.autoMergePrs = true
+       RETURN count(tab) > 0 AS enabled`,
+      { taskId }
+    );
+    if (result.records.length === 0) return false;
+    return result.records[0].get("enabled") as boolean;
+  });
+}
+
+/**
+ * Check if all tasks in a group are done (or will be done once the current task resolves).
+ * "Done" means state = "done" OR the task is the current one being resolved.
+ *
+ * @param groupId The group identifier
+ * @param currentTaskId The task that is about to be resolved (treated as "done")
+ * @returns true if all tasks in the group are done or are the current task
+ */
+export async function areAllGroupTasksDone(groupId: string, currentTaskId: number): Promise<boolean> {
+  return readQuery(async (tx: ManagedTransaction) => {
+    const result = await tx.run(
+      `MATCH (t:Task {groupId: $groupId})
+       WHERE t.id <> $currentTaskId AND t.state <> 'done'
+       RETURN count(t) AS notDoneCount`,
+      { groupId, currentTaskId }
+    );
+    if (result.records.length === 0) return true;
+    const count = result.records[0].get("notDoneCount");
+    // Neo4j Integer: use toNumber() if it's an Integer object
+    const num = typeof count === "object" && count !== null && "toNumber" in count
+      ? count.toNumber()
+      : Number(count);
+    return num === 0;
   });
 }

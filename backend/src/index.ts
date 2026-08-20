@@ -6,6 +6,7 @@ import cors from "cors";
 import cookieParser from "cookie-parser";
 import { createServer } from "http";
 import path from "path";
+import fs from "fs";
 import { fileURLToPath } from "url";
 
 import { setupWebSocket } from "./websocket-handler.js";
@@ -38,10 +39,15 @@ const corsOrigin = process.env.NODE_ENV === "production"
   ? false // Same-origin only — no cross-origin requests needed
   : true; // Development: allow all origins for convenience
 app.use(cors({ origin: corsOrigin }));
+// Route-specific body-parser limit for task-planner (image uploads send base64 in JSON,
+// easily exceeding the default 100KB). Must be registered BEFORE the global parser so
+// that large payloads to this path are parsed here rather than rejected by the default.
+app.use("/api/task-planner", express.json({ limit: "15mb" }));
 app.use(express.json());
 app.use(cookieParser());
 
-// Serve static files from frontend/public directory
+// Serve static files: Vite build output first, then legacy public/ (login.html, impressum.html, etc.)
+app.use(express.static(path.join(__dirname, "../../frontend/dist")));
 app.use(express.static(path.join(__dirname, "../../frontend/public")));
 
 // API error logger — attaches a `finish` listener to detect 5xx responses for Azure Monitor
@@ -93,6 +99,26 @@ app.use("/api/usage", requireDb, usageRouter);
 // Error-handling middleware — catches unhandled errors from route handlers and logs them
 // as structured JSON for Azure Monitor (must be registered AFTER all route handlers).
 app.use(uncaughtErrorLogger);
+
+// SPA catch-all: serve the React app's index.html for any non-API, non-static GET request.
+// This must be AFTER all API routes and static middleware, but BEFORE the HTTP server setup.
+app.get("*", (req, res) => {
+  // Don't intercept API paths or known static files (login.html, impressum.html)
+  if (req.path.startsWith("/api/") || req.path.startsWith("/internal/")) {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
+  const distIndex = path.join(__dirname, "../../frontend/dist/index.html");
+  res.sendFile(distIndex, (err) => {
+    if (err) {
+      // Fallback to legacy public/index.html if Vite build not available
+      const publicIndex = path.join(__dirname, "../../frontend/public/index.html");
+      res.sendFile(publicIndex, (err2) => {
+        if (err2) res.status(404).send("Not found");
+      });
+    }
+  });
+});
 
 // Create HTTP server and WebSocket servers.
 //
@@ -162,6 +188,15 @@ async function start(): Promise<void> {
       port: PORT,
       msg: `Vibecode Heaven server running on http://localhost:${PORT}`,
     });
+
+    // Check if the React frontend build exists
+    const distIndex = path.join(__dirname, "../../frontend/dist/index.html");
+    if (!fs.existsSync(distIndex)) {
+      log.warn("frontend-dist-missing", {
+        component: "startup",
+        msg: "frontend/dist/index.html not found — serving legacy frontend/public/index.html as fallback. Run 'npm run build -w frontend' to build the React frontend.",
+      });
+    }
   });
 
   // ACA preflight: verify the managed identity can operate the worker job.

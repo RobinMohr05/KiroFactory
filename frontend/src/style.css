@@ -848,7 +848,7 @@ textarea:focus {
   padding: 0.85rem 1rem 0.85rem 1.25rem;
   cursor: pointer;
   transition: transform 0.15s, box-shadow 0.15s;
-  overflow: visible;
+  overflow: hidden;
 }
 
 .task-card::before {
@@ -894,8 +894,6 @@ textarea:focus {
   line-height: 1.4;
   margin-bottom: 0.5rem;
   color: var(--text-primary);
-  word-wrap: break-word;
-  overflow-wrap: break-word;
 }
 
 .card-meta {

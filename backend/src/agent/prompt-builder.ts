@@ -40,9 +40,28 @@ Once all comments are addressed and resolved, the implementation will be re-revi
 `
     : "";
 
+  // Branch setup section: when the task has a branch name, instruct the agent to
+  // manage its own branch (create or checkout+merge). This gives the editor agent
+  // control over branch state, enabling intelligent conflict resolution.
+  const branchSetupSection = task.branch
+    ? `
+## BRANCH SETUP
+
+Your task branch is: \`${task.branch}\`
+Base branch: \`develop\` (or detect with \`git symbolic-ref refs/remotes/origin/HEAD\`)
+
+Before starting any work:
+1. Check if the branch already exists remotely: \`git ls-remote --heads origin ${task.branch}\`
+2. If it exists: \`git fetch origin ${task.branch}\` then \`git checkout -B ${task.branch} origin/${task.branch}\` (this ensures you have the latest remote version, even if a stale local branch exists from a previous attempt in this container). Then run \`git merge origin/develop\` — if there are merge conflicts, resolve them intelligently by reading both sides and choosing the correct resolution, then commit the merge.
+3. If it does NOT exist: \`git checkout -B ${task.branch}\` (creates or resets the branch from your current position, which is the latest develop).
+
+Always ensure you're on \`${task.branch}\` before making any changes for the task.
+`
+    : "";
+
   return `You are the Developer Implementation Agent. You have been ASSIGNED a specific task.
 Do NOT pick a task yourself — this task has already been selected and claimed for you.
-${reworkSection}
+${branchSetupSection}${reworkSection}
 ## YOUR ASSIGNED TASK
 
 **Task ID:** ${task.id}
@@ -71,9 +90,9 @@ ${task.pullRequestUrl
 - If the task cannot be completed (missing dependencies, unclear requirements), explain why and exit.
 - Do NOT introduce unrelated refactoring or improvements beyond what the task requires.
 - Do NOT modify test files unless the task specifically asks for test changes.
-- Do NOT run git commit, git push, or create pull requests. The orchestrator handles git operations automatically after your work is complete.
-- Do NOT run any git commands at all (no git add, commit, push, branch, checkout, pull request). The orchestrator manages ALL git operations.
-- Do NOT create or switch branches. You are already on the correct branch.
+${task.branch
+  ? "- You MUST run the git commands described in the BRANCH SETUP section above (ls-remote, fetch, checkout, merge). If `git merge origin/develop` results in conflicts, resolve them and run `git add` + `git commit` to finalize the merge — this is the ONLY situation where you should commit. Do NOT run `git commit` for your own implementation work, `git push`, or create pull requests — those are handled by the orchestrator after your turn ends."
+  : "- Do NOT run git commit, git push, or create pull requests. The orchestrator handles git operations automatically after your work is complete.\n- Do NOT run any git commands at all (no git add, commit, push, branch, checkout, pull request). The orchestrator manages ALL git operations.\n- Do NOT create or switch branches. You are already on the correct branch."}
 
 ## WORKING DIRECTORY
 
@@ -99,11 +118,27 @@ This is the checked-out repository where your task should be implemented. All fi
  * configured, so inspector agents were told to implement the very feature
  * they were supposed to be reviewing — contradicting their own system prompt.
  */
-export function buildReviewPrompt(task: ClaimedTask, cwd: string): string {
+export function buildReviewPrompt(task: ClaimedTask, cwd: string, autoMergePrs?: boolean): string {
   const filesList =
     task.files.length > 0
       ? task.files.map((f) => `  - ${f}`).join("\n")
       : "  (no specific files listed — investigate based on the diff)";
+
+  const autoMergeSection = autoMergePrs
+    ? `
+
+## AUTO-MERGE ENABLED
+
+This tab has automatic PR completion enabled. If your QA finds ZERO defects:
+1. Call \`complete_pull_request\` with a reason summarizing your QA pass.
+2. If \`complete_pull_request\` succeeds: call \`report_verdict\` with verdict "no_action_needed" and mention the PR was merged.
+3. If \`complete_pull_request\` returns a merge_conflict error: first post a review comment explaining that the PR has merge conflicts with the base branch that must be resolved before it can be merged, then call \`report_verdict\` with verdict "changes_requested".
+4. If \`complete_pull_request\` returns any other error: call \`report_verdict\` with verdict "no_action_needed" (the QA itself passed — the merge failure is an infrastructure issue that will be logged). Mention the merge failure in your reason.
+5. If \`complete_pull_request\` returns a "deferred" message (sibling tasks not yet complete): this is normal and expected for grouped tasks. Call \`report_verdict\` with verdict "no_action_needed" and mention that the PR merge was deferred until all grouped tasks pass QA.
+
+If your QA finds defects, ignore auto-merge — post your comments and report "changes_requested" as normal.
+`
+    : "";
 
   return `You have been ASSIGNED a task to inspect. Follow the review/QA workflow and criteria described in your system prompt.
 
@@ -126,7 +161,7 @@ ${filesList}
 2. Review the diff following the workflow and criteria described in your system prompt.
 3. For every issue found, call \`post_review_comment\` exactly once per issue. This is the ONLY place your findings are recorded — if you don't call it, your findings exist nowhere the next agent can see them.
 4. Call \`report_verdict\` exactly once when finished: \`"no_action_needed"\` if you found zero issues, \`"changes_requested"\` if you posted one or more comments.
-
+${autoMergeSection}
 ## CRITICAL RULES
 
 - Do NOT edit, create, or delete any file in the repository.

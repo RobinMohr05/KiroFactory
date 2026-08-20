@@ -259,6 +259,10 @@ export interface WorkerTaskMeta {
   pullRequestUrl?: string | null;
   /** Sibling tasks sharing the same branch (for grouped PR content). */
   siblingTasks?: Array<{ id: number; title: string; type: string; description: string; pullRequestUrl: string | null }>;
+  /** Whether the task's tab has autoMergePrs enabled (for pr-complete MCP server injection). */
+  autoMergePrs?: boolean;
+  /** Whether all sibling tasks in the group are done (for pr-complete group guard). */
+  allGroupTasksDone?: boolean;
 }
 
 /**

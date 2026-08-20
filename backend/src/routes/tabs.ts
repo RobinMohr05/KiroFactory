@@ -168,14 +168,20 @@ router.put("/:id", async (req: Request, res: Response) => {
       res.status(404).json({ error: "Tab not found" });
       return;
     }
-    const { name, repositoryUrl, mcpConfig, gitProvider } = req.body as {
+    const { name, repositoryUrl, mcpConfig, gitProvider, autoMergePrs } = req.body as {
       name: string;
       repositoryUrl?: string | null;
       mcpConfig?: { atlassian?: boolean; azureDevops?: boolean; awsApi?: boolean; awsDocs?: boolean } | null;
       gitProvider?: string | null;
+      autoMergePrs?: boolean;
     };
     if (!name || typeof name !== "string" || name.trim().length === 0) {
       res.status(400).json({ error: "name is required" });
+      return;
+    }
+    // Validate autoMergePrs is a boolean if provided
+    if (autoMergePrs !== undefined && typeof autoMergePrs !== "boolean") {
+      res.status(400).json({ error: "autoMergePrs must be a boolean" });
       return;
     }
     // Omitting gitProvider keeps the current value; sending null/"" clears it
@@ -196,7 +202,7 @@ router.put("/:id", async (req: Request, res: Response) => {
         awsDocs: mcpConfig.awsDocs !== false,
       };
     }
-    const tab = await updateTab(id, name.trim(), repositoryUrl, validatedMcpConfig, validatedProvider);
+    const tab = await updateTab(id, name.trim(), repositoryUrl, validatedMcpConfig, validatedProvider, autoMergePrs);
     if (!tab) {
       res.status(404).json({ error: "Tab not found" });
       return;
