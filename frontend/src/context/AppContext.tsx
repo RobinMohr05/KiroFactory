@@ -271,6 +271,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
         window.dispatchEvent(new CustomEvent('ws-session-activity', { detail: message }));
         break;
       }
+      case 'session-turn-start': {
+        window.dispatchEvent(new CustomEvent('ws-session-turn-start', { detail: message }));
+        break;
+      }
+      case 'session-turn-end': {
+        window.dispatchEvent(new CustomEvent('ws-session-turn-end', { detail: message }));
+        break;
+      }
+      case 'session-tool-call': {
+        window.dispatchEvent(new CustomEvent('ws-session-tool-call', { detail: message }));
+        break;
+      }
+      case 'session-tool-call-update': {
+        window.dispatchEvent(new CustomEvent('ws-session-tool-call-update', { detail: message }));
+        break;
+      }
       case 'error-created': {
         setErrors(prev => {
           if (prev.find(e => e.id === message.error.id)) return prev;

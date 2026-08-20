@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useApp } from '../context/AppContext';
 import { SessionModal } from './SessionModal';
+import { SessionDetailTabs } from './SessionDetailTabs';
 import { apiFetch } from '../utils/api';
 import { useConfirmAction } from '../hooks/useConfirmAction';
 import type { Session, OutputEntry, SessionActivity } from '../types';
@@ -354,24 +355,13 @@ export function SessionsPanel() {
                 <span>{activity?.detail || activity?.type || 'Idle'}</span>
               </div>
               <div className="session-output-wrapper">
-                <div
-                  className="session-output"
-                  id="sessionOutput"
-                  role="log"
-                  aria-live="polite"
-                  aria-label="Agent output"
-                  tabIndex={0}
-                  ref={outputRef}
+                <SessionDetailTabs
+                  sessionId={activeSession.id}
+                  sessionStatus={activeSession.status}
+                  output={output}
+                  autoScroll={autoScroll}
                   onScroll={handleOutputScroll}
-                >
-                  <pre className="output-pre" id="outputPre">
-                    {output.map((entry, i) => (
-                      <span key={i} className={`output-line output-${entry.stream}`}>
-                        {entry.timestamp ? `[${new Date(entry.timestamp).toLocaleTimeString()}] ` : ''}{entry.text}{'\n'}
-                      </span>
-                    ))}
-                  </pre>
-                </div>
+                />
                 {!autoScroll && (
                   <button
                     className="scroll-to-bottom-btn"

@@ -76,6 +76,67 @@ export interface OutputEntry {
   timestamp?: string;
 }
 
+// ─── Turn-level data (from /api/sessions/:id/turns and WebSocket events) ─────
+
+export interface TurnRecord {
+  number: number;
+  startedAt: string;
+  endedAt: string | null;
+  credits: number;
+  costEur: number;
+  verdict: string | null;
+  taskId: number | null;
+  taskTitle: string | null;
+  toolCallCount: number;
+  hasChanges: boolean;
+  prUrl: string | null;
+  branchName: string | null;
+  durationMs: number;
+  sessionId: number;
+}
+
+export interface TurnEndSummary {
+  credits: number;
+  costEur: number;
+  verdict?: string;
+  durationMs: number;
+  toolCallCount: number;
+  hasChanges: boolean;
+  prUrl?: string;
+  branchName?: string;
+}
+
+/** Live tool call state tracked client-side during a turn */
+export interface ToolCallEntry {
+  id: string;
+  label: string;
+  icon: string;
+  status: 'running' | 'completed' | 'failed';
+  output?: string;
+  durationMs?: number;
+}
+
+/** A turn in the timeline, combining persisted data with live streaming state */
+export interface TimelineTurn {
+  number: number;
+  startedAt: string;
+  endedAt: string | null;
+  credits: number;
+  costEur: number;
+  verdict: string | null;
+  taskId: number | null;
+  taskTitle: string | null;
+  toolCallCount: number;
+  hasChanges: boolean;
+  prUrl: string | null;
+  branchName: string | null;
+  durationMs: number;
+  /** Live tool calls streamed via WebSocket */
+  toolCalls: ToolCallEntry[];
+  /** Whether this turn is currently in progress */
+  isActive: boolean;
+}
+
 export interface Agent {
   id: number;
   name: string;
@@ -128,6 +189,10 @@ export type WsMessage =
   | { type: 'sessions-reordered'; sessions: Session[] }
   | { type: 'session-output'; sessionId: number; entry: OutputEntry }
   | { type: 'session-activity'; sessionId: number; activity: SessionActivity }
+  | { type: 'session-turn-start'; sessionId: number; turnNumber: number; taskId?: number; taskTitle?: string; startedAt: string }
+  | { type: 'session-turn-end'; sessionId: number; turnNumber: number; summary: TurnEndSummary }
+  | { type: 'session-tool-call'; sessionId: number; turnNumber: number; toolCallId: string; label: string; icon: string; status: 'running' }
+  | { type: 'session-tool-call-update'; sessionId: number; turnNumber: number; toolCallId: string; status: 'completed' | 'failed'; output?: string; durationMs?: number }
   | { type: 'error-created'; error: AgentError }
   | { type: 'error-dismissed'; errorId: string }
   | { type: 'errors-cleared' }
