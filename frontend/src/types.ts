@@ -53,6 +53,12 @@ export interface Session {
   sortOrder?: number;
   currentActivity?: SessionActivity;
   totalCreditsUsed?: number;
+  /** Currently claimed task ID (while in loop mode, working a task) */
+  currentTaskId?: number;
+  /** Title of the currently claimed task (derived from turn-start events) */
+  currentTaskTitle?: string;
+  /** Number of turns completed/started this run (derived from turn events, reset on session start) */
+  turnCount?: number;
   mcpConfigOverride?: McpConfig;
   mcpServers?: McpServerConfig[];
   timeoutSeconds?: number;

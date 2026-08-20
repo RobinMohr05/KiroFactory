@@ -7,7 +7,7 @@ import { useConfirmAction } from '../hooks/useConfirmAction';
 import type { Session, OutputEntry, SessionActivity } from '../types';
 
 export function SessionsPanel() {
-  const { sessions, setSessions, currentTabId, activeSessionId, setActiveSessionId, tabs, pendingOps } = useApp();
+  const { sessions, setSessions, currentTabId, activeSessionId, setActiveSessionId, tabs, pendingOps, errors } = useApp();
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [editingSession, setEditingSession] = useState<Session | null>(null);
   const [output, setOutput] = useState<OutputEntry[]>([]);
@@ -267,6 +267,11 @@ export function SessionsPanel() {
     }
   };
 
+  // Compute which sessions have errors (matched by session name)
+  const sessionNamesWithErrors = new Set(
+    errors.map(e => e.sessionName)
+  );
+
   const isRunning = activeSession?.status === 'running';
   const isInteractive = activeSession?.interactive !== false;
   const isLoop = activeSession?.loop === true;
@@ -297,6 +302,7 @@ export function SessionsPanel() {
                 key={session.id}
                 session={session}
                 active={session.id === activeSessionId}
+                hasErrors={sessionNamesWithErrors.has(session.name)}
                 onClick={() => setActiveSessionId(session.id)}
                 onDragStart={(e) => handleDragStart(e, session)}
                 onDragEnd={handleDragEnd}
@@ -312,6 +318,7 @@ export function SessionsPanel() {
                 key={session.id}
                 session={session}
                 active={session.id === activeSessionId}
+                hasErrors={sessionNamesWithErrors.has(session.name)}
                 onClick={() => setActiveSessionId(session.id)}
                 onDragStart={(e) => handleDragStart(e, session)}
                 onDragEnd={handleDragEnd}
@@ -346,6 +353,23 @@ export function SessionsPanel() {
                   <button className={`btn btn-secondary btn-sm${deleteConfirmPending ? ' btn-confirm-pending' : ''}`} disabled={!!activeSession.isPermanent} onClick={handleDeleteClick}>{deleteConfirmPending ? 'Confirm?' : 'Delete'}</button>
                 </div>
               </div>
+              {((activeSession.turnCount ?? 0) > 0 || (activeSession.totalCreditsUsed ?? 0) > 0) && (
+                <div className="session-detail-meta" data-testid="session-detail-meta">
+                  {(activeSession.turnCount ?? 0) > 0 && (
+                    <span className="session-meta-turns">🔄 {activeSession.turnCount} turn{activeSession.turnCount !== 1 ? 's' : ''}</span>
+                  )}
+                  {(activeSession.totalCreditsUsed ?? 0) > 0 && (
+                    <span className="session-meta-credits">
+                      💰 {(activeSession.totalCreditsUsed! < 10 ? activeSession.totalCreditsUsed!.toFixed(2) : Math.round(activeSession.totalCreditsUsed!).toString())} credits (€{((activeSession.totalCreditsUsed! * 0.04) < 0.01 ? (activeSession.totalCreditsUsed! * 0.04).toFixed(4) : (activeSession.totalCreditsUsed! * 0.04).toFixed(3))})
+                    </span>
+                  )}
+                  {activeSession.currentTaskId && activeSession.currentTaskTitle && (
+                    <span className="session-meta-task" data-testid="session-current-task-link">
+                      📋 <strong>#{activeSession.currentTaskId}</strong> {activeSession.currentTaskTitle}
+                    </span>
+                  )}
+                </div>
+              )}
               <div className="session-tabs-bar">
                 <span className="session-tabs-label">Tabs:</span>
                 <span className="session-tabs-list">{sessionTabNames}</span>
@@ -401,9 +425,10 @@ export function SessionsPanel() {
   );
 }
 
-function SessionListItem({ session, active, onClick, onDragStart, onDragEnd, onDragOver, onDrop, onContextMenu }: {
+function SessionListItem({ session, active, hasErrors, onClick, onDragStart, onDragEnd, onDragOver, onDrop, onContextMenu }: {
   session: Session;
   active: boolean;
+  hasErrors: boolean;
   onClick: () => void;
   onDragStart: (e: React.DragEvent) => void;
   onDragEnd: (e: React.DragEvent) => void;
@@ -413,6 +438,8 @@ function SessionListItem({ session, active, onClick, onDragStart, onDragEnd, onD
 }) {
   const statusClass = `status-dot-sm status-${session.status}`;
   const activityDetail = session.currentActivity?.detail || session.currentActivity?.type || '';
+  const credits = session.totalCreditsUsed ?? 0;
+  const creditsEur = credits * 0.04;
 
   return (
     <li
@@ -431,14 +458,21 @@ function SessionListItem({ session, active, onClick, onDragStart, onDragEnd, onD
         <span className="session-item-name">
           {session.pinned && <span className="session-item-pin" title="Pinned">📌</span>}
           {session.name}
+          {hasErrors && <span className="session-item-error-dot" data-testid={`session-error-indicator-${session.id}`} title="Has errors">●</span>}
         </span>
         <span className="session-item-agent">{session.agent || <em>Interactive</em>}</span>
         {session.status === 'running' && activityDetail && (
           <span className="session-item-activity">{activityDetail}</span>
         )}
-        {session.status === 'running' && (session.totalCreditsUsed ?? 0) > 0 && (
+        {session.status === 'running' && session.currentTaskId && session.currentTaskTitle && (
+          <span className="session-item-task">
+            <span className="session-item-task-id">#{session.currentTaskId}</span>{' '}
+            {session.currentTaskTitle.length > 30 ? session.currentTaskTitle.slice(0, 30) + '…' : session.currentTaskTitle}
+          </span>
+        )}
+        {session.status === 'running' && credits > 0 && (
           <span className="session-item-usage">
-            💰 {(session.totalCreditsUsed! < 10 ? session.totalCreditsUsed!.toFixed(2) : Math.round(session.totalCreditsUsed!).toString())} credits
+            💰 {credits < 10 ? credits.toFixed(2) : Math.round(credits).toString()} credits (€{creditsEur < 0.01 ? creditsEur.toFixed(4) : creditsEur.toFixed(3)})
           </span>
         )}
       </div>

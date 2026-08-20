@@ -1413,6 +1413,61 @@ textarea:focus {
   opacity: 0.85;
 }
 
+.session-item-task {
+  font-size: 0.65rem;
+  color: var(--ta-blueprint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 180px;
+}
+
+.session-item-task-id {
+  font-weight: 600;
+}
+
+.session-item-error-dot {
+  color: var(--ta-rapid-red);
+  font-size: 0.6rem;
+  margin-left: 0.35rem;
+  vertical-align: middle;
+}
+
+/* Session detail meta bar (turn count, credits, current task) */
+.session-detail-meta {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.4rem 1.25rem;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+  flex-wrap: wrap;
+}
+
+.session-meta-turns {
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.session-meta-credits {
+  color: var(--ta-torque-teal);
+}
+
+.session-meta-task {
+  color: var(--ta-blueprint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 300px;
+  cursor: pointer;
+}
+
+.session-meta-task strong {
+  font-weight: 600;
+}
+
 /* Status dots (small, in list) */
 .status-dot-sm {
   width: 8px;

@@ -228,7 +228,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
           const idx = prev.findIndex(s => s.id === message.session.id);
           if (idx !== -1) {
             const next = [...prev];
-            next[idx] = { ...next[idx], ...message.session };
+            const existing = next[idx];
+            const updated = { ...existing, ...message.session };
+            // When totalCreditsUsed resets to 0 (session restarted), also reset turnCount
+            if (message.session.totalCreditsUsed === 0 && existing.totalCreditsUsed !== 0) {
+              updated.turnCount = 0;
+              updated.currentTaskTitle = undefined;
+            }
+            // Clear currentTaskTitle when currentTaskId is cleared
+            if (!message.session.currentTaskId && existing.currentTaskId) {
+              updated.currentTaskTitle = undefined;
+            }
+            next[idx] = updated;
             return next;
           }
           return [...prev, message.session];
@@ -272,6 +283,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
         break;
       }
       case 'session-turn-start': {
+        // Update session's turnCount and currentTaskTitle from turn-start events
+        setSessions(prev => {
+          const idx = prev.findIndex(s => s.id === message.sessionId);
+          if (idx === -1) return prev;
+          const next = [...prev];
+          next[idx] = {
+            ...next[idx],
+            turnCount: message.turnNumber,
+            ...(message.taskTitle ? { currentTaskTitle: message.taskTitle } : {}),
+            ...(message.taskId ? { currentTaskId: message.taskId } : {}),
+          };
+          return next;
+        });
         window.dispatchEvent(new CustomEvent('ws-session-turn-start', { detail: message }));
         break;
       }
