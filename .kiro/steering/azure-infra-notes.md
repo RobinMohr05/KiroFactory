@@ -44,6 +44,46 @@ the script defaults — use these confirmed names instead, or re-verify with
   forwarding it on failure. If debugging a run from *before* that fix, don't expect to find
   raw command output in the logs — only in the chat transcript's tool-call summaries.
 
+## Querying the same logs with the `az` CLI (Windows/pwsh) — two traps
+
+Works fine as a fallback when the Azure MCP server isn't available, but two things bite on
+Windows (verified 2026-08-20):
+
+1. **`az` is a `.cmd` wrapper, so double quotes inside `--analytics-query` get mangled** by
+   cmd.exe before Python sees them — you get `SYN0002 ... could not be parsed` or a raw
+   `"..." was unexpected at this time`. Write the KQL with **single quotes only** and pass it
+   from a PowerShell single-quoted here-string (`@'...'@`), which allows embedded single quotes.
+2. **Piping `az` output into `Select-Object`/`Select-String` can silently swallow it entirely**
+   (empty result, exit code 0). Redirect to a file and read the file instead.
+
+The workspace **GUID** (not the name) is what this command wants:
+
+```powershell
+az monitor log-analytics workspace show -g SandboxForRM -n workspacesandboxforrm86f0 --query customerId -o tsv
+# → 55510ef0-80e4-41b9-a8b8-4eab974a391a
+$q = @'
+ContainerAppConsoleLogs_CL | where TimeGenerated > ago(3h)
+| extend sid = tostring(parse_json(Log_s).sessionId) | where sid == '62'
+| project TimeGenerated, ContainerName_s, Log_s | order by TimeGenerated asc
+'@
+az monitor log-analytics query -w <guid> --analytics-query $q -o tsv > $env:TEMP\out.tsv 2>&1
+```
+
+`extend sid = tostring(parse_json(Log_s).sessionId)` is the reliable way to pivot by session —
+an `extract()` regex against the escaped JSON was unreliable in practice. Orchestrator rows have
+`ContainerGroupName_s` like `kirofactory-api--0000084-…`; worker rows are `ContainerName_s == 'worker'`.
+
+Useful for correlating: `az containerapp job execution list -g SandboxForRM -n kirofactory-worker`
+shows each worker execution's start/end and status.
+
+### Worker executions die at the 1-hour mark, by design
+
+`infra/modules/worker-job.bicep` sets `replicaTimeout: 3600`, and the execution history bears it
+out — every long-running loop session's worker ends ~59m40s after it starts, cleanly
+(`worker-shutdown` exit 0 → the session is marked `completed`). So a loop session is not actually
+endless: expect an hourly restart. When reading log history, don't mistake that hourly boundary
+for a crash.
+
 ## Setting up the Azure MCP server
 
 Microsoft's official `@azure/mcp` server (added to `~/.kiro/settings/mcp.json` as

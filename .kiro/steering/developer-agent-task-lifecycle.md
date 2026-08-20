@@ -191,6 +191,54 @@ on an environment/credential problem it can't fix by retrying.
   the specific hardcoded `"in-progress"` state, which happens to be every seeded agent's default
   `workingState` today.
 
+## The `groupId` lock is per-stage — and "No tasks available" can be a lie
+
+Confirmed by investigation 2026-08-20 (tasks 588/589/590, all `groupId: "mobile-responsive"`).
+
+Both `claimTask()`'s candidate query and `getAvailableTaskCount()` exclude a task when a
+groupId sibling already sits in **the caller's own `workingState`**:
+
+```cypher
+AND ( t.groupId IS NULL OR
+      NOT EXISTS { MATCH (g:Task {state: $workingState})
+                   WHERE g.groupId = t.groupId AND g.id <> t.id } )
+```
+
+Two consequences that are easy to misread:
+
+1. **Two sessions running the same agent cannot work two tasks of one group in parallel.** With
+   three tasks in one group and two reviewer sessions, exactly one reviews at a time; the other
+   correctly finds nothing claimable.
+2. **It does NOT prevent a dev and a reviewer from working the same group — and therefore the
+   same branch — simultaneously**, because the exclusion only looks at one `workingState`. A
+   task in `in-progress` does not block a claim into `in-code-review`. Observed live: an editor
+   pushing commits to the shared branch while an inspector reviewed a sibling task on it.
+
+The misleading part: because `getAvailableTaskCount()` applies the same exclusion, a fully
+group-locked queue returns **0**, and the loop's idle branch reports
+`"No tasks available. Waiting for new tasks..."` — indistinguishable from an empty board, even
+while the column visibly holds tasks in the UI. `describeClaimFailure()` produces the correct
+`"waiting on its group — sibling task N is still being worked"` message, but it is only reached
+after `claimTask()` returns null, which requires `todoCount > 0` — so on a group-locked queue
+the good message is unreachable. It is not a deadlock: `resolveTask`/`resetTask` fire
+`notifyTaskAvailable()`, so the parked session wakes as soon as the sibling leaves the stage —
+whichever parked session wakes first wins the claim, which is why a task can appear to be
+"picked up by a different session" than the one you were watching.
+
+Before concluding a queue is stuck, check for a groupId sibling in that stage's `workingState`.
+
+## Diagnosing what the pipeline actually did
+
+`:Turn` nodes (`backend/src/db/turns.ts`, `(:Session)-[:HAS_TURN]->(:Turn)`) are the
+authoritative per-turn record and the fastest way to reconstruct pipeline behavior — they carry
+`sessionId`, `taskId`, `verdict`, `startedAt`/`endedAt`, `credits`, `hasChanges`. One Cypher
+read ordered by `startedAt` shows every stage handoff, including verdict loops that are
+invisible from the board's current state.
+
+Note that the orchestrator's `worker-prompt-done` log line takes its `taskId` from
+`session.meta.currentTaskId` at prompt-done time, not from the worker — so it reflects the
+orchestrator's in-memory view, whereas `:Turn` is what was committed.
+
 ## Relevant source files
 
 - `backend/src/session-manager.ts` — owns the loop logic, mode selection, verdict/failure rules
