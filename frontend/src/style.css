@@ -4148,24 +4148,15 @@ textarea:focus {
     overflow-x: hidden;
   }
 
-  /* Kanban stacks vertically on mobile */
-  .kanban {
-    grid-template-columns: 1fr;
-    grid-template-rows: none;
-    overflow-x: hidden;
-    overflow-y: auto;
-    padding: 0 0.75rem 1rem;
-  }
-
   /* Sessions panel adjustments */
   .sessions-layout {
     grid-template-columns: 1fr;
-    grid-template-rows: auto 1fr;
+    grid-template-rows: 1fr;
   }
 
   .session-list-panel {
     border-right: none;
-    border-bottom: 1px solid var(--border-color);
+    border-bottom: none;
     max-height: none;
     overflow-y: auto;
   }
@@ -4178,12 +4169,12 @@ textarea:focus {
   /* Agents panel adjustments */
   .agents-layout {
     grid-template-columns: 1fr;
-    grid-template-rows: auto 1fr;
+    grid-template-rows: 1fr;
   }
 
   .agent-list-panel {
     border-right: none;
-    border-bottom: 1px solid var(--border-color);
+    border-bottom: none;
     max-height: none;
     overflow-y: auto;
   }
@@ -4426,6 +4417,13 @@ textarea:focus {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+}
+
+.mobile-task-list-empty {
+  text-align: center;
+  color: var(--text-muted);
+  padding: 2rem 1rem;
+  font-size: 0.9rem;
 }
 
 .mobile-task-card {

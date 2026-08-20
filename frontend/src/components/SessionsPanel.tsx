@@ -301,6 +301,13 @@ export function SessionsPanel() {
     }
   }, [isMobile]);
 
+  // Reset mobile detail state when tab changes
+  useEffect(() => {
+    if (isMobile) {
+      setMobileShowDetail(false);
+    }
+  }, [currentTabId]);
+
   const listHidden = isMobile && mobileShowDetail;
   const detailHidden = isMobile && !mobileShowDetail;
 
@@ -357,6 +364,11 @@ export function SessionsPanel() {
         <div className={`session-detail-panel${detailHidden ? ' mobile-hidden' : ''}`} id="sessionDetailPanel">
           {!activeSession ? (
             <div className="session-empty-state">
+              {isMobile && mobileShowDetail && (
+                <button className="mobile-back-btn" onClick={handleMobileBack} aria-label="Back to session list">
+                  ←
+                </button>
+              )}
               <p className="session-empty-msg">No sessions available for this tab.</p>
             </div>
           ) : (

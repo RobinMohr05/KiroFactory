@@ -113,6 +113,11 @@ export function AgentsPanel() {
         <div className={`agent-detail-panel${detailHidden ? ' mobile-hidden' : ''}`} id="agentDetailPanel">
           {!activeAgent ? (
             <div className="agent-empty-state" id="agentEmptyState">
+              {isMobile && mobileShowDetail && (
+                <button className="mobile-back-btn" onClick={handleMobileBack} aria-label="Back to agent list">
+                  ←
+                </button>
+              )}
               <div className="quick-start">
                 <h3>No agents yet</h3>
                 <p className="quick-start-hint">Agents are reusable prompt + tool presets you can launch sessions with. Create one to get started, or select one from the list.</p>

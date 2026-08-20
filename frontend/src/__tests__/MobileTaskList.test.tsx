@@ -122,9 +122,9 @@ describe('MobileTaskList', () => {
       render(<MobileTaskList tasks={makeTasks()} onTaskClick={onTaskClick} />);
       const sortBtn = screen.getByRole('button', { name: /sort/i });
       fireEvent.click(sortBtn);
-      expect(screen.getByRole('button', { name: /priority/i })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: /created date/i })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: /alphabetical/i })).toBeInTheDocument();
+      expect(screen.getByRole('menuitem', { name: /priority/i })).toBeInTheDocument();
+      expect(screen.getByRole('menuitem', { name: /created date/i })).toBeInTheDocument();
+      expect(screen.getByRole('menuitem', { name: /alphabetical/i })).toBeInTheDocument();
     });
 
     it('sorts by priority by default (lower priority number first)', () => {
@@ -138,7 +138,7 @@ describe('MobileTaskList', () => {
       render(<MobileTaskList tasks={makeTasks()} onTaskClick={onTaskClick} />);
       const sortBtn = screen.getByRole('button', { name: /sort/i });
       fireEvent.click(sortBtn);
-      fireEvent.click(screen.getByRole('button', { name: /alphabetical/i }));
+      fireEvent.click(screen.getByRole('menuitem', { name: /alphabetical/i }));
       const cards = screen.getAllByRole('article');
       // "Add dashboard" comes first alphabetically among visible tasks
       expect(cards[0]).toHaveAttribute('aria-label', expect.stringContaining('Add dashboard'));
@@ -149,7 +149,7 @@ describe('MobileTaskList', () => {
       render(<MobileTaskList tasks={tasks} onTaskClick={onTaskClick} />);
       const sortBtn = screen.getByRole('button', { name: /sort/i });
       fireEvent.click(sortBtn);
-      fireEvent.click(screen.getByRole('button', { name: /created date/i }));
+      fireEvent.click(screen.getByRole('menuitem', { name: /created date/i }));
       const cards = screen.getAllByRole('article');
       // Most recent first (highest index = most recent date, but "done" excluded)
       // Task 8 (QA task, Jan 8) is most recent among visible

@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import type { Task, TaskState } from '../types';
 
 const COLUMNS: { state: TaskState; label: string }[] = [
@@ -26,6 +26,19 @@ export function MobileTaskList({ tasks, onTaskClick }: MobileTaskListProps) {
   const [activeStates, setActiveStates] = useState<Set<TaskState>>(new Set(DEFAULT_ACTIVE_STATES));
   const [sortBy, setSortBy] = useState<SortOption>('priority');
   const [showSortPopover, setShowSortPopover] = useState(false);
+  const sortContainerRef = useRef<HTMLDivElement>(null);
+
+  // Click-outside dismissal for sort popover
+  useEffect(() => {
+    if (!showSortPopover) return;
+    const handler = (e: MouseEvent) => {
+      if (sortContainerRef.current && !sortContainerRef.current.contains(e.target as Node)) {
+        setShowSortPopover(false);
+      }
+    };
+    document.addEventListener('pointerdown', handler);
+    return () => document.removeEventListener('pointerdown', handler);
+  }, [showSortPopover]);
 
   const toggleState = useCallback((state: TaskState) => {
     setActiveStates(prev => {
@@ -85,7 +98,7 @@ export function MobileTaskList({ tasks, onTaskClick }: MobileTaskListProps) {
             </button>
           ))}
         </div>
-        <div className="mobile-sort-container">
+        <div className="mobile-sort-container" ref={sortContainerRef}>
           <button
             className="mobile-sort-btn"
             aria-label="Sort"
@@ -98,7 +111,7 @@ export function MobileTaskList({ tasks, onTaskClick }: MobileTaskListProps) {
           {showSortPopover && (
             <div className="mobile-sort-popover" role="menu">
               <button
-                role="button"
+                role="menuitem"
                 className={`mobile-sort-option${sortBy === 'priority' ? ' active' : ''}`}
                 aria-label="Priority"
                 onClick={() => handleSortSelect('priority')}
@@ -106,7 +119,7 @@ export function MobileTaskList({ tasks, onTaskClick }: MobileTaskListProps) {
                 Priority
               </button>
               <button
-                role="button"
+                role="menuitem"
                 className={`mobile-sort-option${sortBy === 'created' ? ' active' : ''}`}
                 aria-label="Created date"
                 onClick={() => handleSortSelect('created')}
@@ -114,7 +127,7 @@ export function MobileTaskList({ tasks, onTaskClick }: MobileTaskListProps) {
                 Created date
               </button>
               <button
-                role="button"
+                role="menuitem"
                 className={`mobile-sort-option${sortBy === 'alphabetical' ? ' active' : ''}`}
                 aria-label="Alphabetical"
                 onClick={() => handleSortSelect('alphabetical')}
@@ -126,9 +139,13 @@ export function MobileTaskList({ tasks, onTaskClick }: MobileTaskListProps) {
         </div>
       </div>
       <div className="mobile-task-list-cards">
-        {filteredAndSorted.map(task => (
-          <MobileTaskCard key={task.id} task={task} onClick={() => onTaskClick(task)} />
-        ))}
+        {filteredAndSorted.length === 0 ? (
+          <p className="mobile-task-list-empty">No tasks match the selected filters.</p>
+        ) : (
+          filteredAndSorted.map(task => (
+            <MobileTaskCard key={task.id} task={task} onClick={() => onTaskClick(task)} />
+          ))
+        )}
       </div>
     </div>
   );
