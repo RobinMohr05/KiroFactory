@@ -1,7 +1,6 @@
 import { useEffect } from 'react';
-import { useLocation, useParams } from 'react-router-dom';
+import { useLocation } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
-import type { ViewTab } from '../types';
 
 /**
  * Syncs the current route to the AppContext state (activeView, activeSessionId, activeAgentId).
