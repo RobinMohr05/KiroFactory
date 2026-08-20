@@ -65,7 +65,7 @@ import type {
   McpServerConfig,
   TurnEndSummary,
 } from "./types.js";
-import { createTurn, completeTurn, createErrorEvent } from "./db/turns.js";
+import { createTurn, completeTurn, createErrorEvent, getMaxTurnNumber } from "./db/turns.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -161,6 +161,12 @@ interface ManagedSession {
   turnToolCallCount: number;
   /** Active tool calls with their start times, keyed by toolCallId. */
   turnActiveToolCalls: Map<string, number>;
+  /**
+   * Last generated fallback toolCallId (when ACP doesn't provide one on tool_call).
+   * Used to correlate the subsequent tool_call_update which also won't have a toolCallId.
+   * Reset after use or when the next tool_call arrives.
+   */
+  lastGeneratedToolCallId: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -258,6 +264,7 @@ export async function initSessions(): Promise<void> {
       turnStartedAt: null,
       turnToolCallCount: 0,
       turnActiveToolCalls: new Map(),
+      lastGeneratedToolCallId: null,
     });
 
     // Check if this session should auto-restart.
@@ -524,6 +531,7 @@ export async function createSession(input: CreateSessionInput): Promise<Session>
     turnStartedAt: null,
     turnToolCallCount: 0,
     turnActiveToolCalls: new Map(),
+    lastGeneratedToolCallId: null,
   };
 
   sessions.set(meta.id, session);
@@ -762,10 +770,19 @@ export async function startSession(id: number): Promise<boolean> {
   session.meta.startedAt = now();
   session.totalCreditsUsed = 0;
   session.meta.totalCreditsUsed = 0;
-  session.turnNumber = 0;
+  // Load the max turn number from the DB to continue numbering without
+  // collisions with Turn nodes from previous runs of this session.
+  let maxTurn = 0;
+  if (isDbAvailable()) {
+    try {
+      maxTurn = await getMaxTurnNumber(id);
+    } catch { /* best effort — start from 0 if DB is unreachable */ }
+  }
+  session.turnNumber = maxTurn;
   session.turnStartedAt = null;
   session.turnToolCallCount = 0;
   session.turnActiveToolCalls.clear();
+  session.lastGeneratedToolCallId = null;
   setStatus(session, "running");
   setActivity(session, { type: "working", detail: "Starting ACP session..." });
   logSessionEvent("session-started", id, { agent: session.meta.agent, name: session.meta.name, mode: ACA_MODE ? "remote" : "local" });
@@ -1219,7 +1236,7 @@ async function runLoopMode(
     managed.verdictToolCallId = null;
 
     try {
-      await streamPrompt(managed, prompt);
+      await streamPrompt(managed, prompt, undefined, { id: task.id, title: task.title });
     } catch (err) {
       success = false;
       const msg = err instanceof Error ? err.message : String(err);
@@ -1426,7 +1443,7 @@ async function runStandaloneLoopLocal(
   }
 }
 
-async function streamPrompt(managed: ManagedSession, text: string, image?: { data: string; mimeType: string }): Promise<void> {
+async function streamPrompt(managed: ManagedSession, text: string, image?: { data: string; mimeType: string }, taskMeta?: { id: number; title: string }): Promise<void> {
   if (!managed.runner) return;
 
   // ─── Turn start ───
@@ -1436,8 +1453,8 @@ async function streamPrompt(managed: ManagedSession, text: string, image?: { dat
   managed.turnActiveToolCalls.clear();
 
   const turnNumber = managed.turnNumber;
-  const taskId = managed.meta.currentTaskId;
-  const taskTitle = undefined; // Not easily available here — set by loop mode callers
+  const taskId = taskMeta?.id ?? managed.meta.currentTaskId;
+  const taskTitle = taskMeta?.title;
 
   broadcastToUser(managed.meta.userId, {
     type: "session-turn-start",
@@ -1673,7 +1690,12 @@ function processUpdate(managed: ManagedSession, update: SessionUpdateChunk): voi
         managed.turnToolCallCount++;
 
         // Generate a toolCallId if one isn't provided
-        const toolCallId = (update as { toolCallId?: string }).toolCallId || `tc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const acpToolCallId = (update as { toolCallId?: string }).toolCallId;
+        const toolCallId = acpToolCallId || `tc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+        // Track the last generated fallback ID so tool_call_update (which also
+        // won't have a toolCallId) can be correlated with this tool_call.
+        managed.lastGeneratedToolCallId = acpToolCallId ? null : toolCallId;
 
         // Track the tool call start time for durationMs calculation
         managed.turnActiveToolCalls.set(toolCallId, Date.now());
@@ -1700,7 +1722,13 @@ function processUpdate(managed: ManagedSession, update: SessionUpdateChunk): voi
       }
 
       case "tool_call_update": {
-        const tcUpdateId = (update as { toolCallId?: string }).toolCallId;
+        // Use ACP-provided toolCallId, or fall back to the last generated one
+        // (from a tool_call that also lacked a toolCallId — they arrive sequentially).
+        const tcUpdateId = (update as { toolCallId?: string }).toolCallId || managed.lastGeneratedToolCallId;
+        // Clear the fallback after use — it's a one-shot correlation.
+        if (!((update as { toolCallId?: string }).toolCallId) && managed.lastGeneratedToolCallId) {
+          managed.lastGeneratedToolCallId = null;
+        }
 
         if (update.status === "completed") {
           // Check if this is a completed report_verdict call — capture the verdict

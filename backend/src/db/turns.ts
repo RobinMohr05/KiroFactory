@@ -91,26 +91,41 @@ export interface UsageAggregation {
 
 /**
  * Create a Turn node at turn-start, linked to the session via [:HAS_TURN].
+ * Uses MERGE to handle session restarts gracefully — if a Turn with the same
+ * sessionId + number already exists (from a previous run), it is reused rather
+ * than creating a duplicate.
  */
 export async function createTurn(input: CreateTurnInput): Promise<TurnRecord> {
   return writeQuery(async (tx: ManagedTransaction) => {
     const result = await tx.run(
       `MATCH (s:Session {id: $sessionId})
-       CREATE (s)-[:HAS_TURN]->(t:Turn {
-         number: $number,
-         startedAt: $startedAt,
-         endedAt: null,
-         credits: 0,
-         costEur: 0,
-         verdict: null,
-         taskId: $taskId,
-         taskTitle: $taskTitle,
-         toolCallCount: 0,
-         hasChanges: false,
-         prUrl: null,
-         branchName: null,
-         durationMs: 0
-       })
+       MERGE (s)-[:HAS_TURN]->(t:Turn {sessionId: $sessionId, number: $number})
+       ON CREATE SET
+         t.startedAt = $startedAt,
+         t.endedAt = null,
+         t.credits = 0,
+         t.costEur = 0,
+         t.verdict = null,
+         t.taskId = $taskId,
+         t.taskTitle = $taskTitle,
+         t.toolCallCount = 0,
+         t.hasChanges = false,
+         t.prUrl = null,
+         t.branchName = null,
+         t.durationMs = 0
+       ON MATCH SET
+         t.startedAt = $startedAt,
+         t.endedAt = null,
+         t.credits = 0,
+         t.costEur = 0,
+         t.verdict = null,
+         t.taskId = $taskId,
+         t.taskTitle = $taskTitle,
+         t.toolCallCount = 0,
+         t.hasChanges = false,
+         t.prUrl = null,
+         t.branchName = null,
+         t.durationMs = 0
        RETURN t.number AS number, t.startedAt AS startedAt, s.id AS sessionId`,
       {
         sessionId: input.sessionId,
@@ -196,6 +211,23 @@ export async function completeTurn(input: CompleteTurnInput): Promise<TurnRecord
       durationMs: record.get("durationMs"),
       sessionId: record.get("sessionId"),
     };
+  });
+}
+
+/**
+ * Get the highest turn number for a session (0 if no turns exist).
+ * Used on session restart to continue numbering without collisions.
+ */
+export async function getMaxTurnNumber(sessionId: number): Promise<number> {
+  return readQuery(async (tx: ManagedTransaction) => {
+    const result = await tx.run(
+      `MATCH (s:Session {id: $sessionId})-[:HAS_TURN]->(t:Turn)
+       RETURN max(t.number) AS maxNumber`,
+      { sessionId }
+    );
+    const record = result.records[0];
+    const maxNumber = record?.get("maxNumber");
+    return typeof maxNumber === "number" ? maxNumber : 0;
   });
 }
 

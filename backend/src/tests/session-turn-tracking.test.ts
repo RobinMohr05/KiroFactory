@@ -51,6 +51,7 @@ vi.mock("../db/turns.js", () => ({
   createTurn: vi.fn().mockResolvedValue({ number: 1, sessionId: 1, startedAt: "2026-08-20T06:00:00.000Z" }),
   completeTurn: vi.fn().mockResolvedValue(null),
   createErrorEvent: vi.fn().mockResolvedValue(null),
+  getMaxTurnNumber: vi.fn().mockResolvedValue(0),
 }));
 
 vi.mock("../websocket-handler.js", () => ({

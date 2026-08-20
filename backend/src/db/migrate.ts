@@ -61,7 +61,11 @@ const SCHEMA_STATEMENTS: string[] = [
   "CREATE INDEX task_group_id_idx IF NOT EXISTS FOR (t:Task) ON (t.groupId)",
 
   // ── Turn persistence (session-level turn tracking for the credits dashboard) ──
-  // Composite index for efficient turn lookups by session + number
+  // Node key constraint ensures no duplicate Turn nodes for the same session + number
+  // (guards against session restart collisions at the DB level).
+  "CREATE CONSTRAINT turn_session_number_key IF NOT EXISTS FOR (t:Turn) REQUIRE (t.sessionId, t.number) IS NODE KEY",
+  // Index on turn number — helps if Neo4j's planner starts from Turn nodes,
+  // though primary lookups traverse from Session via :HAS_TURN relationship.
   "CREATE INDEX turn_session_number_idx IF NOT EXISTS FOR (t:Turn) ON (t.number)",
   // Index on startedAt for date-range queries in usage/dashboard endpoints
   "CREATE INDEX turn_started_at_idx IF NOT EXISTS FOR (t:Turn) ON (t.startedAt)",

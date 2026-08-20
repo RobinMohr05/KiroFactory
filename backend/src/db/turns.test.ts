@@ -19,6 +19,7 @@ import {
   completeTurn,
   getTurnsBySession,
   getTurnsByUserAndPeriod,
+  getMaxTurnNumber,
   createErrorEvent,
   getErrorsBySession,
 } from "./turns.js";
@@ -238,6 +239,51 @@ describe("db/turns", () => {
 
       await getTurnsByUserAndPeriod(1, "2026-08-01", "2026-08-31", 2);
       expect(readQuery).toHaveBeenCalledOnce();
+    });
+  });
+
+  describe("getMaxTurnNumber", () => {
+    it("should return the max turn number for a session", async () => {
+      (readQuery as any).mockImplementation(async (fn: any) => {
+        const mockTx = {
+          run: vi.fn().mockResolvedValue({
+            records: [
+              {
+                get: (key: string) => {
+                  if (key === "maxNumber") return 5;
+                  return null;
+                },
+              },
+            ],
+          }),
+        };
+        return fn(mockTx);
+      });
+
+      const result = await getMaxTurnNumber(1);
+      expect(result).toBe(5);
+      expect(readQuery).toHaveBeenCalledOnce();
+    });
+
+    it("should return 0 when no turns exist", async () => {
+      (readQuery as any).mockImplementation(async (fn: any) => {
+        const mockTx = {
+          run: vi.fn().mockResolvedValue({
+            records: [
+              {
+                get: (key: string) => {
+                  if (key === "maxNumber") return null;
+                  return null;
+                },
+              },
+            ],
+          }),
+        };
+        return fn(mockTx);
+      });
+
+      const result = await getMaxTurnNumber(999);
+      expect(result).toBe(0);
     });
   });
 
