@@ -91,6 +91,15 @@ const PERSISTENT_BRANCH_NAME = process.env.PERSISTENT_BRANCH_NAME || "";
  */
 const REVIEW_MARKER_PATH = `/tmp/kirofactory-review-comments-${SESSION_ID || "local"}.count`;
 
+/**
+ * Path where the git-delivery MCP server writes its delivery result JSON after
+ * submit_task_changes completes. Read by finishPromptTurn() to populate the
+ * prompt-done result (hasChanges, committed, prUrl, branchName). Cleaned up
+ * at the start of every prompt turn in deliverPrompt() to prevent stale results
+ * from a prior task being misread.
+ */
+const DELIVERY_RESULT_PATH = `/tmp/kirofactory-delivery-result-${SESSION_ID || "local"}.json`;
+
 const WORKSPACE = "/workspace";
 
 // Connection retry: 30 attempts × 5s ≈ 150s, comfortably inside the
@@ -1942,7 +1951,6 @@ function buildMcpServers() {
   // included for inspector-kind (they never commit) or standalone sessions
   // (PERSISTENT_BRANCH_NAME — no task branch to manage).
   if (AGENT_KIND === "editor" && !PERSISTENT_BRANCH_NAME && REPO_URL) {
-    const deliveryResultPath = `/tmp/kirofactory-delivery-result-${SESSION_ID || "local"}.json`;
     const gitDeliveryEnv = [
       { name: "WORKSPACE", value: WORKSPACE },
       { name: "TASK_BRANCH_NAME", value: currentBranchName || "" },
@@ -1954,7 +1962,7 @@ function buildMcpServers() {
       { name: "TASK_PR_URL", value: process.env.TASK_PR_URL || "" },
       { name: "REPO_URL", value: REPO_URL || "" },
       { name: "GIT_PROVIDER", value: GIT_PROVIDER },
-      { name: "DELIVERY_RESULT_PATH", value: deliveryResultPath },
+      { name: "DELIVERY_RESULT_PATH", value: DELIVERY_RESULT_PATH },
     ];
     if (process.env.GITHUB_PAT) {
       gitDeliveryEnv.push({ name: "GITHUB_PAT", value: process.env.GITHUB_PAT });
@@ -2127,16 +2135,17 @@ function finishPromptTurn(msg) {
       // submit_task_changes itself, and writes the result to DELIVERY_RESULT_PATH.
       // Standalone/persistent-branch sessions still use the worker-driven
       // commitAndPush() flow (no MCP delivery tools available).
-      if (!PERSISTENT_BRANCH_NAME && TASK_ID) {
+      // Use currentTaskMeta (set per-task in handlePrompt) rather than the
+      // env-level TASK_ID which is only set for legacy single-shot workers.
+      if (!PERSISTENT_BRANCH_NAME && (currentTaskMeta || TASK_ID)) {
         // Read delivery result written by submit_task_changes MCP tool
-        const deliveryResultPath = `/tmp/kirofactory-delivery-result-${SESSION_ID || "local"}.json`;
         let deliveryResult = null;
         try {
-          if (existsSync(deliveryResultPath)) {
-            deliveryResult = JSON.parse(readFileSync(deliveryResultPath, "utf8"));
+          if (existsSync(DELIVERY_RESULT_PATH)) {
+            deliveryResult = JSON.parse(readFileSync(DELIVERY_RESULT_PATH, "utf8"));
           }
         } catch (err) {
-          logError("Failed to read delivery result file", { path: deliveryResultPath, error: err?.message || String(err) });
+          logError("Failed to read delivery result file", { path: DELIVERY_RESULT_PATH, error: err?.message || String(err) });
         }
 
         if (deliveryResult) {
@@ -2783,9 +2792,8 @@ function deliverPrompt(text) {
   // Clean up the delivery result file from any prior turn so a stale result
   // from a previous task is never misread as this turn's outcome.
   try {
-    const deliveryResultPath = `/tmp/kirofactory-delivery-result-${SESSION_ID || "local"}.json`;
-    if (existsSync(deliveryResultPath)) {
-      unlinkSync(deliveryResultPath);
+    if (existsSync(DELIVERY_RESULT_PATH)) {
+      unlinkSync(DELIVERY_RESULT_PATH);
     }
   } catch {
     // Best effort — if deletion fails, finishPromptTurn will just read the stale file.
@@ -2834,7 +2842,9 @@ function commitOnExitAndShutdown(exitCode) {
     // Task-based editor sessions use the git-delivery MCP tools — the agent
     // commits/pushes via submit_task_changes during the turn. Only standalone/
     // persistent-branch sessions still need the worker-driven commit-on-exit.
-    const isTaskBasedEditor = !PERSISTENT_BRANCH_NAME && TASK_ID;
+    // Use currentTaskMeta (set per-task in handlePrompt) rather than the
+    // env-level TASK_ID which is only set for legacy single-shot workers.
+    const isTaskBasedEditor = !PERSISTENT_BRANCH_NAME && (currentTaskMeta || TASK_ID);
     if (!isTaskBasedEditor) {
       try {
         const result = commitAndPush();
