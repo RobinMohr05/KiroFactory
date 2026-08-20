@@ -7,10 +7,40 @@ inclusion: always
 ## Terminology
 
 When the user refers to "items" or "tasks" in conversation, they mean the
-**tasks stored in the database** (the `tasks` table), not IDE tasks, spec
-tasks, or to-do items. Always interpret task-related requests in the context
-of the DB-backed task system managed by `backend/src/db/tasks.ts` and
-`backend/src/agent/task-claimer.ts`.
+**tasks stored in the database** (`:Task` nodes in Neo4j), not IDE tasks,
+spec tasks, or to-do items. Always interpret task-related requests in the
+context of the DB-backed task system managed by `backend/src/db/tasks.ts`
+and `backend/src/agent/task-claimer.ts`.
+
+## Database layer
+
+The backend uses **Neo4j AuraDB** (cloud-hosted graph database) with the
+`neo4j-driver` npm package — raw Cypher queries via managed transactions
+(`readQuery`/`writeQuery` from `backend/src/db/connection.ts`). There is no
+ORM or query builder.
+
+Key patterns the developer agent needs to know:
+
+- **No SQL.** All queries are Cypher. There is no `backend/sql/` directory,
+  no `mssql` package, no SQL Server connection.
+- **Relationships replace join tables.** E.g. `(:Task)-[:IN_TAB]->(:Tab)`
+  replaces the old `task_tabs` table; `(:Task)-[:DEPENDS_ON]->(:Task)` is
+  the dependency graph.
+- **IDs are allocated by Counter nodes** (`backend/src/db/id-counter.ts`),
+  not auto-increment columns. Every `createX()` calls `getNextId("Label")`.
+- **Schema is constraint-based.** `backend/src/db/migrate.ts` runs
+  idempotent `CREATE CONSTRAINT/INDEX IF NOT EXISTS` on startup — there are
+  no incremental migration steps to add.
+- **Task claiming** uses a CAS (compare-and-swap) retry loop with
+  lock-forcing writes — not SQL Server's `UPDLOCK`/`READPAST`. See the
+  extensive comment at the top of `backend/src/agent/task-claimer.ts`.
+- **`files` and `columns` are native Neo4j list properties**, not separate
+  tables or JSON strings.
+- **`isBlocked` is computed at read time**, never stored — derived from
+  whether any `[:DEPENDS_ON]` target has `state <> 'done'`.
+- **Environment variables:** `NEO4J_URI`, `NEO4J_USERNAME`,
+  `NEO4J_PASSWORD`, `NEO4J_DATABASE` (optional — AuraDB uses the instance
+  ID as database name).
 
 ## Origin field
 

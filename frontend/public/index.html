@@ -496,11 +496,33 @@
             </label>
           </div>
         </div>
+        <div class="form-group" id="tabAutoMergeGroup">
+          <label>Automation</label>
+          <small class="form-hint">Automate post-QA actions for this board.</small>
+          <div class="mcp-toggles">
+            <label class="mcp-toggle-item">
+              <input type="checkbox" id="tabAutoMergePrs" />
+              <span class="mcp-toggle-label">Auto-complete PRs</span>
+            </label>
+          </div>
+        </div>
         <div class="form-actions">
           <button type="button" class="btn btn-secondary" id="cancelTabBtn">Cancel</button>
           <button type="submit" class="btn btn-primary" id="submitTabBtn">Create Tab</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- Confirm Auto-Merge PRs Modal -->
+  <div class="modal-backdrop" id="confirmAutoMergeModal" hidden>
+    <div class="modal" role="dialog" aria-labelledby="confirmAutoMergeTitle">
+      <h2 id="confirmAutoMergeTitle">Enable Auto-complete PRs?</h2>
+      <p>Enabling Auto-complete PRs means the QA agent will automatically merge approved pull requests into the base branch and delete their source branches. This action is irreversible for PRs that have already been merged. Are you sure you want to enable this?</p>
+      <div class="form-actions">
+        <button type="button" class="btn btn-secondary" id="cancelAutoMergeBtn">Cancel</button>
+        <button type="button" class="btn btn-primary" id="confirmAutoMergeBtn">Enable</button>
+      </div>
     </div>
   </div>
 
