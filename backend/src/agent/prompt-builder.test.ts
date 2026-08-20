@@ -107,18 +107,19 @@ describe("buildDevPrompt", () => {
       expect(prompt).toContain("## BRANCH SYNC & DELIVERY (MCP tools)");
     });
 
-    it("tells the agent not to run git commands manually when branch is set", () => {
+    it("tells the agent not to run git commands manually and to use MCP tools exclusively", () => {
       const task = makeTask({ branch: "feature/#100_test-task" });
       const prompt = buildDevPrompt(task, "/workspace");
       expect(prompt).toContain("Do NOT run git commit, git push, or create pull requests manually");
       expect(prompt).toContain("MCP tools exclusively");
     });
 
-    it("tells the agent not to run any git commands when branch is not set", () => {
+    it("tells the agent to use MCP tools even when branch is not yet set", () => {
       const task = makeTask({ branch: null });
       const prompt = buildDevPrompt(task, "/workspace");
+      expect(prompt).toContain("Do NOT run git commit, git push, or create pull requests manually");
+      expect(prompt).toContain("MCP tools exclusively");
       expect(prompt).toContain("Do NOT run any git commands at all");
-      expect(prompt).toContain("The orchestrator manages ALL git operations");
     });
   });
 });

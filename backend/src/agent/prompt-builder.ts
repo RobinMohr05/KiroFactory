@@ -93,9 +93,8 @@ ${task.pullRequestUrl
 - If the task cannot be completed (missing dependencies, unclear requirements), explain why and exit.
 - Do NOT introduce unrelated refactoring or improvements beyond what the task requires.
 - Do NOT modify test files unless the task specifically asks for test changes.
-${task.branch
-  ? "- Do NOT run git commit, git push, or create pull requests manually. Use the `sync_task_branch`, `finalize_branch_sync`, and `submit_task_changes` MCP tools exclusively for all git operations.\n- Do NOT run any git commands at all (no git add, commit, push, branch, checkout, pull request). The MCP tools handle everything."
-  : "- Do NOT run git commit, git push, or create pull requests. The orchestrator handles git operations automatically after your work is complete.\n- Do NOT run any git commands at all (no git add, commit, push, branch, checkout, pull request). The orchestrator manages ALL git operations.\n- Do NOT create or switch branches. You are already on the correct branch."}
+- Do NOT run git commit, git push, or create pull requests manually. Use the \`sync_task_branch\`, \`finalize_branch_sync\`, and \`submit_task_changes\` MCP tools exclusively for all git operations.
+- Do NOT run any git commands at all (no git add, commit, push, branch, checkout, pull request). The MCP tools handle everything.
 
 ## WORKING DIRECTORY
 
