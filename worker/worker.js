@@ -19,7 +19,7 @@
 
 import { spawn, execSync, execFileSync } from "node:child_process";
 import { WebSocket } from "ws";
-import { mkdirSync, existsSync, writeFileSync, appendFileSync, readFileSync } from "node:fs";
+import { mkdirSync, existsSync, writeFileSync, appendFileSync, readFileSync, unlinkSync } from "node:fs";
 import { buildGroupPrContent, findSiblingPrUrl } from "./shared-branch-utils.js";
 import { buildSpawnEnv } from "./spawn-env.js";
 
@@ -2779,6 +2779,17 @@ function deliverPrompt(text) {
     writeFileSync(REVIEW_MARKER_PATH, "0");
   } catch (err) {
     logError("Failed to reset review-comment marker file", { error: err?.message || String(err) });
+  }
+  // Clean up the delivery result file from any prior turn so a stale result
+  // from a previous task is never misread as this turn's outcome.
+  try {
+    const deliveryResultPath = `/tmp/kirofactory-delivery-result-${SESSION_ID || "local"}.json`;
+    if (existsSync(deliveryResultPath)) {
+      unlinkSync(deliveryResultPath);
+    }
+  } catch {
+    // Best effort — if deletion fails, finishPromptTurn will just read the stale file.
+    // Not critical enough to fail the turn over.
   }
 
   const sent = writeToKiro({
