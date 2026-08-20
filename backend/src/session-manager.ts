@@ -63,7 +63,9 @@ import type {
   CreateSessionInput,
   UpdateSessionInput,
   McpServerConfig,
+  TurnEndSummary,
 } from "./types.js";
+import { createTurn, completeTurn, createErrorEvent } from "./db/turns.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -151,6 +153,14 @@ interface ManagedSession {
    * instead of creating a new one. Consumed (set to null) once used.
    */
   pendingRunner: KiroRunner | null;
+  /** Turn number counter — incremented on each prompt send for this session. */
+  turnNumber: number;
+  /** Timestamp when the current turn started (for computing durationMs). */
+  turnStartedAt: string | null;
+  /** Tool call count in the current turn (for turn-end summary). */
+  turnToolCallCount: number;
+  /** Active tool calls with their start times, keyed by toolCallId. */
+  turnActiveToolCalls: Map<string, number>;
 }
 
 // ---------------------------------------------------------------------------
@@ -244,6 +254,10 @@ export async function initSessions(): Promise<void> {
       turnVerdict: null,
       verdictToolCallId: null,
       pendingRunner: null,
+      turnNumber: 0,
+      turnStartedAt: null,
+      turnToolCallCount: 0,
+      turnActiveToolCalls: new Map(),
     });
 
     // Check if this session should auto-restart.
@@ -311,6 +325,34 @@ export async function initSessions(): Promise<void> {
 
 function now(): string {
   return new Date().toISOString();
+}
+
+/**
+ * Record an error both in the in-memory error store (for live UI) and persist
+ * it to the DB as an ErrorEvent node linked to the session (for historical review).
+ */
+function recordSessionError(input: {
+  sessionId: number;
+  sessionName: string;
+  agent: string;
+  message: string;
+  context: string;
+  taskId?: number;
+  taskTitle?: string;
+  userId: number;
+}): void {
+  recordError(input);
+
+  // Persist to DB — fire-and-forget, non-fatal
+  if (isDbAvailable()) {
+    createErrorEvent({
+      sessionId: input.sessionId,
+      timestamp: now(),
+      message: input.message,
+      taskId: input.taskId ?? null,
+      taskTitle: input.taskTitle ?? null,
+    }).catch(() => { /* best effort */ });
+  }
 }
 
 function appendOutput(session: ManagedSession, entry: OutputEntry): void {
@@ -478,6 +520,10 @@ export async function createSession(input: CreateSessionInput): Promise<Session>
     turnVerdict: null,
     verdictToolCallId: null,
     pendingRunner: null,
+    turnNumber: 0,
+    turnStartedAt: null,
+    turnToolCallCount: 0,
+    turnActiveToolCalls: new Map(),
   };
 
   sessions.set(meta.id, session);
@@ -716,6 +762,10 @@ export async function startSession(id: number): Promise<boolean> {
   session.meta.startedAt = now();
   session.totalCreditsUsed = 0;
   session.meta.totalCreditsUsed = 0;
+  session.turnNumber = 0;
+  session.turnStartedAt = null;
+  session.turnToolCallCount = 0;
+  session.turnActiveToolCalls.clear();
   setStatus(session, "running");
   setActivity(session, { type: "working", detail: "Starting ACP session..." });
   logSessionEvent("session-started", id, { agent: session.meta.agent, name: session.meta.name, mode: ACA_MODE ? "remote" : "local" });
@@ -752,7 +802,7 @@ export async function startSession(id: number): Promise<boolean> {
     });
 
     // Record the error for the UI
-    recordError({
+    recordSessionError({
       sessionId: session.meta.id,
       sessionName: session.meta.name,
       agent: session.meta.agent,
@@ -1180,7 +1230,7 @@ async function runLoopMode(
       });
 
       // Record the error so it appears in the Errors tab
-      recordError({
+      recordSessionError({
         sessionId: meta.id,
         sessionName: meta.name,
         agent: meta.agent,
@@ -1205,7 +1255,7 @@ async function runLoopMode(
         text: `✖ MCP server(s) [${failedNames}] failed to start — the agent was missing tools it needed. ` +
           `Task reset to "${stages.claimState}" for retry instead of trusting this turn's result.`,
       });
-      recordError({
+      recordSessionError({
         sessionId: meta.id,
         sessionName: meta.name,
         agent: meta.agent,
@@ -1353,7 +1403,7 @@ async function runStandaloneLoopLocal(
         stream: "stderr",
         text: `Prompt execution error: ${msg}`,
       });
-      recordError({
+      recordSessionError({
         sessionId: meta.id,
         sessionName: meta.name,
         agent: meta.agent,
@@ -1379,6 +1429,36 @@ async function runStandaloneLoopLocal(
 async function streamPrompt(managed: ManagedSession, text: string, image?: { data: string; mimeType: string }): Promise<void> {
   if (!managed.runner) return;
 
+  // ─── Turn start ───
+  managed.turnNumber++;
+  managed.turnStartedAt = now();
+  managed.turnToolCallCount = 0;
+  managed.turnActiveToolCalls.clear();
+
+  const turnNumber = managed.turnNumber;
+  const taskId = managed.meta.currentTaskId;
+  const taskTitle = undefined; // Not easily available here — set by loop mode callers
+
+  broadcastToUser(managed.meta.userId, {
+    type: "session-turn-start",
+    sessionId: managed.meta.id,
+    turnNumber,
+    taskId,
+    taskTitle,
+    startedAt: managed.turnStartedAt,
+  });
+
+  // Persist turn-start to DB (fire-and-forget — don't block the prompt)
+  if (isDbAvailable()) {
+    createTurn({
+      sessionId: managed.meta.id,
+      number: turnNumber,
+      startedAt: managed.turnStartedAt,
+      taskId: taskId ?? null,
+      taskTitle: taskTitle ?? null,
+    }).catch(() => { /* best effort — non-fatal */ });
+  }
+
   try {
     for await (const update of managed.runner.prompt(text, image)) {
       if (managed.abortController?.signal.aborted) break;
@@ -1401,10 +1481,83 @@ async function streamPrompt(managed: ManagedSession, text: string, image?: { dat
       persistSession(managed.meta.id);
     }
 
+    // ─── Turn end ───
+    const endedAt = now();
+    const durationMs = managed.turnStartedAt
+      ? new Date(endedAt).getTime() - new Date(managed.turnStartedAt).getTime()
+      : 0;
+    const costEur = turnCredits * 0.04;
+
+    const summary: TurnEndSummary = {
+      credits: turnCredits,
+      costEur,
+      durationMs,
+      toolCallCount: managed.turnToolCallCount,
+      hasChanges: false, // Local mode doesn't track git changes
+      verdict: managed.turnVerdict ?? undefined,
+    };
+
+    broadcastToUser(managed.meta.userId, {
+      type: "session-turn-end",
+      sessionId: managed.meta.id,
+      turnNumber,
+      summary,
+    });
+
+    // Persist turn-end to DB
+    if (isDbAvailable()) {
+      completeTurn({
+        sessionId: managed.meta.id,
+        number: turnNumber,
+        endedAt,
+        credits: turnCredits,
+        costEur,
+        verdict: managed.turnVerdict ?? null,
+        durationMs,
+        toolCallCount: managed.turnToolCallCount,
+        hasChanges: false,
+      }).catch(() => { /* best effort — non-fatal */ });
+    }
+
     setActivity(managed, { type: "idle", detail: "Ready for next prompt" });
   } catch (err) {
     // Flush buffer even on error so partial text isn't lost
     flushMessageBuffer(managed);
+
+    // ─── Turn end (on error) ───
+    const endedAt = now();
+    const durationMs = managed.turnStartedAt
+      ? new Date(endedAt).getTime() - new Date(managed.turnStartedAt).getTime()
+      : 0;
+
+    const summary: TurnEndSummary = {
+      credits: 0,
+      costEur: 0,
+      durationMs,
+      toolCallCount: managed.turnToolCallCount,
+      hasChanges: false,
+    };
+
+    broadcastToUser(managed.meta.userId, {
+      type: "session-turn-end",
+      sessionId: managed.meta.id,
+      turnNumber,
+      summary,
+    });
+
+    if (isDbAvailable()) {
+      completeTurn({
+        sessionId: managed.meta.id,
+        number: turnNumber,
+        endedAt,
+        credits: 0,
+        costEur: 0,
+        durationMs,
+        toolCallCount: managed.turnToolCallCount,
+        hasChanges: false,
+      }).catch(() => { /* best effort */ });
+    }
+
     if (managed.abortController?.signal.aborted) return;
     throw err;
   }
@@ -1515,6 +1668,27 @@ function processUpdate(managed: ManagedSession, update: SessionUpdateChunk): voi
           stream: "system",
           text: `${icon} ${label}${update.title && label !== update.title ? ` — ${update.title}` : ""}`,
         });
+
+        // Track tool call count for the turn summary
+        managed.turnToolCallCount++;
+
+        // Generate a toolCallId if one isn't provided
+        const toolCallId = (update as { toolCallId?: string }).toolCallId || `tc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+        // Track the tool call start time for durationMs calculation
+        managed.turnActiveToolCalls.set(toolCallId, Date.now());
+
+        // Emit structured session-tool-call event
+        broadcastToUser(managed.meta.userId, {
+          type: "session-tool-call",
+          sessionId: managed.meta.id,
+          turnNumber: managed.turnNumber,
+          toolCallId,
+          label,
+          icon,
+          status: "running",
+        });
+
         // Track report_verdict tool calls so we can capture the verdict from the update.
         // kiro-cli reports MCP tool titles as "Running: @<server>/<tool>" (e.g.
         // "Running: @verdict/report_verdict"), never the bare tool name — an exact
@@ -1525,12 +1699,14 @@ function processUpdate(managed: ManagedSession, update: SessionUpdateChunk): voi
         break;
       }
 
-      case "tool_call_update":
+      case "tool_call_update": {
+        const tcUpdateId = (update as { toolCallId?: string }).toolCallId;
+
         if (update.status === "completed") {
           // Check if this is a completed report_verdict call — capture the verdict
           if (
             managed.verdictToolCallId &&
-            (update as { toolCallId?: string }).toolCallId === managed.verdictToolCallId
+            tcUpdateId === managed.verdictToolCallId
           ) {
             // Extract verdict from tool output content
             const content = (update as { content?: Array<{ type?: string; text?: string }> }).content;
@@ -1548,17 +1724,66 @@ function processUpdate(managed: ManagedSession, update: SessionUpdateChunk): voi
             }
             managed.verdictToolCallId = null;
           }
+
+          // Emit structured session-tool-call-update event
+          if (tcUpdateId) {
+            const startTime = managed.turnActiveToolCalls.get(tcUpdateId);
+            const durationMs = startTime ? Date.now() - startTime : undefined;
+            managed.turnActiveToolCalls.delete(tcUpdateId);
+
+            // Extract output text from content blocks
+            const content = (update as { content?: Array<{ type?: string; text?: string }> }).content;
+            let output: string | undefined;
+            if (Array.isArray(content)) {
+              const texts = content
+                .filter((b) => b?.type === "text" && b.text)
+                .map((b) => b.text!);
+              if (texts.length > 0) {
+                // Truncate to first 2000 chars to keep WS messages reasonable
+                const joined = texts.join("\n");
+                output = joined.length > 2000 ? joined.slice(0, 2000) + "…" : joined;
+              }
+            }
+
+            broadcastToUser(managed.meta.userId, {
+              type: "session-tool-call-update",
+              sessionId: managed.meta.id,
+              turnNumber: managed.turnNumber,
+              toolCallId: tcUpdateId,
+              status: "completed",
+              output,
+              durationMs,
+            });
+          }
+
           setActivity(managed, { type: "working", detail: "Processing..." });
         } else if (update.status === "failed") {
+          // Emit structured session-tool-call-update event for failure
+          if (tcUpdateId) {
+            const startTime = managed.turnActiveToolCalls.get(tcUpdateId);
+            const durationMs = startTime ? Date.now() - startTime : undefined;
+            managed.turnActiveToolCalls.delete(tcUpdateId);
+
+            broadcastToUser(managed.meta.userId, {
+              type: "session-tool-call-update",
+              sessionId: managed.meta.id,
+              turnNumber: managed.turnNumber,
+              toolCallId: tcUpdateId,
+              status: "failed",
+              durationMs,
+            });
+          }
+
           // Tool failures are the most common reason an agent produces no
           // changes — always surface them.
           appendOutput(managed, {
             timestamp: now(),
             stream: "stderr",
-            text: `⚠️ Tool call failed: ${update.title || (update as { toolCallId?: string }).toolCallId || "unknown tool"}`,
+            text: `⚠️ Tool call failed: ${update.title || tcUpdateId || "unknown tool"}`,
           });
         }
         break;
+      }
 
       case "agent_thought_chunk":
       case "thinking":
@@ -2049,6 +2274,36 @@ async function streamPromptAca(managed: ManagedSession, text: string, taskMeta?:
     throw new Error("Worker is not connected");
   }
 
+  // ─── Turn start ───
+  managed.turnNumber++;
+  managed.turnStartedAt = now();
+  managed.turnToolCallCount = 0;
+  managed.turnActiveToolCalls.clear();
+
+  const turnNumber = managed.turnNumber;
+  const taskId = taskMeta?.id ?? managed.meta.currentTaskId;
+  const taskTitle = taskMeta?.title;
+
+  broadcastToUser(managed.meta.userId, {
+    type: "session-turn-start",
+    sessionId: managed.meta.id,
+    turnNumber,
+    taskId,
+    taskTitle,
+    startedAt: managed.turnStartedAt,
+  });
+
+  // Persist turn-start to DB (fire-and-forget)
+  if (isDbAvailable()) {
+    createTurn({
+      sessionId: managed.meta.id,
+      number: turnNumber,
+      startedAt: managed.turnStartedAt,
+      taskId: taskId ?? null,
+      taskTitle: taskTitle ?? null,
+    }).catch(() => { /* best effort */ });
+  }
+
   // Send the prompt to the worker (with optional task metadata for branch/commit/PR)
   const workerTaskMeta = taskMeta ? { id: taskMeta.id, title: taskMeta.title, type: taskMeta.type, description: taskMeta.description, files: taskMeta.files, branch: taskMeta.branch ?? null, pullRequestUrl: taskMeta.pullRequestUrl ?? null, siblingTasks: taskMeta.siblingTasks } : undefined;
   const sent = sendWorkerPrompt(managed.meta.id, text, workerTaskMeta);
@@ -2073,7 +2328,52 @@ async function streamPromptAca(managed: ManagedSession, text: string, taskMeta?:
   managed.acaPromptResolver = null;
   managed.acaPromptRejecter = null;
 
-  return (result && typeof result === "object") ? result as WorkerPromptResult : {};
+  const promptResult = (result && typeof result === "object") ? result as WorkerPromptResult : {};
+
+  // ─── Turn end ───
+  const endedAt = now();
+  const durationMs = managed.turnStartedAt
+    ? new Date(endedAt).getTime() - new Date(managed.turnStartedAt).getTime()
+    : 0;
+  const turnCredits = promptResult.credits ?? 0;
+  const costEur = turnCredits * 0.04;
+
+  const summary: TurnEndSummary = {
+    credits: turnCredits,
+    costEur,
+    durationMs: promptResult.durationMs ?? durationMs,
+    toolCallCount: promptResult.toolCalls ?? managed.turnToolCallCount,
+    hasChanges: promptResult.hasChanges ?? false,
+    verdict: promptResult.verdict ?? undefined,
+    prUrl: promptResult.prUrl ?? undefined,
+    branchName: promptResult.branchName ?? undefined,
+  };
+
+  broadcastToUser(managed.meta.userId, {
+    type: "session-turn-end",
+    sessionId: managed.meta.id,
+    turnNumber,
+    summary,
+  });
+
+  // Persist turn-end to DB
+  if (isDbAvailable()) {
+    completeTurn({
+      sessionId: managed.meta.id,
+      number: turnNumber,
+      endedAt,
+      credits: turnCredits,
+      costEur,
+      verdict: promptResult.verdict ?? null,
+      durationMs: promptResult.durationMs ?? durationMs,
+      toolCallCount: promptResult.toolCalls ?? managed.turnToolCallCount,
+      hasChanges: promptResult.hasChanges ?? false,
+      prUrl: promptResult.prUrl ?? null,
+      branchName: promptResult.branchName ?? null,
+    }).catch(() => { /* best effort */ });
+  }
+
+  return promptResult;
 }
 
 /**
@@ -2130,7 +2430,7 @@ async function runStandaloneLoopAca(
           stream: "stderr",
           text: `⚠ Turn error: ${promptResult.error}`,
         });
-        recordError({
+        recordSessionError({
           sessionId: meta.id,
           sessionName: meta.name,
           agent: meta.agent,
@@ -2153,7 +2453,7 @@ async function runStandaloneLoopAca(
         stream: "stderr",
         text: `Prompt execution error: ${msg}`,
       });
-      recordError({
+      recordSessionError({
         sessionId: meta.id,
         sessionName: meta.name,
         agent: meta.agent,
@@ -2388,7 +2688,7 @@ async function runLoopModeAca(
         stream: "stderr",
         text: `Task execution error: ${msg}`,
       });
-      recordError({
+      recordSessionError({
         sessionId: meta.id,
         sessionName: meta.name,
         agent: meta.agent,
@@ -2438,7 +2738,7 @@ async function runLoopModeAca(
           text: `✖ Agent turn failed: ${promptResult.error}`,
         });
       }
-      recordError({
+      recordSessionError({
         sessionId: meta.id,
         sessionName: meta.name,
         agent: meta.agent,
@@ -2467,7 +2767,7 @@ async function runLoopModeAca(
         stream: "stderr",
         text: `✖ Agent turn was cancelled before it finished (likely a timeout) — task reset to "${stages.claimState}" instead of being marked "${stages.resolveState}".`,
       });
-      recordError({
+      recordSessionError({
         sessionId: meta.id,
         sessionName: meta.name,
         agent: meta.agent,
@@ -2503,7 +2803,7 @@ async function runLoopModeAca(
         text: `✖ MCP server(s) [${failedNames}] failed to start — the agent was missing tools it needed. ` +
           `Task reset to "${stages.claimState}" for retry instead of trusting this turn's result.`,
       });
-      recordError({
+      recordSessionError({
         sessionId: meta.id,
         sessionName: meta.name,
         agent: meta.agent,
@@ -2627,7 +2927,7 @@ async function runLoopModeAca(
           stream: "system",
           text: `Task ${task.id} reset to "${stages.claimState}" (${failureReason || "execution failed"}). ⛔ Blocked after ${failures} consecutive failures — will not retry this session.`,
         });
-        recordError({
+        recordSessionError({
           sessionId: meta.id,
           sessionName: meta.name,
           agent: meta.agent,

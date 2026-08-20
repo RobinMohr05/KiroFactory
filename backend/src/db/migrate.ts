@@ -59,6 +59,14 @@ const SCHEMA_STATEMENTS: string[] = [
   // IX_tasks_group_id (group_id IS NOT NULL). As above, Neo4j indexes the
   // full property; tasks with no groupId simply aren't queried by it.
   "CREATE INDEX task_group_id_idx IF NOT EXISTS FOR (t:Task) ON (t.groupId)",
+
+  // ── Turn persistence (session-level turn tracking for the credits dashboard) ──
+  // Composite index for efficient turn lookups by session + number
+  "CREATE INDEX turn_session_number_idx IF NOT EXISTS FOR (t:Turn) ON (t.number)",
+  // Index on startedAt for date-range queries in usage/dashboard endpoints
+  "CREATE INDEX turn_started_at_idx IF NOT EXISTS FOR (t:Turn) ON (t.startedAt)",
+  // ErrorEvent lookup by timestamp
+  "CREATE INDEX error_event_timestamp_idx IF NOT EXISTS FOR (e:ErrorEvent) ON (e.timestamp)",
 ];
 
 /**

@@ -17,6 +17,7 @@ import { requireAuth, getUserId } from "../middleware/auth.js";
 import type { CreateSessionInput, UpdateSessionInput } from "../types.js";
 import { log, toErrorFields } from "../logger.js";
 import { sanitizeSessionForClient } from "../session-sanitize.js";
+import { getTurnsBySession } from "../db/turns.js";
 
 const router = Router();
 
@@ -159,6 +160,34 @@ router.get("/:id/output", (req: Request, res: Response) => {
       msg: "Failed to fetch output",
     });
     res.status(500).json({ error: "Failed to fetch output" });
+  }
+});
+
+// GET /api/sessions/:id/turns — get turn history for a session (must belong to authenticated user)
+router.get("/:id/turns", async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const id = paramId(req);
+    if (id === null) {
+      res.status(400).json({ error: "Invalid session id" });
+      return;
+    }
+    const session = getSession(id);
+    if (!session || session.userId !== userId) {
+      res.status(404).json({ error: "Session not found" });
+      return;
+    }
+    const turns = await getTurnsBySession(id);
+    res.json(turns);
+  } catch (err) {
+    log.error("route-error", {
+      component: "sessions",
+      method: "GET",
+      path: "/api/sessions/:id/turns",
+      ...toErrorFields(err),
+      msg: "Failed to fetch turns",
+    });
+    res.status(500).json({ error: "Failed to fetch turns" });
   }
 });
 

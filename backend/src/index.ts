@@ -21,6 +21,7 @@ import errorsRouter from "./routes/errors.js";
 import credentialsRouter from "./routes/credentials.js";
 import adminRouter from "./routes/admin.js";
 import taskPlannerRouter, { plannerPool } from "./routes/task-planner.js";
+import usageRouter from "./routes/usage.js";
 import { runMigration } from "./db/migrate.js";
 import { tryConnect, isDbAvailable, closePool } from "./db/connection.js";
 import { shutdownAllSessions, initSessions } from "./session-manager.js";
@@ -87,6 +88,7 @@ app.use("/api/errors", errorsRouter);
 app.use("/api/users/me/credentials", requireDb, credentialsRouter);
 app.use("/api/admin", requireDb, adminRouter);
 app.use("/api/task-planner", requireDb, taskPlannerRouter);
+app.use("/api/usage", requireDb, usageRouter);
 
 // Error-handling middleware — catches unhandled errors from route handlers and logs them
 // as structured JSON for Azure Monitor (must be registered AFTER all route handlers).
