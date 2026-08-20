@@ -1462,6 +1462,8 @@ async function streamPrompt(managed: ManagedSession, text: string, image?: { dat
   managed.turnStartedAt = now();
   managed.turnToolCallCount = 0;
   managed.turnActiveToolCalls.clear();
+  managed.turnVerdict = null;
+  managed.verdictToolCallId = null;
 
   const turnNumber = managed.turnNumber;
   const taskId = taskMeta?.id ?? managed.meta.currentTaskId;

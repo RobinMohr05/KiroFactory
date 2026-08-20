@@ -6,9 +6,13 @@
  * - Returns aggregated usage data
  * - Handles tabId filter
  * - Returns proper error for invalid params
+ * - Validates ISO date format for from/to
+ * - Normalizes date-only values to full ISO datetime strings
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import request from "supertest";
+import express from "express";
 
 // Mock dependencies
 vi.mock("../db/turns.js", () => ({
@@ -25,7 +29,20 @@ vi.mock("../middleware/auth.js", () => ({
   getUserId: vi.fn().mockReturnValue(1),
 }));
 
+vi.mock("../logger.js", () => ({
+  log: { error: vi.fn(), info: vi.fn(), warn: vi.fn() },
+  toErrorFields: vi.fn().mockReturnValue({}),
+}));
+
 import { getTurnsByUserAndPeriod } from "../db/turns.js";
+import usageRouter from "./usage.js";
+
+// Create a minimal Express app for route testing
+function createApp() {
+  const app = express();
+  app.use("/api/usage", usageRouter);
+  return app;
+}
 
 describe("GET /api/usage — aggregation logic", () => {
   beforeEach(() => {
@@ -116,5 +133,89 @@ describe("GET /api/usage — aggregation logic", () => {
     expect(totalCredits).toBe(0);
     expect(totalCostEur).toBe(0);
     expect(totalTurns).toBe(0);
+  });
+});
+
+describe("GET /api/usage — route validation", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns 400 when from is missing", async () => {
+    const app = createApp();
+    const res = await request(app).get("/api/usage?to=2026-08-20");
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/from and to/i);
+  });
+
+  it("returns 400 when to is missing", async () => {
+    const app = createApp();
+    const res = await request(app).get("/api/usage?from=2026-08-20");
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/from and to/i);
+  });
+
+  it("returns 400 for non-ISO date format in from", async () => {
+    const app = createApp();
+    const res = await request(app).get("/api/usage?from=hello&to=2026-08-20");
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/ISO date/i);
+  });
+
+  it("returns 400 for non-ISO date format in to", async () => {
+    const app = createApp();
+    const res = await request(app).get("/api/usage?from=2026-08-20&to=not-a-date");
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/ISO date/i);
+  });
+
+  it("normalizes date-only from/to values to full datetime strings", async () => {
+    const app = createApp();
+    (getTurnsByUserAndPeriod as any).mockResolvedValue([]);
+
+    await request(app).get("/api/usage?from=2026-08-20&to=2026-08-20");
+
+    // Should have been called with normalized datetime strings
+    expect(getTurnsByUserAndPeriod).toHaveBeenCalledWith(
+      1,
+      "2026-08-20T00:00:00.000Z",
+      "2026-08-20T23:59:59.999Z",
+      undefined
+    );
+  });
+
+  it("passes full datetime strings through unchanged", async () => {
+    const app = createApp();
+    (getTurnsByUserAndPeriod as any).mockResolvedValue([]);
+
+    await request(app).get("/api/usage?from=2026-08-20T06:00:00.000Z&to=2026-08-21T18:00:00.000Z");
+
+    expect(getTurnsByUserAndPeriod).toHaveBeenCalledWith(
+      1,
+      "2026-08-20T06:00:00.000Z",
+      "2026-08-21T18:00:00.000Z",
+      undefined
+    );
+  });
+
+  it("returns 400 for invalid tabId", async () => {
+    const app = createApp();
+    const res = await request(app).get("/api/usage?from=2026-08-20&to=2026-08-21&tabId=abc");
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/tabId/i);
+  });
+
+  it("passes valid tabId as number", async () => {
+    const app = createApp();
+    (getTurnsByUserAndPeriod as any).mockResolvedValue([]);
+
+    await request(app).get("/api/usage?from=2026-08-20&to=2026-08-21&tabId=2");
+
+    expect(getTurnsByUserAndPeriod).toHaveBeenCalledWith(
+      1,
+      "2026-08-20T00:00:00.000Z",
+      "2026-08-21T23:59:59.999Z",
+      2
+    );
   });
 });

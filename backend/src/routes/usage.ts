@@ -27,13 +27,26 @@ router.get("/", async (req: Request, res: Response) => {
       return;
     }
 
+    // Validate ISO date format (YYYY-MM-DD with optional time component)
+    const isoDateish = /^\d{4}-\d{2}-\d{2}/;
+    if (!isoDateish.test(from) || !isoDateish.test(to)) {
+      res.status(400).json({ error: "from and to must be ISO date strings (YYYY-MM-DD...)" });
+      return;
+    }
+
+    // Normalize date-only values to full ISO datetime strings so that the
+    // Cypher string comparison (t.startedAt >= $from AND t.startedAt <= $to)
+    // correctly includes all turns on the boundary dates.
+    const normalizedFrom = from.length === 10 ? `${from}T00:00:00.000Z` : from;
+    const normalizedTo = to.length === 10 ? `${to}T23:59:59.999Z` : to;
+
     const tabId = req.query.tabId ? Number(req.query.tabId) : undefined;
     if (req.query.tabId && (!Number.isInteger(tabId) || tabId! < 1)) {
       res.status(400).json({ error: "tabId must be a positive integer" });
       return;
     }
 
-    const breakdown = await getTurnsByUserAndPeriod(userId, from, to, tabId);
+    const breakdown = await getTurnsByUserAndPeriod(userId, normalizedFrom, normalizedTo, tabId);
 
     // Compute aggregates from the breakdown
     let totalCredits = 0;
