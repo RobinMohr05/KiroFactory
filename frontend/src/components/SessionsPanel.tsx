@@ -1,18 +1,18 @@
 import { useState, useEffect, useRef } from 'react';
 import { useApp } from '../context/AppContext';
 import { SessionModal } from './SessionModal';
+import { SessionDetailTabs } from './SessionDetailTabs';
 import { apiFetch } from '../utils/api';
+import { formatCreditsWithEur } from '../utils/format';
 import { useConfirmAction } from '../hooks/useConfirmAction';
 import type { Session, OutputEntry, SessionActivity } from '../types';
 
 export function SessionsPanel() {
-  const { sessions, setSessions, currentTabId, activeSessionId, setActiveSessionId, tabs, pendingOps } = useApp();
+  const { sessions, setSessions, currentTabId, activeSessionId, setActiveSessionId, tabs, pendingOps, errors, setActiveView, setHighlightedTaskId } = useApp();
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [editingSession, setEditingSession] = useState<Session | null>(null);
   const [output, setOutput] = useState<OutputEntry[]>([]);
-  const [autoScroll, setAutoScroll] = useState(true);
   const [activity, setActivity] = useState<SessionActivity | null>(null);
-  const outputRef = useRef<HTMLDivElement>(null);
   const dragIdRef = useRef<number | null>(null);
 
   // Filter sessions for current tab
@@ -40,7 +40,6 @@ export function SessionsPanel() {
       setOutput([]);
       return;
     }
-    setAutoScroll(true);
     (async () => {
       try {
         const res = await apiFetch(`/api/sessions/${activeSessionId}/output`);
@@ -75,20 +74,7 @@ export function SessionsPanel() {
     return () => window.removeEventListener('ws-session-activity', handler);
   }, [activeSessionId]);
 
-  // Auto-scroll output
-  useEffect(() => {
-    if (autoScroll && outputRef.current) {
-      const container = outputRef.current;
-      container.scrollTop = container.scrollHeight;
-    }
-  }, [output, autoScroll]);
-
-  const handleOutputScroll = () => {
-    if (!outputRef.current) return;
-    const el = outputRef.current;
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
-    setAutoScroll(atBottom);
-  };
+  // Auto-scroll is managed internally by SessionDetailTabs and SessionTimeline
 
   const handleStart = async () => {
     if (!activeSessionId) return;
@@ -266,6 +252,11 @@ export function SessionsPanel() {
     }
   };
 
+  // Compute which sessions have errors (matched by session name)
+  const sessionNamesWithErrors = new Set(
+    errors.map(e => e.sessionName)
+  );
+
   const isRunning = activeSession?.status === 'running';
   const isInteractive = activeSession?.interactive !== false;
   const isLoop = activeSession?.loop === true;
@@ -296,6 +287,7 @@ export function SessionsPanel() {
                 key={session.id}
                 session={session}
                 active={session.id === activeSessionId}
+                hasErrors={sessionNamesWithErrors.has(session.name)}
                 onClick={() => setActiveSessionId(session.id)}
                 onDragStart={(e) => handleDragStart(e, session)}
                 onDragEnd={handleDragEnd}
@@ -311,6 +303,7 @@ export function SessionsPanel() {
                 key={session.id}
                 session={session}
                 active={session.id === activeSessionId}
+                hasErrors={sessionNamesWithErrors.has(session.name)}
                 onClick={() => setActiveSessionId(session.id)}
                 onDragStart={(e) => handleDragStart(e, session)}
                 onDragEnd={handleDragEnd}
@@ -345,6 +338,30 @@ export function SessionsPanel() {
                   <button className={`btn btn-secondary btn-sm${deleteConfirmPending ? ' btn-confirm-pending' : ''}`} disabled={!!activeSession.isPermanent} onClick={handleDeleteClick}>{deleteConfirmPending ? 'Confirm?' : 'Delete'}</button>
                 </div>
               </div>
+              {((activeSession.turnCount ?? 0) > 0 || (activeSession.totalCreditsUsed ?? 0) > 0) && (
+                <div className="session-detail-meta" data-testid="session-detail-meta">
+                  {(activeSession.turnCount ?? 0) > 0 && (
+                    <span className="session-meta-turns">🔄 {activeSession.turnCount} turn{activeSession.turnCount !== 1 ? 's' : ''}</span>
+                  )}
+                  {(activeSession.totalCreditsUsed ?? 0) > 0 && (
+                    <span className="session-meta-credits">
+                      💰 {formatCreditsWithEur(activeSession.totalCreditsUsed!).creditsStr} credits (€{formatCreditsWithEur(activeSession.totalCreditsUsed!).eurStr})
+                    </span>
+                  )}
+                  {activeSession.currentTaskId && activeSession.currentTaskTitle && (
+                    <span
+                      className="session-meta-task"
+                      data-testid="session-current-task-link"
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => { setHighlightedTaskId(activeSession.currentTaskId!); setActiveView('boards'); }}
+                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setHighlightedTaskId(activeSession.currentTaskId!); setActiveView('boards'); } }}
+                    >
+                      📋 <strong>#{activeSession.currentTaskId}</strong> {activeSession.currentTaskTitle}
+                    </span>
+                  )}
+                </div>
+              )}
               <div className="session-tabs-bar">
                 <span className="session-tabs-label">Tabs:</span>
                 <span className="session-tabs-list">{sessionTabNames}</span>
@@ -354,34 +371,11 @@ export function SessionsPanel() {
                 <span>{activity?.detail || activity?.type || 'Idle'}</span>
               </div>
               <div className="session-output-wrapper">
-                <div
-                  className="session-output"
-                  id="sessionOutput"
-                  role="log"
-                  aria-live="polite"
-                  aria-label="Agent output"
-                  tabIndex={0}
-                  ref={outputRef}
-                  onScroll={handleOutputScroll}
-                >
-                  <pre className="output-pre" id="outputPre">
-                    {output.map((entry, i) => (
-                      <span key={i} className={`output-line output-${entry.stream}`}>
-                        {entry.timestamp ? `[${new Date(entry.timestamp).toLocaleTimeString()}] ` : ''}{entry.text}{'\n'}
-                      </span>
-                    ))}
-                  </pre>
-                </div>
-                {!autoScroll && (
-                  <button
-                    className="scroll-to-bottom-btn"
-                    aria-label="Scroll to bottom"
-                    title="Scroll to bottom"
-                    onClick={() => { setAutoScroll(true); if (outputRef.current) outputRef.current.scrollTop = outputRef.current.scrollHeight; }}
-                  >
-                    ↓ New output
-                  </button>
-                )}
+                <SessionDetailTabs
+                  sessionId={activeSession.id}
+                  sessionStatus={activeSession.status}
+                  output={output}
+                />
               </div>
               <SessionPromptBar canSend={canSendPrompt} isLoop={isLoop} isInteractive={isInteractive} session={activeSession} onSend={handleSendPrompt} />
             </div>
@@ -411,9 +405,10 @@ export function SessionsPanel() {
   );
 }
 
-function SessionListItem({ session, active, onClick, onDragStart, onDragEnd, onDragOver, onDrop, onContextMenu }: {
+function SessionListItem({ session, active, hasErrors, onClick, onDragStart, onDragEnd, onDragOver, onDrop, onContextMenu }: {
   session: Session;
   active: boolean;
+  hasErrors: boolean;
   onClick: () => void;
   onDragStart: (e: React.DragEvent) => void;
   onDragEnd: (e: React.DragEvent) => void;
@@ -423,6 +418,7 @@ function SessionListItem({ session, active, onClick, onDragStart, onDragEnd, onD
 }) {
   const statusClass = `status-dot-sm status-${session.status}`;
   const activityDetail = session.currentActivity?.detail || session.currentActivity?.type || '';
+  const credits = session.totalCreditsUsed ?? 0;
 
   return (
     <li
@@ -441,14 +437,21 @@ function SessionListItem({ session, active, onClick, onDragStart, onDragEnd, onD
         <span className="session-item-name">
           {session.pinned && <span className="session-item-pin" title="Pinned">📌</span>}
           {session.name}
+          {hasErrors && <span className="session-item-error-dot" data-testid={`session-error-indicator-${session.id}`} title="Has errors">●</span>}
         </span>
         <span className="session-item-agent">{session.agent || <em>Interactive</em>}</span>
         {session.status === 'running' && activityDetail && (
           <span className="session-item-activity">{activityDetail}</span>
         )}
-        {session.status === 'running' && (session.totalCreditsUsed ?? 0) > 0 && (
+        {session.status === 'running' && session.currentTaskId && session.currentTaskTitle && (
+          <span className="session-item-task">
+            <span className="session-item-task-id">#{session.currentTaskId}</span>{' '}
+            {session.currentTaskTitle.length > 30 ? session.currentTaskTitle.slice(0, 30) + '…' : session.currentTaskTitle}
+          </span>
+        )}
+        {session.status === 'running' && credits > 0 && (
           <span className="session-item-usage">
-            💰 {(session.totalCreditsUsed! < 10 ? session.totalCreditsUsed!.toFixed(2) : Math.round(session.totalCreditsUsed!).toString())} credits
+            💰 {formatCreditsWithEur(credits).creditsStr} credits (€{formatCreditsWithEur(credits).eurStr})
           </span>
         )}
       </div>

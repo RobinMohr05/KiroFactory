@@ -64,3 +64,33 @@ describe('constants', () => {
     expect(TYPE_CLASSES['feature']).toBe('badge-feature');
   });
 });
+
+import { formatCreditsWithEur } from '../utils/format';
+
+describe('formatCreditsWithEur', () => {
+  it('formats credits < 10 with 2 decimal places', () => {
+    const { creditsStr } = formatCreditsWithEur(2.5);
+    expect(creditsStr).toBe('2.50');
+  });
+
+  it('rounds credits >= 10 to integers', () => {
+    const { creditsStr } = formatCreditsWithEur(15.3);
+    expect(creditsStr).toBe('15');
+  });
+
+  it('formats EUR >= 0.01 with 3 decimal places', () => {
+    const { eurStr } = formatCreditsWithEur(2.5); // 2.5 * 0.04 = 0.10
+    expect(eurStr).toBe('0.100');
+  });
+
+  it('formats EUR < 0.01 with 4 decimal places', () => {
+    const { eurStr } = formatCreditsWithEur(0.1); // 0.1 * 0.04 = 0.004
+    expect(eurStr).toBe('0.0040');
+  });
+
+  it('handles zero credits', () => {
+    const { creditsStr, eurStr } = formatCreditsWithEur(0);
+    expect(creditsStr).toBe('0.00');
+    expect(eurStr).toBe('0.0000');
+  });
+});

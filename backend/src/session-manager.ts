@@ -65,7 +65,9 @@ import type {
   CreateSessionInput,
   UpdateSessionInput,
   McpServerConfig,
+  TurnEndSummary,
 } from "./types.js";
+import { createTurn, completeTurn, createErrorEvent, getMaxTurnNumber } from "./db/turns.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -153,6 +155,22 @@ interface ManagedSession {
    * instead of creating a new one. Consumed (set to null) once used.
    */
   pendingRunner: KiroRunner | null;
+  /** Turn number counter — incremented on each prompt send for this session. */
+  turnNumber: number;
+  /** Number of turns completed/started this run (resets on session start, used for REST API). */
+  turnCountThisRun: number;
+  /** Timestamp when the current turn started (for computing durationMs). */
+  turnStartedAt: string | null;
+  /** Tool call count in the current turn (for turn-end summary). */
+  turnToolCallCount: number;
+  /** Active tool calls with their start times, keyed by toolCallId. */
+  turnActiveToolCalls: Map<string, number>;
+  /**
+   * Last generated fallback toolCallId (when ACP doesn't provide one on tool_call).
+   * Used to correlate the subsequent tool_call_update which also won't have a toolCallId.
+   * Reset after use or when the next tool_call arrives.
+   */
+  lastGeneratedToolCallId: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -246,6 +264,12 @@ export async function initSessions(): Promise<void> {
       turnVerdict: null,
       verdictToolCallId: null,
       pendingRunner: null,
+      turnNumber: 0,
+      turnCountThisRun: 0,
+      turnStartedAt: null,
+      turnToolCallCount: 0,
+      turnActiveToolCalls: new Map(),
+      lastGeneratedToolCallId: null,
     });
 
     // Check if this session should auto-restart.
@@ -313,6 +337,34 @@ export async function initSessions(): Promise<void> {
 
 function now(): string {
   return new Date().toISOString();
+}
+
+/**
+ * Record an error both in the in-memory error store (for live UI) and persist
+ * it to the DB as an ErrorEvent node linked to the session (for historical review).
+ */
+function recordSessionError(input: {
+  sessionId: number;
+  sessionName: string;
+  agent: string;
+  message: string;
+  context: string;
+  taskId?: number;
+  taskTitle?: string;
+  userId: number;
+}): void {
+  recordError(input);
+
+  // Persist to DB — fire-and-forget, non-fatal
+  if (isDbAvailable()) {
+    createErrorEvent({
+      sessionId: input.sessionId,
+      timestamp: now(),
+      message: input.message,
+      taskId: input.taskId ?? null,
+      taskTitle: input.taskTitle ?? null,
+    }).catch(() => { /* best effort */ });
+  }
 }
 
 function appendOutput(session: ManagedSession, entry: OutputEntry): void {
@@ -480,6 +532,12 @@ export async function createSession(input: CreateSessionInput): Promise<Session>
     turnVerdict: null,
     verdictToolCallId: null,
     pendingRunner: null,
+    turnNumber: 0,
+    turnCountThisRun: 0,
+    turnStartedAt: null,
+    turnToolCallCount: 0,
+    turnActiveToolCalls: new Map(),
+    lastGeneratedToolCallId: null,
   };
 
   sessions.set(meta.id, session);
@@ -492,7 +550,14 @@ export async function createSession(input: CreateSessionInput): Promise<Session>
 }
 
 export function getSession(id: number): Session | undefined {
-  return sessions.get(id)?.meta;
+  const session = sessions.get(id);
+  if (!session) return undefined;
+  return session.meta;
+}
+
+/** Get the per-run turn count for a session (survives WS reconnection). */
+export function getSessionTurnCount(id: number): number {
+  return sessions.get(id)?.turnCountThisRun ?? 0;
 }
 
 export function getAllSessions(userId?: number): Session[] {
@@ -507,6 +572,8 @@ export function getAllSessions(userId?: number): Session[] {
     ...sanitizeSessionForClient(s.meta),
     // Don't include full output in list endpoint — too large
     output: [],
+    // Per-run turn count for the frontend (survives WS reconnection)
+    turnCount: s.turnCountThisRun,
   }));
 }
 
@@ -718,6 +785,20 @@ export async function startSession(id: number): Promise<boolean> {
   session.meta.startedAt = now();
   session.totalCreditsUsed = 0;
   session.meta.totalCreditsUsed = 0;
+  // Load the max turn number from the DB to continue numbering without
+  // collisions with Turn nodes from previous runs of this session.
+  let maxTurn = 0;
+  if (isDbAvailable()) {
+    try {
+      maxTurn = await getMaxTurnNumber(id);
+    } catch { /* best effort — start from 0 if DB is unreachable */ }
+  }
+  session.turnNumber = maxTurn;
+  session.turnCountThisRun = 0;
+  session.turnStartedAt = null;
+  session.turnToolCallCount = 0;
+  session.turnActiveToolCalls.clear();
+  session.lastGeneratedToolCallId = null;
   setStatus(session, "running");
   setActivity(session, { type: "working", detail: "Starting ACP session..." });
   logSessionEvent("session-started", id, { agent: session.meta.agent, name: session.meta.name, mode: ACA_MODE ? "remote" : "local" });
@@ -754,7 +835,7 @@ export async function startSession(id: number): Promise<boolean> {
     });
 
     // Record the error for the UI
-    recordError({
+    recordSessionError({
       sessionId: session.meta.id,
       sessionName: session.meta.name,
       agent: session.meta.agent,
@@ -1159,6 +1240,7 @@ async function runLoopMode(
 
     // Track current task
     meta.currentTaskId = task.id;
+    meta.currentTaskTitle = task.title;
     broadcastToUser(meta.userId, { type: "session-updated", session: sanitizeSessionForClient(meta) });
     persistSession(meta.id);
 
@@ -1208,7 +1290,7 @@ async function runLoopMode(
     managed.verdictToolCallId = null;
 
     try {
-      await streamPrompt(managed, prompt);
+      await streamPrompt(managed, prompt, undefined, { id: task.id, title: task.title });
     } catch (err) {
       success = false;
       const msg = err instanceof Error ? err.message : String(err);
@@ -1219,7 +1301,7 @@ async function runLoopMode(
       });
 
       // Record the error so it appears in the Errors tab
-      recordError({
+      recordSessionError({
         sessionId: meta.id,
         sessionName: meta.name,
         agent: meta.agent,
@@ -1244,7 +1326,7 @@ async function runLoopMode(
         text: `✖ MCP server(s) [${failedNames}] failed to start — the agent was missing tools it needed. ` +
           `Task reset to "${stages.claimState}" for retry instead of trusting this turn's result.`,
       });
-      recordError({
+      recordSessionError({
         sessionId: meta.id,
         sessionName: meta.name,
         agent: meta.agent,
@@ -1311,10 +1393,9 @@ async function runLoopMode(
     }
 
     meta.currentTaskId = undefined;
+    meta.currentTaskTitle = undefined;
     broadcastToUser(meta.userId, { type: "session-updated", session: meta });
     persistSession(meta.id);
-
-    // Brief pause between tasks
     if (!signal.aborted && meta.intervalSeconds > 0) {
       setActivity(managed, {
         type: "idle",
@@ -1392,7 +1473,7 @@ async function runStandaloneLoopLocal(
         stream: "stderr",
         text: `Prompt execution error: ${msg}`,
       });
-      recordError({
+      recordSessionError({
         sessionId: meta.id,
         sessionName: meta.name,
         agent: meta.agent,
@@ -1415,8 +1496,41 @@ async function runStandaloneLoopLocal(
   }
 }
 
-async function streamPrompt(managed: ManagedSession, text: string, image?: { data: string; mimeType: string }): Promise<void> {
+async function streamPrompt(managed: ManagedSession, text: string, image?: { data: string; mimeType: string }, taskMeta?: { id: number; title: string }): Promise<void> {
   if (!managed.runner) return;
+
+  // ─── Turn start ───
+  managed.turnNumber++;
+  managed.turnCountThisRun++;
+  managed.turnStartedAt = now();
+  managed.turnToolCallCount = 0;
+  managed.turnActiveToolCalls.clear();
+  managed.turnVerdict = null;
+  managed.verdictToolCallId = null;
+
+  const turnNumber = managed.turnNumber;
+  const taskId = taskMeta?.id ?? managed.meta.currentTaskId;
+  const taskTitle = taskMeta?.title;
+
+  broadcastToUser(managed.meta.userId, {
+    type: "session-turn-start",
+    sessionId: managed.meta.id,
+    turnNumber,
+    taskId,
+    taskTitle,
+    startedAt: managed.turnStartedAt,
+  });
+
+  // Persist turn-start to DB (fire-and-forget — don't block the prompt)
+  if (isDbAvailable()) {
+    createTurn({
+      sessionId: managed.meta.id,
+      number: turnNumber,
+      startedAt: managed.turnStartedAt,
+      taskId: taskId ?? null,
+      taskTitle: taskTitle ?? null,
+    }).catch(() => { /* best effort — non-fatal */ });
+  }
 
   try {
     for await (const update of managed.runner.prompt(text, image)) {
@@ -1452,10 +1566,83 @@ async function streamPrompt(managed: ManagedSession, text: string, image?: { dat
       }
     }
 
+    // ─── Turn end ───
+    const endedAt = now();
+    const durationMs = managed.turnStartedAt
+      ? new Date(endedAt).getTime() - new Date(managed.turnStartedAt).getTime()
+      : 0;
+    const costEur = turnCredits * 0.04;
+
+    const summary: TurnEndSummary = {
+      credits: turnCredits,
+      costEur,
+      durationMs,
+      toolCallCount: managed.turnToolCallCount,
+      hasChanges: false, // Local mode doesn't track git changes
+      verdict: managed.turnVerdict ?? undefined,
+    };
+
+    broadcastToUser(managed.meta.userId, {
+      type: "session-turn-end",
+      sessionId: managed.meta.id,
+      turnNumber,
+      summary,
+    });
+
+    // Persist turn-end to DB
+    if (isDbAvailable()) {
+      completeTurn({
+        sessionId: managed.meta.id,
+        number: turnNumber,
+        endedAt,
+        credits: turnCredits,
+        costEur,
+        verdict: managed.turnVerdict ?? null,
+        durationMs,
+        toolCallCount: managed.turnToolCallCount,
+        hasChanges: false,
+      }).catch(() => { /* best effort — non-fatal */ });
+    }
+
     setActivity(managed, { type: "idle", detail: "Ready for next prompt" });
   } catch (err) {
     // Flush buffer even on error so partial text isn't lost
     flushMessageBuffer(managed);
+
+    // ─── Turn end (on error) ───
+    const endedAt = now();
+    const durationMs = managed.turnStartedAt
+      ? new Date(endedAt).getTime() - new Date(managed.turnStartedAt).getTime()
+      : 0;
+
+    const summary: TurnEndSummary = {
+      credits: 0,
+      costEur: 0,
+      durationMs,
+      toolCallCount: managed.turnToolCallCount,
+      hasChanges: false,
+    };
+
+    broadcastToUser(managed.meta.userId, {
+      type: "session-turn-end",
+      sessionId: managed.meta.id,
+      turnNumber,
+      summary,
+    });
+
+    if (isDbAvailable()) {
+      completeTurn({
+        sessionId: managed.meta.id,
+        number: turnNumber,
+        endedAt,
+        credits: 0,
+        costEur: 0,
+        durationMs,
+        toolCallCount: managed.turnToolCallCount,
+        hasChanges: false,
+      }).catch(() => { /* best effort */ });
+    }
+
     if (managed.abortController?.signal.aborted) return;
     throw err;
   }
@@ -1566,6 +1753,32 @@ function processUpdate(managed: ManagedSession, update: SessionUpdateChunk): voi
           stream: "system",
           text: `${icon} ${label}${update.title && label !== update.title ? ` — ${update.title}` : ""}`,
         });
+
+        // Track tool call count for the turn summary
+        managed.turnToolCallCount++;
+
+        // Generate a toolCallId if one isn't provided
+        const acpToolCallId = (update as { toolCallId?: string }).toolCallId;
+        const toolCallId = acpToolCallId || `tc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+        // Track the last generated fallback ID so tool_call_update (which also
+        // won't have a toolCallId) can be correlated with this tool_call.
+        managed.lastGeneratedToolCallId = acpToolCallId ? null : toolCallId;
+
+        // Track the tool call start time for durationMs calculation
+        managed.turnActiveToolCalls.set(toolCallId, Date.now());
+
+        // Emit structured session-tool-call event
+        broadcastToUser(managed.meta.userId, {
+          type: "session-tool-call",
+          sessionId: managed.meta.id,
+          turnNumber: managed.turnNumber,
+          toolCallId,
+          label,
+          icon,
+          status: "running",
+        });
+
         // Track report_verdict tool calls so we can capture the verdict from the update.
         // kiro-cli reports MCP tool titles as "Running: @<server>/<tool>" (e.g.
         // "Running: @verdict/report_verdict"), never the bare tool name — an exact
@@ -1576,12 +1789,20 @@ function processUpdate(managed: ManagedSession, update: SessionUpdateChunk): voi
         break;
       }
 
-      case "tool_call_update":
+      case "tool_call_update": {
+        // Use ACP-provided toolCallId, or fall back to the last generated one
+        // (from a tool_call that also lacked a toolCallId — they arrive sequentially).
+        const tcUpdateId = (update as { toolCallId?: string }).toolCallId || managed.lastGeneratedToolCallId;
+        // Clear the fallback after use — it's a one-shot correlation.
+        if (!((update as { toolCallId?: string }).toolCallId) && managed.lastGeneratedToolCallId) {
+          managed.lastGeneratedToolCallId = null;
+        }
+
         if (update.status === "completed") {
           // Check if this is a completed report_verdict call — capture the verdict
           if (
             managed.verdictToolCallId &&
-            (update as { toolCallId?: string }).toolCallId === managed.verdictToolCallId
+            tcUpdateId === managed.verdictToolCallId
           ) {
             // Extract verdict from tool output content
             const content = (update as { content?: Array<{ type?: string; text?: string }> }).content;
@@ -1599,17 +1820,80 @@ function processUpdate(managed: ManagedSession, update: SessionUpdateChunk): voi
             }
             managed.verdictToolCallId = null;
           }
+
+          // Emit structured session-tool-call-update event
+          if (tcUpdateId) {
+            const startTime = managed.turnActiveToolCalls.get(tcUpdateId);
+            const durationMs = startTime ? Date.now() - startTime : undefined;
+            managed.turnActiveToolCalls.delete(tcUpdateId);
+
+            // Extract output text from content blocks
+            const content = (update as { content?: Array<{ type?: string; text?: string }> }).content;
+            let output: string | undefined;
+            if (Array.isArray(content)) {
+              const texts = content
+                .filter((b) => b?.type === "text" && b.text)
+                .map((b) => b.text!);
+              if (texts.length > 0) {
+                // Truncate to first 2000 chars to keep WS messages reasonable
+                const joined = texts.join("\n");
+                output = joined.length > 2000 ? joined.slice(0, 2000) + "…" : joined;
+              }
+            }
+
+            broadcastToUser(managed.meta.userId, {
+              type: "session-tool-call-update",
+              sessionId: managed.meta.id,
+              turnNumber: managed.turnNumber,
+              toolCallId: tcUpdateId,
+              status: "completed",
+              output,
+              durationMs,
+            });
+          }
+
           setActivity(managed, { type: "working", detail: "Processing..." });
         } else if (update.status === "failed") {
+          // Emit structured session-tool-call-update event for failure
+          if (tcUpdateId) {
+            const startTime = managed.turnActiveToolCalls.get(tcUpdateId);
+            const durationMs = startTime ? Date.now() - startTime : undefined;
+            managed.turnActiveToolCalls.delete(tcUpdateId);
+
+            // Extract output text from content blocks (same as completed path)
+            const content = (update as { content?: Array<{ type?: string; text?: string }> }).content;
+            let output: string | undefined;
+            if (Array.isArray(content)) {
+              const texts = content
+                .filter((b) => b?.type === "text" && b.text)
+                .map((b) => b.text!);
+              if (texts.length > 0) {
+                const joined = texts.join("\n");
+                output = joined.length > 2000 ? joined.slice(0, 2000) + "…" : joined;
+              }
+            }
+
+            broadcastToUser(managed.meta.userId, {
+              type: "session-tool-call-update",
+              sessionId: managed.meta.id,
+              turnNumber: managed.turnNumber,
+              toolCallId: tcUpdateId,
+              status: "failed",
+              output,
+              durationMs,
+            });
+          }
+
           // Tool failures are the most common reason an agent produces no
           // changes — always surface them.
           appendOutput(managed, {
             timestamp: now(),
             stream: "stderr",
-            text: `⚠️ Tool call failed: ${update.title || (update as { toolCallId?: string }).toolCallId || "unknown tool"}`,
+            text: `⚠️ Tool call failed: ${update.title || tcUpdateId || "unknown tool"}`,
           });
         }
         break;
+      }
 
       case "agent_thought_chunk":
       case "thinking":
@@ -2100,6 +2384,37 @@ async function streamPromptAca(managed: ManagedSession, text: string, taskMeta?:
     throw new Error("Worker is not connected");
   }
 
+  // ─── Turn start ───
+  managed.turnNumber++;
+  managed.turnCountThisRun++;
+  managed.turnStartedAt = now();
+  managed.turnToolCallCount = 0;
+  managed.turnActiveToolCalls.clear();
+
+  const turnNumber = managed.turnNumber;
+  const taskId = taskMeta?.id ?? managed.meta.currentTaskId;
+  const taskTitle = taskMeta?.title;
+
+  broadcastToUser(managed.meta.userId, {
+    type: "session-turn-start",
+    sessionId: managed.meta.id,
+    turnNumber,
+    taskId,
+    taskTitle,
+    startedAt: managed.turnStartedAt,
+  });
+
+  // Persist turn-start to DB (fire-and-forget)
+  if (isDbAvailable()) {
+    createTurn({
+      sessionId: managed.meta.id,
+      number: turnNumber,
+      startedAt: managed.turnStartedAt,
+      taskId: taskId ?? null,
+      taskTitle: taskTitle ?? null,
+    }).catch(() => { /* best effort */ });
+  }
+
   // Send the prompt to the worker (with optional task metadata for branch/commit/PR)
   const workerTaskMeta = taskMeta ? { id: taskMeta.id, title: taskMeta.title, type: taskMeta.type, description: taskMeta.description, files: taskMeta.files, branch: taskMeta.branch ?? null, pullRequestUrl: taskMeta.pullRequestUrl ?? null, siblingTasks: taskMeta.siblingTasks, autoMergePrs: taskMeta.autoMergePrs, allGroupTasksDone: taskMeta.allGroupTasksDone } : undefined;
   const sent = sendWorkerPrompt(managed.meta.id, text, workerTaskMeta);
@@ -2124,7 +2439,52 @@ async function streamPromptAca(managed: ManagedSession, text: string, taskMeta?:
   managed.acaPromptResolver = null;
   managed.acaPromptRejecter = null;
 
-  return (result && typeof result === "object") ? result as WorkerPromptResult : {};
+  const promptResult = (result && typeof result === "object") ? result as WorkerPromptResult : {};
+
+  // ─── Turn end ───
+  const endedAt = now();
+  const durationMs = managed.turnStartedAt
+    ? new Date(endedAt).getTime() - new Date(managed.turnStartedAt).getTime()
+    : 0;
+  const turnCredits = promptResult.credits ?? 0;
+  const costEur = turnCredits * 0.04;
+
+  const summary: TurnEndSummary = {
+    credits: turnCredits,
+    costEur,
+    durationMs: promptResult.durationMs ?? durationMs,
+    toolCallCount: promptResult.toolCalls ?? managed.turnToolCallCount,
+    hasChanges: promptResult.hasChanges ?? false,
+    verdict: promptResult.verdict ?? undefined,
+    prUrl: promptResult.prUrl ?? undefined,
+    branchName: promptResult.branchName ?? undefined,
+  };
+
+  broadcastToUser(managed.meta.userId, {
+    type: "session-turn-end",
+    sessionId: managed.meta.id,
+    turnNumber,
+    summary,
+  });
+
+  // Persist turn-end to DB
+  if (isDbAvailable()) {
+    completeTurn({
+      sessionId: managed.meta.id,
+      number: turnNumber,
+      endedAt,
+      credits: turnCredits,
+      costEur,
+      verdict: promptResult.verdict ?? null,
+      durationMs: promptResult.durationMs ?? durationMs,
+      toolCallCount: promptResult.toolCalls ?? managed.turnToolCallCount,
+      hasChanges: promptResult.hasChanges ?? false,
+      prUrl: promptResult.prUrl ?? null,
+      branchName: promptResult.branchName ?? null,
+    }).catch(() => { /* best effort */ });
+  }
+
+  return promptResult;
 }
 
 /**
@@ -2181,7 +2541,7 @@ async function runStandaloneLoopAca(
           stream: "stderr",
           text: `⚠ Turn error: ${promptResult.error}`,
         });
-        recordError({
+        recordSessionError({
           sessionId: meta.id,
           sessionName: meta.name,
           agent: meta.agent,
@@ -2204,7 +2564,7 @@ async function runStandaloneLoopAca(
         stream: "stderr",
         text: `Prompt execution error: ${msg}`,
       });
-      recordError({
+      recordSessionError({
         sessionId: meta.id,
         sessionName: meta.name,
         agent: meta.agent,
@@ -2323,6 +2683,7 @@ async function runLoopModeAca(
     }
 
     meta.currentTaskId = task.id;
+    meta.currentTaskTitle = task.title;
     broadcastToUser(meta.userId, { type: "session-updated", session: meta });
     persistSession(meta.id);
 
@@ -2470,7 +2831,7 @@ async function runLoopModeAca(
         stream: "stderr",
         text: `Task execution error: ${msg}`,
       });
-      recordError({
+      recordSessionError({
         sessionId: meta.id,
         sessionName: meta.name,
         agent: meta.agent,
@@ -2520,7 +2881,7 @@ async function runLoopModeAca(
           text: `✖ Agent turn failed: ${promptResult.error}`,
         });
       }
-      recordError({
+      recordSessionError({
         sessionId: meta.id,
         sessionName: meta.name,
         agent: meta.agent,
@@ -2549,7 +2910,7 @@ async function runLoopModeAca(
         stream: "stderr",
         text: `✖ Agent turn was cancelled before it finished (likely a timeout) — task reset to "${stages.claimState}" instead of being marked "${stages.resolveState}".`,
       });
-      recordError({
+      recordSessionError({
         sessionId: meta.id,
         sessionName: meta.name,
         agent: meta.agent,
@@ -2585,7 +2946,7 @@ async function runLoopModeAca(
         text: `✖ MCP server(s) [${failedNames}] failed to start — the agent was missing tools it needed. ` +
           `Task reset to "${stages.claimState}" for retry instead of trusting this turn's result.`,
       });
-      recordError({
+      recordSessionError({
         sessionId: meta.id,
         sessionName: meta.name,
         agent: meta.agent,
@@ -2693,6 +3054,7 @@ async function runLoopModeAca(
           text: `Task ${task.id} reset to "${stages.claimState}" and blocked for this session — fix the git credentials, then re-run.`,
         });
         meta.currentTaskId = undefined;
+        meta.currentTaskTitle = undefined;
         broadcastToUser(meta.userId, { type: "session-updated", session: meta });
         persistSession(meta.id);
         continue;
@@ -2709,7 +3071,7 @@ async function runLoopModeAca(
           stream: "system",
           text: `Task ${task.id} reset to "${stages.claimState}" (${failureReason || "execution failed"}). ⛔ Blocked after ${failures} consecutive failures — will not retry this session.`,
         });
-        recordError({
+        recordSessionError({
           sessionId: meta.id,
           sessionName: meta.name,
           agent: meta.agent,
@@ -2733,6 +3095,7 @@ async function runLoopModeAca(
     }
 
     meta.currentTaskId = undefined;
+    meta.currentTaskTitle = undefined;
     broadcastToUser(meta.userId, { type: "session-updated", session: meta });
     persistSession(meta.id);
 

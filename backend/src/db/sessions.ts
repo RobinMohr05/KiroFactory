@@ -190,6 +190,7 @@ function mapRecordToSession(record: Neo4jRecord): Session {
     createdAt: (props.createdAt as { toString(): string }).toString(),
     startedAt: props.startedAt ? (props.startedAt as { toString(): string }).toString() : undefined,
     currentTaskId: (props.currentTaskId as number) || undefined,
+    currentTaskTitle: (props.currentTaskTitle as string) || undefined,
     currentActivity,
     pinned: !!props.pinned,
     isPermanent: !!props.isPermanent,
@@ -299,6 +300,7 @@ export async function insertSession(session: Session): Promise<number> {
           interactive: $interactive, loop: $loop, runs: $runs, intervalSeconds: $intervalSeconds,
           cwd: $cwd, timeoutSeconds: $timeoutSeconds, model: $model,
           activityType: $activityType, activityDetail: $activityDetail, currentTaskId: $currentTaskId,
+          currentTaskTitle: $currentTaskTitle,
           pinned: $pinned, isPermanent: $isPermanent, sortOrder: $sortOrder, forceLocal: $forceLocal,
           createdAt: datetime($createdAt), startedAt: datetime($startedAt)
         })
@@ -347,6 +349,7 @@ export async function insertSession(session: Session): Promise<number> {
         activityType: session.currentActivity?.type ?? null,
         activityDetail: session.currentActivity?.detail ?? null,
         currentTaskId: session.currentTaskId ?? null,
+        currentTaskTitle: session.currentTaskTitle ?? null,
         pinned: session.pinned ? true : false,
         isPermanent: session.isPermanent ? true : false,
         sortOrder: session.sortOrder ?? 0,
@@ -435,6 +438,7 @@ export async function updateSessionMeta(session: Session): Promise<void> {
             s.interactive = $interactive, s.loop = $loop, s.runs = $runs, s.intervalSeconds = $intervalSeconds,
             s.cwd = $cwd, s.timeoutSeconds = $timeoutSeconds, s.model = $model,
             s.activityType = $activityType, s.activityDetail = $activityDetail, s.currentTaskId = $currentTaskId,
+            s.currentTaskTitle = $currentTaskTitle,
             s.pinned = $pinned, s.sortOrder = $sortOrder, s.forceLocal = $forceLocal,
             s.startedAt = datetime($startedAt)
         WITH s
@@ -492,6 +496,7 @@ export async function updateSessionMeta(session: Session): Promise<void> {
         activityType: session.currentActivity?.type ?? null,
         activityDetail: session.currentActivity?.detail ?? null,
         currentTaskId: session.currentTaskId ?? null,
+        currentTaskTitle: session.currentTaskTitle ?? null,
         pinned: session.pinned ? true : false,
         sortOrder: session.sortOrder ?? 0,
         forceLocal: session.forceLocal ? true : false,

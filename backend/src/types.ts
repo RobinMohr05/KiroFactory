@@ -362,6 +362,8 @@ export interface Session {
   currentActivity?: Activity;
   /** Currently claimed task ID (while in loop mode) */
   currentTaskId?: number;
+  /** Title of the currently claimed task (persisted alongside currentTaskId) */
+  currentTaskTitle?: string;
   /**
    * True for the one permanent, agentless "Chat" session every user gets.
    * Pinned sessions are always sorted first in the UI and cannot be deleted.
@@ -474,10 +476,27 @@ export type WsServerMessage =
   | { type: "sessions-reordered"; sessions: Session[] }
   | { type: "session-output"; sessionId: number; entry: OutputEntry }
   | { type: "session-activity"; sessionId: number; activity: Activity }
+  | { type: "session-turn-start"; sessionId: number; turnNumber: number; taskId?: number; taskTitle?: string; startedAt: string }
+  | { type: "session-turn-end"; sessionId: number; turnNumber: number; summary: TurnEndSummary }
+  | { type: "session-tool-call"; sessionId: number; turnNumber: number; toolCallId: string; label: string; icon: string; status: "running" }
+  | { type: "session-tool-call-update"; sessionId: number; turnNumber: number; toolCallId: string; status: "completed" | "failed"; output?: string; durationMs?: number }
   | { type: "error-created"; error: AgentError }
   | { type: "error-dismissed"; errorId: string }
   | { type: "errors-cleared" }
   | { type: "connected"; message: string };
+
+// ─── Turn Summary (used in session-turn-end WS event) ────────────────────────
+
+export interface TurnEndSummary {
+  credits: number;
+  costEur: number;
+  verdict?: string;
+  durationMs: number;
+  toolCallCount: number;
+  hasChanges: boolean;
+  prUrl?: string;
+  branchName?: string;
+}
 
 // ─── Agent Errors ────────────────────────────────────────────────────────────
 

@@ -60,8 +60,20 @@ const SCHEMA_STATEMENTS: string[] = [
   // IX_tasks_group_id (group_id IS NOT NULL). As above, Neo4j indexes the
   // full property; tasks with no groupId simply aren't queried by it.
   "CREATE INDEX task_group_id_idx IF NOT EXISTS FOR (t:Task) ON (t.groupId)",
-  // Supports usage queries filtered by timestamp range
+
+  // ── Turn persistence (session-level turn tracking for the credits dashboard) ──
+  // Node key constraint ensures no duplicate Turn nodes for the same session + number
+  // (guards against session restart collisions at the DB level).
+  "CREATE CONSTRAINT turn_session_number_key IF NOT EXISTS FOR (t:Turn) REQUIRE (t.sessionId, t.number) IS NODE KEY",
+  // Index on turn number — helps if Neo4j's planner starts from Turn nodes,
+  // though primary lookups traverse from Session via :HAS_TURN relationship.
+  "CREATE INDEX turn_session_number_idx IF NOT EXISTS FOR (t:Turn) ON (t.number)",
+  // Index on startedAt for date-range queries in usage/dashboard endpoints
+  "CREATE INDEX turn_started_at_idx IF NOT EXISTS FOR (t:Turn) ON (t.startedAt)",
+  // Supports usage queries filtered by timestamp range (datetime property)
   "CREATE INDEX turn_timestamp_idx IF NOT EXISTS FOR (t:Turn) ON (t.timestamp)",
+  // ErrorEvent lookup by timestamp
+  "CREATE INDEX error_event_timestamp_idx IF NOT EXISTS FOR (e:ErrorEvent) ON (e.timestamp)",
 ];
 
 /**
