@@ -144,3 +144,16 @@ into agent's shell env") — not yet fixed as of this writing. If working on `wo
 the agent's shell already has ambient access to these secrets regardless of whether it also
 gets new MCP tools — the MCP-over-shell design choice for #585/#586 avoids adding NEW
 exposure, but doesn't fix this pre-existing one.
+
+**Update 2026-08-20 — fixed, with one side effect to know about:** #594 was fixed and merged
+(PR #70) via a new `worker/spawn-env.js` — an explicit allowlist plus a belt-and-suspenders
+`BLOCKED_KEYS` list, matching the recommendation above. One resulting inconsistency worth
+knowing about if debugging a "works locally, fails in production" issue: `kiro-runner.ts`
+(local mode) still forwards the entire `AWS_*` prefix to the agent's shell, but
+`spawn-env.js` (ACA/production mode) forwards none of it by design (`FORWARD_PREFIXES = []`,
+with a comment that the worker container doesn't need AWS credentials for agent shell
+commands). Before this fix both paths leaked everything, so they happened to agree by
+accident; now they genuinely differ. Not a bug — nothing currently depends on AWS creds in
+an agent's shell — but if a future task on some tab needs AWS tooling and only fails in the
+ACA/production worker, this divergence is why. Add `"AWS_"` to `spawn-env.js`'s
+`FORWARD_PREFIXES` if that ever becomes a real need.
