@@ -32,7 +32,7 @@ export interface UsageSummary {
     sessionId: number;
     sessionName: string;
     agent: string;
-    tabId: number | null;
+    tabName: string | null;
     credits: number;
     costEur: number;
     turns: number;
@@ -123,9 +123,12 @@ export async function getUsage(params: {
         MATCH (u:User {id: $userId})-[:OWNS]->(s:Session)-[:HAS_TURN]->(t:Turn)
         WHERE t.timestamp >= datetime($from) AND t.timestamp <= datetime($to)
         ${tabFilter}
+        OPTIONAL MATCH (s)-[:IN_TAB]->(tab:Tab)
+        WITH t, s, collect(tab.name) AS tabNames
         RETURN t.id AS id, t.sessionId AS sessionId, t.sessionName AS sessionName,
                t.agent AS agent, t.credits AS credits, t.taskId AS taskId,
-               toString(t.timestamp) AS timestamp
+               toString(t.timestamp) AS timestamp,
+               CASE WHEN size(tabNames) > 0 THEN tabNames[0] ELSE null END AS tabName
         ORDER BY t.timestamp ASC
       `,
       {
@@ -144,6 +147,7 @@ export async function getUsage(params: {
       credits: r.get("credits") as number,
       taskId: r.get("taskId") as number | null,
       timestamp: r.get("timestamp") as string,
+      tabName: (r.get("tabName") as string | null) ?? null,
     }));
 
     // Compute totals
@@ -171,6 +175,7 @@ export async function getUsage(params: {
         sessionId: number;
         sessionName: string;
         agent: string;
+        tabName: string | null;
         credits: number;
         turns: number;
         firstTurn: string;
@@ -189,6 +194,7 @@ export async function getUsage(params: {
           sessionId: turn.sessionId,
           sessionName: turn.sessionName,
           agent: turn.agent,
+          tabName: turn.tabName,
           credits: turn.credits,
           turns: 1,
           firstTurn: turn.timestamp,
@@ -200,7 +206,6 @@ export async function getUsage(params: {
       .sort((a, b) => b.credits - a.credits)
       .map((s) => ({
         ...s,
-        tabId: null as number | null, // Tabs are per-turn, not per-session aggregate
         costEur: s.credits * EUR_PER_CREDIT,
       }));
 

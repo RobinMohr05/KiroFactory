@@ -12,7 +12,7 @@ interface SessionBreakdown {
   sessionId: number;
   sessionName: string;
   agent: string;
-  tabId: number | null;
+  tabName: string | null;
   credits: number;
   costEur: number;
   turns: number;
@@ -27,7 +27,7 @@ interface UsageData {
   sessionBreakdown: SessionBreakdown[];
 }
 
-type SortKey = 'sessionName' | 'agent' | 'credits' | 'costEur' | 'turns' | 'firstTurn';
+type SortKey = 'sessionName' | 'agent' | 'tabName' | 'credits' | 'costEur' | 'turns' | 'firstTurn';
 type SortDir = 'asc' | 'desc';
 
 export function UsagePanel() {
@@ -91,6 +91,9 @@ export function UsagePanel() {
         case 'agent':
           cmp = a.agent.localeCompare(b.agent);
           break;
+        case 'tabName':
+          cmp = (a.tabName ?? '').localeCompare(b.tabName ?? '');
+          break;
         case 'credits':
           cmp = a.credits - b.credits;
           break;
@@ -139,7 +142,9 @@ export function UsagePanel() {
     if (!usageData) return new Map<number, DailyBreakdown>();
     const map = new Map<number, DailyBreakdown>();
     for (const d of usageData.dailyBreakdown) {
-      const day = new Date(d.date).getDate();
+      // Parse day directly from YYYY-MM-DD string to avoid timezone issues
+      // (new Date("2026-08-01").getDate() returns 31 in negative UTC offsets)
+      const day = parseInt(d.date.split('-')[2], 10);
       map.set(day, d);
     }
     return map;
@@ -240,22 +245,25 @@ export function UsagePanel() {
               <table className="usage-table">
                 <thead>
                   <tr>
-                    <th onClick={() => handleSort('sessionName')} className="usage-th-sortable">
+                    <th onClick={() => handleSort('sessionName')} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleSort('sessionName'); } }} tabIndex={0} className="usage-th-sortable">
                       Session{sortIndicator('sessionName')}
                     </th>
-                    <th onClick={() => handleSort('agent')} className="usage-th-sortable">
+                    <th onClick={() => handleSort('agent')} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleSort('agent'); } }} tabIndex={0} className="usage-th-sortable">
                       Agent{sortIndicator('agent')}
                     </th>
-                    <th onClick={() => handleSort('credits')} className="usage-th-sortable">
+                    <th onClick={() => handleSort('tabName')} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleSort('tabName'); } }} tabIndex={0} className="usage-th-sortable">
+                      Tab{sortIndicator('tabName')}
+                    </th>
+                    <th onClick={() => handleSort('credits')} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleSort('credits'); } }} tabIndex={0} className="usage-th-sortable">
                       Credits{sortIndicator('credits')}
                     </th>
-                    <th onClick={() => handleSort('costEur')} className="usage-th-sortable">
+                    <th onClick={() => handleSort('costEur')} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleSort('costEur'); } }} tabIndex={0} className="usage-th-sortable">
                       EUR Cost{sortIndicator('costEur')}
                     </th>
-                    <th onClick={() => handleSort('turns')} className="usage-th-sortable">
+                    <th onClick={() => handleSort('turns')} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleSort('turns'); } }} tabIndex={0} className="usage-th-sortable">
                       Turns{sortIndicator('turns')}
                     </th>
-                    <th onClick={() => handleSort('firstTurn')} className="usage-th-sortable">
+                    <th onClick={() => handleSort('firstTurn')} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleSort('firstTurn'); } }} tabIndex={0} className="usage-th-sortable">
                       Date Range{sortIndicator('firstTurn')}
                     </th>
                   </tr>
@@ -272,6 +280,7 @@ export function UsagePanel() {
                     >
                       <td>{session.sessionName}</td>
                       <td>{session.agent}</td>
+                      <td>{session.tabName ?? '—'}</td>
                       <td>{session.credits.toFixed(2)}</td>
                       <td>EUR {session.costEur.toFixed(2)}</td>
                       <td>{session.turns}</td>

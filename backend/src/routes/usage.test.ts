@@ -63,7 +63,7 @@ describe("GET /api/usage", () => {
           sessionId: 1,
           sessionName: "Dev Session",
           agent: "developer-agent",
-          tabId: null,
+          tabName: null,
           credits: 10.5,
           costEur: 0.42,
           turns: 3,

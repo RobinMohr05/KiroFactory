@@ -27,7 +27,7 @@ const mockUsageData = {
       sessionId: 1,
       sessionName: 'Dev Session',
       agent: 'developer-agent',
-      tabId: null,
+      tabName: null,
       credits: 15.5,
       costEur: 0.62,
       turns: 5,
@@ -38,7 +38,7 @@ const mockUsageData = {
       sessionId: 2,
       sessionName: 'Review Session',
       agent: 'code-reviewer-agent',
-      tabId: null,
+      tabName: null,
       credits: 10.0,
       costEur: 0.40,
       turns: 3,
@@ -196,5 +196,97 @@ describe('UsagePanel', () => {
       expect(screen.getByText('No sessions consumed credits this period.')).toBeInTheDocument();
     });
     expect(screen.getByText('No usage data for this period.')).toBeInTheDocument();
+  });
+
+  it('maps daily breakdown dates by string parsing, not timezone-sensitive Date object', async () => {
+    // Regression: new Date('2026-08-01').getDate() can return 31 in negative UTC offsets.
+    // The fix must parse the day directly from the 'YYYY-MM-DD' string.
+    const dataWithDay1 = {
+      totalCredits: 5.0,
+      totalCostEur: 0.20,
+      dailyBreakdown: [
+        { date: '2026-08-01', credits: 5.0, costEur: 0.20 },
+      ],
+      sessionBreakdown: [],
+    };
+
+    vi.mocked(api.apiFetch).mockResolvedValue({
+      ok: true,
+      json: async () => dataWithDay1,
+    } as any);
+
+    render(<UsagePanel />);
+    await waitFor(() => {
+      expect(screen.getByText('5.00 credits')).toBeInTheDocument();
+    });
+
+    // Day 1 should have the bar with title containing "Day 1"
+    const bar = screen.getByTitle(/Day 1:/);
+    expect(bar).toBeInTheDocument();
+    expect(bar.getAttribute('title')).toContain('5.00 credits');
+  });
+
+  it('renders a Tab column in the session breakdown table', async () => {
+    const dataWithTabs = {
+      totalCredits: 25.5,
+      totalCostEur: 1.02,
+      dailyBreakdown: [
+        { date: '2026-08-01', credits: 10.0, costEur: 0.40 },
+      ],
+      sessionBreakdown: [
+        {
+          sessionId: 1,
+          sessionName: 'Dev Session',
+          agent: 'developer-agent',
+          tabName: 'VCH',
+          credits: 15.5,
+          costEur: 0.62,
+          turns: 5,
+          firstTurn: '2026-08-01T10:00:00.000Z',
+          lastTurn: '2026-08-05T15:00:00.000Z',
+        },
+      ],
+    };
+
+    vi.mocked(api.apiFetch).mockResolvedValue({
+      ok: true,
+      json: async () => dataWithTabs,
+    } as any);
+
+    render(<UsagePanel />);
+    await waitFor(() => {
+      expect(screen.getByText('Dev Session')).toBeInTheDocument();
+    });
+
+    // There should be a "Tab" column header
+    expect(screen.getByText('Tab')).toBeInTheDocument();
+    // And the tab name in the row
+    expect(screen.getByText('VCH')).toBeInTheDocument();
+  });
+
+  it('makes sortable table headers keyboard-accessible', async () => {
+    vi.mocked(api.apiFetch).mockResolvedValue({
+      ok: true,
+      json: async () => mockUsageData,
+    } as any);
+
+    render(<UsagePanel />);
+    await waitFor(() => {
+      expect(screen.getByText('Dev Session')).toBeInTheDocument();
+    });
+
+    // Each sortable th should be keyboard accessible
+    const creditsHeader = screen.getByText(/^Credits/);
+    expect(creditsHeader.closest('th')).toHaveAttribute('tabindex', '0');
+
+    // Should respond to Enter key
+    fireEvent.keyDown(creditsHeader.closest('th')!, { key: 'Enter' });
+    // After pressing Enter on credits (already sorted desc), it toggles to asc
+    // Review Session (10.0) should now appear before Dev Session (15.5)
+    const rows = screen.getAllByRole('button').filter(
+      el => el.textContent?.includes('Session')
+    );
+    expect(rows[0]).toHaveTextContent('Review Session');
+    expect(rows[1]).toHaveTextContent('Dev Session');
   });
 });
