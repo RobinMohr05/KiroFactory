@@ -4,6 +4,7 @@ export interface Tab {
   repositoryUrl?: string | null;
   gitProvider?: string | null;
   mcpConfig?: McpConfig;
+  autoMergePrs?: boolean;
   sortOrder?: number;
 }
 
