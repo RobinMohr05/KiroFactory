@@ -21,6 +21,7 @@ import { spawn, execSync, execFileSync } from "node:child_process";
 import { WebSocket } from "ws";
 import { mkdirSync, existsSync, writeFileSync, appendFileSync } from "node:fs";
 import { buildGroupPrContent, findSiblingPrUrl } from "./shared-branch-utils.js";
+import { buildSpawnEnv } from "./spawn-env.js";
 
 // ---------------------------------------------------------------------------
 // Configuration (from environment variables injected by orchestrator)
@@ -2406,7 +2407,7 @@ function handleAcpMessage(msg) {
 
 function spawnKiro() {
   const args = AGENT_NAME ? ["acp", "--agent", AGENT_NAME] : ["acp"];
-  const env = { ...process.env, KIRO_API_KEY, NO_COLOR: "1", FORCE_COLOR: "0" };
+  const env = buildSpawnEnv(process.env, KIRO_API_KEY);
 
   sendOutput(AGENT_NAME ? `Starting kiro-cli acp --agent ${AGENT_NAME}` : "Starting kiro-cli acp (no agent)", "system");
 
