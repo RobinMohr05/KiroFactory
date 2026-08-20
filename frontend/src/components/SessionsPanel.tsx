@@ -288,7 +288,7 @@ export function SessionsPanel() {
   const listPanelRef = useRef<HTMLElement>(null);
   const handleMobileSessionClick = (sessionId: number) => {
     setActiveSessionId(sessionId);
-    navigate(`/sessions/${sessionId}`, { replace: true });
+    navigate(`/sessions/${sessionId}`, { replace: isMobile });
     if (isMobile) {
       // Save scroll position before navigating away
       if (listPanelRef.current) {

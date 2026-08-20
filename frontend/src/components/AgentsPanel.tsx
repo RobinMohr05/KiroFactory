@@ -69,7 +69,7 @@ export function AgentsPanel() {
   // Mobile drill-down: when an agent is tapped on mobile, transition to detail view
   const handleMobileAgentClick = (agentId: number) => {
     setActiveAgentId(agentId);
-    navigate(`/agents/${agentId}`, { replace: true });
+    navigate(`/agents/${agentId}`, { replace: isMobile });
     if (isMobile) {
       if (listPanelRef.current) {
         scrollTopRef.current = listPanelRef.current.scrollTop;

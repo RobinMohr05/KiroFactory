@@ -18,20 +18,30 @@ export function useRouteSync() {
       const match = path.match(/^\/sessions\/(\d+)/);
       if (match) {
         setActiveSessionId(Number(match[1]));
+      } else {
+        setActiveSessionId(null);
       }
     } else if (path.startsWith('/agents')) {
       setActiveView('agents');
       const match = path.match(/^\/agents\/(\d+)/);
       if (match) {
         setActiveAgentId(Number(match[1]));
+      } else {
+        setActiveAgentId(null);
       }
     } else if (path.startsWith('/errors')) {
       setActiveView('errors');
+      setActiveSessionId(null);
+      setActiveAgentId(null);
     } else if (path.startsWith('/usage')) {
       setActiveView('usage');
+      setActiveSessionId(null);
+      setActiveAgentId(null);
     } else {
       // /tasks or anything else
       setActiveView('boards');
+      setActiveSessionId(null);
+      setActiveAgentId(null);
     }
   }, [location.pathname, setActiveView, setActiveSessionId, setActiveAgentId]);
 }

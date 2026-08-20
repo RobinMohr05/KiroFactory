@@ -216,4 +216,56 @@ describe('Routing', () => {
       expect(sessionsTab.classList.contains('active')).toBe(true);
     });
   });
+
+  describe('wildcard catch-all route', () => {
+    beforeEach(() => {
+      mockAuthenticatedFetch();
+    });
+
+    it('unknown paths redirect to /tasks', async () => {
+      await act(async () => {
+        renderWithRouter(['/nonexistent']);
+      });
+      // Should render the TasksPanel (kanban columns) instead of a blank page
+      expect(screen.getByText('To Do')).toBeInTheDocument();
+    });
+
+    it('/foobar redirects to /tasks', async () => {
+      await act(async () => {
+        renderWithRouter(['/foobar']);
+      });
+      expect(screen.getByText('To Do')).toBeInTheDocument();
+    });
+  });
+
+  describe('auth deep-link preservation', () => {
+    it('redirects to login.html with returnTo param when unauthenticated on a deep link', async () => {
+      mockUnauthenticatedFetch();
+      const hrefSetter = vi.fn();
+      // Mock window.location.href as a settable property
+      Object.defineProperty(window, 'location', {
+        value: { ...window.location, pathname: '/sessions/5', search: '', href: '' },
+        writable: true,
+      });
+      Object.defineProperty(window.location, 'href', {
+        set: hrefSetter,
+        get: () => '',
+      });
+
+      await act(async () => {
+        renderWithRouter(['/sessions/5']);
+      });
+
+      // Wait for async auth check to complete
+      await act(async () => {
+        await new Promise(resolve => setTimeout(resolve, 50));
+      });
+
+      // Should redirect with returnTo parameter
+      const lastCall = hrefSetter.mock.calls[hrefSetter.mock.calls.length - 1]?.[0] || '';
+      expect(lastCall).toContain('login.html');
+      expect(lastCall).toContain('returnTo');
+      expect(lastCall).toContain(encodeURIComponent('/sessions/5'));
+    });
+  });
 });

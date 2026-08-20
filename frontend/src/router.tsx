@@ -24,6 +24,7 @@ export const routes: RouteObject[] = [
       { path: 'agents/:id', element: <AgentsPanel /> },
       { path: 'errors', element: <ErrorsPanel /> },
       { path: 'usage', element: <UsagePanel /> },
+      { path: '*', element: <Navigate to="/tasks" replace /> },
     ],
   },
 ];
