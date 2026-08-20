@@ -417,14 +417,14 @@ async function handleFinalizeBranchSync() {
     return { success: false, error: `Failed to stage files: ${redactSecrets(err?.message || String(err))}` };
   }
 
-  // Check if any staged files still contain literal conflict markers
-  // (the real check — file content, not git's unmerged state)
+  // Check if any tracked files still contain literal conflict markers
+  // (the real check — file content, not git's unmerged state).
+  // Uses `git grep` to only search tracked files, avoiding false positives
+  // from .git/ internals or node_modules/ test fixtures.
   try {
-    const grepResult = execFileSync(
-      "grep",
-      ["-rl", "^<<<<<<<\\|^=======\\|^>>>>>>>", "."],
-      { cwd: WORKSPACE, encoding: "utf-8", timeout: 30_000 }
-    ).trim();
+    const grepResult = execGit(
+      ["grep", "-l", "^<<<<<<<\\|^=======\\|^>>>>>>>", "--", ".", ":!node_modules"],
+    );
     if (grepResult) {
       const files = grepResult.split("\n").filter(Boolean).slice(0, 10);
       return {
@@ -434,7 +434,7 @@ async function handleFinalizeBranchSync() {
       };
     }
   } catch {
-    // grep returns exit code 1 when no matches found — that's the success case
+    // git grep returns exit code 1 when no matches found — that's the success case
   }
 
   // Commit the merge

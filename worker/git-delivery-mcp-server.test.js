@@ -489,6 +489,63 @@ describe("git-delivery-mcp-server", () => {
       assert.equal(result.success, false);
       assert.ok(result.error.includes("conflict markers"));
     });
+
+    it("does not false-positive on conflict markers in node_modules or .git", async () => {
+      // Set up a conflict, then resolve it, but put conflict markers in node_modules
+      execSync("git checkout -b feature/#62_false-positive", { cwd: workspace.workspaceDir });
+      writeFileSync(join(workspace.workspaceDir, "README.md"), "# Task version\n");
+      execSync("git add -A && git commit -m 'task change'", { cwd: workspace.workspaceDir });
+      execSync("git push origin feature/#62_false-positive", { cwd: workspace.workspaceDir });
+
+      execSync("git checkout develop", { cwd: workspace.workspaceDir });
+      writeFileSync(join(workspace.workspaceDir, "README.md"), "# Develop version\n");
+      execSync("git add -A && git commit -m 'develop conflict'", { cwd: workspace.workspaceDir });
+      execSync("git push origin develop", { cwd: workspace.workspaceDir });
+
+      server = spawnServer({
+        TASK_BRANCH_NAME: "feature/#62_false-positive",
+        DEV_BRANCH: "develop",
+        WORKSPACE: workspace.workspaceDir,
+        TASK_ID: "62",
+        REPO_URL: workspace.remoteDir,
+      });
+
+      await server.sendAndWaitResponse({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {},
+      });
+
+      // Trigger the merge conflict
+      await server.sendAndWaitResponse({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: { name: "sync_task_branch", arguments: {} },
+      });
+
+      // Resolve the actual conflict in README.md
+      writeFileSync(join(workspace.workspaceDir, "README.md"), "# Resolved version\n");
+
+      // Put conflict markers in node_modules (should be ignored)
+      mkdirSync(join(workspace.workspaceDir, "node_modules", "some-pkg"), { recursive: true });
+      writeFileSync(
+        join(workspace.workspaceDir, "node_modules", "some-pkg", "test-fixture.txt"),
+        "<<<<<<< HEAD\nsome content\n=======\nother content\n>>>>>>> branch\n"
+      );
+
+      // finalize_branch_sync should succeed — node_modules markers are irrelevant
+      const response = await server.sendAndWaitResponse({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: { name: "finalize_branch_sync", arguments: {} },
+      });
+
+      const result = JSON.parse(response.result.content[0].text);
+      assert.equal(result.success, true, `Expected success but got: ${JSON.stringify(result)}`);
+    });
   });
 
   describe("submit_task_changes", () => {
