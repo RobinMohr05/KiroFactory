@@ -32,19 +32,4 @@ Standing conventions for how to work in this workspace, confirmed with the user 
   actual `session-manager.ts` + `task-claimer.ts` + `worker.js` pipeline instead. Default to this
   resolution (remove + rewrite docs) rather than leaving dead code in place "for reference."
 
-## End-of-session knowledge capture
 
-When a session surfaces reusable findings (a bug's root cause, an undocumented gotcha, a working
-recipe, a workspace convention), decide where it belongs before ending the session — don't let it
-evaporate in chat history or linger in `.temp/`:
-
-| Where | When |
-|---|---|
-| **Steering** (`.kiro/steering/*.md`) | Relevant often/broadly across sessions in this workspace. `inclusion: always` for things that should shape every session; `inclusion: fileMatch` for things only relevant when specific files are touched. |
-| **Skill** (`.kiro/skills/<name>/SKILL.md`) | Specialized, occasional-use knowledge — won't come up in most sessions, but is valuable when it is needed (a how-to recipe, credentials/environment setup, a reference for a narrow task). Rule of thumb: **everything that won't be used that often should be a skill, not steering.** |
-| **Hook** (`.kiro/hooks/*.json`) | Only when automatically triggering an action on a specific event is genuinely necessary — be conservative. Most "remember to do X" process reminders belong in always-included steering (already in every session's context), not a hook that fires on every session/tool/file event. |
-| **Nowhere / `.temp/`** | Scratch investigation notes not worth preserving once the task is done — clean these up. |
-
-Prefer extending an existing steering file or skill that already covers the topic over creating a
-new, narrowly-overlapping one — fragmenting related knowledge across many tiny files makes it
-harder to find later. Only split into a new file when the topic is genuinely distinct.
