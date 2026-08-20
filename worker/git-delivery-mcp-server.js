@@ -464,8 +464,90 @@ async function handleSubmitTaskChanges(args) {
   }
 
   if (!status) {
-    // No changes to commit
-    const result = { committed: false, pushed: false, branchName: TASK_BRANCH_NAME, message: "No changes to commit." };
+    // No uncommitted changes — but there may be already-committed changes
+    // that failed to push on a prior call (e.g., transient network error).
+    // Check if the local branch is ahead of the remote and attempt a push.
+    const branchName = TASK_BRANCH_NAME || execGit(["rev-parse", "--abbrev-ref", "HEAD"]);
+    let localAhead = false;
+    try {
+      const ahead = execGit(["rev-list", `origin/${branchName}..HEAD`]);
+      localAhead = Boolean(ahead.trim());
+    } catch {
+      // origin/branchName may not exist yet — check if we're on the task branch
+      try {
+        const currentBranch = execGit(["rev-parse", "--abbrev-ref", "HEAD"]);
+        localAhead = currentBranch === branchName;
+      } catch { /* noop */ }
+    }
+
+    if (localAhead) {
+      // Attempt push of existing commits
+      const remote = buildAuthRemoteUrl();
+      let pushed = false;
+      let pushError = null;
+
+      try {
+        execGit(["push", remote, `HEAD:refs/heads/${branchName}`]);
+        pushed = true;
+      } catch (err) {
+        pushError = redactSecrets(err?.message || String(err));
+      }
+
+      // Handle PR creation/update after successful push
+      let prUrl = getTaskPrUrl();
+      let prCreated = false;
+
+      if (pushed) {
+        const provider = detectProvider();
+
+        if (!prUrl) {
+          const prTitle = `${title} [KiroFactory #${TASK_ID}]`;
+          const prBody = body || buildDefaultPrBody();
+
+          try {
+            if (provider === "github" && GITHUB_PAT) {
+              prUrl = await createGitHubPullRequest(branchName, prTitle, prBody);
+              prCreated = true;
+            } else if (provider === "azure-devops" && AZURE_DEVOPS_PAT) {
+              prUrl = await createAzureDevOpsPullRequest(branchName, prTitle, prBody);
+              prCreated = true;
+            }
+            if (prCreated && prUrl) {
+              process.env.TASK_PR_URL = prUrl;
+            }
+          } catch (err) {
+            pushError = `Push succeeded but PR creation failed: ${redactSecrets(err?.message || String(err))}`;
+          }
+        } else {
+          const prTitle = `${title} [KiroFactory #${TASK_ID}]`;
+          const prBody = body || buildDefaultPrBody();
+
+          try {
+            if (provider === "github" && GITHUB_PAT) {
+              await updateGitHubPullRequest(prUrl, prTitle, prBody);
+            } else if (provider === "azure-devops" && AZURE_DEVOPS_PAT) {
+              await updateAzureDevOpsPullRequest(prUrl, prTitle, prBody);
+            }
+          } catch {
+            // Update failure is non-fatal
+          }
+        }
+      }
+
+      const result = {
+        committed: true,
+        pushed,
+        branchName,
+        prUrl: prUrl || null,
+        prCreated,
+        error: pushError || undefined,
+        message: "No new changes to commit; pushed existing unpushed commits.",
+      };
+      writeDeliveryResult(result);
+      return result;
+    }
+
+    const result = { committed: false, pushed: false, branchName, message: "No changes to commit." };
     writeDeliveryResult(result);
     return result;
   }
