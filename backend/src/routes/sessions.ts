@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from "express";
 import {
   createSession,
   getSession,
+  getSessionTurnCount,
   getAllSessions,
   getSessionOutput,
   deleteSession,
@@ -122,7 +123,7 @@ router.get("/:id", (req: Request, res: Response) => {
       res.status(404).json({ error: "Session not found" });
       return;
     }
-    res.json(sanitizeSessionForClient(session));
+    res.json({ ...sanitizeSessionForClient(session), turnCount: getSessionTurnCount(id) });
   } catch (err) {
     log.error("route-error", {
       component: "sessions",

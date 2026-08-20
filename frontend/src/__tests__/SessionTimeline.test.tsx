@@ -366,7 +366,7 @@ describe('SessionTimeline', () => {
       return render(<SessionTimeline sessionId={1} sessionStatus="stopped" />);
     });
 
-    expect(mockedApiFetch).toHaveBeenCalledWith('/api/sessions/1/turns');
+    expect(mockedApiFetch).toHaveBeenCalledWith('/api/sessions/1/turns', expect.objectContaining({ signal: expect.any(AbortSignal) }));
 
     mockedApiFetch.mockResolvedValue({
       ok: true,
@@ -377,7 +377,7 @@ describe('SessionTimeline', () => {
       rerender(<SessionTimeline sessionId={2} sessionStatus="stopped" />);
     });
 
-    expect(mockedApiFetch).toHaveBeenCalledWith('/api/sessions/2/turns');
+    expect(mockedApiFetch).toHaveBeenCalledWith('/api/sessions/2/turns', expect.objectContaining({ signal: expect.any(AbortSignal) }));
   });
 
   it('tool call header with output has tabIndex and responds to keyboard Enter', async () => {

@@ -12,9 +12,7 @@ export function SessionsPanel() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [editingSession, setEditingSession] = useState<Session | null>(null);
   const [output, setOutput] = useState<OutputEntry[]>([]);
-  const [autoScroll, setAutoScroll] = useState(true);
   const [activity, setActivity] = useState<SessionActivity | null>(null);
-  const outputRef = useRef<HTMLDivElement>(null);
   const dragIdRef = useRef<number | null>(null);
 
   // Filter sessions for current tab
@@ -42,7 +40,6 @@ export function SessionsPanel() {
       setOutput([]);
       return;
     }
-    setAutoScroll(true);
     (async () => {
       try {
         const res = await apiFetch(`/api/sessions/${activeSessionId}/output`);
@@ -77,20 +74,7 @@ export function SessionsPanel() {
     return () => window.removeEventListener('ws-session-activity', handler);
   }, [activeSessionId]);
 
-  // Auto-scroll output
-  useEffect(() => {
-    if (autoScroll && outputRef.current) {
-      const container = outputRef.current;
-      container.scrollTop = container.scrollHeight;
-    }
-  }, [output, autoScroll]);
-
-  const handleOutputScroll = () => {
-    if (!outputRef.current) return;
-    const el = outputRef.current;
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
-    setAutoScroll(atBottom);
-  };
+  // Auto-scroll is managed internally by SessionDetailTabs and SessionTimeline
 
   const handleStart = async () => {
     if (!activeSessionId) return;
@@ -391,19 +375,7 @@ export function SessionsPanel() {
                   sessionId={activeSession.id}
                   sessionStatus={activeSession.status}
                   output={output}
-                  autoScroll={autoScroll}
-                  onScroll={handleOutputScroll}
                 />
-                {!autoScroll && (
-                  <button
-                    className="scroll-to-bottom-btn"
-                    aria-label="Scroll to bottom"
-                    title="Scroll to bottom"
-                    onClick={() => { setAutoScroll(true); if (outputRef.current) outputRef.current.scrollTop = outputRef.current.scrollHeight; }}
-                  >
-                    ↓ New output
-                  </button>
-                )}
               </div>
               <SessionPromptBar canSend={canSendPrompt} isLoop={isLoop} isInteractive={isInteractive} session={activeSession} onSend={handleSendPrompt} />
             </div>

@@ -13,7 +13,13 @@ vi.mock("./connection.js", () => ({
   writeQuery: vi.fn(),
 }));
 
+// Mock the id-counter module
+vi.mock("./id-counter.js", () => ({
+  getNextId: vi.fn().mockResolvedValue(100),
+}));
+
 import { readQuery, writeQuery } from "./connection.js";
+import { getNextId } from "./id-counter.js";
 import {
   createTurn,
   completeTurn,
@@ -95,6 +101,51 @@ describe("db/turns", () => {
 
       expect(result.number).toBe(2);
       expect(result.sessionId).toBe(3);
+    });
+
+    it("should allocate a unique t.id via getNextId to satisfy the turn_id_key constraint", async () => {
+      let capturedParams: Record<string, any> | null = null;
+      let capturedCypher = "";
+
+      (getNextId as any).mockResolvedValue(42);
+      (writeQuery as any).mockImplementation(async (fn: any) => {
+        const mockTx = {
+          run: vi.fn().mockImplementation((cypher: string, params: any) => {
+            capturedCypher = cypher;
+            capturedParams = params;
+            return {
+              records: [
+                {
+                  get: (key: string) => {
+                    const data: Record<string, any> = {
+                      number: 1,
+                      startedAt: "2026-08-20T08:00:00.000Z",
+                      sessionId: 10,
+                    };
+                    return data[key];
+                  },
+                },
+              ],
+            };
+          }),
+        };
+        return fn(mockTx);
+      });
+
+      await createTurn({
+        sessionId: 10,
+        number: 1,
+        startedAt: "2026-08-20T08:00:00.000Z",
+        taskId: 5,
+        taskTitle: "Test",
+      });
+
+      // getNextId should have been called to allocate an ID for the Turn node
+      expect(getNextId).toHaveBeenCalledWith("Turn");
+      // The Cypher should include t.id in the ON CREATE SET clause
+      expect(capturedCypher).toContain("t.id");
+      // The id parameter should be passed to the query
+      expect(capturedParams).toHaveProperty("id", 42);
     });
   });
 

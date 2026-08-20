@@ -157,6 +157,8 @@ interface ManagedSession {
   pendingRunner: KiroRunner | null;
   /** Turn number counter — incremented on each prompt send for this session. */
   turnNumber: number;
+  /** Number of turns completed/started this run (resets on session start, used for REST API). */
+  turnCountThisRun: number;
   /** Timestamp when the current turn started (for computing durationMs). */
   turnStartedAt: string | null;
   /** Tool call count in the current turn (for turn-end summary). */
@@ -263,6 +265,7 @@ export async function initSessions(): Promise<void> {
       verdictToolCallId: null,
       pendingRunner: null,
       turnNumber: 0,
+      turnCountThisRun: 0,
       turnStartedAt: null,
       turnToolCallCount: 0,
       turnActiveToolCalls: new Map(),
@@ -530,6 +533,7 @@ export async function createSession(input: CreateSessionInput): Promise<Session>
     verdictToolCallId: null,
     pendingRunner: null,
     turnNumber: 0,
+    turnCountThisRun: 0,
     turnStartedAt: null,
     turnToolCallCount: 0,
     turnActiveToolCalls: new Map(),
@@ -546,7 +550,14 @@ export async function createSession(input: CreateSessionInput): Promise<Session>
 }
 
 export function getSession(id: number): Session | undefined {
-  return sessions.get(id)?.meta;
+  const session = sessions.get(id);
+  if (!session) return undefined;
+  return session.meta;
+}
+
+/** Get the per-run turn count for a session (survives WS reconnection). */
+export function getSessionTurnCount(id: number): number {
+  return sessions.get(id)?.turnCountThisRun ?? 0;
 }
 
 export function getAllSessions(userId?: number): Session[] {
@@ -561,6 +572,8 @@ export function getAllSessions(userId?: number): Session[] {
     ...sanitizeSessionForClient(s.meta),
     // Don't include full output in list endpoint — too large
     output: [],
+    // Per-run turn count for the frontend (survives WS reconnection)
+    turnCount: s.turnCountThisRun,
   }));
 }
 
@@ -781,6 +794,7 @@ export async function startSession(id: number): Promise<boolean> {
     } catch { /* best effort — start from 0 if DB is unreachable */ }
   }
   session.turnNumber = maxTurn;
+  session.turnCountThisRun = 0;
   session.turnStartedAt = null;
   session.turnToolCallCount = 0;
   session.turnActiveToolCalls.clear();
@@ -1460,6 +1474,7 @@ async function streamPrompt(managed: ManagedSession, text: string, image?: { dat
 
   // ─── Turn start ───
   managed.turnNumber++;
+  managed.turnCountThisRun++;
   managed.turnStartedAt = now();
   managed.turnToolCallCount = 0;
   managed.turnActiveToolCalls.clear();
@@ -2330,6 +2345,7 @@ async function streamPromptAca(managed: ManagedSession, text: string, taskMeta?:
 
   // ─── Turn start ───
   managed.turnNumber++;
+  managed.turnCountThisRun++;
   managed.turnStartedAt = now();
   managed.turnToolCallCount = 0;
   managed.turnActiveToolCalls.clear();

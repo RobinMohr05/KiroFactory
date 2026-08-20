@@ -33,8 +33,6 @@ describe('SessionDetailTabs', () => {
           sessionId={1}
           sessionStatus="stopped"
           output={mockOutput}
-          autoScroll={true}
-          onScroll={() => {}}
         />
       );
     });
@@ -50,8 +48,6 @@ describe('SessionDetailTabs', () => {
           sessionId={1}
           sessionStatus="stopped"
           output={mockOutput}
-          autoScroll={true}
-          onScroll={() => {}}
         />
       );
     });
@@ -72,8 +68,6 @@ describe('SessionDetailTabs', () => {
           sessionId={1}
           sessionStatus="stopped"
           output={mockOutput}
-          autoScroll={true}
-          onScroll={() => {}}
         />
       );
     });
@@ -90,8 +84,6 @@ describe('SessionDetailTabs', () => {
           sessionId={1}
           sessionStatus="stopped"
           output={mockOutput}
-          autoScroll={true}
-          onScroll={() => {}}
         />
       );
     });

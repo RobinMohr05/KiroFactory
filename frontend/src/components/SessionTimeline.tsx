@@ -21,12 +21,35 @@ function verdictClass(verdict: string | null): string {
   return `verdict-${verdict}`;
 }
 
-export function SessionTimeline({ sessionId, sessionStatus }: SessionTimelineProps) {
+/** Hook that ticks every second while there's an active turn, returning current elapsed ms. */
+function useElapsedTime(activeTurn: TimelineTurn | undefined): number {
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    if (!activeTurn?.startedAt) {
+      setElapsed(0);
+      return;
+    }
+    const start = new Date(activeTurn.startedAt).getTime();
+    const update = () => setElapsed(Date.now() - start);
+    update();
+    const interval = setInterval(update, 1000);
+    return () => clearInterval(interval);
+  }, [activeTurn?.startedAt, activeTurn?.isActive]);
+
+  return elapsed;
+}
+
+export function SessionTimeline({ sessionId, sessionStatus: _sessionStatus }: SessionTimelineProps) {
   const [turns, setTurns] = useState<TimelineTurn[]>([]);
   const [loading, setLoading] = useState(true);
   const [expandedToolCalls, setExpandedToolCalls] = useState<Set<string>>(new Set());
   const [autoScroll, setAutoScroll] = useState(true);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // Track active turn for elapsed time display
+  const activeTurn = turns.find(t => t.isActive);
+  const elapsed = useElapsedTime(activeTurn);
 
   // Fetch persisted turns on mount / sessionId change
   useEffect(() => {
@@ -34,9 +57,12 @@ export function SessionTimeline({ sessionId, sessionStatus }: SessionTimelinePro
     setLoading(true);
     setExpandedToolCalls(new Set());
 
+    const abortController = new AbortController();
+
     (async () => {
       try {
-        const res = await apiFetch(`/api/sessions/${sessionId}/turns`);
+        const res = await apiFetch(`/api/sessions/${sessionId}/turns`, { signal: abortController.signal });
+        if (abortController.signal.aborted) return;
         if (!res.ok) {
           setLoading(false);
           return;
@@ -54,11 +80,16 @@ export function SessionTimeline({ sessionId, sessionStatus }: SessionTimelinePro
           const liveTurns = prev.filter(t => !fetchedNumbers.has(t.number));
           return [...mapped, ...liveTurns];
         });
-      } catch {
-        // ignore fetch errors
+      } catch (err: unknown) {
+        if ((err as Error)?.name === 'AbortError') return;
+        // ignore other fetch errors
       }
-      setLoading(false);
+      if (!abortController.signal.aborted) {
+        setLoading(false);
+      }
     })();
+
+    return () => { abortController.abort(); };
   }, [sessionId]);
 
   // Handle turn-start events
@@ -215,100 +246,102 @@ export function SessionTimeline({ sessionId, sessionStatus }: SessionTimelinePro
   }
 
   return (
-    <div className="timeline-container" ref={containerRef} onScroll={handleScroll}>
-      {turns.map(turn => (
-        <div key={turn.number} className="turn-section">
-          <div className={`turn-header${turn.isActive ? ' turn-active' : ''}`}>
-            <div className="turn-header-left">
-              <span className="turn-number">Turn {turn.number}</span>
-              {turn.taskTitle && <span className="turn-task-title">{turn.taskTitle}</span>}
-            </div>
-            <div className="turn-header-right">
-              {turn.isActive ? (
-                <span className="turn-elapsed">
-                  <span className="turn-running-dot"></span>
-                  Running...
-                </span>
-              ) : (
-                <>
-                  <span className="turn-duration">{formatDuration(turn.durationMs)}</span>
-                  <span className="turn-credits">
-                    {turn.credits.toFixed(2)} credits
-                    <span className="turn-cost">€{turn.costEur.toFixed(2)}</span>
+    <div className="timeline-wrapper">
+      <div className="timeline-container" ref={containerRef} onScroll={handleScroll}>
+        {turns.map(turn => (
+          <div key={turn.number} className="turn-section">
+            <div className={`turn-header${turn.isActive ? ' turn-active' : ''}`}>
+              <div className="turn-header-left">
+                <span className="turn-number">Turn {turn.number}</span>
+                {turn.taskTitle && <span className="turn-task-title">{turn.taskTitle}</span>}
+              </div>
+              <div className="turn-header-right">
+                {turn.isActive ? (
+                  <span className="turn-elapsed">
+                    <span className="turn-running-dot"></span>
+                    Running... {turn === activeTurn && elapsed > 0 ? formatDuration(elapsed) : ''}
                   </span>
-                  {turn.verdict && (
-                    <span className={`turn-verdict-badge ${verdictClass(turn.verdict)}`}>
-                      {turn.verdict}
+                ) : (
+                  <>
+                    <span className="turn-duration">{formatDuration(turn.durationMs)}</span>
+                    <span className="turn-credits">
+                      {turn.credits.toFixed(2)} credits
+                      <span className="turn-cost">€{turn.costEur.toFixed(2)}</span>
                     </span>
+                    {turn.verdict && (
+                      <span className={`turn-verdict-badge ${verdictClass(turn.verdict)}`}>
+                        {turn.verdict}
+                      </span>
+                    )}
+                    {turn.prUrl && (
+                      <a
+                        href={turn.prUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="turn-pr-link"
+                        aria-label="PR"
+                      >
+                        PR
+                      </a>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+
+            <div className="turn-body">
+              {turn.toolCalls.length === 0 && !turn.isActive && (
+                <div className="turn-no-details">
+                  {turn.toolCallCount} tool call{turn.toolCallCount !== 1 ? 's' : ''} executed
+                </div>
+              )}
+              {turn.toolCalls.map(tc => (
+                <div
+                  key={tc.id}
+                  className={`tool-call-card${tc.status === 'failed' ? ' tool-call-failed' : ''}${tc.status === 'running' ? ' tool-call-running' : ''}`}
+                >
+                  <div
+                    className="tool-call-header"
+                    onClick={() => tc.output && toggleToolCallOutput(tc.id)}
+                    onKeyDown={(e) => { if (tc.output && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); toggleToolCallOutput(tc.id); } }}
+                    role={tc.output ? 'button' : undefined}
+                    tabIndex={tc.output ? 0 : undefined}
+                    aria-expanded={tc.output ? expandedToolCalls.has(tc.id) : undefined}
+                  >
+                    <span className="tool-call-icon">{tc.icon}</span>
+                    <span className="tool-call-label">{tc.label}</span>
+                    <span className={`tool-call-status tool-call-status-${tc.status}`}>
+                      {tc.status === 'running' && <span className="tool-call-spinner"></span>}
+                      {tc.status === 'completed' && '✓'}
+                      {tc.status === 'failed' && '✗'}
+                    </span>
+                    {tc.durationMs != null && (
+                      <span className="tool-call-duration">{tc.durationMs}ms</span>
+                    )}
+                    {tc.output && (
+                      <span className="tool-call-expand-icon">
+                        {expandedToolCalls.has(tc.id) ? '▾' : '▸'}
+                      </span>
+                    )}
+                  </div>
+                  {tc.output && (
+                    <div className={`tool-call-output${expandedToolCalls.has(tc.id) ? ' expanded' : ''}`}>
+                      <pre>{tc.output}</pre>
+                    </div>
                   )}
-                  {turn.prUrl && (
-                    <a
-                      href={turn.prUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="turn-pr-link"
-                      aria-label="PR"
-                    >
-                      PR
-                    </a>
-                  )}
-                </>
+                </div>
+              ))}
+              {turn.isActive && (
+                <div className="turn-thinking">
+                  <span className="thinking-dot"></span>
+                  <span className="thinking-dot"></span>
+                  <span className="thinking-dot"></span>
+                </div>
               )}
             </div>
           </div>
-
-          <div className="turn-body">
-            {turn.toolCalls.length === 0 && !turn.isActive && (
-              <div className="turn-no-details">
-                {turn.toolCallCount} tool call{turn.toolCallCount !== 1 ? 's' : ''} executed
-              </div>
-            )}
-            {turn.toolCalls.map(tc => (
-              <div
-                key={tc.id}
-                className={`tool-call-card${tc.status === 'failed' ? ' tool-call-failed' : ''}${tc.status === 'running' ? ' tool-call-running' : ''}`}
-              >
-                <div
-                  className="tool-call-header"
-                  onClick={() => tc.output && toggleToolCallOutput(tc.id)}
-                  onKeyDown={(e) => { if (tc.output && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); toggleToolCallOutput(tc.id); } }}
-                  role={tc.output ? 'button' : undefined}
-                  tabIndex={tc.output ? 0 : undefined}
-                  aria-expanded={tc.output ? expandedToolCalls.has(tc.id) : undefined}
-                >
-                  <span className="tool-call-icon">{tc.icon}</span>
-                  <span className="tool-call-label">{tc.label}</span>
-                  <span className={`tool-call-status tool-call-status-${tc.status}`}>
-                    {tc.status === 'running' && <span className="tool-call-spinner"></span>}
-                    {tc.status === 'completed' && '✓'}
-                    {tc.status === 'failed' && '✗'}
-                  </span>
-                  {tc.durationMs != null && (
-                    <span className="tool-call-duration">{tc.durationMs}ms</span>
-                  )}
-                  {tc.output && (
-                    <span className="tool-call-expand-icon">
-                      {expandedToolCalls.has(tc.id) ? '▾' : '▸'}
-                    </span>
-                  )}
-                </div>
-                {tc.output && (
-                  <div className={`tool-call-output${expandedToolCalls.has(tc.id) ? ' expanded' : ''}`}>
-                    <pre>{tc.output}</pre>
-                  </div>
-                )}
-              </div>
-            ))}
-            {turn.isActive && (
-              <div className="turn-thinking">
-                <span className="thinking-dot"></span>
-                <span className="thinking-dot"></span>
-                <span className="thinking-dot"></span>
-              </div>
-            )}
-          </div>
-        </div>
-      ))}
+        ))}
+      </div>
 
       {!autoScroll && (
         <button

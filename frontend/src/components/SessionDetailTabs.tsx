@@ -6,15 +6,14 @@ interface SessionDetailTabsProps {
   sessionId: number;
   sessionStatus: string;
   output: OutputEntry[];
-  autoScroll: boolean;
-  onScroll: () => void;
 }
 
 type DetailTab = 'timeline' | 'rawlog';
 
-export function SessionDetailTabs({ sessionId, sessionStatus, output, autoScroll, onScroll }: SessionDetailTabsProps) {
+export function SessionDetailTabs({ sessionId, sessionStatus, output }: SessionDetailTabsProps) {
   const [activeTab, setActiveTab] = useState<DetailTab>('timeline');
   const rawLogRef = useRef<HTMLDivElement>(null);
+  const [autoScroll, setAutoScroll] = useState(true);
 
   // Auto-scroll the raw log when new output arrives and autoScroll is enabled
   useEffect(() => {
@@ -22,6 +21,13 @@ export function SessionDetailTabs({ sessionId, sessionStatus, output, autoScroll
       rawLogRef.current.scrollTop = rawLogRef.current.scrollHeight;
     }
   }, [output, autoScroll, activeTab]);
+
+  const handleRawLogScroll = () => {
+    if (!rawLogRef.current) return;
+    const el = rawLogRef.current;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
+    setAutoScroll(atBottom);
+  };
 
   return (
     <div className="session-detail-tabs-wrapper">
@@ -56,7 +62,7 @@ export function SessionDetailTabs({ sessionId, sessionStatus, output, autoScroll
             aria-label="Agent output"
             tabIndex={0}
             ref={rawLogRef}
-            onScroll={onScroll}
+            onScroll={handleRawLogScroll}
           >
             <pre className="output-pre">
               {output.map((entry, i) => (

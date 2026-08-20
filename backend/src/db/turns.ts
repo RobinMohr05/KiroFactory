@@ -129,11 +129,13 @@ const EUR_PER_CREDIT = 0.04;
  * than creating a duplicate.
  */
 export async function createTurn(input: CreateTurnInput): Promise<TurnRecord> {
+  const id = await getNextId("Turn");
   return writeQuery(async (tx: ManagedTransaction) => {
     const result = await tx.run(
       `MATCH (s:Session {id: $sessionId})
        MERGE (s)-[:HAS_TURN]->(t:Turn {sessionId: $sessionId, number: $number})
        ON CREATE SET
+         t.id = $id,
          t.startedAt = $startedAt,
          t.endedAt = null,
          t.credits = 0,
@@ -161,6 +163,7 @@ export async function createTurn(input: CreateTurnInput): Promise<TurnRecord> {
          t.durationMs = 0
        RETURN t.number AS number, t.startedAt AS startedAt, s.id AS sessionId`,
       {
+        id,
         sessionId: input.sessionId,
         number: input.number,
         startedAt: input.startedAt,
