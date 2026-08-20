@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { useTheme } from '../hooks/useTheme';
 import { SettingsModal } from './SettingsModal';
@@ -16,6 +16,14 @@ export function MobileDrawer({ open, onClose, monthlyCredits }: MobileDrawerProp
   const [showSettings, setShowSettings] = useState(false);
 
   const unreadErrorCount = errors.filter(e => !e.taskCreated).length;
+
+  useEffect(() => {
+    if (!open) return;
+    const mql = window.matchMedia('(max-width: 480px)');
+    const handler = () => { if (!mql.matches) onClose(); };
+    mql.addEventListener('change', handler);
+    return () => mql.removeEventListener('change', handler);
+  }, [open, onClose]);
 
   if (!open && !showSettings) return null;
 

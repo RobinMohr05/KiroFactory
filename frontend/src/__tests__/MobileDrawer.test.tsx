@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, fireEvent, act } from '@testing-library/react';
 import { MobileDrawer } from '../components/MobileDrawer';
 
 vi.mock('../context/AppContext', () => ({
@@ -92,5 +92,58 @@ describe('MobileDrawer', () => {
 
     const agentsBtn = screen.getByRole('button', { name: /^agents$/i });
     expect(agentsBtn.className).toContain('active');
+  });
+
+  describe('auto-close on viewport resize past 480px', () => {
+    let mockMql: { matches: boolean; addEventListener: ReturnType<typeof vi.fn>; removeEventListener: ReturnType<typeof vi.fn> };
+
+    beforeEach(() => {
+      mockMql = {
+        matches: true, // initially ≤480px (mobile)
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      };
+      vi.stubGlobal('matchMedia', vi.fn(() => mockMql));
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('calls onClose when viewport exceeds 480px while drawer is open', () => {
+      render(<MobileDrawer open={true} onClose={mockOnClose} monthlyCredits={0} />);
+
+      // Verify the listener was registered
+      expect(mockMql.addEventListener).toHaveBeenCalledWith('change', expect.any(Function));
+
+      // Get the registered handler and simulate viewport resizing past 480px
+      const handler = mockMql.addEventListener.mock.calls[0][1];
+      mockMql.matches = false;
+      act(() => {
+        handler({ matches: false });
+      });
+
+      expect(mockOnClose).toHaveBeenCalled();
+    });
+
+    it('does not call onClose when viewport stays within 480px', () => {
+      render(<MobileDrawer open={true} onClose={mockOnClose} monthlyCredits={0} />);
+
+      // Get the registered handler and simulate a change event where still ≤480px
+      const handler = mockMql.addEventListener.mock.calls[0][1];
+      act(() => {
+        handler({ matches: true });
+      });
+
+      expect(mockOnClose).not.toHaveBeenCalled();
+    });
+
+    it('cleans up the matchMedia listener on unmount', () => {
+      const { unmount } = render(<MobileDrawer open={true} onClose={mockOnClose} monthlyCredits={0} />);
+
+      unmount();
+
+      expect(mockMql.removeEventListener).toHaveBeenCalledWith('change', expect.any(Function));
+    });
   });
 });
