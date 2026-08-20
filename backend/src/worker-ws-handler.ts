@@ -53,6 +53,8 @@ export interface WorkerPromptDoneMessage extends WorkerMessage {
     toolCalls?: number;
     durationMs?: number;
     hasChanges?: boolean;
+    /** Whether the agent's changes were actually committed (via MCP tools or worker). */
+    committed?: boolean;
     prUrl?: string | null;
     branchName?: string | null;
     /** Kiro credits consumed this turn (from _kiro.dev/metadata meteringUsage). */
