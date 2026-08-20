@@ -11,6 +11,7 @@
     "seed:agents": "tsx scripts/seed-agents.ts",
     "seed:local": "tsx scripts/seed-local-dev.ts",
     "verify:neo4j": "tsx scripts/verify-neo4j.ts",
+    "create:task": "tsx scripts/create-task.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },
