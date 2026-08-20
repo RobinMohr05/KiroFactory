@@ -85,6 +85,16 @@ const FALLBACK_POLL_MS = 5 * 60 * 1000;
  * Wait until at least one task in `claimState` is available for `tabIds`,
  * or until the AbortSignal fires.
  *
+ * `workingState` must match the value the caller passes to claimTask() for
+ * this same pipeline stage — it's forwarded to getAvailableTaskCount() so
+ * the "is anything available" check applies the exact same group-lock
+ * exclusion that claimTask()'s candidate query uses (see that function's
+ * doc comment). Without this, a task whose only groupId sibling is
+ * currently in workingState would look "available" here, this function
+ * would return immediately instead of parking, and the caller's very next
+ * claimTask() call would fail — not a real race, just a mismatched
+ * eligibility rule between the two queries.
+ *
  * Returns immediately if tasks are already available (checked via DB COUNT).
  * Otherwise parks the caller until a "task-available" event is emitted by
  * any write path (createTask broadcast, resetTask, resolveTask, etc.), the
@@ -94,10 +104,11 @@ const FALLBACK_POLL_MS = 5 * 60 * 1000;
 export async function waitForTaskAvailable(
   tabIds: number[] | undefined,
   claimState: string,
-  signal: AbortSignal
+  signal: AbortSignal,
+  workingState: string = "in-progress"
 ): Promise<void> {
   // Fast path: tasks already present, no need to wait.
-  const count = await getAvailableTaskCount(tabIds, claimState);
+  const count = await getAvailableTaskCount(tabIds, claimState, workingState);
   if (count > 0 || signal.aborted) return;
 
   return new Promise<void>((resolve) => {
@@ -478,19 +489,25 @@ export async function resetOrphanedTasks(): Promise<number> {
  * Get the count of available tasks in the given claim state.
  *
  * Uses a short TTL cache (5s) to avoid redundant COUNT queries when multiple
- * loop sessions poll simultaneously. The cache is keyed by the sorted tabIds
- * AND the claim state.
+ * loop sessions poll simultaneously. The cache is keyed by the sorted tabIds,
+ * the claim state, AND the working state (see below).
  *
- * Excludes tasks blocked by an incomplete DEPENDS_ON dependency, matching
- * exactly what claimTask()'s candidate query considers eligible — this
- * count is what decides whether a loop session even attempts to claim
- * (see waitForTaskAvailable's fast path), so it needs to agree with the
- * claim query's own eligibility rule or a session could see count > 0 from
- * blocked-only tasks, skip waiting, and immediately get null back from
- * claimTask() anyway.
+ * Excludes tasks blocked by an incomplete DEPENDS_ON dependency, AND tasks
+ * whose groupId matches another task already in `workingState` — both
+ * matching exactly what claimTask()'s candidate query considers eligible.
+ * This count is what decides whether a loop session even attempts to claim
+ * (see waitForTaskAvailable's fast path) or instead parks idle, so it needs
+ * to agree with the claim query's own eligibility rule. Before the groupId
+ * exclusion was added here, a task whose only sibling was actively being
+ * worked (in workingState) still counted as "available" — the loop would
+ * see count > 0, skip parking, and claimTask() would then correctly exclude
+ * that same task and return null every time, forever, logging a misleading
+ * "race condition" until the sibling left workingState. Not a real race:
+ * both queries were just evaluating different eligibility rules.
  *
  * @param tabIds Optional tab IDs to filter by — only tasks belonging to at least one of these tabs are counted. If empty/undefined, all tasks in the given state are counted.
  * @param claimState The state to count tasks in (default: "todo")
+ * @param workingState The state a groupId sibling must be in to block a task from counting (default: "in-progress") — pass the same value used for the corresponding claimTask() call.
  */
 
 interface CachedCount {
@@ -501,12 +518,16 @@ interface CachedCount {
 const countCache = new Map<string, CachedCount>();
 const COUNT_CACHE_TTL_MS = 5000;
 
-export async function getAvailableTaskCount(tabIds?: number[], claimState: string = "todo"): Promise<number> {
-  // Build a stable cache key from the sorted tab IDs + claim state
+export async function getAvailableTaskCount(
+  tabIds?: number[],
+  claimState: string = "todo",
+  workingState: string = "in-progress"
+): Promise<number> {
+  // Build a stable cache key from the sorted tab IDs + claim state + working state
   const tabPart = tabIds && tabIds.length > 0
     ? `tabs:${[...tabIds].sort((a, b) => a - b).join(",")}`
     : "all";
-  const cacheKey = `${tabPart}:state:${claimState}`;
+  const cacheKey = `${tabPart}:state:${claimState}:working:${workingState}`;
 
   const cached = countCache.get(cacheKey);
   if (cached && Date.now() < cached.expiresAt) {
@@ -520,14 +541,106 @@ export async function getAvailableTaskCount(tabIds?: number[], claimState: strin
       `MATCH (t:Task {state: $claimState})
        WHERE NOT EXISTS { MATCH (t)-[:DEPENDS_ON]->(dep:Task) WHERE dep.state <> 'done' }
          AND ($tabIds IS NULL OR EXISTS { MATCH (t)-[:IN_TAB]->(tab:Tab) WHERE tab.id IN $tabIds })
+         AND (
+           t.groupId IS NULL OR
+           NOT EXISTS {
+             MATCH (g:Task {state: $workingState})
+             WHERE g.groupId = t.groupId AND g.id <> t.id
+           }
+         )
        RETURN count(t) AS count`,
-      { claimState, tabIds: effectiveTabIds }
+      { claimState, workingState, tabIds: effectiveTabIds }
     );
     return result.records[0].get("count") as number;
   });
 
   countCache.set(cacheKey, { value: count, expiresAt: Date.now() + COUNT_CACHE_TTL_MS });
   return count;
+}
+
+export interface ClaimFailureDiagnosis {
+  /**
+   * "empty": nothing in claimState at all (the ordinary idle case).
+   * "group-locked": every remaining candidate is blocked by a groupId
+   *   sibling currently in workingState — not a race, just waiting on
+   *   another pipeline stage to finish with that group.
+   * "race": at least one real candidate existed but claimTask() still came
+   *   back empty — a concurrent caller most likely won it first (genuine
+   *   CAS loss), or the count cache was briefly stale.
+   */
+  reason: "empty" | "group-locked" | "race";
+  /** Populated only when reason === "group-locked". */
+  blockedTaskId?: number;
+  blockedTaskTitle?: string;
+  blockingSiblingId?: number;
+  blockingSiblingTitle?: string;
+}
+
+/**
+ * Diagnoses why claimTask() just returned null, for logging purposes only —
+ * this is never on the hot path and never influences claiming behavior
+ * itself, it just re-queries (uncached) to explain a failure after the fact.
+ *
+ * getAvailableTaskCount() and claimTask()'s candidate query apply the same
+ * DEPENDS_ON + groupId/workingState exclusions (see both functions' doc
+ * comments), so a null claimTask() result right after a positive count
+ * should now be rare and transient — either the count cache's up-to-
+ * COUNT_CACHE_TTL_MS-second staleness window, or a genuine concurrent
+ * caller winning the same candidate. Before that fix, this was NOT rare:
+ * a task whose only groupId sibling sat in workingState indefinitely would
+ * count as "available" forever while claimTask() correctly rejected it
+ * forever, producing an endless "race condition or empty queue" loop that
+ * was never actually a race. Callers (runLoopMode/runLoopModeAca in
+ * session-manager.ts) use this to log the real reason instead of that
+ * generic message.
+ */
+export async function describeClaimFailure(
+  tabIds: number[] | undefined,
+  claimState: string,
+  workingState: string
+): Promise<ClaimFailureDiagnosis> {
+  const effectiveTabIds = tabIds && tabIds.length > 0 ? tabIds : null;
+
+  const rows = await readQuery(async (tx: ManagedTransaction) => {
+    const result = await tx.run(
+      `MATCH (t:Task {state: $claimState})
+       WHERE NOT EXISTS { MATCH (t)-[:DEPENDS_ON]->(dep:Task) WHERE dep.state <> 'done' }
+         AND ($tabIds IS NULL OR EXISTS { MATCH (t)-[:IN_TAB]->(tab:Tab) WHERE tab.id IN $tabIds })
+       OPTIONAL MATCH (g:Task {state: $workingState})
+         WHERE t.groupId IS NOT NULL AND g.groupId = t.groupId AND g.id <> t.id
+       RETURN t.id AS id, t.title AS title, g.id AS blockingSiblingId, g.title AS blockingSiblingTitle
+       ORDER BY t.priority ASC, t.createdAt ASC`,
+      { claimState, workingState, tabIds: effectiveTabIds }
+    );
+    return result.records.map((r) => ({
+      id: r.get("id") as number,
+      title: r.get("title") as string,
+      blockingSiblingId: r.get("blockingSiblingId") as number | null,
+      blockingSiblingTitle: r.get("blockingSiblingTitle") as string | null,
+    }));
+  });
+
+  if (rows.length === 0) {
+    return { reason: "empty" };
+  }
+
+  const unblocked = rows.find((r) => r.blockingSiblingId == null);
+  if (unblocked) {
+    // A valid candidate existed — losing here means a concurrent caller
+    // claimed it between the candidate read and the write attempt.
+    return { reason: "race" };
+  }
+
+  // Every remaining task is group-locked — report the highest-priority one
+  // (rows is already ordered) as the representative example.
+  const blocked = rows[0];
+  return {
+    reason: "group-locked",
+    blockedTaskId: blocked.id,
+    blockedTaskTitle: blocked.title,
+    blockingSiblingId: blocked.blockingSiblingId ?? undefined,
+    blockingSiblingTitle: blocked.blockingSiblingTitle ?? undefined,
+  };
 }
 
 /**
