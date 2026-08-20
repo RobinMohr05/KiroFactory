@@ -71,55 +71,54 @@ describe("buildReviewPrompt", () => {
 });
 
 describe("buildDevPrompt", () => {
-  describe("BRANCH SETUP section", () => {
-    it("includes BRANCH SETUP section with the task branch name when branch is set", () => {
+  describe("BRANCH SYNC & DELIVERY section", () => {
+    it("includes BRANCH SYNC & DELIVERY section with MCP tool instructions", () => {
       const task = makeTask({ branch: "feature/#100_test-task" });
       const prompt = buildDevPrompt(task, "/workspace");
-      expect(prompt).toContain("## BRANCH SETUP");
-      expect(prompt).toContain("feature/#100_test-task");
+      expect(prompt).toContain("## BRANCH SYNC & DELIVERY (MCP tools)");
+      expect(prompt).toContain("sync_task_branch");
+      expect(prompt).toContain("submit_task_changes");
     });
 
-    it("includes instructions to check if branch exists remotely", () => {
+    it("includes instructions for conflict resolution via finalize_branch_sync", () => {
       const task = makeTask({ branch: "feature/#100_test-task" });
       const prompt = buildDevPrompt(task, "/workspace");
-      expect(prompt).toContain("git ls-remote --heads origin feature/#100_test-task");
+      expect(prompt).toContain("hadConflicts: true");
+      expect(prompt).toContain("finalize_branch_sync");
     });
 
-    it("includes instructions to checkout and merge develop if branch exists", () => {
+    it("includes conventional-commit format guidance for submit_task_changes", () => {
       const task = makeTask({ branch: "feature/#100_test-task" });
       const prompt = buildDevPrompt(task, "/workspace");
-      expect(prompt).toContain("git fetch origin feature/#100_test-task");
-      expect(prompt).toContain("git checkout -B feature/#100_test-task origin/feature/#100_test-task");
-      expect(prompt).toContain("git merge origin/develop");
+      expect(prompt).toContain("conventional-commit");
+      expect(prompt).toContain("feat:");
+      expect(prompt).toContain("fix:");
     });
 
-    it("includes instructions to create a new branch if it does not exist", () => {
+    it("tells the agent NOT to add the Vibecode Heaven suffix manually", () => {
       const task = makeTask({ branch: "feature/#100_test-task" });
       const prompt = buildDevPrompt(task, "/workspace");
-      expect(prompt).toContain("git checkout -B feature/#100_test-task");
+      expect(prompt).toContain("Do NOT add a `[Vibecode Heaven #id]` suffix");
     });
 
-    it("does NOT include BRANCH SETUP section when branch is null", () => {
+    it("also includes BRANCH SYNC & DELIVERY section when branch is null (tools handle creation)", () => {
       const task = makeTask({ branch: null });
       const prompt = buildDevPrompt(task, "/workspace");
-      expect(prompt).not.toContain("## BRANCH SETUP");
+      expect(prompt).toContain("## BRANCH SYNC & DELIVERY (MCP tools)");
     });
 
-    it("does NOT tell the agent to avoid ALL git commands in BRANCH SETUP mode", () => {
+    it("tells the agent not to run git commands manually when branch is set", () => {
       const task = makeTask({ branch: "feature/#100_test-task" });
       const prompt = buildDevPrompt(task, "/workspace");
-      // When branch setup is active, the blanket "Do NOT run any git commands at all"
-      // prohibition should be replaced with a more nuanced rule that allows branch operations
-      expect(prompt).not.toMatch(/Do NOT run any git commands at all[^]*?The orchestrator manages ALL git operations\.\s*\n- Do NOT create/);
+      expect(prompt).toContain("Do NOT run git commit, git push, or create pull requests manually");
+      expect(prompt).toContain("MCP tools exclusively");
     });
 
-    it("still tells the agent not to commit or push (orchestrator handles that)", () => {
-      const task = makeTask({ branch: "feature/#100_test-task" });
+    it("tells the agent not to run any git commands when branch is not set", () => {
+      const task = makeTask({ branch: null });
       const prompt = buildDevPrompt(task, "/workspace");
-      // Should still prohibit commit/push for implementation work
-      expect(prompt).toContain("Do NOT run `git commit` for your own implementation work");
-      expect(prompt).toContain("git push");
-      expect(prompt).toContain("orchestrator");
+      expect(prompt).toContain("Do NOT run any git commands at all");
+      expect(prompt).toContain("The orchestrator manages ALL git operations");
     });
   });
 });

@@ -19,7 +19,7 @@
 
 import { spawn, execSync, execFileSync } from "node:child_process";
 import { WebSocket } from "ws";
-import { mkdirSync, existsSync, writeFileSync, appendFileSync } from "node:fs";
+import { mkdirSync, existsSync, writeFileSync, appendFileSync, readFileSync } from "node:fs";
 import { buildGroupPrContent, findSiblingPrUrl } from "./shared-branch-utils.js";
 import { buildSpawnEnv } from "./spawn-env.js";
 
@@ -2123,38 +2123,90 @@ function finishPromptTurn(msg) {
         }
       }
 
-      try {
-        const gitResult = commitAndPush();
-        hasChanges = gitResult.hasChanges;
-        committed = !!gitResult.committed;
-        if (gitResult.pushError) gitError = gitResult.pushError;
-        if (gitResult.pushed && gitResult.branchName && !PERSISTENT_BRANCH_NAME) {
-          // If a PR URL is already known (shared branch group — sibling already
-          // created the PR), skip PR creation (the push already updated the PR's
-          // branch automatically). Instead, update the PR title/body to include
-          // all tasks in the group (AC5).
-          // Check both the current task's own pullRequestUrl AND sibling PR URLs,
-          // because the second+ task in a group won't have its own PR URL persisted.
-          const groupPrUrl = currentTaskMeta?.pullRequestUrl
-            || (currentTaskMeta?.siblingTasks?.length > 0 ? findSiblingPrUrl(currentTaskMeta.siblingTasks) : null);
-          if (groupPrUrl && currentTaskMeta?.siblingTasks?.length > 0) {
-            prUrl = groupPrUrl;
-            const { title, body } = buildPrContent();
-            const provider = detectGitProvider(REPO_URL);
-            if (provider === "github") {
-              await updateGitHubPullRequest(prUrl, title, body);
-            } else if (provider === "azure-devops") {
-              await updateAzureDevOpsPullRequest(prUrl, title, body);
-            }
-            sendOutput(`PR already exists (shared branch): ${prUrl}`, "system");
-          } else {
-            prUrl = await createPullRequest(gitResult.branchName);
+      // Task-based sessions use the git-delivery MCP tools — the agent calls
+      // submit_task_changes itself, and writes the result to DELIVERY_RESULT_PATH.
+      // Standalone/persistent-branch sessions still use the worker-driven
+      // commitAndPush() flow (no MCP delivery tools available).
+      if (!PERSISTENT_BRANCH_NAME && TASK_ID) {
+        // Read delivery result written by submit_task_changes MCP tool
+        const deliveryResultPath = `/tmp/kirofactory-delivery-result-${SESSION_ID || "local"}.json`;
+        let deliveryResult = null;
+        try {
+          if (existsSync(deliveryResultPath)) {
+            deliveryResult = JSON.parse(readFileSync(deliveryResultPath, "utf8"));
+          }
+        } catch (err) {
+          logError("Failed to read delivery result file", { path: deliveryResultPath, error: err?.message || String(err) });
+        }
+
+        if (deliveryResult) {
+          hasChanges = !!deliveryResult.committed || !!deliveryResult.pushed;
+          committed = !!deliveryResult.committed;
+          prUrl = deliveryResult.prUrl || null;
+          if (deliveryResult.branchName) {
+            // Update currentBranchName so sendPromptDone reports it correctly
+            currentBranchName = deliveryResult.branchName;
+          }
+          if (deliveryResult.error && !deliveryResult.pushed) {
+            gitError = deliveryResult.error;
           }
         }
-      } catch (err) {
-        gitError = redactSecrets(err?.message || String(err));
-        logError("Post-prompt git/PR operations failed", { error: gitError });
-        sendOutput(`Post-prompt error: ${gitError}`, "stderr");
+
+        // Ground-truth cross-check: if the working tree is dirty but no
+        // successful commit was recorded via the delivery result, report the
+        // truth so the orchestrator can handle it appropriately (reset task).
+        try {
+          const status = exec("git status --porcelain", { cwd: WORKSPACE });
+          if (status) {
+            const dirtyFiles = status.split("\n").filter(Boolean);
+            if (!deliveryResult || !deliveryResult.committed) {
+              logError("Dirty working tree but no successful commit via MCP tools", {
+                fileCount: dirtyFiles.length,
+                files: dirtyFiles.slice(0, 20),
+                deliveryResult: deliveryResult || "absent",
+              });
+              sendOutput(
+                `⚠ Working tree has ${dirtyFiles.length} uncommitted file(s) but submit_task_changes was never ` +
+                `successfully called — reporting hasChanges: true, committed: false.`,
+                "stderr"
+              );
+              hasChanges = true;
+              committed = false;
+            }
+          }
+        } catch {
+          // git status failed — can't verify, proceed with whatever we have
+        }
+      } else {
+        // Standalone/persistent-branch session: use the legacy worker-driven
+        // commitAndPush() flow.
+        try {
+          const gitResult = commitAndPush();
+          hasChanges = gitResult.hasChanges;
+          committed = !!gitResult.committed;
+          if (gitResult.pushError) gitError = gitResult.pushError;
+          if (gitResult.pushed && gitResult.branchName && !PERSISTENT_BRANCH_NAME) {
+            const groupPrUrl = currentTaskMeta?.pullRequestUrl
+              || (currentTaskMeta?.siblingTasks?.length > 0 ? findSiblingPrUrl(currentTaskMeta.siblingTasks) : null);
+            if (groupPrUrl && currentTaskMeta?.siblingTasks?.length > 0) {
+              prUrl = groupPrUrl;
+              const { title, body } = buildPrContent();
+              const provider = detectGitProvider(REPO_URL);
+              if (provider === "github") {
+                await updateGitHubPullRequest(prUrl, title, body);
+              } else if (provider === "azure-devops") {
+                await updateAzureDevOpsPullRequest(prUrl, title, body);
+              }
+              sendOutput(`PR already exists (shared branch): ${prUrl}`, "system");
+            } else {
+              prUrl = await createPullRequest(gitResult.branchName);
+            }
+          }
+        } catch (err) {
+          gitError = redactSecrets(err?.message || String(err));
+          logError("Post-prompt git/PR operations failed", { error: gitError });
+          sendOutput(`Post-prompt error: ${gitError}`, "stderr");
+        }
       }
     }
 
@@ -2167,6 +2219,7 @@ function finishPromptTurn(msg) {
       toolCalls: turnStats.toolCalls,
       durationMs,
       hasChanges,
+      committed,
       prUrl,
       branchName: currentBranchName,
       credits: turnStats.credits || undefined,
@@ -2769,12 +2822,18 @@ let shuttingDown = false;
 function commitOnExitAndShutdown(exitCode) {
   if (shuttingDown) return;
   if (AGENT_KIND !== "inspector") {
-    try {
-      const result = commitAndPush();
-      if (result.pushed) sendOutput(`Changes pushed to ${result.branchName}`, "system");
-    } catch (err) {
-      logError("commit/push on exit failed", { error: err?.message || String(err) });
-      sendOutput(`commit/push failed: ${err?.message || String(err)}`, "stderr");
+    // Task-based editor sessions use the git-delivery MCP tools — the agent
+    // commits/pushes via submit_task_changes during the turn. Only standalone/
+    // persistent-branch sessions still need the worker-driven commit-on-exit.
+    const isTaskBasedEditor = !PERSISTENT_BRANCH_NAME && TASK_ID;
+    if (!isTaskBasedEditor) {
+      try {
+        const result = commitAndPush();
+        if (result.pushed) sendOutput(`Changes pushed to ${result.branchName}`, "system");
+      } catch (err) {
+        logError("commit/push on exit failed", { error: err?.message || String(err) });
+        sendOutput(`commit/push failed: ${err?.message || String(err)}`, "stderr");
+      }
     }
   }
   // worker-shutdown drives the orchestrator's final session status; the socket

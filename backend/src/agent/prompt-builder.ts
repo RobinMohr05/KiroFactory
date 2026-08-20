@@ -40,28 +40,31 @@ Once all comments are addressed and resolved, the implementation will be re-revi
 `
     : "";
 
-  // Branch setup section: when the task has a branch name, instruct the agent to
-  // manage its own branch (create or checkout+merge). This gives the editor agent
-  // control over branch state, enabling intelligent conflict resolution.
-  const branchSetupSection = task.branch
-    ? `
-## BRANCH SETUP
+  // Branch sync section: instruct the agent to use the git-delivery MCP tools
+  // for branch setup (sync_task_branch), conflict resolution (finalize_branch_sync),
+  // and commit/push/PR (submit_task_changes).
+  const branchSyncSection = `
+## BRANCH SYNC & DELIVERY (MCP tools)
 
-Your task branch is: \`${task.branch}\`
-Base branch: \`develop\` (or detect with \`git symbolic-ref refs/remotes/origin/HEAD\`)
+At the **very start** of your turn, before making any code changes, call \`sync_task_branch\`.
+This creates or syncs the task branch with the latest base branch.
 
-Before starting any work:
-1. Check if the branch already exists remotely: \`git ls-remote --heads origin ${task.branch}\`
-2. If it exists: \`git fetch origin ${task.branch}\` then \`git checkout -B ${task.branch} origin/${task.branch}\` (this ensures you have the latest remote version, even if a stale local branch exists from a previous attempt in this container). Then run \`git merge origin/develop\` — if there are merge conflicts, resolve them intelligently by reading both sides and choosing the correct resolution, then commit the merge.
-3. If it does NOT exist: \`git checkout -B ${task.branch}\` (creates or resets the branch from your current position, which is the latest develop).
+- If it reports \`hadConflicts: true\`: resolve the listed conflicted files by reading both
+  sides of each conflict (the \`<<<<<<<\` / \`=======\` / \`>>>>>>>\` markers) and choosing
+  the correct resolution. Edit each file to remove all conflict markers and produce the
+  intended content. Then call \`finalize_branch_sync\` to complete the merge.
+- If it reports \`hadConflicts: false\`: you're ready to proceed — no merge step needed.
 
-Always ensure you're on \`${task.branch}\` before making any changes for the task.
-`
-    : "";
+After implementation is complete and verified (tests/build passing), call \`submit_task_changes\`
+with a \`title\` (and optional \`body\`) you author from the actual diff:
+- Follow conventional-commit format: type prefix (\`feat:\`, \`fix:\`, \`refactor:\`, \`chore:\`, etc.)
+- Use imperative mood in the subject line, under 72 characters
+- Do NOT add a \`[Vibecode Heaven #id]\` suffix — the tool appends that automatically
+`;
 
   return `You are the Developer Implementation Agent. You have been ASSIGNED a specific task.
 Do NOT pick a task yourself — this task has already been selected and claimed for you.
-${branchSetupSection}${reworkSection}
+${branchSyncSection}${reworkSection}
 ## YOUR ASSIGNED TASK
 
 **Task ID:** ${task.id}
@@ -91,7 +94,7 @@ ${task.pullRequestUrl
 - Do NOT introduce unrelated refactoring or improvements beyond what the task requires.
 - Do NOT modify test files unless the task specifically asks for test changes.
 ${task.branch
-  ? "- You MUST run the git commands described in the BRANCH SETUP section above (ls-remote, fetch, checkout, merge). If `git merge origin/develop` results in conflicts, resolve them and run `git add` + `git commit` to finalize the merge — this is the ONLY situation where you should commit. Do NOT run `git commit` for your own implementation work, `git push`, or create pull requests — those are handled by the orchestrator after your turn ends."
+  ? "- Do NOT run git commit, git push, or create pull requests manually. Use the `sync_task_branch`, `finalize_branch_sync`, and `submit_task_changes` MCP tools exclusively for all git operations.\n- Do NOT run any git commands at all (no git add, commit, push, branch, checkout, pull request). The MCP tools handle everything."
   : "- Do NOT run git commit, git push, or create pull requests. The orchestrator handles git operations automatically after your work is complete.\n- Do NOT run any git commands at all (no git add, commit, push, branch, checkout, pull request). The orchestrator manages ALL git operations.\n- Do NOT create or switch branches. You are already on the correct branch."}
 
 ## WORKING DIRECTORY

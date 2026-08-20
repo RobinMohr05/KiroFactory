@@ -2341,6 +2341,8 @@ async function waitForWorkerOrAbort(
  */
 interface WorkerPromptResult {
   hasChanges?: boolean;
+  /** Whether the agent's changes were actually committed (via MCP tools or worker). */
+  committed?: boolean;
   prUrl?: string;
   branchName?: string;
   error?: string | null;
@@ -2941,6 +2943,32 @@ async function runLoopModeAca(
         context:
           `Task "${task.title}" (ID: ${task.id}, type: ${task.type}, priority: P${task.priority}) ran with ` +
           `${failedNames} unavailable. Any verdict this turn reported (${promptResult.verdict ?? "none"}) is not trustworthy.`,
+        taskId: task.id,
+        taskTitle: task.title,
+        userId: meta.userId,
+      });
+    }
+
+    // Changes were made but never successfully committed via the git-delivery
+    // MCP tools. The agent edited files but never called submit_task_changes
+    // (or it failed). Treat this the same as a cancelled turn — the work is
+    // incomplete/undelivered.
+    if (success && promptResult.hasChanges && promptResult.committed === false) {
+      success = false;
+      failureReason = `Agent made file changes but never successfully committed them (submit_task_changes was not called or failed) — work is undelivered`;
+      appendOutput(managed, {
+        timestamp: now(),
+        stream: "stderr",
+        text: `✖ Agent produced file changes but they were never committed via submit_task_changes — task reset to "${stages.claimState}".`,
+      });
+      recordSessionError({
+        sessionId: meta.id,
+        sessionName: meta.name,
+        agent: meta.agent,
+        message: failureReason,
+        context:
+          `Task "${task.title}" (ID: ${task.id}, type: ${task.type}, priority: P${task.priority}) had uncommitted ` +
+          `changes at end of turn. The agent may have forgotten to call submit_task_changes or it failed.`,
         taskId: task.id,
         taskTitle: task.title,
         userId: meta.userId,
