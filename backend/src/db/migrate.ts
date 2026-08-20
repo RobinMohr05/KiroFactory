@@ -33,6 +33,7 @@ const SCHEMA_STATEMENTS: string[] = [
   "CREATE CONSTRAINT task_id_key IF NOT EXISTS FOR (t:Task) REQUIRE t.id IS NODE KEY",
   "CREATE CONSTRAINT agent_id_key IF NOT EXISTS FOR (a:Agent) REQUIRE a.id IS NODE KEY",
   "CREATE CONSTRAINT session_id_key IF NOT EXISTS FOR (s:Session) REQUIRE s.id IS NODE KEY",
+  "CREATE CONSTRAINT turn_id_key IF NOT EXISTS FOR (t:Turn) REQUIRE t.id IS NODE KEY",
 
   // ── Infrastructure node keys (Counter, Settings — not domain entities) ──
   "CREATE CONSTRAINT counter_name_key IF NOT EXISTS FOR (c:Counter) REQUIRE c.name IS NODE KEY",
@@ -59,6 +60,8 @@ const SCHEMA_STATEMENTS: string[] = [
   // IX_tasks_group_id (group_id IS NOT NULL). As above, Neo4j indexes the
   // full property; tasks with no groupId simply aren't queried by it.
   "CREATE INDEX task_group_id_idx IF NOT EXISTS FOR (t:Task) ON (t.groupId)",
+  // Supports usage queries filtered by timestamp range
+  "CREATE INDEX turn_timestamp_idx IF NOT EXISTS FOR (t:Turn) ON (t.timestamp)",
 ];
 
 /**
