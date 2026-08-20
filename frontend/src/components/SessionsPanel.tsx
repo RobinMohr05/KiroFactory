@@ -3,11 +3,12 @@ import { useApp } from '../context/AppContext';
 import { SessionModal } from './SessionModal';
 import { SessionDetailTabs } from './SessionDetailTabs';
 import { apiFetch } from '../utils/api';
+import { formatCreditsWithEur } from '../utils/format';
 import { useConfirmAction } from '../hooks/useConfirmAction';
 import type { Session, OutputEntry, SessionActivity } from '../types';
 
 export function SessionsPanel() {
-  const { sessions, setSessions, currentTabId, activeSessionId, setActiveSessionId, tabs, pendingOps, errors, setActiveView } = useApp();
+  const { sessions, setSessions, currentTabId, activeSessionId, setActiveSessionId, tabs, pendingOps, errors, setActiveView, setHighlightedTaskId } = useApp();
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [editingSession, setEditingSession] = useState<Session | null>(null);
   const [output, setOutput] = useState<OutputEntry[]>([]);
@@ -360,7 +361,7 @@ export function SessionsPanel() {
                   )}
                   {(activeSession.totalCreditsUsed ?? 0) > 0 && (
                     <span className="session-meta-credits">
-                      💰 {(activeSession.totalCreditsUsed! < 10 ? activeSession.totalCreditsUsed!.toFixed(2) : Math.round(activeSession.totalCreditsUsed!).toString())} credits (€{((activeSession.totalCreditsUsed! * 0.04) < 0.01 ? (activeSession.totalCreditsUsed! * 0.04).toFixed(4) : (activeSession.totalCreditsUsed! * 0.04).toFixed(3))})
+                      💰 {formatCreditsWithEur(activeSession.totalCreditsUsed!).creditsStr} credits (€{formatCreditsWithEur(activeSession.totalCreditsUsed!).eurStr})
                     </span>
                   )}
                   {activeSession.currentTaskId && activeSession.currentTaskTitle && (
@@ -369,8 +370,8 @@ export function SessionsPanel() {
                       data-testid="session-current-task-link"
                       role="button"
                       tabIndex={0}
-                      onClick={() => setActiveView('boards')}
-                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setActiveView('boards'); } }}
+                      onClick={() => { setHighlightedTaskId(activeSession.currentTaskId!); setActiveView('boards'); }}
+                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setHighlightedTaskId(activeSession.currentTaskId!); setActiveView('boards'); } }}
                     >
                       📋 <strong>#{activeSession.currentTaskId}</strong> {activeSession.currentTaskTitle}
                     </span>
@@ -446,7 +447,6 @@ function SessionListItem({ session, active, hasErrors, onClick, onDragStart, onD
   const statusClass = `status-dot-sm status-${session.status}`;
   const activityDetail = session.currentActivity?.detail || session.currentActivity?.type || '';
   const credits = session.totalCreditsUsed ?? 0;
-  const creditsEur = credits * 0.04;
 
   return (
     <li
@@ -479,7 +479,7 @@ function SessionListItem({ session, active, hasErrors, onClick, onDragStart, onD
         )}
         {session.status === 'running' && credits > 0 && (
           <span className="session-item-usage">
-            💰 {credits < 10 ? credits.toFixed(2) : Math.round(credits).toString()} credits (€{creditsEur < 0.01 ? creditsEur.toFixed(4) : creditsEur.toFixed(3)})
+            💰 {formatCreditsWithEur(credits).creditsStr} credits (€{formatCreditsWithEur(credits).eurStr})
           </span>
         )}
       </div>

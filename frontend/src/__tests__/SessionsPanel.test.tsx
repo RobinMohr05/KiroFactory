@@ -24,6 +24,8 @@ function mockUseApp(overrides: Partial<ReturnType<typeof AppContext.useApp>> = {
     pendingOps: { current: new Set() },
     errors: [],
     tasks: [],
+    setActiveView: vi.fn(),
+    setHighlightedTaskId: vi.fn(),
     ...overrides,
   };
   vi.mocked(AppContext.useApp).mockReturnValue(base as any);
@@ -176,6 +178,7 @@ describe('SessionsPanel - Session detail header enhancements', () => {
 
   it('shows current task as a clickable element with onClick handler', () => {
     const mockSetActiveView = vi.fn();
+    const mockSetHighlightedTaskId = vi.fn();
     mockUseApp({
       sessions: [{
         id: 1,
@@ -190,6 +193,7 @@ describe('SessionsPanel - Session detail header enhancements', () => {
       }],
       activeSessionId: 1,
       setActiveView: mockSetActiveView,
+      setHighlightedTaskId: mockSetHighlightedTaskId,
     });
 
     render(<SessionsPanel />);
@@ -200,6 +204,7 @@ describe('SessionsPanel - Session detail header enhancements', () => {
     // The task link should have an onClick handler and be keyboard accessible
     taskLink.click();
     expect(mockSetActiveView).toHaveBeenCalledWith('boards');
+    expect(mockSetHighlightedTaskId).toHaveBeenCalledWith(42);
   });
 
   it('shows total credits in the session detail header', () => {

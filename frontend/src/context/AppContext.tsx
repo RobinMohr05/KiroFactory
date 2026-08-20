@@ -17,6 +17,7 @@ interface AppState {
   currentSort: 'priority' | 'updated' | 'created';
   boardSessions: { id: number; name: string; agent?: string; status: string }[];
   boardAgents: string[];
+  highlightedTaskId: number | null;
 }
 
 interface AppContextValue extends AppState {
@@ -25,6 +26,7 @@ interface AppContextValue extends AppState {
   setActiveAgentId: (id: number | null) => void;
   setActiveView: (view: ViewTab) => void;
   setCurrentSort: (sort: 'priority' | 'updated' | 'created') => void;
+  setHighlightedTaskId: (id: number | null) => void;
   setTabs: React.Dispatch<React.SetStateAction<Tab[]>>;
   setTasks: React.Dispatch<React.SetStateAction<Task[]>>;
   setSessions: React.Dispatch<React.SetStateAction<Session[]>>;
@@ -62,6 +64,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [activeView, setActiveView] = useState<ViewTab>('boards');
   const [boardSessions, setBoardSessions] = useState<{ id: number; name: string; agent?: string; status: string }[]>([]);
   const [boardAgents, setBoardAgents] = useState<string[]>([]);
+  const [highlightedTaskId, setHighlightedTaskId] = useState<number | null>(null);
 
   const pendingOps = useRef<Set<string>>(new Set());
   const wsRef = useRef<WebSocket | null>(null);
@@ -234,9 +237,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
             if (message.session.totalCreditsUsed === 0 && existing.totalCreditsUsed !== 0) {
               updated.turnCount = 0;
               updated.currentTaskTitle = undefined;
+              updated.currentTaskId = undefined;
             }
-            // Clear currentTaskTitle when currentTaskId is cleared
+            // Clear currentTaskId and currentTaskTitle when currentTaskId is cleared
             if (!message.session.currentTaskId && existing.currentTaskId) {
+              updated.currentTaskId = undefined;
               updated.currentTaskTitle = undefined;
             }
             next[idx] = updated;
@@ -443,11 +448,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     currentSort,
     boardSessions,
     boardAgents,
+    highlightedTaskId,
     setCurrentTabId,
     setActiveSessionId,
     setActiveAgentId,
     setActiveView,
     setCurrentSort,
+    setHighlightedTaskId,
     setTabs,
     setTasks,
     setSessions,

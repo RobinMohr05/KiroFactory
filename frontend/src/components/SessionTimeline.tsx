@@ -129,6 +129,7 @@ export function SessionTimeline({ sessionId, sessionStatus }: SessionTimelinePro
 
     setTurns(prev => prev.map(turn => {
       if (turn.number !== detail.turnNumber) return turn;
+      if (turn.toolCalls.some(tc => tc.id === newToolCall.id)) return turn; // deduplicate
       return {
         ...turn,
         toolCalls: [...turn.toolCalls, newToolCall],

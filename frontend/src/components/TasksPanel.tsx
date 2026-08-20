@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { apiFetch, truncateUrl } from '../utils/api';
 import { TaskCard } from './TaskCard';
@@ -17,10 +17,17 @@ const COLUMNS: { state: TaskState; label: string }[] = [
 ];
 
 export function TasksPanel() {
-  const { tasks, setTasks, currentSort, setCurrentSort, currentTabId, tabs, fetchTabTasks, pendingOps, boardSessions, boardAgents, setActiveSessionId, setActiveView } = useApp();
+  const { tasks, setTasks, currentSort, setCurrentSort, currentTabId, tabs, fetchTabTasks, pendingOps, boardSessions, boardAgents, setActiveSessionId, setActiveView, highlightedTaskId, setHighlightedTaskId } = useApp();
   const [editingTask, setEditingTask] = useState<Task | null | undefined>(undefined);
   const [showPlanner, setShowPlanner] = useState(false);
   // undefined = no modal, null = create new, Task = editing
+
+  // Auto-clear highlighted task after animation (2s)
+  useEffect(() => {
+    if (highlightedTaskId == null) return;
+    const timer = setTimeout(() => setHighlightedTaskId(null), 2000);
+    return () => clearTimeout(timer);
+  }, [highlightedTaskId, setHighlightedTaskId]);
 
   const currentTab = tabs.find(t => t.id === currentTabId);
 
@@ -130,7 +137,7 @@ export function TasksPanel() {
               </div>
               <div className="column-cards" id={`cards-${state}`}>
                 {columnTasks.map(task => (
-                  <TaskCard key={task.id} task={task} onClick={() => setEditingTask(task)} />
+                  <TaskCard key={task.id} task={task} onClick={() => setEditingTask(task)} highlighted={highlightedTaskId === task.id} />
                 ))}
               </div>
             </div>

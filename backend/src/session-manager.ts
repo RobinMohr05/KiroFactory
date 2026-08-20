@@ -1198,6 +1198,7 @@ async function runLoopMode(
 
     // Track current task
     meta.currentTaskId = task.id;
+    meta.currentTaskTitle = task.title;
     broadcastToUser(meta.userId, { type: "session-updated", session: sanitizeSessionForClient(meta) });
     persistSession(meta.id);
 
@@ -1350,10 +1351,9 @@ async function runLoopMode(
     }
 
     meta.currentTaskId = undefined;
+    meta.currentTaskTitle = undefined;
     broadcastToUser(meta.userId, { type: "session-updated", session: meta });
     persistSession(meta.id);
-
-    // Brief pause between tasks
     if (!signal.aborted && meta.intervalSeconds > 0) {
       setActivity(managed, {
         type: "idle",
@@ -2612,6 +2612,7 @@ async function runLoopModeAca(
     }
 
     meta.currentTaskId = task.id;
+    meta.currentTaskTitle = task.title;
     broadcastToUser(meta.userId, { type: "session-updated", session: meta });
     persistSession(meta.id);
 
@@ -2982,6 +2983,7 @@ async function runLoopModeAca(
           text: `Task ${task.id} reset to "${stages.claimState}" and blocked for this session — fix the git credentials, then re-run.`,
         });
         meta.currentTaskId = undefined;
+        meta.currentTaskTitle = undefined;
         broadcastToUser(meta.userId, { type: "session-updated", session: meta });
         persistSession(meta.id);
         continue;
@@ -3022,6 +3024,7 @@ async function runLoopModeAca(
     }
 
     meta.currentTaskId = undefined;
+    meta.currentTaskTitle = undefined;
     broadcastToUser(meta.userId, { type: "session-updated", session: meta });
     persistSession(meta.id);
 

@@ -475,4 +475,43 @@ describe('SessionTimeline', () => {
     expect(screen.getByText(/Turn 1/)).toBeInTheDocument();
     expect(screen.getByText(/Turn 2/)).toBeInTheDocument();
   });
+
+  it('deduplicates tool calls with the same ID (e.g. WS reconnect replays)', async () => {
+    mockedApiFetch.mockResolvedValue({
+      ok: true,
+      json: async () => [],
+    } as any);
+
+    await act(async () => {
+      render(<SessionTimeline sessionId={1} sessionStatus="running" />);
+    });
+
+    // Start a turn
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('ws-session-turn-start', {
+        detail: { sessionId: 1, turnNumber: 1, startedAt: '2026-08-20T10:00:00Z' },
+      }));
+    });
+
+    // Dispatch the same tool call event twice (simulating WS reconnect replay)
+    const toolCallDetail = {
+      sessionId: 1,
+      turnNumber: 1,
+      toolCallId: 'tc-dup',
+      label: 'write_file',
+      icon: '✏️',
+      status: 'running',
+    };
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('ws-session-tool-call', { detail: toolCallDetail }));
+    });
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('ws-session-tool-call', { detail: toolCallDetail }));
+    });
+
+    // Should only render one tool call card, not two
+    const labels = screen.getAllByText('write_file');
+    expect(labels).toHaveLength(1);
+  });
 });

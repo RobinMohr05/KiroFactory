@@ -362,6 +362,8 @@ export interface Session {
   currentActivity?: Activity;
   /** Currently claimed task ID (while in loop mode) */
   currentTaskId?: number;
+  /** Title of the currently claimed task (persisted alongside currentTaskId) */
+  currentTaskTitle?: string;
   /**
    * True for the one permanent, agentless "Chat" session every user gets.
    * Pinned sessions are always sorted first in the UI and cannot be deleted.
