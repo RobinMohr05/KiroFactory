@@ -36,16 +36,17 @@ export function apiErrorLogger(req: Request, res: Response, next: NextFunction):
  * Must be registered AFTER route handlers.
  */
 export function uncaughtErrorLogger(
-  err: Error,
+  err: Error & { status?: number; statusCode?: number },
   req: Request,
   res: Response,
   next: NextFunction
 ): void {
-  logApiError(500, req.method, req.originalUrl, err.message || "Unhandled error");
+  const status = err.status || err.statusCode || 500;
+  logApiError(status, req.method, req.originalUrl, err.message || "Unhandled error");
 
   // Pass to Express default error handler if headers not sent
   if (!res.headersSent) {
-    res.status(500).json({ error: "Internal Server Error" });
+    res.status(status).json({ error: err.message || "Internal Server Error" });
   } else {
     next(err);
   }
