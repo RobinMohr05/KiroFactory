@@ -1,14 +1,23 @@
-import { useRef } from 'react';
+import { useRef, useEffect } from 'react';
 import type { Task } from '../types';
 import { TYPE_CLASSES, ORIGIN_ICONS } from '../utils/api';
 
 interface TaskCardProps {
   task: Task;
   onClick: () => void;
+  highlighted?: boolean;
 }
 
-export function TaskCard({ task, onClick }: TaskCardProps) {
+export function TaskCard({ task, onClick, highlighted }: TaskCardProps) {
   const wasDragged = useRef(false);
+  const cardRef = useRef<HTMLDivElement>(null);
+
+  // Scroll into view and flash when highlighted
+  useEffect(() => {
+    if (highlighted && cardRef.current) {
+      cardRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [highlighted]);
 
   const typeClass = TYPE_CLASSES[task.type] || 'badge-improvement';
   const typeLabel = task.type ? task.type.charAt(0).toUpperCase() + task.type.slice(1) : 'Task';
@@ -38,7 +47,8 @@ export function TaskCard({ task, onClick }: TaskCardProps) {
 
   return (
     <div
-      className="task-card"
+      ref={cardRef}
+      className={`task-card${highlighted ? ' task-card-highlighted' : ''}`}
       draggable
       data-task-id={task.id}
       data-priority={priority}

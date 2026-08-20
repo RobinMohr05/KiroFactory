@@ -888,6 +888,16 @@ textarea:focus {
   cursor: grabbing;
 }
 
+.task-card-highlighted {
+  animation: task-highlight-flash 2s ease-out;
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+@keyframes task-highlight-flash {
+  0%, 20% { box-shadow: 0 0 0 3px var(--accent), 0 0 8px rgba(56, 132, 255, 0.4); }
+  100% { box-shadow: 0 0 0 2px var(--accent); }
+}
+
 .card-title {
   font-size: 0.925rem;
   font-weight: 500;

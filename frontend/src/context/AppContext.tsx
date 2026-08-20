@@ -17,6 +17,7 @@ interface AppState {
   currentSort: 'priority' | 'updated' | 'created';
   boardSessions: { id: number; name: string; agent?: string; status: string }[];
   boardAgents: string[];
+  highlightedTaskId: number | null;
 }
 
 interface AppContextValue extends AppState {
@@ -25,6 +26,7 @@ interface AppContextValue extends AppState {
   setActiveAgentId: (id: number | null) => void;
   setActiveView: (view: ViewTab) => void;
   setCurrentSort: (sort: 'priority' | 'updated' | 'created') => void;
+  setHighlightedTaskId: (id: number | null) => void;
   setTabs: React.Dispatch<React.SetStateAction<Tab[]>>;
   setTasks: React.Dispatch<React.SetStateAction<Task[]>>;
   setSessions: React.Dispatch<React.SetStateAction<Session[]>>;
@@ -62,6 +64,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [activeView, setActiveView] = useState<ViewTab>('boards');
   const [boardSessions, setBoardSessions] = useState<{ id: number; name: string; agent?: string; status: string }[]>([]);
   const [boardAgents, setBoardAgents] = useState<string[]>([]);
+  const [highlightedTaskId, setHighlightedTaskId] = useState<number | null>(null);
 
   const pendingOps = useRef<Set<string>>(new Set());
   const wsRef = useRef<WebSocket | null>(null);
@@ -228,7 +231,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
           const idx = prev.findIndex(s => s.id === message.session.id);
           if (idx !== -1) {
             const next = [...prev];
-            next[idx] = { ...next[idx], ...message.session };
+            const existing = next[idx];
+            const updated = { ...existing, ...message.session };
+            // When totalCreditsUsed resets to 0 (session restarted), also reset turnCount
+            if (message.session.totalCreditsUsed === 0 && existing.totalCreditsUsed !== 0) {
+              updated.turnCount = 0;
+              updated.currentTaskTitle = undefined;
+              updated.currentTaskId = undefined;
+            }
+            // Clear currentTaskId and currentTaskTitle when currentTaskId is cleared
+            if (!message.session.currentTaskId && existing.currentTaskId) {
+              updated.currentTaskId = undefined;
+              updated.currentTaskTitle = undefined;
+            }
+            next[idx] = updated;
             return next;
           }
           return [...prev, message.session];
@@ -270,6 +286,35 @@ export function AppProvider({ children }: { children: ReactNode }) {
           return next;
         });
         window.dispatchEvent(new CustomEvent('ws-session-activity', { detail: message }));
+        break;
+      }
+      case 'session-turn-start': {
+        // Update session's turnCount and currentTaskTitle from turn-start events
+        setSessions(prev => {
+          const idx = prev.findIndex(s => s.id === message.sessionId);
+          if (idx === -1) return prev;
+          const next = [...prev];
+          next[idx] = {
+            ...next[idx],
+            turnCount: (next[idx].turnCount ?? 0) + 1,
+            ...(message.taskTitle ? { currentTaskTitle: message.taskTitle } : {}),
+            ...(message.taskId ? { currentTaskId: message.taskId } : {}),
+          };
+          return next;
+        });
+        window.dispatchEvent(new CustomEvent('ws-session-turn-start', { detail: message }));
+        break;
+      }
+      case 'session-turn-end': {
+        window.dispatchEvent(new CustomEvent('ws-session-turn-end', { detail: message }));
+        break;
+      }
+      case 'session-tool-call': {
+        window.dispatchEvent(new CustomEvent('ws-session-tool-call', { detail: message }));
+        break;
+      }
+      case 'session-tool-call-update': {
+        window.dispatchEvent(new CustomEvent('ws-session-tool-call-update', { detail: message }));
         break;
       }
       case 'error-created': {
@@ -404,11 +449,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     currentSort,
     boardSessions,
     boardAgents,
+    highlightedTaskId,
     setCurrentTabId,
     setActiveSessionId,
     setActiveAgentId,
     setActiveView,
     setCurrentSort,
+    setHighlightedTaskId,
     setTabs,
     setTasks,
     setSessions,
