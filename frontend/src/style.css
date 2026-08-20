@@ -4269,7 +4269,7 @@ textarea:focus {
   border: none;
   border-radius: 6px;
   background: transparent;
-  color: var(--text-color);
+  color: var(--text-primary);
   font-size: 1.25rem;
   cursor: pointer;
   margin-right: 0.5rem;
@@ -4277,7 +4277,7 @@ textarea:focus {
 }
 
 .mobile-back-btn:hover {
-  background-color: var(--hover-bg);
+  background-color: var(--hover-bg, rgba(0, 0, 0, 0.06));
 }
 
 .mobile-back-btn:active {

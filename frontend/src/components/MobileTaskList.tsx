@@ -102,6 +102,8 @@ export function MobileTaskList({ tasks, onTaskClick }: MobileTaskListProps) {
           <button
             className="mobile-sort-btn"
             aria-label="Sort"
+            aria-haspopup="true"
+            aria-expanded={showSortPopover}
             onClick={() => setShowSortPopover(prev => !prev)}
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
