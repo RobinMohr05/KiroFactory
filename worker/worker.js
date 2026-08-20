@@ -1935,6 +1935,45 @@ function buildMcpServers() {
     });
   }
 
+  // Include the git-delivery MCP server for editor-kind, task-based sessions
+  // only. This gives the dev agent tools to commit/push/create PRs itself
+  // rather than relying on the worker's post-turn commitAndPush(). Not
+  // included for inspector-kind (they never commit) or standalone sessions
+  // (PERSISTENT_BRANCH_NAME — no task branch to manage).
+  if (AGENT_KIND === "editor" && !PERSISTENT_BRANCH_NAME && REPO_URL) {
+    const deliveryResultPath = `/tmp/kirofactory-delivery-result-${SESSION_ID || "local"}.json`;
+    const gitDeliveryEnv = [
+      { name: "WORKSPACE", value: WORKSPACE },
+      { name: "TASK_BRANCH_NAME", value: currentBranchName || "" },
+      { name: "DEV_BRANCH", value: DEV_BRANCH || "" },
+      { name: "TASK_ID", value: String(currentTaskMeta?.id || TASK_ID || "") },
+      { name: "TASK_TITLE", value: currentTaskMeta?.title || "" },
+      { name: "TASK_DESCRIPTION", value: currentTaskMeta?.description || "" },
+      { name: "TASK_TYPE", value: currentTaskMeta?.type || "task" },
+      { name: "TASK_PR_URL", value: process.env.TASK_PR_URL || "" },
+      { name: "REPO_URL", value: REPO_URL || "" },
+      { name: "GIT_PROVIDER", value: GIT_PROVIDER },
+      { name: "DELIVERY_RESULT_PATH", value: deliveryResultPath },
+    ];
+    if (process.env.GITHUB_PAT) {
+      gitDeliveryEnv.push({ name: "GITHUB_PAT", value: process.env.GITHUB_PAT });
+    }
+    if (AZURE_DEVOPS_PAT) {
+      gitDeliveryEnv.push({ name: "AZURE_DEVOPS_PAT", value: AZURE_DEVOPS_PAT });
+    }
+    servers.push({
+      name: "git-delivery",
+      command: "node",
+      args: ["/app/git-delivery-mcp-server.js"],
+      env: gitDeliveryEnv,
+    });
+    logInfo("Including git-delivery MCP server", {
+      agentKind: AGENT_KIND,
+      taskBranch: currentBranchName || "(not yet set)",
+      taskId: currentTaskMeta?.id || TASK_ID || "(not yet set)",
+    });
+  }
+
   for (const name of MCP_SIDECAR_SERVER_NAMES) {
     servers.push({
       name,
