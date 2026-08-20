@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { apiFetch } from '../utils/api';
 import { useConfirmAction } from '../hooks/useConfirmAction';
@@ -8,6 +9,8 @@ import type { Agent } from '../types';
 
 export function AgentsPanel() {
   const { agents, setAgents, fetchAgents, activeAgentId, setActiveAgentId } = useApp();
+  const navigate = useNavigate();
+  const { id: routeId } = useParams<{ id?: string }>();
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
   const isMobile = useMobileBreakpoint();
@@ -18,6 +21,16 @@ export function AgentsPanel() {
   useEffect(() => {
     fetchAgents();
   }, [fetchAgents]);
+
+  // Sync route param to active agent
+  useEffect(() => {
+    if (routeId) {
+      const id = Number(routeId);
+      if (!isNaN(id) && id !== activeAgentId) {
+        setActiveAgentId(id);
+      }
+    }
+  }, [routeId, activeAgentId, setActiveAgentId]);
 
   useEffect(() => {
     if (!activeAgentId && agents.length > 0) {
@@ -56,6 +69,7 @@ export function AgentsPanel() {
   // Mobile drill-down: when an agent is tapped on mobile, transition to detail view
   const handleMobileAgentClick = (agentId: number) => {
     setActiveAgentId(agentId);
+    navigate(`/agents/${agentId}`, { replace: true });
     if (isMobile) {
       if (listPanelRef.current) {
         scrollTopRef.current = listPanelRef.current.scrollTop;
@@ -66,6 +80,7 @@ export function AgentsPanel() {
 
   const handleMobileBack = () => {
     setMobileShowDetail(false);
+    navigate('/agents', { replace: true });
     requestAnimationFrame(() => {
       if (listPanelRef.current) {
         listPanelRef.current.scrollTop = scrollTopRef.current;

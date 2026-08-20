@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { SessionModal } from './SessionModal';
 import { SessionDetailTabs } from './SessionDetailTabs';
@@ -9,7 +10,9 @@ import { useMobileBreakpoint } from '../hooks/useMobileBreakpoint';
 import type { Session, OutputEntry, SessionActivity } from '../types';
 
 export function SessionsPanel() {
-  const { sessions, setSessions, currentTabId, activeSessionId, setActiveSessionId, tabs, pendingOps, errors, setActiveView, setHighlightedTaskId } = useApp();
+  const { sessions, setSessions, currentTabId, activeSessionId, setActiveSessionId, tabs, pendingOps, errors, setHighlightedTaskId } = useApp();
+  const navigate = useNavigate();
+  const { id: routeId } = useParams<{ id?: string }>();
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [editingSession, setEditingSession] = useState<Session | null>(null);
   const [output, setOutput] = useState<OutputEntry[]>([]);
@@ -18,6 +21,16 @@ export function SessionsPanel() {
   const isMobile = useMobileBreakpoint();
   const [mobileShowDetail, setMobileShowDetail] = useState(false);
   const scrollTopRef = useRef<number>(0);
+
+  // Sync route param to active session
+  useEffect(() => {
+    if (routeId) {
+      const id = Number(routeId);
+      if (!isNaN(id) && id !== activeSessionId) {
+        setActiveSessionId(id);
+      }
+    }
+  }, [routeId, activeSessionId, setActiveSessionId]);
 
   // Filter sessions for current tab
   const visibleSessions = currentTabId
@@ -275,6 +288,7 @@ export function SessionsPanel() {
   const listPanelRef = useRef<HTMLElement>(null);
   const handleMobileSessionClick = (sessionId: number) => {
     setActiveSessionId(sessionId);
+    navigate(`/sessions/${sessionId}`, { replace: true });
     if (isMobile) {
       // Save scroll position before navigating away
       if (listPanelRef.current) {
@@ -286,6 +300,7 @@ export function SessionsPanel() {
 
   const handleMobileBack = () => {
     setMobileShowDetail(false);
+    navigate('/sessions', { replace: true });
     // Restore scroll position after returning to list
     requestAnimationFrame(() => {
       if (listPanelRef.current) {
@@ -408,8 +423,8 @@ export function SessionsPanel() {
                       data-testid="session-current-task-link"
                       role="button"
                       tabIndex={0}
-                      onClick={() => { setHighlightedTaskId(activeSession.currentTaskId!); setActiveView('boards'); }}
-                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setHighlightedTaskId(activeSession.currentTaskId!); setActiveView('boards'); } }}
+                      onClick={() => { setHighlightedTaskId(activeSession.currentTaskId!); navigate('/tasks'); }}
+                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setHighlightedTaskId(activeSession.currentTaskId!); navigate('/tasks'); } }}
                     >
                       📋 <strong>#{activeSession.currentTaskId}</strong> {activeSession.currentTaskTitle}
                     </span>

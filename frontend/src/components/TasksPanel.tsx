@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { apiFetch, truncateUrl } from '../utils/api';
 import { TaskCard } from './TaskCard';
@@ -20,6 +21,7 @@ const COLUMNS: { state: TaskState; label: string }[] = [
 
 export function TasksPanel() {
   const { tasks, setTasks, currentSort, setCurrentSort, currentTabId, tabs, fetchTabTasks, pendingOps, boardSessions, boardAgents, setActiveSessionId, setActiveView, highlightedTaskId, setHighlightedTaskId } = useApp();
+  const navigate = useNavigate();
   const [editingTask, setEditingTask] = useState<Task | null | undefined>(undefined);
   const [showPlanner, setShowPlanner] = useState(false);
   const isMobile = useMobileBreakpoint();
@@ -83,11 +85,11 @@ export function TasksPanel() {
 
   const handleSessionClick = (sessionId: number) => {
     setActiveSessionId(sessionId);
-    setActiveView('sessions');
+    navigate(`/sessions/${sessionId}`);
   };
 
   const handleAgentClick = (_agentName: string) => {
-    setActiveView('agents');
+    navigate('/agents');
   };
 
   return (

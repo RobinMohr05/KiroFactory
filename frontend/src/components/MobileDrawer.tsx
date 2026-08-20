@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { useTheme } from '../hooks/useTheme';
 import { SettingsModal } from './SettingsModal';
@@ -10,9 +11,18 @@ interface MobileDrawerProps {
   monthlyCredits: number;
 }
 
+const viewToPath: Record<ViewTab, string> = {
+  boards: '/tasks',
+  sessions: '/sessions',
+  agents: '/agents',
+  errors: '/errors',
+  usage: '/usage',
+};
+
 export function MobileDrawer({ open, onClose, monthlyCredits }: MobileDrawerProps) {
-  const { errors, activeView, setActiveView, logout } = useApp();
+  const { errors, activeView, logout } = useApp();
   const { toggleTheme } = useTheme();
+  const navigate = useNavigate();
   const [showSettings, setShowSettings] = useState(false);
 
   const unreadErrorCount = errors.filter(e => !e.taskCreated).length;
@@ -37,7 +47,7 @@ export function MobileDrawer({ open, onClose, monthlyCredits }: MobileDrawerProp
   if (!open && !showSettings) return null;
 
   const handleNavClick = (view: ViewTab) => {
-    setActiveView(view);
+    navigate(viewToPath[view]);
     onClose();
   };
 

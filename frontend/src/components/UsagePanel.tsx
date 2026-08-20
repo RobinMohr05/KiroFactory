@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { apiFetch } from '../utils/api';
 
@@ -32,6 +33,7 @@ type SortDir = 'asc' | 'desc';
 
 export function UsagePanel() {
   const { tabs, setActiveView, setActiveSessionId } = useApp();
+  const navigate = useNavigate();
   const [usageData, setUsageData] = useState<UsageData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -123,7 +125,7 @@ export function UsagePanel() {
 
   const handleSessionClick = (sessionId: number) => {
     setActiveSessionId(sessionId);
-    setActiveView('sessions');
+    navigate(`/sessions/${sessionId}`);
   };
 
   const maxCreditsPerDay = useMemo(() => {

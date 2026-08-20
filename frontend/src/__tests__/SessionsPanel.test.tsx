@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import * as AppContext from '../context/AppContext';
 
 vi.mock('../context/AppContext', () => ({
@@ -9,6 +10,16 @@ vi.mock('../context/AppContext', () => ({
 vi.mock('../utils/api', () => ({
   apiFetch: vi.fn().mockResolvedValue({ ok: true, json: async () => [] }),
 }));
+
+const mockNavigate = vi.fn();
+vi.mock('react-router-dom', async () => {
+  const actual = await vi.importActual('react-router-dom');
+  return {
+    ...actual,
+    useNavigate: () => mockNavigate,
+    useParams: () => ({}),
+  };
+});
 
 // We need to import SessionsPanel after mocks are set up
 import { SessionsPanel } from '../components/SessionsPanel';
@@ -53,7 +64,7 @@ describe('SessionsPanel - Sidebar list item enhancements', () => {
       activeSessionId: 1,
     });
 
-    render(<SessionsPanel />);
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
 
     // Should show task ID in both the sidebar item and the detail header
     const taskIdElements = screen.getAllByText(/#142/);
@@ -82,7 +93,7 @@ describe('SessionsPanel - Sidebar list item enhancements', () => {
       ],
     });
 
-    render(<SessionsPanel />);
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
 
     // Should show an error indicator in the sidebar item
     const errorIndicator = screen.getByTestId('session-error-indicator-1');
@@ -103,7 +114,7 @@ describe('SessionsPanel - Sidebar list item enhancements', () => {
       errors: [],
     });
 
-    render(<SessionsPanel />);
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
 
     expect(screen.queryByTestId('session-error-indicator-1')).not.toBeInTheDocument();
   });
@@ -122,7 +133,7 @@ describe('SessionsPanel - Sidebar list item enhancements', () => {
       activeSessionId: 1,
     });
 
-    render(<SessionsPanel />);
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
 
     // Should show credits with EUR in the sidebar item (may also appear in detail header)
     const creditElements = screen.getAllByText(/0\.35/);
@@ -145,7 +156,7 @@ describe('SessionsPanel - Sidebar list item enhancements', () => {
       activeSessionId: 1,
     });
 
-    render(<SessionsPanel />);
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
 
     expect(screen.queryByText(/#\d+/)).not.toBeInTheDocument();
   });
@@ -170,14 +181,13 @@ describe('SessionsPanel - Session detail header enhancements', () => {
       activeSessionId: 1,
     });
 
-    render(<SessionsPanel />);
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
 
     // Should show turn count
     expect(screen.getByText(/7 turns/i)).toBeInTheDocument();
   });
 
   it('shows current task as a clickable element with onClick handler', () => {
-    const mockSetActiveView = vi.fn();
     const mockSetHighlightedTaskId = vi.fn();
     mockUseApp({
       sessions: [{
@@ -192,18 +202,17 @@ describe('SessionsPanel - Session detail header enhancements', () => {
         tabIds: [1],
       }],
       activeSessionId: 1,
-      setActiveView: mockSetActiveView,
       setHighlightedTaskId: mockSetHighlightedTaskId,
     });
 
-    render(<SessionsPanel />);
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
 
     const taskLink = screen.getByTestId('session-current-task-link');
     expect(taskLink).toBeInTheDocument();
 
     // The task link should have an onClick handler and be keyboard accessible
     taskLink.click();
-    expect(mockSetActiveView).toHaveBeenCalledWith('boards');
+    expect(mockNavigate).toHaveBeenCalledWith('/tasks');
     expect(mockSetHighlightedTaskId).toHaveBeenCalledWith(42);
   });
 
@@ -221,7 +230,7 @@ describe('SessionsPanel - Session detail header enhancements', () => {
       activeSessionId: 1,
     });
 
-    render(<SessionsPanel />);
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
 
     // The detail header should show total credits with EUR
     const detailHeader = screen.getByTestId('session-detail-meta');
@@ -245,7 +254,7 @@ describe('SessionsPanel - Session detail header enhancements', () => {
       activeSessionId: 1,
     });
 
-    render(<SessionsPanel />);
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
 
     // Should show task link in detail header
     const taskLink = screen.getByTestId('session-current-task-link');
@@ -268,7 +277,7 @@ describe('SessionsPanel - Session detail header enhancements', () => {
       activeSessionId: 1,
     });
 
-    render(<SessionsPanel />);
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
 
     expect(screen.queryByTestId('session-detail-meta')).not.toBeInTheDocument();
   });
@@ -287,7 +296,7 @@ describe('SessionsPanel - Session detail header enhancements', () => {
       activeSessionId: 1,
     });
 
-    render(<SessionsPanel />);
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
 
     expect(screen.queryByTestId('session-current-task-link')).not.toBeInTheDocument();
   });

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { UsagePanel } from '../components/UsagePanel';
 import * as AppContext from '../context/AppContext';
 import * as api from '../utils/api';
@@ -11,6 +12,15 @@ vi.mock('../context/AppContext', () => ({
 vi.mock('../utils/api', () => ({
   apiFetch: vi.fn(),
 }));
+
+const mockNavigate = vi.fn();
+vi.mock('react-router-dom', async () => {
+  const actual = await vi.importActual('react-router-dom');
+  return {
+    ...actual,
+    useNavigate: () => mockNavigate,
+  };
+});
 
 const mockSetActiveView = vi.fn();
 const mockSetActiveSessionId = vi.fn();
@@ -63,7 +73,7 @@ describe('UsagePanel', () => {
 
   it('shows loading state initially', () => {
     vi.mocked(api.apiFetch).mockReturnValue(new Promise(() => {})); // Never resolves
-    render(<UsagePanel />);
+    render(<MemoryRouter><UsagePanel /></MemoryRouter>);
     expect(screen.getByText('Loading usage data…')).toBeInTheDocument();
   });
 
@@ -73,7 +83,7 @@ describe('UsagePanel', () => {
       status: 500,
       json: async () => ({}),
     } as any);
-    render(<UsagePanel />);
+    render(<MemoryRouter><UsagePanel /></MemoryRouter>);
     await waitFor(() => {
       expect(screen.getByText('Failed to load usage data')).toBeInTheDocument();
     });
@@ -85,7 +95,7 @@ describe('UsagePanel', () => {
       json: async () => mockUsageData,
     } as any);
 
-    render(<UsagePanel />);
+    render(<MemoryRouter><UsagePanel /></MemoryRouter>);
     await waitFor(() => {
       expect(screen.getByText('25.50 credits')).toBeInTheDocument();
     });
@@ -102,7 +112,7 @@ describe('UsagePanel', () => {
       json: async () => mockUsageData,
     } as any);
 
-    render(<UsagePanel />);
+    render(<MemoryRouter><UsagePanel /></MemoryRouter>);
     await waitFor(() => {
       expect(screen.getByLabelText('Filter by tab')).toBeInTheDocument();
     });
@@ -117,7 +127,7 @@ describe('UsagePanel', () => {
       json: async () => mockUsageData,
     } as any);
 
-    render(<UsagePanel />);
+    render(<MemoryRouter><UsagePanel /></MemoryRouter>);
     await waitFor(() => {
       expect(screen.getByText('25.50 credits')).toBeInTheDocument();
     });
@@ -137,7 +147,7 @@ describe('UsagePanel', () => {
       json: async () => mockUsageData,
     } as any);
 
-    render(<UsagePanel />);
+    render(<MemoryRouter><UsagePanel /></MemoryRouter>);
     await waitFor(() => {
       expect(screen.getByText('Dev Session')).toBeInTheDocument();
     });
@@ -170,14 +180,14 @@ describe('UsagePanel', () => {
       json: async () => mockUsageData,
     } as any);
 
-    render(<UsagePanel />);
+    render(<MemoryRouter><UsagePanel /></MemoryRouter>);
     await waitFor(() => {
       expect(screen.getByText('Dev Session')).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByText('Dev Session'));
     expect(mockSetActiveSessionId).toHaveBeenCalledWith(1);
-    expect(mockSetActiveView).toHaveBeenCalledWith('sessions');
+    expect(mockNavigate).toHaveBeenCalledWith('/sessions/1');
   });
 
   it('shows empty state when no sessions have credits', async () => {
@@ -191,7 +201,7 @@ describe('UsagePanel', () => {
       }),
     } as any);
 
-    render(<UsagePanel />);
+    render(<MemoryRouter><UsagePanel /></MemoryRouter>);
     await waitFor(() => {
       expect(screen.getByText('No sessions consumed credits this period.')).toBeInTheDocument();
     });
@@ -215,7 +225,7 @@ describe('UsagePanel', () => {
       json: async () => dataWithDay1,
     } as any);
 
-    render(<UsagePanel />);
+    render(<MemoryRouter><UsagePanel /></MemoryRouter>);
     await waitFor(() => {
       expect(screen.getByText('5.00 credits')).toBeInTheDocument();
     });
@@ -253,7 +263,7 @@ describe('UsagePanel', () => {
       json: async () => dataWithTabs,
     } as any);
 
-    render(<UsagePanel />);
+    render(<MemoryRouter><UsagePanel /></MemoryRouter>);
     await waitFor(() => {
       expect(screen.getByText('Dev Session')).toBeInTheDocument();
     });
@@ -270,7 +280,7 @@ describe('UsagePanel', () => {
       json: async () => mockUsageData,
     } as any);
 
-    render(<UsagePanel />);
+    render(<MemoryRouter><UsagePanel /></MemoryRouter>);
     await waitFor(() => {
       expect(screen.getByText('Dev Session')).toBeInTheDocument();
     });
