@@ -4,11 +4,12 @@
  * GET /api/usage?from=&to=&tabId= — returns aggregated usage
  *   (total credits/EUR, daily breakdown, per-session breakdown)
  *   for the authenticated user within a date range, optionally filtered by tab.
+ * GET /api/usage/current-month — current month total (for the header badge)
  */
 
 import { Router, type Request, type Response } from "express";
 import { requireAuth, getUserId } from "../middleware/auth.js";
-import { getTurnsByUserAndPeriod } from "../db/turns.js";
+import { getTurnsByUserAndPeriod, getCurrentMonthCredits } from "../db/turns.js";
 import { log, toErrorFields } from "../logger.js";
 
 const router = Router();
@@ -114,6 +115,27 @@ router.get("/", async (req: Request, res: Response) => {
       msg: "Failed to fetch usage data",
     });
     res.status(500).json({ error: "Failed to fetch usage data" });
+  }
+});
+
+/**
+ * GET /api/usage/current-month
+ * Returns the current month's total credits (for the header badge).
+ */
+router.get("/current-month", async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const totalCredits = await getCurrentMonthCredits(userId);
+    res.json({ totalCredits, totalCostEur: totalCredits * 0.04 });
+  } catch (err) {
+    log.error("route-error", {
+      component: "usage",
+      method: "GET",
+      path: "/api/usage/current-month",
+      ...toErrorFields(err),
+      msg: "Failed to fetch current month credits",
+    });
+    res.status(500).json({ error: "Failed to fetch current month credits" });
   }
 });
 

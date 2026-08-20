@@ -33,6 +33,7 @@ const SCHEMA_STATEMENTS: string[] = [
   "CREATE CONSTRAINT task_id_key IF NOT EXISTS FOR (t:Task) REQUIRE t.id IS NODE KEY",
   "CREATE CONSTRAINT agent_id_key IF NOT EXISTS FOR (a:Agent) REQUIRE a.id IS NODE KEY",
   "CREATE CONSTRAINT session_id_key IF NOT EXISTS FOR (s:Session) REQUIRE s.id IS NODE KEY",
+  "CREATE CONSTRAINT turn_id_key IF NOT EXISTS FOR (t:Turn) REQUIRE t.id IS NODE KEY",
 
   // ── Infrastructure node keys (Counter, Settings — not domain entities) ──
   "CREATE CONSTRAINT counter_name_key IF NOT EXISTS FOR (c:Counter) REQUIRE c.name IS NODE KEY",
@@ -69,6 +70,8 @@ const SCHEMA_STATEMENTS: string[] = [
   "CREATE INDEX turn_session_number_idx IF NOT EXISTS FOR (t:Turn) ON (t.number)",
   // Index on startedAt for date-range queries in usage/dashboard endpoints
   "CREATE INDEX turn_started_at_idx IF NOT EXISTS FOR (t:Turn) ON (t.startedAt)",
+  // Supports usage queries filtered by timestamp range (datetime property)
+  "CREATE INDEX turn_timestamp_idx IF NOT EXISTS FOR (t:Turn) ON (t.timestamp)",
   // ErrorEvent lookup by timestamp
   "CREATE INDEX error_event_timestamp_idx IF NOT EXISTS FOR (e:ErrorEvent) ON (e.timestamp)",
 ];

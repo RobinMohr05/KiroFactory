@@ -1,5 +1,5 @@
 /**
- * Tests for the usage API route (GET /api/usage).
+ * Tests for the usage API routes (GET /api/usage, GET /api/usage/current-month).
  *
  * Verifies:
  * - Requires from and to query parameters
@@ -8,6 +8,7 @@
  * - Returns proper error for invalid params
  * - Validates ISO date format for from/to
  * - Normalizes date-only values to full ISO datetime strings
+ * - Current-month endpoint returns total and EUR cost
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -17,6 +18,7 @@ import express from "express";
 // Mock dependencies
 vi.mock("../db/turns.js", () => ({
   getTurnsByUserAndPeriod: vi.fn(),
+  getCurrentMonthCredits: vi.fn(),
 }));
 
 vi.mock("../db/connection.js", () => ({
@@ -34,7 +36,7 @@ vi.mock("../logger.js", () => ({
   toErrorFields: vi.fn().mockReturnValue({}),
 }));
 
-import { getTurnsByUserAndPeriod } from "../db/turns.js";
+import { getTurnsByUserAndPeriod, getCurrentMonthCredits } from "../db/turns.js";
 import usageRouter from "./usage.js";
 
 // Create a minimal Express app for route testing
@@ -217,5 +219,44 @@ describe("GET /api/usage — route validation", () => {
       "2026-08-21T23:59:59.999Z",
       2
     );
+  });
+});
+
+describe("GET /api/usage/current-month", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns current month total credits and EUR cost", async () => {
+    (getCurrentMonthCredits as any).mockResolvedValue(25.5);
+
+    const app = createApp();
+    const res = await request(app).get("/api/usage/current-month");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      totalCredits: 25.5,
+      totalCostEur: 25.5 * 0.04,
+    });
+  });
+
+  it("returns zero when no usage this month", async () => {
+    (getCurrentMonthCredits as any).mockResolvedValue(0);
+
+    const app = createApp();
+    const res = await request(app).get("/api/usage/current-month");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      totalCredits: 0,
+      totalCostEur: 0,
+    });
+  });
+
+  it("returns 500 on DB error", async () => {
+    (getCurrentMonthCredits as any).mockRejectedValue(new Error("DB down"));
+
+    const app = createApp();
+    const res = await request(app).get("/api/usage/current-month");
+    expect(res.status).toBe(500);
+    expect(res.body.error).toMatch(/Failed to fetch current month credits/);
   });
 });

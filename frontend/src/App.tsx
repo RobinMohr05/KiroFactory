@@ -6,6 +6,7 @@ import { TasksPanel } from './components/TasksPanel';
 import { SessionsPanel } from './components/SessionsPanel';
 import { AgentsPanel } from './components/AgentsPanel';
 import { ErrorsPanel } from './components/ErrorsPanel';
+import { UsagePanel } from './components/UsagePanel';
 import './style.css';
 
 function AppInner() {
@@ -20,6 +21,7 @@ function AppInner() {
       {activeView === 'sessions' && <SessionsPanel />}
       {activeView === 'agents' && <AgentsPanel />}
       {activeView === 'errors' && <ErrorsPanel />}
+      {activeView === 'usage' && <UsagePanel />}
     </>
   );
 }
