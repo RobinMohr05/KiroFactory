@@ -30,7 +30,7 @@ export function buildDevPrompt(task: ClaimedTask, cwd: string): string {
 This task already has an open pull request: **${task.pullRequestUrl}**
 You are resuming work on branch \`${task.branch || "see git status"}\` to address reviewer feedback.
 
-**FIRST ACTION:** Call the \`get_pr_review_comments\` tool to fetch all open review comments on the PR.
+**After syncing the branch** (via \`sync_task_branch\` above), call the \`get_pr_review_comments\` tool to fetch all open review comments on the PR.
 Address every comment — treat each one as a required fix. Do NOT skip any.
 **AFTER fixing each comment:** call \`resolve_review_comment\` with that comment's \`threadId\`
 (returned by \`get_pr_review_comments\`) so it doesn't keep reappearing on the next review pass.
@@ -81,7 +81,7 @@ ${filesList}
 ## INSTRUCTIONS
 
 ${task.pullRequestUrl
-  ? "1. Call `get_pr_review_comments` first to fetch all open PR review comments. Address every comment before doing anything else.\n2. For each comment, fix the issue in code, then immediately call `resolve_review_comment` with that comment's `threadId` before moving to the next one.\n3. After fixing and resolving all comments, verify your changes compile correctly (run `npm run build` if applicable)."
+  ? "1. After syncing the branch, call `get_pr_review_comments` to fetch all open PR review comments. Address every comment before doing anything else.\n2. For each comment, fix the issue in code, then immediately call `resolve_review_comment` with that comment's `threadId` before moving to the next one.\n3. After fixing and resolving all comments, verify your changes compile correctly (run `npm run build` if applicable)."
   : "1. Read the relevant source files to understand the current state of the code.\n2. Implement the change described above. Follow the existing code style and conventions.\n3. After implementing, verify your changes compile correctly (run `npm run build` if applicable)."}
 4. STOP after completing this single task. Do not pick another task.
 
@@ -93,8 +93,8 @@ ${task.pullRequestUrl
 - If the task cannot be completed (missing dependencies, unclear requirements), explain why and exit.
 - Do NOT introduce unrelated refactoring or improvements beyond what the task requires.
 - Do NOT modify test files unless the task specifically asks for test changes.
-- Do NOT run git commit, git push, or create pull requests manually. Use the \`sync_task_branch\`, \`finalize_branch_sync\`, and \`submit_task_changes\` MCP tools exclusively for all git operations.
-- Do NOT run any git commands at all (no git add, commit, push, branch, checkout, pull request). The MCP tools handle everything.
+- Do NOT run git commit, git push, or create pull requests manually. Use the \`sync_task_branch\`, \`finalize_branch_sync\`, and \`submit_task_changes\` MCP tools exclusively for all write git operations.
+- Do NOT run git commands that change repository state (no git add, git commit, git push, git branch, git checkout, git merge, git rebase, git reset). Read-only commands (git diff, git status, git log, git show) are fine.
 
 ## WORKING DIRECTORY
 

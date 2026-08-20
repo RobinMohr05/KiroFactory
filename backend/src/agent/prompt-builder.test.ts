@@ -119,7 +119,7 @@ describe("buildDevPrompt", () => {
       const prompt = buildDevPrompt(task, "/workspace");
       expect(prompt).toContain("Do NOT run git commit, git push, or create pull requests manually");
       expect(prompt).toContain("MCP tools exclusively");
-      expect(prompt).toContain("Do NOT run any git commands at all");
+      expect(prompt).toContain("Do NOT run git commands that change repository state");
     });
   });
 });
