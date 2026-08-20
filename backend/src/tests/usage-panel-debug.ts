@@ -1,0 +1,259 @@
+/**
+ * Diagnostic script: debugs the usage panel black screen overlay bug.
+ * Run: npx tsx backend/src/tests/usage-panel-debug.ts
+ *
+ * Requires: QA_EMAIL and QA_PASSWORD environment variables.
+ */
+import puppeteer from 'puppeteer';
+import * as path from 'path';
+import * as fs from 'fs';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const BASE_URL = 'https://kirofactory-api.orangeriver-26cd2328.germanywestcentral.azurecontainerapps.io';
+const SCREENSHOT_DIR = path.resolve(__dirname, '../../../.temp');
+const SCREENSHOT_PATH = path.join(SCREENSHOT_DIR, 'usage-debug.png');
+
+async function main() {
+  const email = process.env.QA_EMAIL;
+  const password = process.env.QA_PASSWORD;
+
+  if (!email || !password) {
+    console.error('ERROR: QA_EMAIL and QA_PASSWORD environment variables are required.');
+    process.exit(1);
+  }
+
+  // Ensure the screenshot directory exists
+  if (!fs.existsSync(SCREENSHOT_DIR)) {
+    fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
+  }
+
+  console.log('Launching browser...');
+  const browser = await puppeteer.launch({
+    headless: true,
+    args: ['--no-sandbox', '--disable-setuid-sandbox'],
+  });
+
+  const page = await browser.newPage();
+  await page.setViewport({ width: 1280, height: 800 });
+
+  // Capture console errors
+  const consoleErrors: string[] = [];
+  page.on('console', (msg) => {
+    if (msg.type() === 'error') {
+      consoleErrors.push(`[${msg.type()}] ${msg.text()}`);
+    }
+  });
+  page.on('pageerror', (err) => {
+    consoleErrors.push(`[PAGE ERROR] ${err?.message ?? String(err)}`);
+  });
+
+  try {
+    // 1. Navigate to login page
+    console.log('Navigating to login page...');
+    await page.goto(`${BASE_URL}/login.html`, { waitUntil: 'networkidle2', timeout: 30000 });
+
+    // 2. Log in
+    console.log('Logging in...');
+    await page.type('#loginEmail', email);
+    await page.type('#loginPassword', password);
+    await page.click('button[type="submit"]');
+
+    // Wait for redirect to main dashboard
+    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 });
+    console.log('Login successful, current URL:', page.url());
+
+    // Wait a moment for full render
+    await new Promise(r => setTimeout(r, 2000));
+
+    // 3. Find and click the usage/money button
+    console.log('Looking for usage button...');
+
+    const usageButtonSelectors = [
+      '.usage-badge',
+      'button[title*="usage"]',
+      'button[title*="Usage"]',
+      'button[aria-label*="usage"]',
+      'button[aria-label*="cost"]',
+      'button[aria-label*="EUR"]',
+      'button[aria-label*="credits"]',
+    ];
+
+    let usageButton = null;
+    for (const sel of usageButtonSelectors) {
+      usageButton = await page.$(sel);
+      if (usageButton) {
+        console.log(`Found usage button with selector: ${sel}`);
+        break;
+      }
+    }
+
+    if (!usageButton) {
+      // Try to find it by text content
+      const handle = await page.evaluateHandle(() => {
+        const buttons = document.querySelectorAll('button');
+        for (const btn of buttons) {
+          if (btn.textContent?.includes('EUR') || btn.textContent?.includes('credit')) {
+            return btn;
+          }
+        }
+        return null;
+      });
+      const element = handle.asElement();
+      if (element) {
+        console.log('Found usage button by text content');
+        usageButton = element;
+      }
+    }
+
+    if (!usageButton) {
+      console.error('ERROR: Could not find usage button!');
+      // Dump all header buttons for debugging
+      const headerButtons = await page.evaluate(() => {
+        const btns = document.querySelectorAll('.header-actions button, .header button, header button');
+        return Array.from(btns).map(b => ({
+          tag: b.tagName,
+          className: b.className,
+          title: b.getAttribute('title'),
+          ariaLabel: b.getAttribute('aria-label'),
+          text: b.textContent?.trim().substring(0, 50),
+          innerHTML: b.innerHTML.substring(0, 100),
+        }));
+      });
+      console.log('Header buttons found:', JSON.stringify(headerButtons, null, 2));
+      await page.screenshot({ path: SCREENSHOT_PATH, fullPage: true });
+      console.log(`Screenshot saved to ${SCREENSHOT_PATH}`);
+      await browser.close();
+      return;
+    }
+
+    // Click the usage button
+    console.log('Clicking usage button...');
+    await usageButton.click();
+    await new Promise(r => setTimeout(r, 2000));
+
+    // 4. Capture the state of any overlays/modals/panels
+    console.log('\n=== DOM STATE AFTER CLICKING USAGE BUTTON ===\n');
+
+    const overlayState = await page.evaluate(() => {
+      const results: Record<string, unknown>[] = [];
+
+      const selectors = [
+        '.modal-backdrop:not([hidden])',
+        '.overlay:not([hidden])',
+        '[class*="overlay"]:not([hidden])',
+        '[class*="modal"]:not([hidden])',
+        '[class*="usage"]',
+        '[class*="panel"]',
+        '#panel-usage',
+        '[id*="usage"]',
+        '[role="tabpanel"]:not([hidden])',
+      ];
+
+      for (const sel of selectors) {
+        const elements = document.querySelectorAll(sel);
+        elements.forEach(el => {
+          const styles = window.getComputedStyle(el);
+          results.push({
+            selector: sel,
+            tag: el.tagName,
+            id: (el as HTMLElement).id,
+            className: (el as HTMLElement).className,
+            display: styles.display,
+            visibility: styles.visibility,
+            opacity: styles.opacity,
+            zIndex: styles.zIndex,
+            position: styles.position,
+            background: styles.background?.substring(0, 100),
+            backgroundColor: styles.backgroundColor,
+            width: styles.width,
+            height: styles.height,
+            innerHTML: el.innerHTML.substring(0, 500),
+            childCount: el.children.length,
+          });
+        });
+      }
+
+      // Check if body has any overlay elements as direct children
+      const bodyOverlays = document.querySelectorAll('body > [style*="position: fixed"], body > [style*="position:fixed"]');
+      bodyOverlays.forEach(el => {
+        const styles = window.getComputedStyle(el);
+        results.push({
+          selector: 'body > fixed-position',
+          tag: el.tagName,
+          id: (el as HTMLElement).id,
+          className: (el as HTMLElement).className,
+          display: styles.display,
+          backgroundColor: styles.backgroundColor,
+          zIndex: styles.zIndex,
+          innerHTML: el.innerHTML.substring(0, 300),
+        });
+      });
+
+      return results;
+    });
+
+    console.log('Overlay/modal/panel state:');
+    console.log(JSON.stringify(overlayState, null, 2));
+
+    // Check active tab state
+    const activeTabState = await page.evaluate(() => {
+      const tabs = document.querySelectorAll('[role="tab"]');
+      return Array.from(tabs).map(tab => ({
+        id: (tab as HTMLElement).id,
+        text: tab.textContent?.trim(),
+        ariaSelected: tab.getAttribute('aria-selected'),
+        className: (tab as HTMLElement).className,
+      }));
+    });
+    console.log('\nTab state:');
+    console.log(JSON.stringify(activeTabState, null, 2));
+
+    // Check all elements with high z-index
+    const highZIndex = await page.evaluate(() => {
+      const all = document.querySelectorAll('*');
+      const results: Record<string, unknown>[] = [];
+      all.forEach(el => {
+        const styles = window.getComputedStyle(el);
+        const z = parseInt(styles.zIndex, 10);
+        if (z > 10 && styles.display !== 'none' && styles.visibility !== 'hidden') {
+          results.push({
+            tag: el.tagName,
+            id: (el as HTMLElement).id,
+            className: (el as HTMLElement).className?.substring(0, 100),
+            zIndex: z,
+            position: styles.position,
+            backgroundColor: styles.backgroundColor,
+            width: styles.width,
+            height: styles.height,
+          });
+        }
+      });
+      return results.sort((a, b) => (b.zIndex as number) - (a.zIndex as number));
+    });
+    console.log('\nHigh z-index elements:');
+    console.log(JSON.stringify(highZIndex, null, 2));
+
+    // Take screenshot
+    await page.screenshot({ path: SCREENSHOT_PATH, fullPage: true });
+    console.log(`\nScreenshot saved to ${SCREENSHOT_PATH}`);
+
+    // Console errors
+    if (consoleErrors.length > 0) {
+      console.log('\n=== CONSOLE ERRORS ===');
+      consoleErrors.forEach(e => console.log(e));
+    } else {
+      console.log('\nNo console errors detected.');
+    }
+  } catch (err) {
+    console.error('Script error:', err);
+    await page.screenshot({ path: SCREENSHOT_PATH, fullPage: true });
+    console.log(`Screenshot saved to ${SCREENSHOT_PATH}`);
+  } finally {
+    await browser.close();
+  }
+}
+
+main();

@@ -38,6 +38,7 @@
     "supertest": "^7.2.2",
     "tsx": "^4.19.0",
     "typescript": "5.7",
+    "puppeteer": "25.8.0",
     "vitest": "^4.1.10"
   }
 }
