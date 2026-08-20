@@ -4559,6 +4559,46 @@ function handlePlannerImageSelect(file) {
 let plannerCurrentAssistantMessage = '';
 
 /**
+ * Render markdown to HTML for assistant messages in the AI Task Planner.
+ * Uses marked with a custom renderer that restricts unsupported elements (images, tables, hr, raw HTML).
+ * All raw HTML in the source is escaped to prevent XSS.
+ */
+const plannerMarked = (function initPlannerMarked() {
+  if (typeof marked === 'undefined' || !marked.Marked) return null;
+  const instance = new marked.Marked();
+  const renderer = {
+    heading({ tokens, depth }) {
+      const text = this.parser.parseInline(tokens);
+      const level = depth < 3 ? 3 : depth > 4 ? 4 : depth;
+      return `<h${level}>${text}</h${level}>\n`;
+    },
+    link({ href, text }) {
+      const sanitizedHref = href && href.match(/^https?:\/\//) ? href : '#';
+      return `<a href="${sanitizedHref}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+    },
+    image() { return ''; },
+    hr() { return ''; },
+    table() { return ''; },
+    tablerow() { return ''; },
+    tablecell() { return ''; },
+    html({ text }) {
+      return text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    },
+  };
+  instance.use({ renderer, breaks: true });
+  return instance;
+})();
+
+function renderPlannerMarkdown(text) {
+  if (!plannerMarked) return escapeHtml(text);
+  try {
+    return plannerMarked.parse(text);
+  } catch {
+    return escapeHtml(text);
+  }
+}
+
+/**
  * Show a partial (streaming) assistant message.
  */
 let partialMessageEl = null;
@@ -4566,10 +4606,10 @@ let partialMessageEl = null;
 function updatePartialAssistantMessage(text) {
   if (!partialMessageEl) {
     partialMessageEl = document.createElement('div');
-    partialMessageEl.className = 'planner-message assistant';
+    partialMessageEl.className = 'planner-message assistant markdown-body';
     taskPlannerMessagesEl.appendChild(partialMessageEl);
   }
-  partialMessageEl.textContent = text;
+  partialMessageEl.innerHTML = renderPlannerMarkdown(text);
   taskPlannerMessagesEl.scrollTop = taskPlannerMessagesEl.scrollHeight;
 }
 
@@ -4586,18 +4626,9 @@ function addPlannerMessage(role, text) {
   const msg = document.createElement('div');
   msg.className = 'planner-message ' + role;
 
-  // Check if message contains a JSON task block
-  const jsonMatch = text.match(/```json:task\s*\n([\s\S]*?)\n```/);
-  if (jsonMatch && role === 'assistant') {
-    const beforeJson = text.substring(0, text.indexOf('```json:task')).trim();
-    const jsonContent = jsonMatch[1];
-    const afterJson = text.substring(text.indexOf('```', text.indexOf('```json:task') + 1) + 3).trim();
-
-    let html = '';
-    if (beforeJson) html += escapeHtml(beforeJson) + '<br><br>';
-    html += '<div class="task-json-block">' + escapeHtml(jsonContent) + '</div>';
-    if (afterJson) html += '<br>' + escapeHtml(afterJson);
-    msg.innerHTML = html;
+  if (role === 'assistant') {
+    msg.classList.add('markdown-body');
+    msg.innerHTML = renderPlannerMarkdown(text);
   } else {
     msg.textContent = text;
   }
