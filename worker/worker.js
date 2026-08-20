@@ -2112,7 +2112,7 @@ function finishPromptTurn(msg) {
             });
             sendOutput(
               `⚠ Agent reported "no_action_needed" but the workspace has ${changedFiles.length} changed file(s) — ` +
-              `verdict ignored, proceeding with normal commit/push flow.`,
+              `verdict ignored, proceeding with delivery check.`,
               "stderr"
             );
             effectiveVerdict = null; // Discard the contradictory verdict
@@ -2603,11 +2603,11 @@ function handlePrompt(text, taskMeta) {
 
     try {
       if (AGENT_KIND === "editor") {
-        // Editor-kind agents handle their own branch management via prompt
-        // instructions (BRANCH SETUP section in buildDevPrompt). The worker
-        // just ensures all remote refs are available and sets currentBranchName
-        // so commitAndPush() knows where to push after the prompt finishes.
-        // The agent is expected to leave the working tree on the correct branch.
+        // Editor-kind agents handle their own branch management via the
+        // git-delivery MCP tools (sync_task_branch / submit_task_changes).
+        // The worker just ensures all remote refs are available and sets
+        // currentBranchName so the MCP server receives the correct
+        // TASK_BRANCH_NAME in its environment.
         // Fetch all refs and update refs/remotes/origin/* tracking refs.
         // Using "origin" (not authRemoteUrl) ensures tracking refs are updated —
         // fetching from a raw URL only updates FETCH_HEAD. The origin remote URL
@@ -2620,12 +2620,10 @@ function handlePrompt(text, taskMeta) {
         if (taskMeta.branch) {
           currentBranchName = taskMeta.branch;
         } else {
-          // Compute the deterministic branch name so commitAndPush() has
-          // a target, and the agent prompt receives it via taskMeta.branch
-          // (which the orchestrator sends). If taskMeta.branch is empty, the
-          // prompt's BRANCH SETUP section won't render — the agent won't know
-          // to create a branch. Set currentBranchName to the deterministic name
-          // here so the post-prompt push still targets the right ref.
+          // Compute the deterministic branch name so the git-delivery MCP
+          // tools (sync_task_branch / submit_task_changes) know which branch
+          // to create/push. This value is passed as TASK_BRANCH_NAME in the
+          // MCP server env when buildMcpServers() runs for session/new.
           currentBranchName = buildBranchName(taskMeta.type || "task", taskMeta.id, taskMeta.title);
         }
         sendOutput(
