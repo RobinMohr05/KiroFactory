@@ -29,11 +29,12 @@ export function Header() {
     return () => clearInterval(interval);
   }, [fetchMonthlyCredits]);
 
-  // Also refresh when sessions update (credits consumed)
+  // Also refresh when a session is updated (credits consumed after a turn completes)
+  // Uses the 'ws-session-updated' event which fires once per turn, not per output line.
   useEffect(() => {
     const handler = () => { fetchMonthlyCredits(); };
-    window.addEventListener('ws-session-output', handler);
-    return () => window.removeEventListener('ws-session-output', handler);
+    window.addEventListener('ws-session-updated', handler);
+    return () => window.removeEventListener('ws-session-updated', handler);
   }, [fetchMonthlyCredits]);
 
   const handleUsageClick = () => {

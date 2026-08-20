@@ -233,6 +233,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           }
           return [...prev, message.session];
         });
+        window.dispatchEvent(new CustomEvent('ws-session-updated', { detail: message }));
         break;
       }
       case 'session-deleted': {
