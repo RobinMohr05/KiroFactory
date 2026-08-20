@@ -524,6 +524,11 @@ async function handleSubmitTaskChanges(args) {
           prUrl = await createAzureDevOpsPullRequest(branchName, prTitle, prBody);
           prCreated = true;
         }
+        // Cache the PR URL so subsequent calls in the same session go
+        // straight to the update path instead of re-attempting creation.
+        if (prCreated && prUrl) {
+          process.env.TASK_PR_URL = prUrl;
+        }
       } catch (err) {
         // PR creation failure is non-fatal — the push succeeded
         pushError = `Push succeeded but PR creation failed: ${redactSecrets(err?.message || String(err))}`;
