@@ -87,18 +87,6 @@ export interface UsageAggregation {
   turnCount: number;
 }
 
-/** Simple turn shape used by the recordTurn/getUsage flow. */
-export interface Turn {
-  id: number;
-  sessionId: number;
-  sessionName: string;
-  agent: string;
-  credits: number;
-  taskId: number | null;
-  timestamp: string;
-  tabIds: number[];
-}
-
 export interface UsageSummary {
   totalCredits: number;
   totalCostEur: number;
@@ -115,8 +103,6 @@ export interface UsageSummary {
     lastTurn: string;
   }[];
 }
-
-const EUR_PER_CREDIT = 0.04;
 
 // ---------------------------------------------------------------------------
 // Turn CRUD (detailed turn tracking for the timeline view)
@@ -351,71 +337,13 @@ export async function getTurnsByUserAndPeriod(
 }
 
 // ---------------------------------------------------------------------------
-// Simple turn recording (used by the usage dashboard)
+// Usage queries (reads Turn nodes created by createTurn/completeTurn)
 // ---------------------------------------------------------------------------
 
 /**
- * Record a turn with credit consumption.
- */
-export async function recordTurn(params: {
-  sessionId: number;
-  sessionName: string;
-  agent: string;
-  credits: number;
-  taskId: number | null;
-  tabIds: number[];
-}): Promise<Turn> {
-  const id = await getNextId("Turn");
-  const timestamp = new Date().toISOString();
-
-  await writeQuery(async (tx: ManagedTransaction) => {
-    await tx.run(
-      `
-        MATCH (s:Session {id: $sessionId})
-        CREATE (t:Turn {
-          id: $id,
-          sessionId: $sessionId,
-          sessionName: $sessionName,
-          agent: $agent,
-          credits: $credits,
-          taskId: $taskId,
-          timestamp: datetime($timestamp)
-        })
-        CREATE (s)-[:HAS_TURN]->(t)
-        WITH t
-        CALL (t) {
-          UNWIND $tabIds AS tabId
-          MATCH (tab:Tab {id: tabId})
-          CREATE (t)-[:IN_TAB]->(tab)
-        }
-      `,
-      {
-        id,
-        sessionId: params.sessionId,
-        sessionName: params.sessionName,
-        agent: params.agent,
-        credits: params.credits,
-        taskId: params.taskId ?? null,
-        timestamp,
-        tabIds: params.tabIds,
-      }
-    );
-  });
-
-  return {
-    id,
-    sessionId: params.sessionId,
-    sessionName: params.sessionName,
-    agent: params.agent,
-    credits: params.credits,
-    taskId: params.taskId,
-    timestamp,
-    tabIds: params.tabIds,
-  };
-}
-
-/**
  * Query usage data for a date range, optionally filtered by tab.
+ * Reads Turn nodes created by the createTurn/completeTurn path (which have
+ * t.startedAt, t.endedAt, t.credits, t.costEur properties).
  */
 export async function getUsage(params: {
   from: string;
@@ -425,22 +353,29 @@ export async function getUsage(params: {
 }): Promise<UsageSummary> {
   return readQuery(async (tx: ManagedTransaction) => {
     const tabFilter = params.tabId
-      ? "AND (t)-[:IN_TAB]->(:Tab {id: $tabId})"
+      ? "AND (s)-[:IN_TAB]->(:Tab {id: $tabId})"
       : "";
 
-    // Get all turns in the date range for this user's sessions
+    // Query completed turns (endedAt IS NOT NULL) within the date range
     const result = await tx.run(
       `
         MATCH (u:User {id: $userId})-[:OWNS]->(s:Session)-[:HAS_TURN]->(t:Turn)
-        WHERE t.timestamp >= datetime($from) AND t.timestamp <= datetime($to)
-        ${tabFilter}
+        WHERE t.endedAt IS NOT NULL
+          AND t.startedAt >= $from
+          AND t.startedAt <= $to
+          ${tabFilter}
         OPTIONAL MATCH (s)-[:IN_TAB]->(tab:Tab)
-        WITH t, s, collect(tab.name) AS tabNames
-        RETURN t.id AS id, t.sessionId AS sessionId, t.sessionName AS sessionName,
-               t.agent AS agent, t.credits AS credits, t.taskId AS taskId,
-               toString(t.timestamp) AS timestamp,
-               CASE WHEN size(tabNames) > 0 THEN tabNames[0] ELSE null END AS tabName
-        ORDER BY t.timestamp ASC
+        WITH t, s, collect(DISTINCT tab.name) AS tabNames
+        WITH s.id AS sessionId, s.name AS sessionName, s.agent AS agent,
+             CASE WHEN size(tabNames) > 0 THEN tabNames[0] ELSE null END AS tabName,
+             sum(t.credits) AS credits,
+             sum(t.costEur) AS costEur,
+             count(t) AS turns,
+             min(t.startedAt) AS firstTurn,
+             max(t.startedAt) AS lastTurn,
+             collect({date: substring(t.startedAt, 0, 10), credits: t.credits, costEur: t.costEur}) AS turnDetails
+        RETURN sessionId, sessionName, agent, tabName, credits, costEur, turns, firstTurn, lastTurn, turnDetails
+        ORDER BY credits DESC
       `,
       {
         userId: params.userId,
@@ -450,74 +385,53 @@ export async function getUsage(params: {
       }
     );
 
-    const turns = result.records.map((r) => ({
-      id: r.get("id") as number,
-      sessionId: r.get("sessionId") as number,
-      sessionName: r.get("sessionName") as string,
-      agent: r.get("agent") as string,
-      credits: r.get("credits") as number,
-      taskId: r.get("taskId") as number | null,
-      timestamp: r.get("timestamp") as string,
-      tabName: (r.get("tabName") as string | null) ?? null,
-    }));
+    let totalCredits = 0;
+    let totalCostEur = 0;
+    const dailyMap = new Map<string, { credits: number; costEur: number }>();
+    const sessionBreakdown: UsageSummary["sessionBreakdown"] = [];
 
-    // Compute totals
-    const totalCredits = turns.reduce((sum, t) => sum + t.credits, 0);
-    const totalCostEur = totalCredits * EUR_PER_CREDIT;
+    for (const record of result.records) {
+      const credits = (record.get("credits") as number) ?? 0;
+      const costEur = (record.get("costEur") as number) ?? 0;
+      totalCredits += credits;
+      totalCostEur += costEur;
 
-    // Daily breakdown
-    const dailyMap = new Map<string, number>();
-    for (const turn of turns) {
-      const date = turn.timestamp.substring(0, 10); // YYYY-MM-DD
-      dailyMap.set(date, (dailyMap.get(date) ?? 0) + turn.credits);
+      sessionBreakdown.push({
+        sessionId: record.get("sessionId") as number,
+        sessionName: record.get("sessionName") as string,
+        agent: (record.get("agent") as string) ?? "",
+        tabName: (record.get("tabName") as string | null) ?? null,
+        credits,
+        costEur,
+        turns: (record.get("turns") as number) ?? 0,
+        firstTurn: (record.get("firstTurn") as string) ?? "",
+        lastTurn: (record.get("lastTurn") as string) ?? "",
+      });
+
+      // Aggregate daily breakdown from turn details
+      const turnDetails = record.get("turnDetails") as Array<{ date: string; credits: number; costEur: number }>;
+      if (turnDetails) {
+        for (const detail of turnDetails) {
+          const existing = dailyMap.get(detail.date);
+          if (existing) {
+            existing.credits += detail.credits ?? 0;
+            existing.costEur += detail.costEur ?? 0;
+          } else {
+            dailyMap.set(detail.date, {
+              credits: detail.credits ?? 0,
+              costEur: detail.costEur ?? 0,
+            });
+          }
+        }
+      }
     }
+
     const dailyBreakdown = Array.from(dailyMap.entries())
       .sort(([a], [b]) => a.localeCompare(b))
-      .map(([date, credits]) => ({
+      .map(([date, data]) => ({
         date,
-        credits,
-        costEur: credits * EUR_PER_CREDIT,
-      }));
-
-    // Session breakdown
-    const sessionMap = new Map<
-      number,
-      {
-        sessionId: number;
-        sessionName: string;
-        agent: string;
-        tabName: string | null;
-        credits: number;
-        turns: number;
-        firstTurn: string;
-        lastTurn: string;
-      }
-    >();
-    for (const turn of turns) {
-      const existing = sessionMap.get(turn.sessionId);
-      if (existing) {
-        existing.credits += turn.credits;
-        existing.turns += 1;
-        if (turn.timestamp < existing.firstTurn) existing.firstTurn = turn.timestamp;
-        if (turn.timestamp > existing.lastTurn) existing.lastTurn = turn.timestamp;
-      } else {
-        sessionMap.set(turn.sessionId, {
-          sessionId: turn.sessionId,
-          sessionName: turn.sessionName,
-          agent: turn.agent,
-          tabName: turn.tabName,
-          credits: turn.credits,
-          turns: 1,
-          firstTurn: turn.timestamp,
-          lastTurn: turn.timestamp,
-        });
-      }
-    }
-    const sessionBreakdown = Array.from(sessionMap.values())
-      .sort((a, b) => b.credits - a.credits)
-      .map((s) => ({
-        ...s,
-        costEur: s.credits * EUR_PER_CREDIT,
+        credits: data.credits,
+        costEur: data.costEur,
       }));
 
     return { totalCredits, totalCostEur, dailyBreakdown, sessionBreakdown };
@@ -526,6 +440,7 @@ export async function getUsage(params: {
 
 /**
  * Get the current month's total credits for a user (for the header badge).
+ * Reads Turn nodes created by the createTurn/completeTurn path.
  */
 export async function getCurrentMonthCredits(userId: number): Promise<number> {
   return readQuery(async (tx: ManagedTransaction) => {
@@ -536,7 +451,9 @@ export async function getCurrentMonthCredits(userId: number): Promise<number> {
     const result = await tx.run(
       `
         MATCH (u:User {id: $userId})-[:OWNS]->(s:Session)-[:HAS_TURN]->(t:Turn)
-        WHERE t.timestamp >= datetime($from) AND t.timestamp <= datetime($to)
+        WHERE t.endedAt IS NOT NULL
+          AND t.startedAt >= $from
+          AND t.startedAt <= $to
         RETURN coalesce(sum(t.credits), 0) AS total
       `,
       { userId, from, to }
