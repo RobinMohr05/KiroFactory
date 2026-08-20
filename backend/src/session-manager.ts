@@ -38,7 +38,6 @@ import { recordError } from "./error-store.js";
 import { log, logSessionEvent, logWorkerEvent, toErrorFields } from "./logger.js";
 import { getAgentTabs, getTabById } from "./db/tabs.js";
 import { getAgentByName } from "./db/agents.js";
-import { recordTurn } from "./db/turns.js";
 import { materializeAgentConfigIfMissing, encodeAgentConfigBase64 } from "./agent/agent-config-writer.js";
 import { buildProxyServersConfig, type SessionCredentials } from "./mcp-proxy-config.js";
 import {
@@ -1552,18 +1551,6 @@ async function streamPrompt(managed: ManagedSession, text: string, image?: { dat
       });
       broadcastToUser(managed.meta.userId, { type: "session-updated", session: managed.meta });
       persistSession(managed.meta.id);
-
-      // Persist turn-level usage data for the usage dashboard
-      if (isDbAvailable()) {
-        recordTurn({
-          sessionId: managed.meta.id,
-          sessionName: managed.meta.name,
-          agent: managed.meta.agent || "",
-          credits: turnCredits,
-          taskId: managed.meta.currentTaskId ?? null,
-          tabIds: managed.meta.tabIds ?? [],
-        }).catch(() => { /* best-effort — don't fail the turn */ });
-      }
     }
 
     // ─── Turn end ───
@@ -3182,18 +3169,6 @@ function initWorkerEventHandler(): void {
         });
         broadcastToUser(session.meta.userId, { type: "session-updated", session: session.meta });
         persistSession(session.meta.id);
-
-        // Persist turn-level usage data for the usage dashboard
-        if (isDbAvailable()) {
-          recordTurn({
-            sessionId: session.meta.id,
-            sessionName: session.meta.name,
-            agent: session.meta.agent || "",
-            credits: r.credits,
-            taskId: session.meta.currentTaskId ?? null,
-            tabIds: session.meta.tabIds ?? [],
-          }).catch(() => { /* best-effort — don't fail the turn */ });
-        }
       }
 
       setActivity(session, { type: "idle", detail: "Ready for next prompt" });
