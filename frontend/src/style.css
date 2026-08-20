@@ -4203,9 +4203,62 @@ textarea:focus {
     padding: 0.75rem;
   }
 
+  .error-card {
+    padding: 0.75rem;
+    overflow-wrap: break-word;
+  }
+
+  .error-card-header {
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  .error-card-meta {
+    flex-wrap: wrap;
+  }
+
+  .error-card-actions {
+    flex-wrap: wrap;
+  }
+
   /* Usage panel */
   .usage-layout {
     padding: 0.75rem;
+  }
+
+  .usage-heading {
+    font-size: 1.1rem;
+  }
+
+  .usage-section-title {
+    font-size: 0.8rem;
+  }
+
+  .usage-chart {
+    height: 120px;
+  }
+
+  .usage-chart-section {
+    overflow: hidden;
+  }
+
+  .usage-table-wrapper {
+    overflow-x: auto;
+    margin: 0 -0.75rem;
+    padding: 0 0.75rem;
+  }
+
+  /* Modals */
+  .modal {
+    width: calc(100vw - 2rem);
+    max-width: 100%;
+    padding: 1rem;
+    overflow-y: auto;
+    margin: 1rem;
+  }
+
+  .modal-wide {
+    max-width: 100%;
   }
 
   /* Toolbar on mobile */
