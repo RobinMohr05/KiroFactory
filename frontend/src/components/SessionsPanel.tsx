@@ -5,6 +5,7 @@ import { SessionDetailTabs } from './SessionDetailTabs';
 import { apiFetch } from '../utils/api';
 import { formatCreditsWithEur } from '../utils/format';
 import { useConfirmAction } from '../hooks/useConfirmAction';
+import { useMobileBreakpoint } from '../hooks/useMobileBreakpoint';
 import type { Session, OutputEntry, SessionActivity } from '../types';
 
 export function SessionsPanel() {
@@ -14,6 +15,9 @@ export function SessionsPanel() {
   const [output, setOutput] = useState<OutputEntry[]>([]);
   const [activity, setActivity] = useState<SessionActivity | null>(null);
   const dragIdRef = useRef<number | null>(null);
+  const isMobile = useMobileBreakpoint();
+  const [mobileShowDetail, setMobileShowDetail] = useState(false);
+  const scrollTopRef = useRef<number>(0);
 
   // Filter sessions for current tab
   const visibleSessions = currentTabId
@@ -267,10 +271,43 @@ export function SessionsPanel() {
     ?.map(tid => tabs.find(b => b.id === tid)?.name || `#${tid}`)
     .join(', ') || 'None';
 
+  // Mobile drill-down: when a session is tapped on mobile, transition to detail view
+  const listPanelRef = useRef<HTMLElement>(null);
+  const handleMobileSessionClick = (sessionId: number) => {
+    setActiveSessionId(sessionId);
+    if (isMobile) {
+      // Save scroll position before navigating away
+      if (listPanelRef.current) {
+        scrollTopRef.current = listPanelRef.current.scrollTop;
+      }
+      setMobileShowDetail(true);
+    }
+  };
+
+  const handleMobileBack = () => {
+    setMobileShowDetail(false);
+    // Restore scroll position after returning to list
+    requestAnimationFrame(() => {
+      if (listPanelRef.current) {
+        listPanelRef.current.scrollTop = scrollTopRef.current;
+      }
+    });
+  };
+
+  // Reset mobile detail state when viewport becomes desktop
+  useEffect(() => {
+    if (!isMobile) {
+      setMobileShowDetail(false);
+    }
+  }, [isMobile]);
+
+  const listHidden = isMobile && mobileShowDetail;
+  const detailHidden = isMobile && !mobileShowDetail;
+
   return (
     <section id="panel-sessions" role="tabpanel" aria-labelledby="tab-sessions">
       <div className="sessions-layout">
-        <aside className="session-list-panel">
+        <aside className={`session-list-panel${listHidden ? ' mobile-hidden' : ''}`} ref={listPanelRef}>
           <div className="toolbar" role="toolbar" aria-label="Session actions">
             <button id="newSessionBtn" className="btn btn-primary" onClick={() => setShowCreateModal(true)}>+ New Session</button>
           </div>
@@ -288,7 +325,7 @@ export function SessionsPanel() {
                 session={session}
                 active={session.id === activeSessionId}
                 hasErrors={sessionNamesWithErrors.has(session.name)}
-                onClick={() => setActiveSessionId(session.id)}
+                onClick={() => handleMobileSessionClick(session.id)}
                 onDragStart={(e) => handleDragStart(e, session)}
                 onDragEnd={handleDragEnd}
                 onDragOver={handleDragOver}
@@ -304,7 +341,7 @@ export function SessionsPanel() {
                 session={session}
                 active={session.id === activeSessionId}
                 hasErrors={sessionNamesWithErrors.has(session.name)}
-                onClick={() => setActiveSessionId(session.id)}
+                onClick={() => handleMobileSessionClick(session.id)}
                 onDragStart={(e) => handleDragStart(e, session)}
                 onDragEnd={handleDragEnd}
                 onDragOver={handleDragOver}
@@ -317,7 +354,7 @@ export function SessionsPanel() {
             )}
           </ul>
         </aside>
-        <div className="session-detail-panel" id="sessionDetailPanel">
+        <div className={`session-detail-panel${detailHidden ? ' mobile-hidden' : ''}`} id="sessionDetailPanel">
           {!activeSession ? (
             <div className="session-empty-state">
               <p className="session-empty-msg">No sessions available for this tab.</p>
@@ -326,6 +363,11 @@ export function SessionsPanel() {
             <div className="session-detail" id="sessionDetail">
               <div className="session-detail-header">
                 <div className="session-info">
+                  {isMobile && (
+                    <button className="mobile-back-btn" onClick={handleMobileBack} aria-label="Back to session list">
+                      ←
+                    </button>
+                  )}
                   <h3 id="sessionDetailName">{activeSession.name}</h3>
                   <span className="session-agent-badge">{activeSession.agent || 'Interactive'}</span>
                   <span className={`session-status-badge status-${activeSession.status}`}>{activeSession.status}</span>

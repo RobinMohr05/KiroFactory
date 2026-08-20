@@ -4166,7 +4166,13 @@ textarea:focus {
   .session-list-panel {
     border-right: none;
     border-bottom: 1px solid var(--border-color);
-    max-height: 40vh;
+    max-height: none;
+    overflow-y: auto;
+  }
+
+  .session-detail-panel {
+    min-height: 0;
+    overflow-y: auto;
   }
 
   /* Agents panel adjustments */
@@ -4178,7 +4184,18 @@ textarea:focus {
   .agent-list-panel {
     border-right: none;
     border-bottom: 1px solid var(--border-color);
-    max-height: 40vh;
+    max-height: none;
+    overflow-y: auto;
+  }
+
+  .agent-detail-panel {
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  /* Mobile drill-down: hide panels via class */
+  .mobile-hidden {
+    display: none !important;
   }
 
   /* Errors panel */
@@ -4195,4 +4212,38 @@ textarea:focus {
   .toolbar {
     padding: 0.75rem;
   }
+}
+
+/* Mobile back button (rendered conditionally in JS, so styles don't need media query) */
+.mobile-back-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-color);
+  font-size: 1.25rem;
+  cursor: pointer;
+  margin-right: 0.5rem;
+  transition: background-color 0.15s ease;
+}
+
+.mobile-back-btn:hover {
+  background-color: var(--hover-bg);
+}
+
+.mobile-back-btn:active {
+  background-color: var(--active-bg, rgba(0, 0, 0, 0.1));
+}
+
+[data-theme="dark"] .mobile-back-btn:hover {
+  background-color: var(--hover-bg, rgba(255, 255, 255, 0.1));
+}
+
+[data-theme="dark"] .mobile-back-btn:active {
+  background-color: var(--active-bg, rgba(255, 255, 255, 0.15));
 }
