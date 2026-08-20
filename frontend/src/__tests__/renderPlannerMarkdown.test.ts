@@ -18,7 +18,8 @@ function createPlannerRenderer() {
     // Links: open in new tab, rel noopener
     link({ href, text }: { href: string; text: string }) {
       const sanitizedHref = href && href.match(/^https?:\/\//) ? href : '#';
-      return `<a href="${sanitizedHref}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+      const escapedHref = sanitizedHref.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+      return `<a href="${escapedHref}" target="_blank" rel="noopener noreferrer">${text}</a>`;
     },
     // Strip images
     image() {
@@ -138,6 +139,11 @@ describe('renderPlannerMarkdown', () => {
       const result = renderPlannerMarkdown('[xss](javascript:alert(1))');
       expect(result).toContain('href="#"');
       expect(result).not.toContain('javascript:');
+    });
+
+    it('escapes special characters in href attributes', () => {
+      const result = renderPlannerMarkdown('[click](https://example.com/path?a=1&b=2)');
+      expect(result).toContain('href="https://example.com/path?a=1&amp;b=2"');
     });
   });
 

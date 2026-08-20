@@ -4574,7 +4574,8 @@ const plannerMarked = (function initPlannerMarked() {
     },
     link({ href, text }) {
       const sanitizedHref = href && href.match(/^https?:\/\//) ? href : '#';
-      return `<a href="${sanitizedHref}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+      const escapedHref = sanitizedHref.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+      return `<a href="${escapedHref}" target="_blank" rel="noopener noreferrer">${text}</a>`;
     },
     image() { return ''; },
     hr() { return ''; },
