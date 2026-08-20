@@ -16,10 +16,31 @@ export function TabModal({ tab, onClose, onSave }: TabModalProps) {
   const [mcpConfig, setMcpConfig] = useState<McpConfig>(
     tab?.mcpConfig || { ...DEFAULT_MCP_CONFIG }
   );
+  const [autoMergePrs, setAutoMergePrs] = useState(tab?.autoMergePrs === true);
+  const [showAutoMergeConfirm, setShowAutoMergeConfirm] = useState(false);
   const [error, setError] = useState('');
 
   const handleMcpToggle = (key: keyof McpConfig) => {
     setMcpConfig(prev => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const handleAutoMergeToggle = () => {
+    if (!autoMergePrs) {
+      // Turning ON — show confirmation dialog
+      setShowAutoMergeConfirm(true);
+    } else {
+      // Turning OFF — no confirmation needed
+      setAutoMergePrs(false);
+    }
+  };
+
+  const confirmAutoMerge = () => {
+    setAutoMergePrs(true);
+    setShowAutoMergeConfirm(false);
+  };
+
+  const cancelAutoMerge = () => {
+    setShowAutoMergeConfirm(false);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -34,6 +55,7 @@ export function TabModal({ tab, onClose, onSave }: TabModalProps) {
           repositoryUrl: repositoryUrl.trim() || null,
           gitProvider: gitProvider || null,
           mcpConfig,
+          autoMergePrs,
         };
         const res = await apiFetch(`/api/tabs/${tab!.id}`, {
           method: 'PUT',
@@ -71,54 +93,86 @@ export function TabModal({ tab, onClose, onSave }: TabModalProps) {
   };
 
   return (
-    <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="modal" role="dialog" aria-labelledby="tabModalTitle">
-        <h2 id="tabModalTitle">{isEditing ? 'Edit Tab' : 'New Tab'}</h2>
-        <form onSubmit={handleSubmit}>
-          <div className="form-group">
-            <label htmlFor="tabFormName">Tab Name</label>
-            <input type="text" id="tabFormName" required placeholder="e.g. My Project" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
-          </div>
-          <div className="form-group">
-            <label htmlFor="tabFormRepo">Repository URL</label>
-            <input type="text" id="tabFormRepo" placeholder="https://github.com/user/repo" value={repositoryUrl} onChange={(e) => setRepositoryUrl(e.target.value)} />
-          </div>
-          <div className="form-group">
-            <label htmlFor="tabFormGitProvider">Git Provider</label>
-            <select id="tabFormGitProvider" value={gitProvider} onChange={(e) => setGitProvider(e.target.value)}>
-              <option value="">Auto-detect from URL</option>
-              <option value="github">GitHub</option>
-              <option value="azure-devops">Azure DevOps</option>
-            </select>
-          </div>
-          <div className="form-group">
-            <label>MCP Servers</label>
-            <div className="mcp-toggles">
-              <label className="checkbox-label">
-                <input type="checkbox" checked={mcpConfig.atlassian} onChange={() => handleMcpToggle('atlassian')} />
-                <span>Atlassian</span>
-              </label>
-              <label className="checkbox-label">
-                <input type="checkbox" checked={mcpConfig.azureDevops} onChange={() => handleMcpToggle('azureDevops')} />
-                <span>Azure DevOps</span>
-              </label>
-              <label className="checkbox-label">
-                <input type="checkbox" checked={mcpConfig.awsApi} onChange={() => handleMcpToggle('awsApi')} />
-                <span>AWS API</span>
-              </label>
-              <label className="checkbox-label">
-                <input type="checkbox" checked={mcpConfig.awsDocs} onChange={() => handleMcpToggle('awsDocs')} />
-                <span>AWS Docs</span>
-              </label>
+    <>
+      <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+        <div className="modal" role="dialog" aria-labelledby="tabModalTitle">
+          <h2 id="tabModalTitle">{isEditing ? 'Edit Tab' : 'New Tab'}</h2>
+          <form onSubmit={handleSubmit}>
+            <div className="form-group">
+              <label htmlFor="tabFormName">Tab Name</label>
+              <input type="text" id="tabFormName" required placeholder="e.g. My Project" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+            </div>
+            <div className="form-group">
+              <label htmlFor="tabFormRepo">Repository URL</label>
+              <input type="text" id="tabFormRepo" placeholder="https://github.com/user/repo" value={repositoryUrl} onChange={(e) => setRepositoryUrl(e.target.value)} />
+            </div>
+            <div className="form-group">
+              <label htmlFor="tabFormGitProvider">Git Provider</label>
+              <select id="tabFormGitProvider" value={gitProvider} onChange={(e) => setGitProvider(e.target.value)}>
+                <option value="">Auto-detect from URL</option>
+                <option value="github">GitHub</option>
+                <option value="azure-devops">Azure DevOps</option>
+              </select>
+            </div>
+            <div className="form-group">
+              <label>MCP Servers</label>
+              <div className="mcp-toggles">
+                <label className="checkbox-label">
+                  <input type="checkbox" checked={mcpConfig.atlassian} onChange={() => handleMcpToggle('atlassian')} />
+                  <span>Atlassian</span>
+                </label>
+                <label className="checkbox-label">
+                  <input type="checkbox" checked={mcpConfig.azureDevops} onChange={() => handleMcpToggle('azureDevops')} />
+                  <span>Azure DevOps</span>
+                </label>
+                <label className="checkbox-label">
+                  <input type="checkbox" checked={mcpConfig.awsApi} onChange={() => handleMcpToggle('awsApi')} />
+                  <span>AWS API</span>
+                </label>
+                <label className="checkbox-label">
+                  <input type="checkbox" checked={mcpConfig.awsDocs} onChange={() => handleMcpToggle('awsDocs')} />
+                  <span>AWS Docs</span>
+                </label>
+              </div>
+            </div>
+            {isEditing && (
+              <div className="form-group">
+                <label>Automation</label>
+                <small className="form-hint">Automate post-QA actions for this board.</small>
+                <div className="mcp-toggles">
+                  <label className="checkbox-label">
+                    <input type="checkbox" checked={autoMergePrs} onChange={handleAutoMergeToggle} />
+                    <span>Auto-complete PRs</span>
+                  </label>
+                </div>
+              </div>
+            )}
+            {error && <div className="form-error">{error}</div>}
+            <div className="form-actions">
+              <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
+              <button type="submit" className="btn btn-primary">{isEditing ? 'Save Changes' : 'Create Tab'}</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      {showAutoMergeConfirm && (
+        <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) cancelAutoMerge(); }}>
+          <div className="modal" role="dialog" aria-labelledby="confirmAutoMergeTitle">
+            <h2 id="confirmAutoMergeTitle">Enable Auto-complete PRs?</h2>
+            <p>
+              Enabling Auto-complete PRs means the QA agent will automatically merge approved
+              pull requests into the base branch and delete their source branches. This action
+              is irreversible for PRs that have already been merged. Are you sure you want to
+              enable this?
+            </p>
+            <div className="form-actions">
+              <button type="button" className="btn btn-secondary" onClick={cancelAutoMerge}>Cancel</button>
+              <button type="button" className="btn btn-primary" onClick={confirmAutoMerge}>Enable</button>
             </div>
           </div>
-          {error && <div className="form-error">{error}</div>}
-          <div className="form-actions">
-            <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
-            <button type="submit" className="btn btn-primary">{isEditing ? 'Save Changes' : 'Create Tab'}</button>
-          </div>
-        </form>
-      </div>
-    </div>
+        </div>
+      )}
+    </>
   );
 }
