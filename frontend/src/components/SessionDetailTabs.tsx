@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { SessionTimeline } from './SessionTimeline';
 import type { OutputEntry } from '../types';
 
@@ -15,6 +15,13 @@ type DetailTab = 'timeline' | 'rawlog';
 export function SessionDetailTabs({ sessionId, sessionStatus, output, autoScroll, onScroll }: SessionDetailTabsProps) {
   const [activeTab, setActiveTab] = useState<DetailTab>('timeline');
   const rawLogRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll the raw log when new output arrives and autoScroll is enabled
+  useEffect(() => {
+    if (autoScroll && rawLogRef.current && activeTab === 'rawlog') {
+      rawLogRef.current.scrollTop = rawLogRef.current.scrollHeight;
+    }
+  }, [output, autoScroll, activeTab]);
 
   return (
     <div className="session-detail-tabs-wrapper">
