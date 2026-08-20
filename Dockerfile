@@ -20,6 +20,13 @@ COPY backend/tsconfig.json ./backend/
 COPY backend/src ./backend/src
 RUN npm run build -w backend
 
+# Copy frontend source and build
+COPY frontend/tsconfig.json frontend/tsconfig.app.json frontend/tsconfig.node.json ./frontend/
+COPY frontend/vite.config.ts ./frontend/
+COPY frontend/index.html ./frontend/
+COPY frontend/src ./frontend/src
+RUN npm run build -w frontend
+
 # Stage 2: Production
 FROM node:22-slim AS production
 WORKDIR /app
@@ -48,7 +55,10 @@ RUN npm ci --omit=dev
 # Copy compiled backend from build stage
 COPY --from=build /app/backend/dist ./backend/dist
 
-# Copy frontend static files
+# Copy built React frontend from build stage
+COPY --from=build /app/frontend/dist ./frontend/dist
+
+# Copy frontend static files (login.html, impressum.html, favicon) for non-SPA routes
 COPY frontend/public ./frontend/public
 
 ENV NODE_ENV=production
