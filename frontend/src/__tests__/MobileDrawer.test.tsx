@@ -146,4 +146,49 @@ describe('MobileDrawer', () => {
       expect(mockMql.removeEventListener).toHaveBeenCalledWith('change', expect.any(Function));
     });
   });
+
+  describe('Escape key dismissal', () => {
+    it('calls onClose when Escape key is pressed while drawer is open', () => {
+      render(<MobileDrawer open={true} onClose={mockOnClose} monthlyCredits={0} />);
+
+      act(() => {
+        fireEvent.keyDown(document, { key: 'Escape' });
+      });
+
+      expect(mockOnClose).toHaveBeenCalled();
+    });
+
+    it('does not call onClose for other keys', () => {
+      render(<MobileDrawer open={true} onClose={mockOnClose} monthlyCredits={0} />);
+
+      act(() => {
+        fireEvent.keyDown(document, { key: 'Enter' });
+      });
+
+      expect(mockOnClose).not.toHaveBeenCalled();
+    });
+
+    it('does not register keydown listener when drawer is closed', () => {
+      const addEventSpy = vi.spyOn(document, 'addEventListener');
+      render(<MobileDrawer open={false} onClose={mockOnClose} monthlyCredits={0} />);
+
+      // Should not have added a keydown listener
+      const keydownCalls = addEventSpy.mock.calls.filter(([event]) => event === 'keydown');
+      expect(keydownCalls).toHaveLength(0);
+
+      addEventSpy.mockRestore();
+    });
+
+    it('cleans up keydown listener on unmount', () => {
+      const removeEventSpy = vi.spyOn(document, 'removeEventListener');
+      const { unmount } = render(<MobileDrawer open={true} onClose={mockOnClose} monthlyCredits={0} />);
+
+      unmount();
+
+      const keydownCalls = removeEventSpy.mock.calls.filter(([event]) => event === 'keydown');
+      expect(keydownCalls.length).toBeGreaterThan(0);
+
+      removeEventSpy.mockRestore();
+    });
+  });
 });

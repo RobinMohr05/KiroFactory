@@ -12,6 +12,8 @@ export function Header() {
   const [monthlyCredits, setMonthlyCredits] = useState<number>(0);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
+  const handleDrawerClose = useCallback(() => setDrawerOpen(false), []);
+
   const fetchMonthlyCredits = useCallback(async () => {
     try {
       const res = await apiFetch('/api/usage/current-month');
@@ -84,7 +86,7 @@ export function Header() {
       </header>
       <MobileDrawer
         open={drawerOpen}
-        onClose={() => setDrawerOpen(false)}
+        onClose={handleDrawerClose}
         monthlyCredits={monthlyCredits}
       />
       {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}

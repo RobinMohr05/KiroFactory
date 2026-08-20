@@ -25,6 +25,15 @@ export function MobileDrawer({ open, onClose, monthlyCredits }: MobileDrawerProp
     return () => mql.removeEventListener('change', handler);
   }, [open, onClose]);
 
+  useEffect(() => {
+    if (!open) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [open, onClose]);
+
   if (!open && !showSettings) return null;
 
   const handleNavClick = (view: ViewTab) => {

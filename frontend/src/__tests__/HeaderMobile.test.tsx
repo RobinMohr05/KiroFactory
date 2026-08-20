@@ -66,4 +66,38 @@ describe('Header - mobile scaffold', () => {
     // The drawer should now be visible (it contains nav links)
     expect(screen.getByRole('button', { name: /^sessions$/i })).toBeInTheDocument();
   });
+
+  it('passes a stable onClose callback to MobileDrawer (useCallback)', async () => {
+    // Spy on MobileDrawer to capture its props across renders
+    const drawerModule = await import('../components/MobileDrawer');
+    const drawerSpy = vi.spyOn(drawerModule, 'MobileDrawer');
+
+    const { rerender } = await act(async () => {
+      return render(<Header />);
+    });
+
+    // Trigger a re-render by clicking hamburger to open drawer
+    const hamburger = screen.getByLabelText(/open menu/i);
+    await act(async () => {
+      fireEvent.click(hamburger);
+    });
+
+    // Get the onClose from the first render that had the drawer open
+    const firstOnClose = drawerSpy.mock.calls.find(
+      (call) => call[0].open === true
+    )?.[0].onClose;
+
+    // Trigger another re-render (advance timer to cause credit refetch)
+    await act(async () => {
+      vi.advanceTimersByTime(30000);
+    });
+
+    // Get the onClose from the latest render
+    const latestOnClose = drawerSpy.mock.calls[drawerSpy.mock.calls.length - 1][0].onClose;
+
+    // They should be the same reference (useCallback ensures stability)
+    expect(firstOnClose).toBe(latestOnClose);
+
+    drawerSpy.mockRestore();
+  });
 });
