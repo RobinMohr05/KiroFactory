@@ -1860,12 +1860,26 @@ function processUpdate(managed: ManagedSession, update: SessionUpdateChunk): voi
             const durationMs = startTime ? Date.now() - startTime : undefined;
             managed.turnActiveToolCalls.delete(tcUpdateId);
 
+            // Extract output text from content blocks (same as completed path)
+            const content = (update as { content?: Array<{ type?: string; text?: string }> }).content;
+            let output: string | undefined;
+            if (Array.isArray(content)) {
+              const texts = content
+                .filter((b) => b?.type === "text" && b.text)
+                .map((b) => b.text!);
+              if (texts.length > 0) {
+                const joined = texts.join("\n");
+                output = joined.length > 2000 ? joined.slice(0, 2000) + "…" : joined;
+              }
+            }
+
             broadcastToUser(managed.meta.userId, {
               type: "session-tool-call-update",
               sessionId: managed.meta.id,
               turnNumber: managed.turnNumber,
               toolCallId: tcUpdateId,
               status: "failed",
+              output,
               durationMs,
             });
           }

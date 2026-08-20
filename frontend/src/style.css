@@ -3562,9 +3562,13 @@ textarea:focus {
   align-items: center;
   gap: 0.5rem;
   padding: 0.375rem 0.625rem;
-  cursor: pointer;
+  cursor: default;
   user-select: none;
   font-size: 0.75rem;
+}
+
+.tool-call-header[role="button"] {
+  cursor: pointer;
 }
 
 .tool-call-header:hover {

@@ -316,7 +316,7 @@ export function SessionTimeline({ sessionId, sessionStatus: _sessionStatus }: Se
                       {tc.status === 'failed' && '✗'}
                     </span>
                     {tc.durationMs != null && (
-                      <span className="tool-call-duration">{tc.durationMs}ms</span>
+                      <span className="tool-call-duration">{formatDuration(tc.durationMs)}</span>
                     )}
                     {tc.output && (
                       <span className="tool-call-expand-icon">
