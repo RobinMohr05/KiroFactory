@@ -673,5 +673,44 @@ describe("git-delivery-mcp-server", () => {
       assert.equal(response.result.isError, true);
       assert.ok(response.result.content[0].text.includes("title"));
     });
+
+    it("flags real git errors (non-git workspace) as isError responses", async () => {
+      // Use a non-git directory as WORKSPACE to trigger a real git error
+      const nonGitDir = mkdtempSync(join(tmpdir(), "git-delivery-nongit-"));
+
+      server = spawnServer({
+        TASK_BRANCH_NAME: "feature/#70_submit-test",
+        DEV_BRANCH: "develop",
+        WORKSPACE: nonGitDir,
+        TASK_ID: "70",
+        REPO_URL: workspace.remoteDir,
+        DELIVERY_RESULT_PATH: join(workspace.base, "delivery-result.json"),
+      });
+
+      await server.sendAndWaitResponse({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {},
+      });
+
+      // Create a file so there ARE changes to commit (the error should come from
+      // git status itself since this isn't a git repo)
+      writeFileSync(join(nonGitDir, "test.txt"), "hello\n");
+
+      const response = await server.sendAndWaitResponse({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: { name: "submit_task_changes", arguments: { title: "Test commit" } },
+      });
+
+      // The response should be flagged as an error — the workspace is not a git repo
+      assert.equal(response.result.isError, true);
+      assert.ok(response.result.content[0].text.includes("Error"));
+
+      // Clean up
+      rmSync(nonGitDir, { recursive: true, force: true });
+    });
   });
 });

@@ -453,10 +453,6 @@ async function handleFinalizeBranchSync() {
 async function handleSubmitTaskChanges(args) {
   const { title, body } = args;
 
-  if (!title || typeof title !== "string") {
-    return { error: true, message: '"title" is required and must be a non-empty string.' };
-  }
-
   // Check for changes
   let status = "";
   try {
@@ -736,9 +732,12 @@ async function handleToolCall(id, params) {
           return;
         }
         const result = await handleSubmitTaskChanges(args);
-        if (result.error === true) {
+        // Flag as an MCP error only for fatal failures (not a git workspace,
+        // commit failed, push failed). Partial success (pushed ok but PR
+        // creation failed) keeps the full result JSON so the agent can act on it.
+        if (result.error && typeof result.error === "string" && !result.pushed) {
           respond(id, {
-            content: [{ type: "text", text: `Error: ${result.message}` }],
+            content: [{ type: "text", text: `Error: ${result.error}` }],
             isError: true,
           });
         } else {
