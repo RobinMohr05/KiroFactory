@@ -9,7 +9,7 @@
 
 import { Router, type Request, type Response } from "express";
 import { requireAuth, getUserId } from "../middleware/auth.js";
-import { getTurnsByUserAndPeriod, getCurrentMonthCredits } from "../db/turns.js";
+import { getUsage, getCurrentMonthCredits } from "../db/turns.js";
 import { log, toErrorFields } from "../logger.js";
 
 const router = Router();
@@ -47,71 +47,19 @@ router.get("/", async (req: Request, res: Response) => {
       return;
     }
 
-    const breakdown = await getTurnsByUserAndPeriod(userId, normalizedFrom, normalizedTo, tabId);
-
-    // Compute aggregates from the breakdown
-    let totalCredits = 0;
-    let totalCostEur = 0;
-    let totalTurns = 0;
-    const dailyMap = new Map<string, { credits: number; costEur: number; turnCount: number }>();
-    const sessionMap = new Map<number, { sessionId: number; sessionName: string; credits: number; costEur: number; turnCount: number }>();
-
-    for (const entry of breakdown) {
-      totalCredits += entry.totalCredits;
-      totalCostEur += entry.totalCostEur;
-      totalTurns += entry.turnCount;
-
-      // Daily aggregation
-      const existing = dailyMap.get(entry.date);
-      if (existing) {
-        existing.credits += entry.totalCredits;
-        existing.costEur += entry.totalCostEur;
-        existing.turnCount += entry.turnCount;
-      } else {
-        dailyMap.set(entry.date, {
-          credits: entry.totalCredits,
-          costEur: entry.totalCostEur,
-          turnCount: entry.turnCount,
-        });
-      }
-
-      // Per-session aggregation
-      const sessionEntry = sessionMap.get(entry.sessionId);
-      if (sessionEntry) {
-        sessionEntry.credits += entry.totalCredits;
-        sessionEntry.costEur += entry.totalCostEur;
-        sessionEntry.turnCount += entry.turnCount;
-      } else {
-        sessionMap.set(entry.sessionId, {
-          sessionId: entry.sessionId,
-          sessionName: entry.sessionName,
-          credits: entry.totalCredits,
-          costEur: entry.totalCostEur,
-          turnCount: entry.turnCount,
-        });
-      }
-    }
-
-    const dailyBreakdown = Array.from(dailyMap.entries()).map(([date, data]) => ({
-      date,
-      credits: data.credits,
-      costEur: data.costEur,
-    }));
-
-    const sessionBreakdown = Array.from(sessionMap.values()).map((s) => ({
-      sessionId: s.sessionId,
-      sessionName: s.sessionName,
-      credits: s.credits,
-      costEur: s.costEur,
-      turns: s.turnCount,
-    }));
+    const usageSummary = await getUsage({
+      userId,
+      from: normalizedFrom,
+      to: normalizedTo,
+      tabId: tabId ?? null,
+    });
 
     res.json({
-      totalCredits,
-      totalCostEur,
-      totalTurns,
-      dailyBreakdown,
-      sessionBreakdown,
+      totalCredits: usageSummary.totalCredits,
+      totalCostEur: usageSummary.totalCostEur,
+      totalTurns: usageSummary.sessionBreakdown.reduce((sum, s) => sum + s.turns, 0),
+      dailyBreakdown: usageSummary.dailyBreakdown,
+      sessionBreakdown: usageSummary.sessionBreakdown,
     });
   } catch (err) {
     log.error("route-error", {
