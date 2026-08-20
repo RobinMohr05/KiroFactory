@@ -14,7 +14,7 @@ import { KiroRunner } from "./agent/kiro-runner.js";
 import type { SessionUpdateChunk } from "./agent/kiro-runner.js";
 import { broadcastToUser } from "./websocket-handler.js";
 import { sanitizeSessionForClient } from "./session-sanitize.js";
-import { claimTask, resolveTask, resetTask, getAvailableTaskCount, waitForTaskAvailable, markTaskDone, findSiblingTasks, findSiblingTasksByGroupId } from "./agent/task-claimer.js";
+import { claimTask, resolveTask, resetTask, getAvailableTaskCount, waitForTaskAvailable, markTaskDone, findSiblingTasks, findSiblingTasksByGroupId, describeClaimFailure } from "./agent/task-claimer.js";
 import type { ClaimedTask } from "./agent/task-claimer.js";
 import { buildDevPrompt, buildReviewPrompt } from "./agent/prompt-builder.js";
 import { buildPersistentBranchName } from "./agent/repo-url-parser.js";
@@ -1055,6 +1055,32 @@ function buildTurnPrompt(kind: "editor" | "inspector", task: ClaimedTask, cwd: s
   return kind === "inspector" ? buildReviewPrompt(task, cwd, autoMergePrs) : buildDevPrompt(task, cwd);
 }
 
+/**
+ * Renders a ClaimFailureDiagnosis (see task-claimer.ts) into the system-log
+ * line shown after claimTask() returns null. Replaces the old unconditional
+ * "race condition or empty queue" message, which was actively misleading in
+ * the most common failure mode: a task blocked by a groupId sibling still
+ * in workingState looks identical to a real race from the log alone, and
+ * that case can persist for as long as the sibling stage takes (not a
+ * transient blip), so it deserves its own message rather than being lumped
+ * in with genuine CAS losses.
+ */
+function describeClaimFailureMessage(diagnosis: import("./agent/task-claimer.js").ClaimFailureDiagnosis): string {
+  switch (diagnosis.reason) {
+    case "group-locked":
+      return (
+        `Task ${diagnosis.blockedTaskId} ("${diagnosis.blockedTaskTitle}") is waiting on its group — ` +
+        `sibling task ${diagnosis.blockingSiblingId} ("${diagnosis.blockingSiblingTitle}") is still being worked. ` +
+        `Will retry once that task leaves its working state.`
+      );
+    case "race":
+      return "Failed to claim task — a concurrent session likely claimed it first. Retrying.";
+    case "empty":
+    default:
+      return "Failed to claim task (empty queue).";
+  }
+}
+
 async function runLoopMode(
   managed: ManagedSession,
   signal: AbortSignal
@@ -1091,7 +1117,7 @@ async function runLoopMode(
     }
 
     // Wait until a task is available (event-driven — no DB poll while idle)
-    const todoCount = await getAvailableTaskCount(effectiveTabIds, stages.claimState);
+    const todoCount = await getAvailableTaskCount(effectiveTabIds, stages.claimState, stages.workingState);
 
     if (todoCount === 0) {
       setActivity(managed, {
@@ -1102,7 +1128,7 @@ async function runLoopMode(
       // Park here until a task is created/reset or the session is stopped.
       // waitForTaskAvailable does a single DB check, then suspends on an
       // in-process event — zero DB queries during the wait.
-      await waitForTaskAvailable(effectiveTabIds, stages.claimState, signal);
+      await waitForTaskAvailable(effectiveTabIds, stages.claimState, signal, stages.workingState);
       continue;
     }
 
@@ -1120,10 +1146,11 @@ async function runLoopMode(
 
     const task = await claimTask(undefined, effectiveTabIds, stages.claimState, stages.workingState);
     if (!task) {
+      const diagnosis = await describeClaimFailure(effectiveTabIds, stages.claimState, stages.workingState);
       appendOutput(managed, {
         timestamp: now(),
         stream: "system",
-        text: "Failed to claim task (race condition or empty queue).",
+        text: describeClaimFailureMessage(diagnosis),
       });
       await interruptibleSleep(meta.intervalSeconds * 1000, signal);
       continue;
@@ -2232,7 +2259,7 @@ async function runLoopModeAca(
       return;
     }
 
-    const todoCount = await getAvailableTaskCount(effectiveTabIds, stages.claimState);
+    const todoCount = await getAvailableTaskCount(effectiveTabIds, stages.claimState, stages.workingState);
 
     if (todoCount === 0) {
       setActivity(managed, {
@@ -2243,7 +2270,7 @@ async function runLoopModeAca(
       // Park here until a task is created/reset or the session is stopped.
       // waitForTaskAvailable does a single DB check, then suspends on an
       // in-process event — zero DB queries during the wait.
-      await waitForTaskAvailable(effectiveTabIds, stages.claimState, signal);
+      await waitForTaskAvailable(effectiveTabIds, stages.claimState, signal, stages.workingState);
       continue;
     }
 
@@ -2259,10 +2286,11 @@ async function runLoopModeAca(
 
     const task = await claimTask(undefined, effectiveTabIds, stages.claimState, stages.workingState);
     if (!task) {
+      const diagnosis = await describeClaimFailure(effectiveTabIds, stages.claimState, stages.workingState);
       appendOutput(managed, {
         timestamp: now(),
         stream: "system",
-        text: "Failed to claim task (race condition or empty queue).",
+        text: describeClaimFailureMessage(diagnosis),
       });
       await interruptibleSleep(meta.intervalSeconds * 1000, signal);
       continue;
