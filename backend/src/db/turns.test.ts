@@ -28,6 +28,8 @@ import {
   getMaxTurnNumber,
   createErrorEvent,
   getErrorsBySession,
+  getUsage,
+  getCurrentMonthCredits,
 } from "./turns.js";
 import type { TurnRecord, ErrorEventRecord } from "./turns.js";
 
@@ -407,6 +409,173 @@ describe("db/turns", () => {
       expect(result).toHaveLength(1);
       expect(result[0].message).toBe("Error 1");
       expect(readQuery).toHaveBeenCalledOnce();
+    });
+  });
+
+  describe("getUsage", () => {
+    it("should query Turn nodes using t.startedAt and t.endedAt IS NOT NULL (completeTurn path)", async () => {
+      let capturedCypher = "";
+
+      (readQuery as any).mockImplementation(async (fn: any) => {
+        const mockTx = {
+          run: vi.fn().mockImplementation((cypher: string) => {
+            capturedCypher = cypher;
+            return { records: [] };
+          }),
+        };
+        return fn(mockTx);
+      });
+
+      await getUsage({
+        userId: 1,
+        from: "2026-08-01T00:00:00.000Z",
+        to: "2026-08-31T23:59:59.999Z",
+        tabId: null,
+      });
+
+      // Must use t.startedAt for date filtering (completeTurn path), NOT t.timestamp (recordTurn path)
+      expect(capturedCypher).toContain("t.startedAt");
+      expect(capturedCypher).toContain("t.endedAt IS NOT NULL");
+      // Must NOT use the old t.timestamp property from the broken recordTurn path
+      expect(capturedCypher).not.toContain("t.timestamp");
+    });
+
+    it("should read t.credits and t.costEur directly from Turn nodes", async () => {
+      (readQuery as any).mockImplementation(async (fn: any) => {
+        const mockTx = {
+          run: vi.fn().mockResolvedValue({
+            records: [
+              {
+                get: (key: string) => {
+                  const data: Record<string, any> = {
+                    sessionId: 1,
+                    sessionName: "Dev Agent",
+                    agent: "developer-agent",
+                    tabName: "VCH",
+                    credits: 1.5,
+                    costEur: 0.06,
+                    turns: 10,
+                    firstTurn: "2026-08-20T06:00:00.000Z",
+                    lastTurn: "2026-08-20T18:00:00.000Z",
+                    date: "2026-08-20",
+                    dailyCredits: 1.5,
+                    dailyCostEur: 0.06,
+                  };
+                  return data[key];
+                },
+              },
+            ],
+          }),
+        };
+        return fn(mockTx);
+      });
+
+      const result = await getUsage({
+        userId: 1,
+        from: "2026-08-01T00:00:00.000Z",
+        to: "2026-08-31T23:59:59.999Z",
+        tabId: null,
+      });
+
+      expect(result).toHaveProperty("totalCredits");
+      expect(result).toHaveProperty("totalCostEur");
+      expect(result).toHaveProperty("dailyBreakdown");
+      expect(result).toHaveProperty("sessionBreakdown");
+    });
+
+    it("should return correct UsageSummary shape with session breakdown including agent and tabName", async () => {
+      (readQuery as any).mockImplementation(async (fn: any) => {
+        const mockTx = {
+          run: vi.fn().mockResolvedValue({
+            records: [
+              {
+                get: (key: string) => {
+                  const data: Record<string, any> = {
+                    sessionId: 1,
+                    sessionName: "Dev Agent",
+                    agent: "developer-agent",
+                    tabName: "VCH",
+                    credits: 2.0,
+                    costEur: 0.08,
+                    turns: 5,
+                    firstTurn: "2026-08-20T06:00:00.000Z",
+                    lastTurn: "2026-08-20T10:00:00.000Z",
+                    date: "2026-08-20",
+                    dailyCredits: 2.0,
+                    dailyCostEur: 0.08,
+                  };
+                  return data[key];
+                },
+              },
+            ],
+          }),
+        };
+        return fn(mockTx);
+      });
+
+      const result = await getUsage({
+        userId: 1,
+        from: "2026-08-20T00:00:00.000Z",
+        to: "2026-08-20T23:59:59.999Z",
+        tabId: null,
+      });
+
+      // Verify the shape has the expected fields
+      expect(result.sessionBreakdown).toBeDefined();
+      if (result.sessionBreakdown.length > 0) {
+        const session = result.sessionBreakdown[0];
+        expect(session).toHaveProperty("sessionId");
+        expect(session).toHaveProperty("sessionName");
+        expect(session).toHaveProperty("agent");
+        expect(session).toHaveProperty("tabName");
+        expect(session).toHaveProperty("credits");
+        expect(session).toHaveProperty("costEur");
+        expect(session).toHaveProperty("turns");
+        expect(session).toHaveProperty("firstTurn");
+        expect(session).toHaveProperty("lastTurn");
+      }
+    });
+  });
+
+  describe("getCurrentMonthCredits", () => {
+    it("should query Turn nodes using t.startedAt and t.endedAt IS NOT NULL", async () => {
+      let capturedCypher = "";
+
+      (readQuery as any).mockImplementation(async (fn: any) => {
+        const mockTx = {
+          run: vi.fn().mockImplementation((cypher: string) => {
+            capturedCypher = cypher;
+            return {
+              records: [
+                {
+                  get: (key: string) => {
+                    if (key === "total") return 5.0;
+                    return null;
+                  },
+                },
+              ],
+            };
+          }),
+        };
+        return fn(mockTx);
+      });
+
+      const result = await getCurrentMonthCredits(1);
+
+      // Must use t.startedAt for date filtering, NOT t.timestamp
+      expect(capturedCypher).toContain("t.startedAt");
+      expect(capturedCypher).toContain("t.endedAt IS NOT NULL");
+      // Must NOT use the old t.timestamp property
+      expect(capturedCypher).not.toContain("t.timestamp");
+      expect(result).toBe(5.0);
+    });
+  });
+
+  describe("recordTurn removal", () => {
+    it("should NOT export recordTurn (removed as broken/dead code)", async () => {
+      // Dynamically import turns to check exports
+      const turnsModule = await import("./turns.js");
+      expect(turnsModule).not.toHaveProperty("recordTurn");
     });
   });
 });

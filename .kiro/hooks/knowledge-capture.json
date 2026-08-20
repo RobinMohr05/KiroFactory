@@ -1,0 +1,14 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "End-of-session knowledge capture",
+      "trigger": "Stop",
+      "description": "At session end, prompts the agent to evaluate whether anything reusable was discovered and propose persisting it.",
+      "action": {
+        "type": "agent",
+        "prompt": "Before this session ends: review what was discussed and discovered. If anything reusable was surfaced — an undocumented gotcha, a working recipe, a workspace convention, an architectural insight — propose persisting it.\n\nTarget options:\n- Steering (.kiro/steering/*.md) — relevant broadly/often across sessions. Use inclusion: always for universal rules; inclusion: fileMatch for file-specific knowledge.\n- Skill (.kiro/skills/<name>/SKILL.md) — specialized, occasional-use knowledge that won't come up most sessions.\n- Extend an existing file over creating a new one when the topic overlaps.\n\nIf a bug was discovered this session, check whether a task already exists for it and create one if not — don't just document bugs, track them.\n\nIf nothing novel was discovered this session, say so briefly and move on — don't force it."
+      }
+    }
+  ]
+}

@@ -110,3 +110,50 @@ ACP connection closed` at face value — it means the stdio stream ended, but sa
 why. Re-run kiro-cli directly with `acp -vv` (verbose) piped through manually-crafted JSON-RPC to
 see the actual `ERROR chat_cli_v2::agent::acp::acp_agent` line, which does name the real
 deserialization failure.
+
+## Known gap: worker.js's spawnKiro() leaks PATs/WORKER_SECRET to the agent's shell
+
+Found 2026-08-20 while designing the git-delivery MCP tools (tasks #585/#586) — checking
+whether the agent could safely be given raw shell `git push` access surfaced that it
+already effectively has equivalent exposure today, independent of that design.
+
+`worker/worker.js`'s `spawnKiro()` spawns the `kiro-cli` child process (the one the agent's
+shell tool runs inside) with `env: { ...process.env, KIRO_API_KEY, NO_COLOR: "1",
+FORCE_COLOR: "0" }`. The `...process.env` spread forwards the ENTIRE worker process
+environment to the agent, including `GITHUB_PAT`/`AZURE_DEVOPS_PAT` and `WORKER_SECRET`
+(the shared secret authenticating this worker to the orchestrator's `/internal/worker`
+WebSocket) — none of it is filtered. Any shell command the agent runs (`env`, `echo
+$GITHUB_PAT`, etc.) can read these directly today.
+
+This is worse than just "the agent could read it if it tried" — `extractToolOutputText()`
+(which surfaces tool_call_update output into logs and, on failure, into `sendOutput()`)
+does NOT call the file's own `redactSecrets()` helper, unlike the worker's own git calls
+(`exec()`/`execFileArgs()`), which do. So a PAT/secret dumped by an agent's own command
+could end up unredacted in the live session output stream and in
+`ContainerAppConsoleLogs_CL`, not just in the ambient shell env.
+
+**The fix pattern already exists in the codebase, just not applied here:**
+`backend/src/agent/kiro-runner.ts`'s `KiroRunner.create()` (local/dev worker mode) builds
+an explicit allowlist of env keys to forward (PATH/HOME/USER/TERM-type vars, `AWS_*`
+prefix, `KIRO_API_KEY` specifically) and never spreads `process.env` wholesale. `worker.js`
+should follow the same allowlist approach instead of the blanket spread.
+
+Tracked as task #594 ("Worker's spawnKiro() leaks GITHUB_PAT/AZURE_DEVOPS_PAT/WORKER_SECRET
+into agent's shell env") — not yet fixed as of this writing. If working on `worker.js`'s
+`spawnKiro()` or on the git-delivery MCP tools (#585/#586) before #594 lands, keep in mind
+the agent's shell already has ambient access to these secrets regardless of whether it also
+gets new MCP tools — the MCP-over-shell design choice for #585/#586 avoids adding NEW
+exposure, but doesn't fix this pre-existing one.
+
+**Update 2026-08-20 — fixed, with one side effect to know about:** #594 was fixed and merged
+(PR #70) via a new `worker/spawn-env.js` — an explicit allowlist plus a belt-and-suspenders
+`BLOCKED_KEYS` list, matching the recommendation above. One resulting inconsistency worth
+knowing about if debugging a "works locally, fails in production" issue: `kiro-runner.ts`
+(local mode) still forwards the entire `AWS_*` prefix to the agent's shell, but
+`spawn-env.js` (ACA/production mode) forwards none of it by design (`FORWARD_PREFIXES = []`,
+with a comment that the worker container doesn't need AWS credentials for agent shell
+commands). Before this fix both paths leaked everything, so they happened to agree by
+accident; now they genuinely differ. Not a bug — nothing currently depends on AWS creds in
+an agent's shell — but if a future task on some tab needs AWS tooling and only fails in the
+ACA/production worker, this divergence is why. Add `"AWS_"` to `spawn-env.js`'s
+`FORWARD_PREFIXES` if that ever becomes a real need.

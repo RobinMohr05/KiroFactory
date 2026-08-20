@@ -42,9 +42,43 @@ Key patterns the developer agent needs to know:
   `NEO4J_PASSWORD`, `NEO4J_DATABASE` (optional — AuraDB uses the instance
   ID as database name).
 
+## How to create a task
+
+Use `backend/scripts/create-task.ts` — do not call `POST /api/tasks` and do not
+write a one-off `.temp/` script for this. This is the single, deterministic
+path for creating tasks from a Kiro session, and it's what keeps all the
+defaults in this file consistently applied. It creates tasks directly via
+the DB layer (`createTask()` in `backend/src/db/tasks.ts`), the same layer
+the authenticated API route itself calls, so this doesn't skip any DB-level
+validation (cycle checks, etc.) — it just skips the HTTP/auth layer, which
+isn't needed for a trusted local script.
+
+```
+cd backend && npx tsx scripts/create-task.ts --file <path-to-json>
+cd backend && npx tsx scripts/create-task.ts --json '<inline json array>'
+```
+
+Input is a JSON array of task specs (one or more). See the script's own header
+comment for the full field list — `title`, `type`, `priority`, and `tabIds`
+are required; everything else follows the defaults described below and in
+"Type, priority, description, and files". For a batch of tasks that depend on
+each other (see `.kiro/steering/task-creation-interview.md`'s "Multiple
+tasks" section), use `dependsOnBatchIndex` to reference an earlier entry by
+its position in the same array — the script resolves those to real task IDs
+after each one is created. To depend on a task that already exists from a
+past session, use `dependsOnTaskId` with its real ID instead.
+
+The script reads `NEO4J_URI`/`NEO4J_USERNAME`/`NEO4J_PASSWORD` from
+`backend/.env` via `dotenv`, exactly like every other script in
+`backend/scripts/` — never pass credentials as arguments or write them into
+an input JSON file.
+
 ## Origin field
 
-When the user asks you to create a task (via the API at `POST /api/tasks`), always set the `origin` field to `"user-assisted"`. This indicates the task was created through a collaborative conversation between the user and the AI agent.
+Always set the `origin` field to `"user-assisted"` (the script's default —
+no need to pass it explicitly unless overriding). This indicates the task
+was created through a collaborative conversation between the user and the
+AI agent.
 
 Only use a different origin if the user explicitly specifies one.
 
@@ -60,9 +94,9 @@ Unless the user says otherwise, create tasks for:
   workspace I'm currently sitting in" isn't something the database can tell you
   on its own.
 
-So a `CreateTaskInput` for a task on this repo should include `tabIds: [2]`
-(and, if calling the DB layer directly instead of the authenticated API,
-`userId: 1` for ownership checks that rely on it).
+So a task spec for `create-task.ts` on this repo should include `tabIds: [2]`.
+(No separate `userId` field is needed — `createTask()` derives ownership
+from the tab's own `OWNS` relationship, not a stored property on the task.)
 
 These IDs were confirmed on 2026-08-03. If tabs get renumbered or the user's
 account changes, re-verify with a query against `users`/`tabs` rather than

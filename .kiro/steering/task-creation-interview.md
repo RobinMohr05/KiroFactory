@@ -123,8 +123,9 @@ description:
 2. Show the draft to the user before creating it. Keep this brief (the
    draft itself, not a long preamble).
 
-3. On confirmation, create the task via the API per
-   `task-origin-convention.md` (origin, tab/user defaults, etc.).
+3. On confirmation, create the task with `backend/scripts/create-task.ts`
+   per `task-origin-convention.md` (origin, tab defaults, dependency syntax,
+   etc.) — not the API, not a one-off `.temp/` script.
 
 ## Escape hatch
 
