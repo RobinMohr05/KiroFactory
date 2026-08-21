@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useApp } from '../context/AppContext';
 import { apiFetch } from '../utils/api';
 import { useConfirmAction } from '../hooks/useConfirmAction';
+import { useMobileBreakpoint } from '../hooks/useMobileBreakpoint';
 import { AgentModal } from './AgentModal';
 import type { Agent } from '../types';
 
@@ -9,6 +10,10 @@ export function AgentsPanel() {
   const { agents, setAgents, fetchAgents, activeAgentId, setActiveAgentId } = useApp();
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
+  const isMobile = useMobileBreakpoint();
+  const [mobileShowDetail, setMobileShowDetail] = useState(false);
+  const scrollTopRef = useRef<number>(0);
+  const listPanelRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     fetchAgents();
@@ -48,10 +53,40 @@ export function AgentsPanel() {
     URL.revokeObjectURL(url);
   };
 
+  // Mobile drill-down: when an agent is tapped on mobile, transition to detail view
+  const handleMobileAgentClick = (agentId: number) => {
+    setActiveAgentId(agentId);
+    if (isMobile) {
+      if (listPanelRef.current) {
+        scrollTopRef.current = listPanelRef.current.scrollTop;
+      }
+      setMobileShowDetail(true);
+    }
+  };
+
+  const handleMobileBack = () => {
+    setMobileShowDetail(false);
+    requestAnimationFrame(() => {
+      if (listPanelRef.current) {
+        listPanelRef.current.scrollTop = scrollTopRef.current;
+      }
+    });
+  };
+
+  // Reset mobile detail state when viewport becomes desktop
+  useEffect(() => {
+    if (!isMobile) {
+      setMobileShowDetail(false);
+    }
+  }, [isMobile]);
+
+  const listHidden = isMobile && mobileShowDetail;
+  const detailHidden = isMobile && !mobileShowDetail;
+
   return (
     <section id="panel-agents" role="tabpanel" aria-labelledby="tab-agents">
       <div className="agents-layout">
-        <aside className="agent-list-panel">
+        <aside className={`agent-list-panel${listHidden ? ' mobile-hidden' : ''}`} ref={listPanelRef}>
           <div className="toolbar" role="toolbar" aria-label="Agent actions">
             <button id="newAgentBtn" className="btn btn-primary" onClick={() => setShowCreateModal(true)}>+ New Agent</button>
           </div>
@@ -63,7 +98,7 @@ export function AgentsPanel() {
                   key={agent.id}
                   className={`agent-item${agent.id === activeAgentId ? ' active' : ''}`}
                   data-agent-id={agent.id}
-                  onClick={() => setActiveAgentId(agent.id)}
+                  onClick={() => handleMobileAgentClick(agent.id)}
                 >
                   <span className="agent-item-icon">{initials}</span>
                   <div className="agent-item-info">
@@ -75,9 +110,14 @@ export function AgentsPanel() {
             })}
           </ul>
         </aside>
-        <div className="agent-detail-panel" id="agentDetailPanel">
+        <div className={`agent-detail-panel${detailHidden ? ' mobile-hidden' : ''}`} id="agentDetailPanel">
           {!activeAgent ? (
             <div className="agent-empty-state" id="agentEmptyState">
+              {isMobile && mobileShowDetail && (
+                <button className="mobile-back-btn" onClick={handleMobileBack} aria-label="Back to agent list">
+                  ←
+                </button>
+              )}
               <div className="quick-start">
                 <h3>No agents yet</h3>
                 <p className="quick-start-hint">Agents are reusable prompt + tool presets you can launch sessions with. Create one to get started, or select one from the list.</p>
@@ -88,6 +128,11 @@ export function AgentsPanel() {
             <div className="agent-detail" id="agentDetail">
               <div className="agent-detail-header">
                 <div className="agent-info">
+                  {isMobile && (
+                    <button className="mobile-back-btn" onClick={handleMobileBack} aria-label="Back to agent list">
+                      ←
+                    </button>
+                  )}
                   <h3 id="agentDetailName">{activeAgent.name}</h3>
                   <span className="agent-desc-text">{activeAgent.description || '(no description)'}</span>
                 </div>

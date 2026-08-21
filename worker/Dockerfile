@@ -23,6 +23,7 @@ COPY shared-branch-utils.js ./
 COPY verdict-mcp-server.js ./
 COPY pr-review-mcp-server.js ./
 COPY pr-complete-mcp-server.js ./
+COPY git-delivery-mcp-server.js ./
 COPY ta-mcp-connect ./
 RUN chmod +x ./ta-mcp-connect
 

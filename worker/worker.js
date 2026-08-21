@@ -19,7 +19,7 @@
 
 import { spawn, execSync, execFileSync } from "node:child_process";
 import { WebSocket } from "ws";
-import { mkdirSync, existsSync, writeFileSync, appendFileSync } from "node:fs";
+import { mkdirSync, existsSync, writeFileSync, appendFileSync, readFileSync, unlinkSync } from "node:fs";
 import { buildGroupPrContent, findSiblingPrUrl } from "./shared-branch-utils.js";
 import { buildSpawnEnv } from "./spawn-env.js";
 
@@ -90,6 +90,15 @@ const PERSISTENT_BRANCH_NAME = process.env.PERSISTENT_BRANCH_NAME || "";
  * else clears it between turns.
  */
 const REVIEW_MARKER_PATH = `/tmp/kirofactory-review-comments-${SESSION_ID || "local"}.count`;
+
+/**
+ * Path where the git-delivery MCP server writes its delivery result JSON after
+ * submit_task_changes completes. Read by finishPromptTurn() to populate the
+ * prompt-done result (hasChanges, committed, prUrl, branchName). Cleaned up
+ * at the start of every prompt turn in deliverPrompt() to prevent stale results
+ * from a prior task being misread.
+ */
+const DELIVERY_RESULT_PATH = `/tmp/kirofactory-delivery-result-${SESSION_ID || "local"}.json`;
 
 const WORKSPACE = "/workspace";
 
@@ -1936,6 +1945,44 @@ function buildMcpServers() {
     });
   }
 
+  // Include the git-delivery MCP server for editor-kind, task-based sessions
+  // only. This gives the dev agent tools to commit/push/create PRs itself
+  // rather than relying on the worker's post-turn commitAndPush(). Not
+  // included for inspector-kind (they never commit) or standalone sessions
+  // (PERSISTENT_BRANCH_NAME — no task branch to manage).
+  if (AGENT_KIND === "editor" && !PERSISTENT_BRANCH_NAME && REPO_URL) {
+    const gitDeliveryEnv = [
+      { name: "WORKSPACE", value: WORKSPACE },
+      { name: "TASK_BRANCH_NAME", value: currentBranchName || "" },
+      { name: "DEV_BRANCH", value: DEV_BRANCH || "" },
+      { name: "TASK_ID", value: String(currentTaskMeta?.id || TASK_ID || "") },
+      { name: "TASK_TITLE", value: currentTaskMeta?.title || "" },
+      { name: "TASK_DESCRIPTION", value: currentTaskMeta?.description || "" },
+      { name: "TASK_TYPE", value: currentTaskMeta?.type || "task" },
+      { name: "TASK_PR_URL", value: process.env.TASK_PR_URL || "" },
+      { name: "REPO_URL", value: REPO_URL || "" },
+      { name: "GIT_PROVIDER", value: GIT_PROVIDER },
+      { name: "DELIVERY_RESULT_PATH", value: DELIVERY_RESULT_PATH },
+    ];
+    if (process.env.GITHUB_PAT) {
+      gitDeliveryEnv.push({ name: "GITHUB_PAT", value: process.env.GITHUB_PAT });
+    }
+    if (AZURE_DEVOPS_PAT) {
+      gitDeliveryEnv.push({ name: "AZURE_DEVOPS_PAT", value: AZURE_DEVOPS_PAT });
+    }
+    servers.push({
+      name: "git-delivery",
+      command: "node",
+      args: ["/app/git-delivery-mcp-server.js"],
+      env: gitDeliveryEnv,
+    });
+    logInfo("Including git-delivery MCP server", {
+      agentKind: AGENT_KIND,
+      taskBranch: currentBranchName || "(not yet set)",
+      taskId: currentTaskMeta?.id || TASK_ID || "(not yet set)",
+    });
+  }
+
   for (const name of MCP_SIDECAR_SERVER_NAMES) {
     servers.push({
       name,
@@ -2073,7 +2120,7 @@ function finishPromptTurn(msg) {
             });
             sendOutput(
               `⚠ Agent reported "no_action_needed" but the workspace has ${changedFiles.length} changed file(s) — ` +
-              `verdict ignored, proceeding with normal commit/push flow.`,
+              `verdict ignored, proceeding with delivery check.`,
               "stderr"
             );
             effectiveVerdict = null; // Discard the contradictory verdict
@@ -2084,38 +2131,91 @@ function finishPromptTurn(msg) {
         }
       }
 
-      try {
-        const gitResult = commitAndPush();
-        hasChanges = gitResult.hasChanges;
-        committed = !!gitResult.committed;
-        if (gitResult.pushError) gitError = gitResult.pushError;
-        if (gitResult.pushed && gitResult.branchName && !PERSISTENT_BRANCH_NAME) {
-          // If a PR URL is already known (shared branch group — sibling already
-          // created the PR), skip PR creation (the push already updated the PR's
-          // branch automatically). Instead, update the PR title/body to include
-          // all tasks in the group (AC5).
-          // Check both the current task's own pullRequestUrl AND sibling PR URLs,
-          // because the second+ task in a group won't have its own PR URL persisted.
-          const groupPrUrl = currentTaskMeta?.pullRequestUrl
-            || (currentTaskMeta?.siblingTasks?.length > 0 ? findSiblingPrUrl(currentTaskMeta.siblingTasks) : null);
-          if (groupPrUrl && currentTaskMeta?.siblingTasks?.length > 0) {
-            prUrl = groupPrUrl;
-            const { title, body } = buildPrContent();
-            const provider = detectGitProvider(REPO_URL);
-            if (provider === "github") {
-              await updateGitHubPullRequest(prUrl, title, body);
-            } else if (provider === "azure-devops") {
-              await updateAzureDevOpsPullRequest(prUrl, title, body);
-            }
-            sendOutput(`PR already exists (shared branch): ${prUrl}`, "system");
-          } else {
-            prUrl = await createPullRequest(gitResult.branchName);
+      // Task-based sessions use the git-delivery MCP tools — the agent calls
+      // submit_task_changes itself, and writes the result to DELIVERY_RESULT_PATH.
+      // Standalone/persistent-branch sessions still use the worker-driven
+      // commitAndPush() flow (no MCP delivery tools available).
+      // Use currentTaskMeta (set per-task in handlePrompt) rather than the
+      // env-level TASK_ID which is only set for legacy single-shot workers.
+      if (!PERSISTENT_BRANCH_NAME && (currentTaskMeta || TASK_ID)) {
+        // Read delivery result written by submit_task_changes MCP tool
+        let deliveryResult = null;
+        try {
+          if (existsSync(DELIVERY_RESULT_PATH)) {
+            deliveryResult = JSON.parse(readFileSync(DELIVERY_RESULT_PATH, "utf8"));
+          }
+        } catch (err) {
+          logError("Failed to read delivery result file", { path: DELIVERY_RESULT_PATH, error: err?.message || String(err) });
+        }
+
+        if (deliveryResult) {
+          hasChanges = !!deliveryResult.committed || !!deliveryResult.pushed;
+          committed = !!deliveryResult.committed;
+          prUrl = deliveryResult.prUrl || null;
+          if (deliveryResult.branchName) {
+            // Update currentBranchName so sendPromptDone reports it correctly
+            currentBranchName = deliveryResult.branchName;
+          }
+          if (deliveryResult.error && !deliveryResult.pushed) {
+            gitError = deliveryResult.error;
           }
         }
-      } catch (err) {
-        gitError = redactSecrets(err?.message || String(err));
-        logError("Post-prompt git/PR operations failed", { error: gitError });
-        sendOutput(`Post-prompt error: ${gitError}`, "stderr");
+
+        // Ground-truth cross-check: if the working tree is dirty but no
+        // successful commit was recorded via the delivery result, report the
+        // truth so the orchestrator can handle it appropriately (reset task).
+        try {
+          const status = exec("git status --porcelain", { cwd: WORKSPACE });
+          if (status) {
+            const dirtyFiles = status.split("\n").filter(Boolean);
+            if (!deliveryResult || !deliveryResult.committed) {
+              logError("Dirty working tree but no successful commit via MCP tools", {
+                fileCount: dirtyFiles.length,
+                files: dirtyFiles.slice(0, 20),
+                deliveryResult: deliveryResult || "absent",
+              });
+              sendOutput(
+                `⚠ Working tree has ${dirtyFiles.length} uncommitted file(s) but submit_task_changes was never ` +
+                `successfully called — reporting hasChanges: true, committed: false.`,
+                "stderr"
+              );
+              hasChanges = true;
+              committed = false;
+            }
+          }
+        } catch {
+          // git status failed — can't verify, proceed with whatever we have
+        }
+      } else {
+        // Standalone/persistent-branch session: use the legacy worker-driven
+        // commitAndPush() flow.
+        try {
+          const gitResult = commitAndPush();
+          hasChanges = gitResult.hasChanges;
+          committed = !!gitResult.committed;
+          if (gitResult.pushError) gitError = gitResult.pushError;
+          if (gitResult.pushed && gitResult.branchName && !PERSISTENT_BRANCH_NAME) {
+            const groupPrUrl = currentTaskMeta?.pullRequestUrl
+              || (currentTaskMeta?.siblingTasks?.length > 0 ? findSiblingPrUrl(currentTaskMeta.siblingTasks) : null);
+            if (groupPrUrl && currentTaskMeta?.siblingTasks?.length > 0) {
+              prUrl = groupPrUrl;
+              const { title, body } = buildPrContent();
+              const provider = detectGitProvider(REPO_URL);
+              if (provider === "github") {
+                await updateGitHubPullRequest(prUrl, title, body);
+              } else if (provider === "azure-devops") {
+                await updateAzureDevOpsPullRequest(prUrl, title, body);
+              }
+              sendOutput(`PR already exists (shared branch): ${prUrl}`, "system");
+            } else {
+              prUrl = await createPullRequest(gitResult.branchName);
+            }
+          }
+        } catch (err) {
+          gitError = redactSecrets(err?.message || String(err));
+          logError("Post-prompt git/PR operations failed", { error: gitError });
+          sendOutput(`Post-prompt error: ${gitError}`, "stderr");
+        }
       }
     }
 
@@ -2128,6 +2228,7 @@ function finishPromptTurn(msg) {
       toolCalls: turnStats.toolCalls,
       durationMs,
       hasChanges,
+      committed,
       prUrl,
       branchName: currentBranchName,
       credits: turnStats.credits || undefined,
@@ -2511,11 +2612,11 @@ function handlePrompt(text, taskMeta) {
 
     try {
       if (AGENT_KIND === "editor") {
-        // Editor-kind agents handle their own branch management via prompt
-        // instructions (BRANCH SETUP section in buildDevPrompt). The worker
-        // just ensures all remote refs are available and sets currentBranchName
-        // so commitAndPush() knows where to push after the prompt finishes.
-        // The agent is expected to leave the working tree on the correct branch.
+        // Editor-kind agents handle their own branch management via the
+        // git-delivery MCP tools (sync_task_branch / submit_task_changes).
+        // The worker just ensures all remote refs are available and sets
+        // currentBranchName so the MCP server receives the correct
+        // TASK_BRANCH_NAME in its environment.
         // Fetch all refs and update refs/remotes/origin/* tracking refs.
         // Using "origin" (not authRemoteUrl) ensures tracking refs are updated —
         // fetching from a raw URL only updates FETCH_HEAD. The origin remote URL
@@ -2528,12 +2629,10 @@ function handlePrompt(text, taskMeta) {
         if (taskMeta.branch) {
           currentBranchName = taskMeta.branch;
         } else {
-          // Compute the deterministic branch name so commitAndPush() has
-          // a target, and the agent prompt receives it via taskMeta.branch
-          // (which the orchestrator sends). If taskMeta.branch is empty, the
-          // prompt's BRANCH SETUP section won't render — the agent won't know
-          // to create a branch. Set currentBranchName to the deterministic name
-          // here so the post-prompt push still targets the right ref.
+          // Compute the deterministic branch name so the git-delivery MCP
+          // tools (sync_task_branch / submit_task_changes) know which branch
+          // to create/push. This value is passed as TASK_BRANCH_NAME in the
+          // MCP server env when buildMcpServers() runs for session/new.
           currentBranchName = buildBranchName(taskMeta.type || "task", taskMeta.id, taskMeta.title);
         }
         sendOutput(
@@ -2690,6 +2789,16 @@ function deliverPrompt(text) {
   } catch (err) {
     logError("Failed to reset review-comment marker file", { error: err?.message || String(err) });
   }
+  // Clean up the delivery result file from any prior turn so a stale result
+  // from a previous task is never misread as this turn's outcome.
+  try {
+    if (existsSync(DELIVERY_RESULT_PATH)) {
+      unlinkSync(DELIVERY_RESULT_PATH);
+    }
+  } catch {
+    // Best effort — if deletion fails, finishPromptTurn will just read the stale file.
+    // Not critical enough to fail the turn over.
+  }
 
   const sent = writeToKiro({
     jsonrpc: "2.0",
@@ -2730,12 +2839,20 @@ let shuttingDown = false;
 function commitOnExitAndShutdown(exitCode) {
   if (shuttingDown) return;
   if (AGENT_KIND !== "inspector") {
-    try {
-      const result = commitAndPush();
-      if (result.pushed) sendOutput(`Changes pushed to ${result.branchName}`, "system");
-    } catch (err) {
-      logError("commit/push on exit failed", { error: err?.message || String(err) });
-      sendOutput(`commit/push failed: ${err?.message || String(err)}`, "stderr");
+    // Task-based editor sessions use the git-delivery MCP tools — the agent
+    // commits/pushes via submit_task_changes during the turn. Only standalone/
+    // persistent-branch sessions still need the worker-driven commit-on-exit.
+    // Use currentTaskMeta (set per-task in handlePrompt) rather than the
+    // env-level TASK_ID which is only set for legacy single-shot workers.
+    const isTaskBasedEditor = !PERSISTENT_BRANCH_NAME && (currentTaskMeta || TASK_ID);
+    if (!isTaskBasedEditor) {
+      try {
+        const result = commitAndPush();
+        if (result.pushed) sendOutput(`Changes pushed to ${result.branchName}`, "system");
+      } catch (err) {
+        logError("commit/push on exit failed", { error: err?.message || String(err) });
+        sendOutput(`commit/push failed: ${err?.message || String(err)}`, "stderr");
+      }
     }
   }
   // worker-shutdown drives the orchestrator's final session status; the socket

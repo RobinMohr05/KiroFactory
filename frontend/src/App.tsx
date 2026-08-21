@@ -2,6 +2,7 @@ import { AppProvider, useApp } from './context/AppContext';
 import { Header } from './components/Header';
 import { TabBar } from './components/TabBar';
 import { ViewTabs } from './components/ViewTabs';
+import { MobileTabSelector } from './components/MobileTabSelector';
 import { TasksPanel } from './components/TasksPanel';
 import { SessionsPanel } from './components/SessionsPanel';
 import { AgentsPanel } from './components/AgentsPanel';
@@ -16,6 +17,7 @@ function AppInner() {
     <>
       <Header />
       <TabBar />
+      <MobileTabSelector />
       <ViewTabs />
       {activeView === 'boards' && <TasksPanel />}
       {activeView === 'sessions' && <SessionsPanel />}

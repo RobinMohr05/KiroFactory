@@ -26,6 +26,8 @@ describe('Header', () => {
       connected: true,
       logout: vi.fn(),
       setActiveView: mockSetActiveView,
+      errors: [],
+      activeView: 'boards',
     } as any);
     vi.mocked(api.apiFetch).mockResolvedValue({
       ok: true,
