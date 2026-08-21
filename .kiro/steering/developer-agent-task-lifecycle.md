@@ -130,13 +130,66 @@ is the human contributor's dev environment for working on KiroFactory itself (co
 references to devcontainer/Docker anywhere in `backend/src/` or `worker/`'s actual session/agent
 execution code). No agent session, local or ACA, runs inside it.
 
-The fix (some form of per-session/per-task working-directory isolation — git worktrees, a
-clone-per-session mirroring the ACA approach, or literal containers) is an open design question
-as of this writing, not yet resolved or task-tracked. If picking this up, resolve the design
-question with the user first (worktrees avoid making Docker a hard local dependency; literal
-containers would need `KiroRunner.create()`'s plain `spawn("kiro-cli", ...)` reworked to spawn
-inside one) before filing or claiming a task — an underspecified task here would be immediately
-auto-claimed by the live pipeline per the claiming rules in this same document.
+**Design in progress (2026-08-21) — git worktrees, chosen over clone-per-session or literal
+containers.** User decision: use `git worktree` (one per loop-mode session, reused across that
+session's tasks — not recreated per task claim), scoped to loop-mode sessions only
+(`developer-agent`/`code-reviewer-agent`/`qa-improvement-agent`); interactive/chat sessions (this
+IDE, the Task Planner) keep using the real project root as `cwd`, unchanged. Proposed path
+convention: `workspaces/session-<id>/` — that directory name is already in `.gitignore` today
+but currently unused by any code, so it's a pre-reserved, ready-to-use spot rather than a new
+entry needed. Not yet implemented or task-tracked as of this writing — do not file/claim a task
+for this until the design below is confirmed, since an underspecified task here would be
+immediately auto-claimed by the live pipeline per the claiming rules in this same document.
+
+The open reconciliation point when this was raised: the user's own framing was "if they only
+read, then they should use develop; if they can write, then they should see develop, but check
+out their own [branch] when actually working." Taken completely literally that would mean
+inspector-kind agents review from develop and never check out the task's own branch at all — but
+that contradicts what ACA already does today (see below), and would mean an inspector's file
+reads never actually show the changed files, only develop's. The reconciliation proposed (pending
+user confirmation) keeps the read/write distinction where it actually matters — inspectors always
+check out an *existing* branch (never create one, never push), editors check out/create *their
+own* task branch — both idle-on-develop between tasks, both checked-out-to-something while
+actively working a task. This mirrors AGENT_KIND's real editor/inspector split (see below)
+instead of introducing a third, local-only behavior that diverges from production.
+
+### How ACA's worker actually handles inspector vs. editor branch checkout (confirmed by tracing worker.js)
+
+Directly relevant to the local-worktree design above, and a fact worth knowing on its own:
+**inspector-kind agents in production DO check out the task's branch locally** — this is easy to
+assume otherwise (e.g. "reviewers just diff a remote ref") but is not what the code does.
+
+In `worker/worker.js`'s `handlePrompt(text, taskMeta)` (~line 2566), after `refreshDevBranch()`
+unconditionally re-fetches and hard-resets local `DEV_BRANCH` to `origin/<DEV_BRANCH>`, there's an
+`if (AGENT_KIND === "editor") { ... } else { ... }` gate (~line 2614/2646):
+
+- **Editor** stays on `DEV_BRANCH` — sets `currentBranchName` purely as a hint for the
+  git-delivery MCP server (`sync_task_branch`/`submit_task_changes`), does zero `git checkout`
+  itself. The agent's own MCP tool calls are what actually create/checkout the task branch.
+- **Inspector** (the `else`, explicitly commented `"the unchanged original logic"` — i.e. this
+  predates the editor MCP-tool addition): `resetWorkingTree()` (discards any dirty state) →
+  `git fetch <remote> <taskMeta.branch>` → `git checkout -B <taskMeta.branch> FETCH_HEAD`. If the
+  task has no `branch` DB field (a stale/lost pointer), it falls back to `git ls-remote --heads`
+  for the deterministic name (`buildBranchName()`, `[type]/#[id]_[slug]`) and checks that out
+  instead if found; if nothing exists anywhere, `currentBranchName = null` and it logs "Inspector
+  agent has no branch to review" — no checkout, `HEAD` stays wherever the previous task on this
+  same long-lived container left it.
+
+This is why `buildReviewPrompt()` (`backend/src/agent/prompt-builder.ts`) can literally tell the
+agent *"This is the checked-out repository, already on the correct branch for this task"* and
+have it be true in the normal case — `handlePrompt()` runs the checkout synchronously to
+completion before the ACP session/first prompt turn ever starts.
+
+Post-turn, `finishPromptTurn()`'s inspector branch (~line 2081) only runs
+`git reset --hard HEAD && git clean -fd`, and only *conditionally* — if `git status --porcelain`
+shows the inspector broke its own read-only instructions and left dirty files. `reset --hard HEAD`
+resets the working tree/index to the current `HEAD` *commit*; it does not move `HEAD` to a
+different branch. There is no `git checkout DEV_BRANCH` anywhere in `finishPromptTurn()` for
+either kind — the workspace sits on the just-finished task's branch until the *next* task's
+`handlePrompt()` → `refreshDevBranch()` transiently passes through `DEV_BRANCH` on its way to
+deciding the next checkout. So "idle between tasks" in production is really "sits on the
+previous task's branch," not "sits on develop" — a detail any local-mode design should either
+replicate or consciously diverge from, not overlook.
 
 The turn prompt itself depends on agent `kind` (`buildTurnPrompt` in `session-manager.ts`):
 editors get `buildDevPrompt` ("implement this"), inspectors get `buildReviewPrompt`
