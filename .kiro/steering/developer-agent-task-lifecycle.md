@@ -108,6 +108,36 @@ up only in `worker/worker.js` (ACA) — a local `KiroRunner` session is never gi
 so a local developer-agent turn has no way to actually commit/push/open a PR even if it wanted
 to, regardless of how the turn otherwise concludes.
 
+**No working-directory isolation in local mode — confirmed gap, not yet fixed (2026-08-21).**
+`DEFAULT_CWD` in `session-manager.ts` (`resolve(import.meta.dirname, "../..")`) is the literal
+KiroFactory project root, and every local session uses it unless a caller explicitly overrides
+`cwd`. There is no per-session or per-task directory allocation anywhere in the local path — no
+`git worktree`, no clone-per-session, nothing. Compare ACA/remote mode, where every worker
+execution gets its own container with a fresh `git clone` into `/workspace`
+(`worker/worker.js`'s `WORKSPACE` constant).
+
+Concretely: the standard 3-stage pipeline run locally (`developer-agent` →
+`code-reviewer-agent` → `qa-improvement-agent`) is three concurrent long-lived loop sessions
+that, by default, all point `kiro-cli` at the *same directory on disk* at the same time — and
+since local dev agents are explicitly told not to run `git checkout`/`git branch` (no
+git-delivery tools to manage a task branch either, per above), there's no branch-per-task
+separation to fall back on. Add an interactive/chat session or a human editing the repo at the
+same time (e.g. via this very IDE) and they're all sharing one working tree with zero
+coordination. This is a live conflict risk today, not a hypothetical.
+
+`.devcontainer/` in the repo root is **not** related to this and does not fix it — that config
+is the human contributor's dev environment for working on KiroFactory itself (confirmed: zero
+references to devcontainer/Docker anywhere in `backend/src/` or `worker/`'s actual session/agent
+execution code). No agent session, local or ACA, runs inside it.
+
+The fix (some form of per-session/per-task working-directory isolation — git worktrees, a
+clone-per-session mirroring the ACA approach, or literal containers) is an open design question
+as of this writing, not yet resolved or task-tracked. If picking this up, resolve the design
+question with the user first (worktrees avoid making Docker a hard local dependency; literal
+containers would need `KiroRunner.create()`'s plain `spawn("kiro-cli", ...)` reworked to spawn
+inside one) before filing or claiming a task — an underspecified task here would be immediately
+auto-claimed by the live pipeline per the claiming rules in this same document.
+
 The turn prompt itself depends on agent `kind` (`buildTurnPrompt` in `session-manager.ts`):
 editors get `buildDevPrompt` ("implement this"), inspectors get `buildReviewPrompt`
 ("review only, post comments, report a verdict — do not modify files").
