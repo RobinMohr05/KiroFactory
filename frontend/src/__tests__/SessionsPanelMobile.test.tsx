@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, act } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import * as AppContext from '../context/AppContext';
 
 vi.mock('../context/AppContext', () => ({
@@ -9,6 +10,16 @@ vi.mock('../context/AppContext', () => ({
 vi.mock('../utils/api', () => ({
   apiFetch: vi.fn().mockResolvedValue({ ok: true, json: async () => [] }),
 }));
+
+const mockNavigate = vi.fn();
+vi.mock('react-router-dom', async () => {
+  const actual = await vi.importActual('react-router-dom');
+  return {
+    ...actual,
+    useNavigate: () => mockNavigate,
+    useParams: () => ({}),
+  };
+});
 
 import { SessionsPanel } from '../components/SessionsPanel';
 
@@ -53,7 +64,7 @@ describe('SessionsPanel - Mobile drill-down (≤480px)', () => {
 
   it('on mobile, shows only the session list (detail panel is hidden)', () => {
     mockUseApp({ activeSessionId: 1 });
-    const { container } = render(<SessionsPanel />);
+    const { container } = render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
 
     // The list panel should be visible (no mobile-hidden class)
     const listPanel = container.querySelector('.session-list-panel');
@@ -67,7 +78,7 @@ describe('SessionsPanel - Mobile drill-down (≤480px)', () => {
   it('on mobile, tapping a session item shows the detail view', () => {
     const mockSetActiveSessionId = vi.fn();
     mockUseApp({ activeSessionId: null, setActiveSessionId: mockSetActiveSessionId });
-    render(<SessionsPanel />);
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
 
     // Click on a session item
     fireEvent.click(screen.getByText('Session One'));
@@ -78,7 +89,7 @@ describe('SessionsPanel - Mobile drill-down (≤480px)', () => {
 
   it('on mobile, when drilled into detail, list panel is hidden and detail is visible', () => {
     mockUseApp({ activeSessionId: 1 });
-    const { container } = render(<SessionsPanel />);
+    const { container } = render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
 
     // Simulate tapping into a session on mobile — click the list item
     const listPanel = container.querySelector('.session-list-panel');
@@ -94,7 +105,7 @@ describe('SessionsPanel - Mobile drill-down (≤480px)', () => {
 
   it('on mobile detail view, shows a back button', () => {
     mockUseApp({ activeSessionId: 1 });
-    const { container } = render(<SessionsPanel />);
+    const { container } = render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
 
     // Drill into the session
     const listPanel = container.querySelector('.session-list-panel');
@@ -108,7 +119,7 @@ describe('SessionsPanel - Mobile drill-down (≤480px)', () => {
 
   it('on mobile, tapping the back button returns to the list view', () => {
     mockUseApp({ activeSessionId: 1 });
-    const { container } = render(<SessionsPanel />);
+    const { container } = render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
 
     // Drill into the session
     const listPanel = container.querySelector('.session-list-panel');
@@ -130,7 +141,7 @@ describe('SessionsPanel - Mobile drill-down (≤480px)', () => {
     // Set desktop viewport
     mockMql.matches = false;
     mockUseApp({ activeSessionId: 1 });
-    const { container } = render(<SessionsPanel />);
+    const { container } = render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
 
     // Both panels should be visible (no mobile-hidden class)
     const listPanel = container.querySelector('.session-list-panel');
@@ -143,7 +154,7 @@ describe('SessionsPanel - Mobile drill-down (≤480px)', () => {
   it('on mobile, the back button is not rendered at desktop width', () => {
     mockMql.matches = false;
     mockUseApp({ activeSessionId: 1 });
-    const { container } = render(<SessionsPanel />);
+    const { container } = render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
 
     expect(container.querySelector('.mobile-back-btn')).not.toBeInTheDocument();
   });
