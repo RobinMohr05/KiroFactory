@@ -32,4 +32,20 @@ Standing conventions for how to work in this workspace, confirmed with the user 
   actual `session-manager.ts` + `task-claimer.ts` + `worker.js` pipeline instead. Default to this
   resolution (remove + rewrite docs) rather than leaving dead code in place "for reference."
 
+## Task/board state isn't ground truth either — a written fix isn't a wired fix
 
+The same "code wins" skepticism applies to the DB's task state, not just to docs/steering. A
+task marked `done`/`resolved` is a claim someone (human or agent) made, not proof the underlying
+code path actually runs.
+
+- Precedent: task #598 ("Local-mode pipeline has no commit gate") was itself marked `done` in
+  Neo4j while its own fix — `backend/src/agent/local-git-check.ts`'s `hasLocalGitChanges()` plus
+  a fully-written test file (`local-commit-gate.test.ts`) spec'ing the exact desired behavior —
+  sat completely unwired: nothing in `session-manager.ts` ever called it. This was only caught
+  by grepping for actual call sites of the helper (found none in non-test code) and then running
+  the existing test suite, which failed immediately with a plain "0 calls" assertion error.
+- General rule this generalizes to: a well-tested helper file existing in the repo is not evidence
+  it's integrated anywhere. Before trusting that a documented/tracked fix has landed — whether the
+  evidence is a task's `done` state, a steering note, or just "there's a file for it" — grep for
+  where it's actually called from, and run its tests, rather than taking the board column at face
+  value.
