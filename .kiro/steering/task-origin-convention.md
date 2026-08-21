@@ -107,6 +107,30 @@ don't hardcode a mapping here — just query `tabs` (name, repository_url,
 user_id) to find the right one when needed. That data already lives in the
 DB; duplicating it in steering would just go stale.
 
+## How to correct task state (reset/resolve outside the pipeline)
+
+Sometimes a task's state needs fixing directly from a Kiro session — e.g. rolling a task
+back to `"todo"` after discovering the pipeline marked it `done`/`developed` incorrectly
+(see `developer-agent-task-lifecycle.md`'s task #598 for a concrete case: tasks that reached
+`done` with `hasChanges: false` on every recorded `:Turn`).
+
+Same principle as task creation: call the real DB-layer function the pipeline itself uses —
+`resetTask(taskId, state)` / `resolveTask(taskId, state, branch?, pullRequestUrl?)` from
+`backend/src/agent/task-claimer.ts` — from a one-off script, rather than writing a raw Cypher
+`SET t.state = ...`. The exported functions do more than the field write: `resetTask` also
+calls `broadcastTaskUpdate` (so any connected UI reflects the change immediately) and
+`notifyTaskAvailable` (so a loop session already parked waiting for that state wakes up
+immediately instead of relying on its 5-minute fallback timer). A raw Cypher write gets the
+column right but silently skips both of those.
+
+There's no dedicated `backend/scripts/reset-task.ts` today (unlike `create-task.ts` for
+creation) — until one exists, write a `.temp/` script that imports `resetTask`/`resolveTask`
+and calls `tryConnect()`/`closePool()` around it (same `dotenv`-via-`backend/.env` pattern as
+every other script), then delete the script per the `.temp/` convention once run. Before
+resetting a task on suspicion alone, check its `:Turn` history first (see
+`developer-agent-task-lifecycle.md`'s "Diagnosing what the pipeline actually did") to confirm
+the correction is warranted rather than guessing from board state alone.
+
 ## Type, priority, description, and files
 
 Don't apply fixed defaults for `type`, `priority`, or `files` — infer them
