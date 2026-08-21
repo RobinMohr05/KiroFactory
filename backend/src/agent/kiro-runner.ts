@@ -10,6 +10,7 @@
 import { spawn, execSync, type ChildProcess } from "node:child_process";
 import { resolve } from "node:path";
 import { existsSync } from "node:fs";
+import { log, toErrorFields } from "../logger.js";
 
 // ---------------------------------------------------------------------------
 // Types (avoid hard dependency on @agentclientprotocol/sdk at import time)
@@ -73,6 +74,33 @@ function getShortPath(longPath: string): string {
   return longPath;
 }
 
+/**
+ * Reject a persisted `cwd` that was captured from a Linux container
+ * environment (e.g. "/app" — the production/Docker WORKDIR — or the ACA
+ * worker's "/workspace") before it ever reaches `path.resolve()`.
+ *
+ * `path.resolve()` does NOT error on a POSIX-style absolute path on win32 —
+ * it silently reinterprets a leading "/" as relative to the current drive
+ * (e.g. "/app" -> "C:\app"). A session whose `cwd` was persisted while the
+ * server ran in a container and is later reused on a local Windows machine
+ * would therefore NOT fail cleanly: it would spawn kiro-cli into whatever
+ * "C:\app" happens to be — nonexistent (caught by the existsSync check
+ * below), or worse, some unrelated directory that happens to already exist
+ * there, in which case the existsSync check never fires and the agent is
+ * silently pointed at the wrong working tree instead of the real project.
+ * This must run on the raw, pre-resolve string.
+ */
+export function assertNotContainerPathOnWindows(rawCwd: string): void {
+  if (process.platform === "win32" && rawCwd.startsWith("/")) {
+    throw new Error(
+      `Session working directory "${rawCwd}" is a container-style path (e.g. from a ` +
+        `production ACA/Docker run) and cannot be used on this Windows machine — resolving ` +
+        `it would silently produce an unrelated drive-root path like "C:\\${rawCwd.slice(1)}" ` +
+        `instead of failing outright. Update the session's working directory to a real local path.`
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // KiroRunner class
 // ---------------------------------------------------------------------------
@@ -97,6 +125,13 @@ export class KiroRunner {
    * turn; read after the `prompt()` async generator completes.
    */
   private _lastTurnCredits = 0;
+  /**
+   * Error captured from a rejected `this.conn.prompt(...)` call.
+   * Stored here so the async generator can drain any buffered updates before
+   * re-throwing — callers see the error after all yielded updates are consumed.
+   * Reset to null at the start of each turn.
+   */
+  private _promptError: Error | null = null;
   /**
    * MCP servers that failed to initialize for the current session (one entry
    * per `_kiro.dev/mcp/server_init_failure` notification). Mirrors the same
@@ -149,6 +184,7 @@ export class KiroRunner {
     if (opts.agent) args.push("--agent", opts.agent);
     if (opts.model) args.push("--model", opts.model);
 
+    assertNotContainerPathOnWindows(opts.cwd);
     const cwd = getShortPath(resolve(opts.cwd));
 
     // A missing cwd also makes Node's spawn() fail with ENOENT — identical to
@@ -383,6 +419,7 @@ export class KiroRunner {
    * scopes conversation state to sessionId.
    */
   async newSession(overrideCwd?: string): Promise<void> {
+    if (overrideCwd) assertNotContainerPathOnWindows(overrideCwd);
     const cwd = overrideCwd ? getShortPath(resolve(overrideCwd)) : this.sessionCwd;
     this._mcpServerInitFailures = [];
     const result = await this.conn.newSession({
@@ -400,6 +437,7 @@ export class KiroRunner {
     this.turnDone = false;
     this.updateQueue = [];
     this._lastTurnCredits = 0;
+    this._promptError = null;
 
     const contentBlocks: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [
       { type: "text" as const, text },
@@ -417,7 +455,10 @@ export class KiroRunner {
         this.turnDone = true;
         this.updateResolve?.();
       })
-      .catch(() => {
+      .catch((err: unknown) => {
+        const error = err instanceof Error ? err : new Error(String(err));
+        this._promptError = error;
+        log.error("ACP prompt rejected", toErrorFields(error));
         this.turnDone = true;
         this.updateResolve?.();
       });
@@ -438,6 +479,13 @@ export class KiroRunner {
     }
 
     await promptDone;
+
+    // Re-throw captured error after all buffered updates have been yielded,
+    // so callers (e.g. streamPrompt) see the failure via their existing
+    // try/catch and can surface it to the session output stream.
+    if (this._promptError) {
+      throw this._promptError;
+    }
   }
 
   /** Cancel the session and kill the kiro-cli subprocess. */
