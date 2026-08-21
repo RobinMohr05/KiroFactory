@@ -100,7 +100,13 @@ back (`stopReason`, `hasChanges`, `prUrl`, `branchName`, `credits`, `verdict`).
 **Local (dev only):** `KiroRunner` (`backend/src/agent/kiro-runner.ts`) spawns `kiro-cli` as a
 child process directly on the orchestrator host — no container, no git integration at all. Both
 paths funnel through the same `processUpdate()` logic in `session-manager.ts`, so verdict
-capture and output streaming behave identically regardless of mode.
+capture and output streaming behave identically regardless of mode. **What is NOT identical:**
+the safety checks built on top of that verdict — see "Local mode has no commit gate" below. Also,
+the git-delivery MCP tools (`sync_task_branch`, `finalize_branch_sync`, `submit_task_changes`)
+that `buildDevPrompt()` instructs every editor-kind agent to use for all git operations are wired
+up only in `worker/worker.js` (ACA) — a local `KiroRunner` session is never given these tools,
+so a local developer-agent turn has no way to actually commit/push/open a PR even if it wanted
+to, regardless of how the turn otherwise concludes.
 
 The turn prompt itself depends on agent `kind` (`buildTurnPrompt` in `session-manager.ts`):
 editors get `buildDevPrompt` ("implement this"), inspectors get `buildReviewPrompt`
@@ -156,6 +162,49 @@ diff and wrongly report no issues on code it never saw. The worker avoids this b
 `git ls-remote` for the task's deterministic branch name (`[type]/#[id]_[slug]`) before falling
 back to creating a fresh branch, recovering the existing remote branch if one is found instead of
 overwriting it.
+
+### Local mode has no commit gate — confirmed live, tracked as task #598
+
+All of the above (`hasChanges`/`committed` cross-check, the no-changes-and-no-verdict check) is
+`runLoopModeAca()`-only. **`runLoopMode()` (local mode) has no equivalent.** Its success/failure
+branch only looks at whether `streamPrompt()` threw and at `managed.turnVerdict` — never at
+whether any file actually changed. `streamPrompt()` itself hardcodes `hasChanges: false`
+unconditionally into every `TurnEndSummary` it builds (local mode has no git integration to
+populate it with — see §2 above), and that hardcoded `false` is written to the DB's
+`Turn.hasChanges` but never read back by the loop's own decision logic. A `developer-agent` turn
+that returns normally with no verdict (expected for editor-kind agents — only inspectors are
+required to call `report_verdict`) falls straight into the `else` branch and gets
+`resolveTask(task.id, stages.resolveState)` unconditionally, with zero verification that anything
+was actually implemented.
+
+Confirmed live on 2026-08-21: three local loop sessions (`developer-agent` → `code-reviewer-agent`
+→ `qa-improvement-agent`) ran end-to-end on two tasks and marked both `done`. One had **zero file
+changes anywhere in the working tree**. The other's change was a stub (a field added but never
+read) that fails the dev agent's own self-authored test 3 out of 4 assertions. All three stages —
+including both inspector stages, whose entire job is supposed to be catching exactly this —
+passed both through. Tracked as task #598. If working on `runLoopMode()`, `streamPrompt()`, or
+considering running the full pipeline locally rather than via ACA, know that historically it
+provided **no delivery guarantee at all** — a task reaching `"done"` locally was not evidence any
+code was written.
+
+**Update 2026-08-21 — fixed, but only closes half the gap:** `runLoopMode()` now calls
+`hasLocalGitChanges(meta.cwd)` (`backend/src/agent/local-git-check.ts` — `git status --porcelain`,
+falling back to `git log <base>..HEAD` for a clean-tree-but-committed turn) for editor-kind agents
+that finish a turn with no verdict. If it reports no changes, the task is reset to
+`stages.claimState` instead of resolved — matching the ACA `hasChanges`/`committed` cross-check's
+philosophy. Inspector-kind agents are exempt (they never produce file changes by design). Covered
+by `backend/src/tests/local-commit-gate.test.ts` (all 3 cases passing: no-changes-and-no-verdict →
+reset, changes-present → resolve, inspector → git check skipped entirely).
+
+This closes the "silently marked done with zero changes" failure mode, but does **not** give local
+mode an actual delivery mechanism — the git-delivery MCP tools gap described just above this
+section is still unresolved. A local developer-agent turn that edits files directly (bypassing the
+git-delivery tools it's told to use, since they don't exist locally) and leaves them uncommitted
+will now correctly fail the gate and retry forever rather than being marked `"done"`, but it still
+has no way to commit/push/open a PR even if the agent behaves exactly as instructed. Local mode
+today is safe (no more false "done"s) but still non-functional as a way to actually ship code
+without ACA — treat it as suitable for interactive/chat sessions, not as a substitute for the ACA
+pipeline.
 
 ## 4. Loop mode
 

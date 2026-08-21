@@ -17,6 +17,7 @@ import { sanitizeSessionForClient } from "./session-sanitize.js";
 import { claimTask, resolveTask, resetTask, getAvailableTaskCount, waitForTaskAvailable, markTaskDone, findSiblingTasks, findSiblingTasksByGroupId, describeClaimFailure } from "./agent/task-claimer.js";
 import type { ClaimedTask } from "./agent/task-claimer.js";
 import { buildDevPrompt, buildReviewPrompt } from "./agent/prompt-builder.js";
+import { hasLocalGitChanges } from "./agent/local-git-check.js";
 import { buildPersistentBranchName } from "./agent/repo-url-parser.js";
 import { TabMcpConfig, DEFAULT_MCP_CONFIG, resolveGitProvider, type GitProvider } from "./types.js";
 import {
@@ -1372,6 +1373,32 @@ async function runLoopMode(
           timestamp: now(),
           stream: "system",
           text: `Task ${task.id} sent back to "todo" — reviewer/QA requested changes (see PR comments).`,
+        });
+      } else if (stages.kind === "editor" && !hasLocalGitChanges(meta.cwd)) {
+        // Local-mode commit gate (task #598): an editor-kind agent that ends its
+        // turn with no verdict AND no observable git change (working tree diff,
+        // or commits ahead of the base branch) produced no detectable outcome at
+        // all. This is the local equivalent of the hasChanges/committed
+        // cross-check runLoopModeAca() gets from the ACA worker — without it, a
+        // turn that silently did nothing (e.g. told to use git-delivery MCP tools
+        // that aren't wired into local KiroRunner sessions) was unconditionally
+        // marked resolved. Inspector-kind agents are exempt: they never produce
+        // file changes by design, so this check only applies to editors.
+        await resetTask(task.id, stages.claimState);
+        appendOutput(managed, {
+          timestamp: now(),
+          stream: "stderr",
+          text: `✖ Task ${task.id} reset to "${stages.claimState}" — no git changes detected and no verdict reported (turn produced no observable outcome).`,
+        });
+        recordSessionError({
+          sessionId: meta.id,
+          sessionName: meta.name,
+          agent: meta.agent,
+          message: `Editor-kind agent completed the turn with no verdict and no local git changes — nothing was actually implemented`,
+          context: `Task "${task.title}" (ID: ${task.id}, type: ${task.type}, priority: P${task.priority}) produced no observable outcome in local mode.`,
+          taskId: task.id,
+          taskTitle: task.title,
+          userId: meta.userId,
         });
       } else {
         await resolveTask(task.id, stages.resolveState);
