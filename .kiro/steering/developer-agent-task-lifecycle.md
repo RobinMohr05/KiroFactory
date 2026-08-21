@@ -131,27 +131,37 @@ references to devcontainer/Docker anywhere in `backend/src/` or `worker/`'s actu
 execution code). No agent session, local or ACA, runs inside it.
 
 **Design in progress (2026-08-21) — git worktrees, chosen over clone-per-session or literal
-containers.** User decision: use `git worktree` (one per loop-mode session, reused across that
-session's tasks — not recreated per task claim), scoped to loop-mode sessions only
+containers.** User decision: use `git worktree`, scoped to loop-mode sessions only
 (`developer-agent`/`code-reviewer-agent`/`qa-improvement-agent`); interactive/chat sessions (this
-IDE, the Task Planner) keep using the real project root as `cwd`, unchanged. Proposed path
-convention: `workspaces/session-<id>/` — that directory name is already in `.gitignore` today
-but currently unused by any code, so it's a pre-reserved, ready-to-use spot rather than a new
-entry needed. Not yet implemented or task-tracked as of this writing — do not file/claim a task
-for this until the design below is confirmed, since an underspecified task here would be
-immediately auto-claimed by the live pipeline per the claiming rules in this same document.
+IDE, the Task Planner) keep using the real project root as `cwd`, unchanged. Not yet implemented
+or task-tracked as of this writing — do not file/claim a task for this until the design below is
+confirmed, since an underspecified task here would be immediately auto-claimed by the live
+pipeline per the claiming rules in this same document.
 
-The open reconciliation point when this was raised: the user's own framing was "if they only
-read, then they should use develop; if they can write, then they should see develop, but check
-out their own [branch] when actually working." Taken completely literally that would mean
-inspector-kind agents review from develop and never check out the task's own branch at all — but
-that contradicts what ACA already does today (see below), and would mean an inspector's file
-reads never actually show the changed files, only develop's. The reconciliation proposed (pending
-user confirmation) keeps the read/write distinction where it actually matters — inspectors always
-check out an *existing* branch (never create one, never push), editors check out/create *their
-own* task branch — both idle-on-develop between tasks, both checked-out-to-something while
-actively working a task. This mirrors AGENT_KIND's real editor/inspector split (see below)
-instead of introducing a third, local-only behavior that diverges from production.
+Confirmed (not just proposed): inspectors get the task's branch checked out into their worktree
+too, not left on develop — this matches what ACA already does (see below) and is necessary for
+an inspector's file reads to show the actual changed files rather than develop's.
+
+**Worktree granularity is per-task, not per-session — reversed from the initial proposal, because
+of a git constraint.** The first draft of this design was one worktree per loop-mode session,
+reused across whichever tasks that session claims over time. That does not work once every
+pipeline stage needs the *same* branch checked out in turn: git enforces that a given branch can
+only be checked out in one worktree at a time (`fatal: '<branch>' is already checked out at
+'<path>'` if you try a second). Production ACA sidesteps this because each stage runs in a
+genuinely separate `git clone` (separate `.git`, no shared exclusivity) — but worktrees all share
+one `.git`, so that exclusivity is real and unavoidable between them. Concretely: developer-agent
+finishes task 600 and goes idle, but its worktree is still sitting checked-out on
+`feature/#600_foo` (idle just means no active turn, not "let go of the branch" — see the ACA
+inspector section below, same idle-on-last-branch behavior). Task 600 moves to `developed`;
+code-reviewer-agent claims it and needs that same branch — if it tried to check that branch out
+into a *different* worktree, it would collide with developer-agent's still-holding worktree. The
+fix: key the worktree by **task ID**, not session ID (e.g. `workspaces/task-<id>/`), created when
+developer-agent first claims the task and reused by whichever stage claims that same task next
+(code-reviewer-agent, qa-improvement-agent, and back to developer-agent again on a
+`changes_requested` bounce) — since only one stage works a given task at a time, there's no
+simultaneous-access conflict, the worktree just follows the task through the pipeline instead of
+staying pinned to one session. Proposed only as of this writing, not yet confirmed by the user or
+implemented.
 
 ### How ACA's worker actually handles inspector vs. editor branch checkout (confirmed by tracing worker.js)
 
