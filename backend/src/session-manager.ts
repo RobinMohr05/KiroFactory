@@ -125,7 +125,7 @@ log.info("worker-mode", {
 
 const sessions = new Map<number, ManagedSession>();
 
-interface ManagedSession {
+export interface ManagedSession {
   meta: Session;
   runner: KiroRunner | null;
   abortController: AbortController | null;
@@ -1745,6 +1745,50 @@ function formatToolName(name: string): string {
   return words.join(" ");
 }
 
+/**
+ * Try to extract a `{ verdict, reason }` payload from a tool call's content
+ * blocks and, if found, record it onto `managed.turnVerdict`.
+ *
+ * This is the sole source of truth for verdict capture — deliberately NOT
+ * gated on toolCallId correlation with a prior `tool_call` announcement (see
+ * the removed `verdictToolCallId`/name-matching approach this replaced).
+ * kiro-cli does not reliably emit MCP tool-call announcements as a
+ * `sessionUpdate: "tool_call"` update before their completion; sometimes the
+ * announcement instead falls into the catch-all `default:` case below (no
+ * `toolCallId`, no `title` matching "report_verdict"), which meant the old
+ * approach's `managed.verdictToolCallId` was never set, so a matching
+ * `tool_call_update` never captured the verdict even though the tool call
+ * genuinely completed successfully with a valid verdict payload (see task
+ * about task #597 resetting to "todo" with "no verdict reported" despite
+ * report_verdict having actually run and returned no_action_needed).
+ *
+ * Matching on content shape instead of on ID/name correlation is robust to
+ * that — any completed tool call whose output happens to contain valid JSON
+ * `{"verdict": "resolved" | "no_action_needed" | "changes_requested", ...}`
+ * is accepted, regardless of which update type announced it or whether a
+ * toolCallId was ever available to correlate against.
+ */
+const VALID_TURN_VERDICTS = new Set(["resolved", "no_action_needed", "changes_requested"]);
+
+export function tryCaptureVerdictFromContent(
+  managed: ManagedSession,
+  content: unknown,
+): void {
+  if (!Array.isArray(content)) return;
+  for (const block of content as Array<{ type?: string; text?: string }>) {
+    if (block?.type === "text" && block.text) {
+      try {
+        const parsed = JSON.parse(block.text);
+        if (parsed && typeof parsed.verdict === "string" && VALID_TURN_VERDICTS.has(parsed.verdict)) {
+          managed.turnVerdict = parsed.verdict;
+        }
+      } catch {
+        /* not JSON — ignore */
+      }
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 
 function processUpdate(managed: ManagedSession, update: SessionUpdateChunk): void {
@@ -1792,14 +1836,6 @@ function processUpdate(managed: ManagedSession, update: SessionUpdateChunk): voi
           icon,
           status: "running",
         });
-
-        // Track report_verdict tool calls so we can capture the verdict from the update.
-        // kiro-cli reports MCP tool titles as "Running: @<server>/<tool>" (e.g.
-        // "Running: @verdict/report_verdict"), never the bare tool name — an exact
-        // match against "report_verdict" never fires. Match by substring instead.
-        if (rawName.includes("report_verdict")) {
-          managed.verdictToolCallId = (update as { toolCallId?: string }).toolCallId ?? null;
-        }
         break;
       }
 
@@ -1813,27 +1849,12 @@ function processUpdate(managed: ManagedSession, update: SessionUpdateChunk): voi
         }
 
         if (update.status === "completed") {
-          // Check if this is a completed report_verdict call — capture the verdict
-          if (
-            managed.verdictToolCallId &&
-            tcUpdateId === managed.verdictToolCallId
-          ) {
-            // Extract verdict from tool output content
-            const content = (update as { content?: Array<{ type?: string; text?: string }> }).content;
-            if (Array.isArray(content)) {
-              for (const block of content) {
-                if (block?.type === "text" && block.text) {
-                  try {
-                    const parsed = JSON.parse(block.text);
-                    if (parsed?.verdict) {
-                      managed.turnVerdict = parsed.verdict;
-                    }
-                  } catch { /* not JSON — ignore */ }
-                }
-              }
-            }
-            managed.verdictToolCallId = null;
-          }
+          // Capture a verdict from this update's content, regardless of
+          // whether a prior "tool_call" announcement was seen for it — see
+          // tryCaptureVerdictFromContent's doc comment for why toolCallId
+          // correlation alone is not reliable enough to gate this on.
+          const completedContent = (update as { content?: unknown }).content;
+          tryCaptureVerdictFromContent(managed, completedContent);
 
           // Emit structured session-tool-call-update event
           if (tcUpdateId) {
@@ -1927,7 +1948,13 @@ function processUpdate(managed: ManagedSession, update: SessionUpdateChunk): voi
       }
 
       default:
-        // Other update types — show only if meaningful, with a clean format
+        // Other update types — capture a verdict from content here too, in
+        // case kiro-cli never emits a recognized "tool_call"/"tool_call_update"
+        // pair for this MCP call (observed in practice — see
+        // tryCaptureVerdictFromContent's doc comment).
+        tryCaptureVerdictFromContent(managed, (update as { content?: unknown }).content);
+
+        // Show only if meaningful, with a clean format
         if (update.title || update.status) {
           const label = update.title || update.status || "";
           appendOutput(managed, {
