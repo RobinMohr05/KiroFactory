@@ -221,7 +221,7 @@ az containerapp update --name kirofactory-api --image kirofactory.azurecr.io/kir
 ### Worker
 
 ```bash
-az acr build --registry kiroFactory --image kirofactory-worker:latest --file worker/Dockerfile worker/
+az acr build --registry kiroFactory --image kirofactory-worker:latest --file worker/.devcontainer/Dockerfile worker/
 ```
 
 The Job picks up `:latest` on the next execution — no redeploy needed (but pin a digest for
@@ -232,12 +232,13 @@ production reliability).
   `package-lock.json` and runs `npm ci` from root, then `npm run build -w backend`.
 - The worker image installs `kiro-cli` from `https://cli.kiro.dev/install` and needs `unzip`,
   `git`, `curl`, `ca-certificates`.
-- `worker/Dockerfile` deliberately does **not** set `NODE_ENV=production` (unlike the root
-  Dockerfile). The worker's job is to `npm ci`/`npm install --include=dev` inside an arbitrary
-  cloned **target** repo so the agent can run its tests/build — `NODE_ENV=production` makes npm's
-  `omit` config default to `dev`, which silently skips writing devDependencies (test runner,
-  compiler, type stubs) to `node_modules` even though the install reports success. That bug is
-  what made `vitest`/`typescript` disappear from every agent session while `npm install` exited 0.
+- `worker/.devcontainer/Dockerfile` deliberately does **not** set `NODE_ENV=production` (unlike
+  the root Dockerfile). The worker's job is to `npm ci`/`npm install --include=dev` inside an
+  arbitrary cloned **target** repo so the agent can run its tests/build — `NODE_ENV=production`
+  makes npm's `omit` config default to `dev`, which silently skips writing devDependencies (test
+  runner, compiler, type stubs) to `node_modules` even though the install reports success. That
+  bug is what made `vitest`/`typescript` disappear from every agent session while `npm install`
+  exited 0.
   See the failure mode table below. (The worker's own dependency-install logic lives entirely
   in `worker/worker.js` — there is no separate `git-workspace.ts` module; that name belonged to
   a removed standalone dev-agent path.)
@@ -320,7 +321,7 @@ The backend keeps a lightweight error log surfaced in the UI under the **Errors*
 | WebSocket `Invalid frame header` | ACA ingress transport wrong | Ingress transport must be `http` (HTTP/1.1). `http2` breaks WebSockets. |
 | Old sessions error on startup | Sessions left `running` in DB from a previous host | Mark them `stopped` in the DB; they auto-restart on boot. |
 | Deploy didn't take effect | Restart reuses cached image | Use `az containerapp update --image ...` to force a new revision. |
-| Agent session can't run tests — `sh: 1: vitest: not found` / `npm error code 127`, even right after `npm install` reported success | `NODE_ENV=production` was set in the worker container (npm's `omit` config defaults to `dev` under that env, so devDependencies resolve into `package-lock.json` but are never installed to disk) | Fixed by removing `ENV NODE_ENV=production` from `worker/Dockerfile` and adding `--include=dev` to every install call in `worker.js`. If this resurfaces, check for `NODE_ENV=production` anywhere in the worker's env (Dockerfile, ACA job env vars, or an `.npmrc`/`omit` setting) — it should never be set for the container that installs a target repo's own dependencies. |
+| Agent session can't run tests — `sh: 1: vitest: not found` / `npm error code 127`, even right after `npm install` reported success | `NODE_ENV=production` was set in the worker container (npm's `omit` config defaults to `dev` under that env, so devDependencies resolve into `package-lock.json` but are never installed to disk) | Fixed by removing `ENV NODE_ENV=production` from `worker/.devcontainer/Dockerfile` and adding `--include=dev` to every install call in `worker.js`. If this resurfaces, check for `NODE_ENV=production` anywhere in the worker's env (Dockerfile, ACA job env vars, or an `.npmrc`/`omit` setting) — it should never be set for the container that installs a target repo's own dependencies. |
 
 ---
 
@@ -379,7 +380,8 @@ Everyone connects to the **same shared AuraDB Free instance** used in production
 accepted tradeoff (Requirement 7.2 of the Neo4j migration spec), not an oversight. That means
 your test data can show up in a teammate's local environment, and vice versa.
 
-**Requirements:** Node.js 20+. No database software to install.
+**Requirements:** Node.js 20+. WSL2 + Docker for starting agent sessions (see §12) — everything
+else needs no database software and no Docker.
 
 **Quick summary:**
 
@@ -393,106 +395,128 @@ your test data can show up in a teammate's local environment, and vice versa.
 There's no separate manual migration step — the constraint/index bootstrap in
 `backend/src/db/migrate.ts` runs automatically and idempotently on every startup.
 
-**What works without a local Docker/WSL setup:** Everything except starting agent sessions. The
-full UI, task/board CRUD, auth, WebSocket sync, and drag-and-drop all work. Starting a session is
-being migrated onto the devcontainer/WSL design described in §12 below — see that section for
-what "Start session" will require going forward, and its current implementation status.
+**What works without WSL/Docker:** Everything except starting agent sessions. The full UI,
+task/board CRUD, auth, WebSocket sync, and drag-and-drop all work. Starting a session
+(`WORKER_MODE=local`, the default when no ACA config is present) now spawns a local Docker
+container inside a dedicated WSL2 distro — see §12 for the full design, setup, and
+troubleshooting. Run `pwsh worker/.devcontainer/setup-wsl.ps1` once to provision the distro (it's
+also auto-checked, but not auto-provisioned, before the first session start — a missing/unhealthy
+distro surfaces as a clear startup log line and a session-start error instead of a silent hang).
 
 For more detail (including the current status of the local seed script), see
 [`backend/README.md` § "Run entirely on localhost"](backend/README.md#run-entirely-on-localhost-no-azure-no-docker).
 
 ---
 
-## 12. Devcontainer-based worker (design in progress)
+## 12. Devcontainer-based worker (WSL2 + Docker for local sessions)
 
-> **Status:** design/planning stage, not yet implemented. This section documents the agreed
-> direction so implementation can proceed incrementally without re-deriving the design. Update
-> this section as pieces land; don't let it go stale (see the "code wins over docs" steering
-> convention — once code exists, this section should describe what's actually there).
+Local-mode sessions and hosted (ACA) sessions run the **same worker image**
+(`worker/.devcontainer/Dockerfile`) and the **same worker code** (`worker/worker.js`) — there is
+no separate local-only execution path anymore. `backend/src/agent/kiro-runner.ts` (a bare
+`kiro-cli acp` child process on the orchestrator's own host, ACP-over-stdio, no container) still
+exists, but only for `forceLocal` sessions — the task planner's pre-warmed session pool
+(`backend/src/planner-session-pool.ts`), a separate low-latency planning concern unrelated to
+dev-session worker mode. Every other session (interactive or loop, editor or inspector agent) now
+goes through the containerized worker path, choosing ACA or local Docker based on `WORKER_MODE`.
 
-### Why
+### How it works
 
-Today, local-mode sessions (`WORKER_MODE=local`) spawn `kiro-cli acp` as a **bare child process
-on the orchestrator's own host** (`backend/src/agent/kiro-runner.ts`, ACP-over-stdio, no
-container at all). This is a second, independently-maintained implementation of "run kiro-cli and
-stream output" — separate from `worker/worker.js`, which is what actually runs in production
-(ACA Job, WebSocket callback to the orchestrator). The two paths can drift apart in behavior.
-
-The goal is to converge both onto **one image and one code path** (`worker/worker.js`), so local
-dev sessions behave identically to production sessions, while still working out-of-the-box on a
-fresh developer machine.
-
-### Target shape
-
-- **One devcontainer definition**, living at `worker/.devcontainer/` (`devcontainer.json` +
-  `Dockerfile`), replacing today's `worker/Dockerfile`. Same runtime deps as today (git, curl,
-  node, `kiro-cli`), just defined via the devcontainer spec so it's buildable with the standard
-  `devcontainer build` CLI in addition to plain `docker build`.
-- **Hosted/production path (ACA):** unchanged in shape. `az acr build` (or `devcontainer build`
-  in CI) builds the same Dockerfile, pushes to `kiroFactory` ACR, and the ACA Job runs it headless
-  exactly as today — see §3(c) and §6.
-- **Local path:** instead of `kiro-runner.ts`'s bare host spawn, the orchestrator runs a **fresh
-  Docker container per session** (`docker run`, one-shot, not a long-lived `devcontainer up` shell)
-  from the *same* image, inside a **dedicated WSL2 distro** running Docker Engine. This mirrors
-  `aca-worker-spawner.ts`'s job-per-session model — a new module (working name
-  `wsl-worker-spawner.ts`) plays the same role for local Docker that `aca-worker-spawner.ts` plays
-  for ACA. `kiro-runner.ts` is retired once this lands.
+- **Image:** `worker/.devcontainer/Dockerfile` + `devcontainer.json` — same runtime deps as
+  before (git, curl, node, `kiro-cli`), just defined via the devcontainer spec so it's buildable
+  with the standard `devcontainer build` CLI in addition to plain `docker build`. This replaced
+  `worker/Dockerfile` (deleted).
+- **Hosted/production path (ACA):** unchanged in shape. `az acr build --file
+  worker/.devcontainer/Dockerfile worker/` (or `devcontainer build` in CI — see the
+  `kirofactory-api-AutoDeployTrigger-*.yml` workflow) builds this same Dockerfile, pushes to
+  `kiroFactory` ACR, and the ACA Job runs it headless exactly as before — see §3(c) and §6.
+  Implemented in `backend/src/aca-worker-spawner.ts` (unchanged).
+- **Local path:** `backend/src/wsl-worker-spawner.ts` — a **fresh Docker container per session**
+  (`docker run -d --rm`, one-shot, not a long-lived `devcontainer up` shell), started from the
+  *same* image inside a **dedicated WSL2 distro** running Docker Engine. Structurally parallel to
+  `aca-worker-spawner.ts`: `loadWslConfig()`/`startWorkerJob()`/`stopWorkerJob()`/
+  `getWorkerJobStatus()`/`verifyWslAccess()` mirror the ACA module's shape exactly, driven via
+  `execFile("wsl.exe", ["-d", "kirofactory-docker", "--", "docker", ...])`.
+- **Dispatch:** `backend/src/session-manager.ts`'s `ContainerWorkerSpawner` abstraction
+  (`resolveContainerSpawner()`) picks the ACA or WSL spawner based on `WORKER_MODE`/`ACA_MODE`,
+  and `runSessionAca()` (despite the name — it's the shared containerized-worker execution path
+  for both backends now) uses whichever one it's given. `startSession()`'s only remaining
+  hard-coded branch is `forceLocal` → `KiroRunner`; everything else goes through
+  `resolveContainerSpawner()`.
 
 ### Why concurrency "just works" here
 
 Each session gets its **own container**, not a shared sandbox — Docker's normal container
 isolation (separate filesystem, separate process namespace) is the isolation boundary, exactly
-like separate ACA Job executions are today. One WSL distro's Docker daemon can run any number of
-containers at once, so N concurrent local sessions = N concurrent containers, each on its own
-branch, own repo clone, own working directory, with no risk of collision even if two sessions
-target the same repository. Nothing is mounted in from the Windows host — **the git clone happens
-entirely inside the container's own filesystem** (physically backed by the WSL distro's virtual
-disk), so there's no Windows↔WSL filesystem I/O in the hot path, and the orchestrator never
-touches those files directly — it only talks to each container over its own WebSocket connection,
-same as it does with an ACA container today.
+like separate ACA Job executions. One WSL distro's Docker daemon can run any number of containers
+at once, so N concurrent local sessions = N concurrent containers, each on its own branch, own
+repo clone, own working directory, with no risk of collision even if two sessions target the same
+repository. Nothing is mounted in from the Windows host — **the git clone happens entirely inside
+the container's own filesystem** (physically backed by the WSL distro's virtual disk), so there's
+no Windows↔WSL filesystem I/O in the hot path, and the orchestrator never touches those files
+directly — it only talks to each container over its own WebSocket connection to
+`/internal/worker`, same as it does with an ACA container.
+
+Each session's worker container and its MCP proxy sidecar (if configured) are joined to a
+per-session Docker bridge network (`kirofactory-session-<id>`) so they can reach each other by
+container name — the local analogue of ACA's same-revision shared-localhost networking, which
+doesn't apply to independent `docker run` invocations. Container names:
+`kirofactory-worker-<sessionId>` and `kirofactory-mcp-proxy-<sessionId>`.
 
 ### Dedicated WSL distro
 
-A WSL2 distro dedicated to this purpose (working name `kirofactory-docker`) runs Docker Engine
-directly (not Docker Desktop's Windows integration), kept separate from any general-purpose WSL
-distro a developer already has. Provisioning is automated and idempotent so it works on any
-developer's machine without manual setup:
+A WSL2 distro dedicated to this purpose, `kirofactory-docker`, runs Docker Engine directly (not
+Docker Desktop's Windows integration), kept separate from any general-purpose WSL distro a
+developer already has.
 
-**Base image decision (confirmed):** minimal Ubuntu (`Ubuntu-24.04`, via `wsl --install -d
-Ubuntu-24.04 --name kirofactory-docker`) with **Docker Engine** installed inside it via the
-official `get.docker.com` convenience script — not Docker Desktop. This is the standard,
-well-documented "Docker Engine on WSL2 without Docker Desktop" pattern, and it's what "a
-Docker-optimized image" concretely means here: there is no standalone, redistributable minimal
-Docker-Engine WSL rootfs to `wsl --import` directly (Docker Desktop's own `docker-desktop` distro
-is not usable standalone/outside Docker Desktop), so the base + Docker Engine install is the
-right realization of that requirement.
+**Base image:** minimal Ubuntu (`Ubuntu-24.04`) with **Docker Engine** installed via the official
+`get.docker.com` convenience script — not Docker Desktop. (Considered and rejected: Microsoft's
+`wslc.exe` built-in WSL container CLI would remove the need for a dedicated distro entirely, but
+it's pre-release-only as of this writing — worth revisiting once it reaches general availability.)
 
-**Considered and rejected for now:** Microsoft's `wslc.exe` (built-in WSL container CLI,
-`wsl --update --pre-release`, requires WSL ≥2.9.3) would remove the need for a dedicated distro
-or a Docker Engine install step entirely — `wslc run`/`wslc build` are drop-in analogs to
-`docker run`/`docker build`. It's currently pre-release-only, so it was not chosen for a setup
-that needs to work reliably on other developers' machines without asking them to opt into
-pre-release WSL updates. Worth revisiting once it reaches general availability.
+**Provisioning:** `worker/.devcontainer/setup-wsl.ps1` — idempotent; safe to re-run.
 
-- `worker/.devcontainer/setup-wsl.ps1` (planned) — checks whether `kirofactory-docker` already
-  exists (`wsl -l -v`); if not, creates it (`wsl --install -d <base-distro> --name
-  kirofactory-docker`) and installs Docker Engine inside it (`get.docker.com` script), starting
-  the daemon. Safe to re-run — skips steps already satisfied.
-- The new `wsl-worker-spawner.ts` module calls this (or a lightweight health check, e.g. `wsl -d
-  kirofactory-docker -- docker info`) lazily before the first local session start of a run,
-  auto-provisioning if missing rather than requiring a manual one-time step.
-- Session env vars (`SESSION_ID`, `REPO_URL`, `DEV_BRANCH`, `AGENT_CONFIG_JSON_B64`, etc. — the
-  same contract `worker.js` already expects from ACA) are passed to `docker run` inside that
-  distro. `ORCHESTRATOR_URL` points at `ws://host.docker.internal:3500/internal/worker` (or the
-  WSL-visible host address) instead of the ACA ingress FQDN — this is the only meaningful
-  difference `worker.js` needs to tolerate between the two environments, and it already only
-  knows "connect back over WebSocket," not "I'm running in ACA," so no code changes should be
-  needed there.
+```powershell
+# One-time setup (or to repair a broken distro):
+pwsh worker/.devcontainer/setup-wsl.ps1
 
-### Open follow-ups
+# Cheap health check only (no mutation) — this is what wsl-worker-spawner.ts
+# calls before every local session start:
+pwsh worker/.devcontainer/setup-wsl.ps1 -CheckOnly
+```
 
-- `worker/.devcontainer/README.md` should document the WSL distro setup, provisioning, and
-  troubleshooting (WSL not started, daemon not running in the distro, etc.) once the setup script
-  exists.
-- Once implemented, §11 above should be rewritten to state the real requirement plainly (WSL2 +
-  Docker via the dedicated distro) instead of pointing here.
+It creates the distro if missing (`wsl --install -d Ubuntu-24.04 --name kirofactory-docker
+--no-launch`), installs Docker Engine if missing, and starts the daemon if it isn't responding.
+`wsl-worker-spawner.ts` calls the `-CheckOnly` health check (not full provisioning) lazily before
+starting a local session — a missing or unhealthy distro surfaces as an actionable error message
+(pointing at this script) rather than a confusing container-start failure.
+
+**Orchestrator → container connection:** `ORCHESTRATOR_URL` defaults to
+`ws://host.docker.internal:3500/internal/worker`; the worker container is started with `--add-host
+host.docker.internal:host-gateway` so that resolves correctly from inside WSL's Docker network.
+Session env vars (`SESSION_ID`, `REPO_URL`, `DEV_BRANCH`, `AGENT_CONFIG_JSON_B64`, etc. — the same
+contract `worker.js` already expects from ACA) are passed to `docker run` unchanged; `worker.js`
+needed **no code changes** to support this — it only ever knew "connect back over WebSocket," not
+which host started it.
+
+### Configuration (environment variables)
+
+| Variable | Purpose |
+|----------|---------|
+| `WSL_DISTRO_NAME` | Dedicated distro name. Defaults to `kirofactory-docker`. |
+| `WSL_WORKER_IMAGE` | Local worker image reference. Defaults to `kirofactory-worker:local` — build it with `docker build -f worker/.devcontainer/Dockerfile -t kirofactory-worker:local worker/` inside the distro, or via `devcontainer build`. |
+| `WSL_PROXY_IMAGE` | Local MCP proxy sidecar image reference. Optional — omit to run without the proxy sidecar. |
+| `WSL_ORCHESTRATOR_URL` | Defaults to `ws://host.docker.internal:3500/internal/worker`. |
+| `ACA_WORKER_SECRET` (or `WSL_WORKER_SECRET`) | Shared secret for worker ↔ orchestrator auth. **Required** — local mode is disabled (`loadWslConfig()` returns `null`) without one. Reusing `ACA_WORKER_SECRET` lets a single `.env` value cover both modes. |
+| `GIT_USER_NAME` / `GIT_USER_EMAIL` | Git identity for commits inside the local worker container. Default to a `(local)`-suffixed identity if unset. |
+| `AZURE_DEVOPS_EXT_PAT` | Org-wide git-clone fallback PAT — same variable ACA mode uses. |
+
+### Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `Local worker mode requires WSL/Docker configuration ... but none is set` | No `ACA_WORKER_SECRET`/`WSL_WORKER_SECRET` in the environment | Set one in `backend/.env`. |
+| `'wsl.exe' was not found on PATH` | WSL2 not installed on this machine | Install WSL2 (`wsl --install`), then run `setup-wsl.ps1`. |
+| `WSL distro "kirofactory-docker" does not exist yet` | Distro not provisioned | Run `pwsh worker/.devcontainer/setup-wsl.ps1`. |
+| `Docker daemon is not running inside WSL distro "kirofactory-docker"` | dockerd not started in the distro | Run `pwsh worker/.devcontainer/setup-wsl.ps1` (restarts it), or manually: `wsl -d kirofactory-docker -- sudo service docker start`. |
+| Local session container never connects | Wrong `WSL_ORCHESTRATOR_URL`, or the orchestrator isn't listening on the interface WSL's `host.docker.internal` resolves to | Check `wsl -d kirofactory-docker -- docker logs kirofactory-worker-<sessionId>` for the worker's own connection error. |
+| Need to inspect a local session's container directly | — | `wsl -d kirofactory-docker -- docker logs kirofactory-worker-<sessionId>` / `docker exec -it kirofactory-worker-<sessionId> bash`. |

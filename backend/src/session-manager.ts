@@ -51,14 +51,22 @@ import {
 import { buildProxyServersConfig, buildLocalMcpServerEntries, type SessionCredentials } from "./mcp-proxy-config.js";
 import {
   loadAcaConfig,
-  startWorkerJob,
-  stopWorkerJob,
-  getWorkerJobStatus,
+  startWorkerJob as startAcaWorkerJob,
+  stopWorkerJob as stopAcaWorkerJob,
+  getWorkerJobStatus as getAcaWorkerJobStatus,
   isAcaModeEnabled,
   type AcaWorkerConfig,
   type AcaJobExecution,
   type McpProxySidecarConfig,
 } from "./aca-worker-spawner.js";
+import {
+  loadWslConfig,
+  startWorkerJob as startWslWorkerJob,
+  stopWorkerJob as stopWslWorkerJob,
+  getWorkerJobStatus as getWslWorkerJobStatus,
+  isWslModeEnabled,
+  type WslWorkerConfig,
+} from "./wsl-worker-spawner.js";
 import {
   setWorkerEventHandler,
   sendWorkerPrompt,
@@ -90,11 +98,20 @@ const DEFAULT_CWD = resolve(import.meta.dirname, "../.."); // project root
 // ---------------------------------------------------------------------------
 
 const acaConfig = loadAcaConfig();
+const wslConfig = loadWslConfig();
 
 /**
- * WORKER_MODE controls how sessions spawn agent processes:
- * - "local"  — Spawn kiro-cli as a local child process (default for development)
- * - "remote" — Launch ACA Job, worker connects back via internal WebSocket
+ * WORKER_MODE controls how non-forceLocal sessions spawn agent processes:
+ * - "remote" — Launch an Azure Container Apps Job; worker connects back via
+ *   internal WebSocket.
+ * - "local"  — Launch a local Docker container inside the dedicated WSL2
+ *   distro (see ARCHITECTURE.md §12); worker connects back via the same
+ *   internal WebSocket mechanism as "remote". This replaced the old bare
+ *   `kiro-cli acp` child-process spawn (KiroRunner) for this path.
+ *
+ * `forceLocal` sessions (the task planner's pre-warmed pool) are a separate
+ * concern entirely and always use KiroRunner regardless of WORKER_MODE — see
+ * the `useLocal` dispatch in startSession().
  *
  * If WORKER_MODE is not set, auto-detect based on ACA config presence.
  */
@@ -109,22 +126,140 @@ const WORKER_MODE: "local" | "remote" = (() => {
 const ACA_MODE = WORKER_MODE === "remote";
 
 /**
- * Absolute path the ACA worker container clones the repository into
- * (WORKSPACE in worker/worker.js).
+ * Absolute path both the ACA worker container and the local WSL/Docker worker
+ * container clone the repository into (WORKSPACE in worker/worker.js — the
+ * same image, hence the same path, is used for both).
  *
- * Prompts for remote workers must use this, not `meta.cwd`: the orchestrator's
- * own cwd is /app inside its container, and telling the agent that /app is the
- * working directory sends it exploring the orchestrator's image layout instead
- * of the checked-out repository.
+ * Prompts for containerized workers must use this, not `meta.cwd`: the
+ * orchestrator's own cwd is /app inside its container, and telling the agent
+ * that /app is the working directory sends it exploring the orchestrator's
+ * image layout instead of the checked-out repository.
  */
 const ACA_WORKSPACE_PATH = "/workspace";
+
+// ---------------------------------------------------------------------------
+// Container worker spawner abstraction
+//
+// runSessionAca()/waitForWorkerOrAbort() below are shared between the ACA
+// (hosted) and WSL/Docker (local) execution paths — both spawn a container
+// running the same worker/.devcontainer image, and both connect back over
+// the same internal WebSocket. Only how the container is *started* differs,
+// so that's the one seam abstracted here rather than forking the (much
+// larger) turn-execution/loop logic a second time.
+// ---------------------------------------------------------------------------
+
+/** A spawned worker container/job, regardless of which backend started it. */
+interface ContainerWorkerExecution {
+  executionName: string;
+  status: string;
+}
+
+/** Status of a previously-started worker container/job. */
+interface ContainerWorkerStatus {
+  status: string;
+  startTime?: string;
+  endTime?: string;
+}
+
+/**
+ * Uniform surface over aca-worker-spawner.ts and wsl-worker-spawner.ts.
+ * Both modules already share this exact function shape by construction
+ * (wsl-worker-spawner.ts was written as a structural parallel) — this
+ * interface just names that shape so callers don't need to know which
+ * backend they're talking to.
+ */
+interface ContainerWorkerSpawner {
+  readonly kind: "aca" | "wsl";
+  start(
+    sessionId: number,
+    agentName: string,
+    userId: number,
+    timeoutSeconds: number,
+    mcpSidecar: McpProxySidecarConfig | null | undefined,
+    gitOptions: unknown,
+    agentKind: "editor" | "inspector" | undefined,
+    agentConfigBase64: string | undefined
+  ): Promise<ContainerWorkerExecution>;
+  stop(executionName: string): Promise<void>;
+  status(executionName: string): Promise<ContainerWorkerStatus>;
+  /** Whether this backend's MCP proxy sidecar image is configured (gates sidecar setup). */
+  hasProxyImage(): boolean;
+}
+
+function makeAcaSpawner(config: AcaWorkerConfig): ContainerWorkerSpawner {
+  return {
+    kind: "aca",
+    start: (sessionId, agentName, userId, timeoutSeconds, mcpSidecar, gitOptions, agentKind, agentConfigBase64) =>
+      startAcaWorkerJob(
+        config,
+        sessionId,
+        agentName,
+        userId,
+        timeoutSeconds,
+        mcpSidecar,
+        gitOptions as Parameters<typeof startAcaWorkerJob>[6],
+        agentKind,
+        agentConfigBase64
+      ),
+    stop: (executionName) => stopAcaWorkerJob(config, executionName),
+    status: (executionName) => getAcaWorkerJobStatus(config, executionName),
+    hasProxyImage: () => !!config.proxyImage,
+  };
+}
+
+function makeWslSpawner(config: WslWorkerConfig): ContainerWorkerSpawner {
+  return {
+    kind: "wsl",
+    start: (sessionId, agentName, userId, timeoutSeconds, mcpSidecar, gitOptions, agentKind, agentConfigBase64) =>
+      startWslWorkerJob(
+        config,
+        sessionId,
+        agentName,
+        userId,
+        timeoutSeconds,
+        mcpSidecar,
+        gitOptions as Parameters<typeof startWslWorkerJob>[6],
+        agentKind,
+        agentConfigBase64
+      ),
+    stop: (executionName) => stopWslWorkerJob(config, executionName),
+    status: (executionName) => getWslWorkerJobStatus(config, executionName),
+    hasProxyImage: () => !!config.proxyImage,
+  };
+}
+
+/**
+ * Resolve which container backend a given session should use.
+ *
+ * - `forceLocal` sessions never reach this — they use KiroRunner (see
+ *   startSession()'s `useLocal` dispatch).
+ * - Otherwise: ACA in remote mode, WSL/Docker in local mode.
+ *
+ * Throws if the resolved mode's configuration is missing, mirroring the
+ * previous `if (!acaConfig) throw ...` guard at the top of runSessionAca().
+ */
+function resolveContainerSpawner(): ContainerWorkerSpawner {
+  if (ACA_MODE) {
+    if (!acaConfig) {
+      throw new Error("ACA mode enabled but configuration is missing");
+    }
+    return makeAcaSpawner(acaConfig);
+  }
+  if (!wslConfig) {
+    throw new Error(
+      "Local worker mode requires WSL/Docker configuration (ACA_WORKER_SECRET or WSL_WORKER_SECRET) " +
+      "but none is set. See worker/.devcontainer/README.md."
+    );
+  }
+  return makeWslSpawner(wslConfig);
+}
 
 log.info("worker-mode", {
   component: "session-manager",
   mode: ACA_MODE ? "remote" : "local",
   msg: ACA_MODE
     ? "Remote worker mode — sessions spawn as Azure Container Apps Jobs"
-    : "Local worker mode — sessions spawn kiro-cli as child processes",
+    : "Local worker mode — sessions spawn as local Docker containers inside the kirofactory-docker WSL distro",
 });
 
 // ---------------------------------------------------------------------------
@@ -147,6 +282,8 @@ export interface ManagedSession {
   lastToolCount: number;
   /** ACA Job execution name (set when running in ACA mode) */
   acaExecutionName: string | null;
+  /** Which container backend (ACA or WSL/Docker) started acaExecutionName, if any — set by runSessionAca(). */
+  containerSpawner: ContainerWorkerSpawner | null;
   /** Resolver for awaiting prompt completion from ACA worker */
   acaPromptResolver: ((result: unknown) => void) | null;
   /** Rejecter for awaiting prompt completion from ACA worker */
@@ -266,6 +403,7 @@ export async function initSessions(): Promise<void> {
       lastToolLabel: "",
       lastToolCount: 0,
       acaExecutionName: null,
+      containerSpawner: null,
       acaPromptResolver: null,
       acaPromptRejecter: null,
       totalCreditsUsed: 0,
@@ -534,6 +672,7 @@ export async function createSession(input: CreateSessionInput): Promise<Session>
     lastToolLabel: "",
     lastToolCount: 0,
     acaExecutionName: null,
+    containerSpawner: null,
     acaPromptResolver: null,
     acaPromptRejecter: null,
     totalCreditsUsed: 0,
@@ -809,25 +948,39 @@ export async function startSession(id: number): Promise<boolean> {
   session.lastGeneratedToolCallId = null;
   setStatus(session, "running");
   setActivity(session, { type: "working", detail: "Starting ACP session..." });
-  logSessionEvent("session-started", id, { agent: session.meta.agent, name: session.meta.name, mode: ACA_MODE ? "remote" : "local" });
+  logSessionEvent("session-started", id, { agent: session.meta.agent, name: session.meta.name, mode: session.meta.forceLocal ? "kiro-runner" : (ACA_MODE ? "remote" : "local-container") });
 
   appendOutput(session, {
     timestamp: now(),
     stream: "system",
-    text: ACA_MODE && !session.meta.forceLocal
+    text: session.meta.forceLocal
       ? session.meta.agent
-        ? `Starting ACA worker for agent "${session.meta.agent}"...`
-        : `Starting ACA worker (no agent)...`
-      : session.meta.agent
         ? `Starting agent "${session.meta.agent}" in ${session.meta.cwd}...`
-        : `Starting interactive session in ${session.meta.cwd}...`,
+        : `Starting interactive session in ${session.meta.cwd}...`
+      : ACA_MODE
+        ? session.meta.agent
+          ? `Starting ACA worker for agent "${session.meta.agent}"...`
+          : `Starting ACA worker (no agent)...`
+        : session.meta.agent
+          ? `Starting local worker container for agent "${session.meta.agent}"...`
+          : `Starting local worker container (no agent)...`,
   });
 
-  // Spawn async — don't block the caller
-  // forceLocal sessions (e.g. task planner) always use the local KiroRunner
-  // child process, even when the global worker mode is "remote" (ACA_MODE).
-  const useLocal = session.meta.forceLocal || !ACA_MODE;
-  const launcher = useLocal ? runSession(session) : runSessionAca(session);
+  // Spawn async — don't block the caller.
+  //
+  // forceLocal sessions (e.g. the task planner's pre-warmed pool) always use
+  // the in-process KiroRunner (bare `kiro-cli acp` child process) regardless
+  // of WORKER_MODE — that's a separate low-latency planning concern, not the
+  // dev-session worker path this module otherwise manages.
+  //
+  // Every other session goes through runSessionAca(), which spawns a
+  // containerized worker via whichever backend resolveContainerSpawner()
+  // picks: an ACA Job in remote mode, or a local Docker container inside the
+  // dedicated kirofactory-docker WSL distro in local mode (see
+  // ARCHITECTURE.md §12). Both connect back over the same internal
+  // WebSocket, so runSessionAca()'s turn/loop logic needs no further
+  // branching between the two.
+  const launcher = session.meta.forceLocal ? runSession(session) : runSessionAca(session);
   launcher.catch((err) => {
     const msg = err instanceof Error ? err.message : String(err);
     appendOutput(session, { timestamp: now(), stream: "stderr", text: `Fatal: ${msg}` });
@@ -869,18 +1022,20 @@ export async function stopSession(id: number): Promise<boolean> {
   // Flush any remaining buffered agent message text
   flushMessageBuffer(session);
 
-  // ACA mode: send stop to worker + cancel the ACA job
-  if (ACA_MODE && session.acaExecutionName) {
+  // Containerized worker (ACA or local WSL/Docker): send stop to worker + tear down the container.
+  // Gated on containerSpawner (set by runSessionAca() when it started the container),
+  // not on ACA_MODE — local WSL/Docker sessions need teardown too, and ACA_MODE is
+  // false for those.
+  if (session.containerSpawner && session.acaExecutionName) {
     // Send stop signal to worker via WebSocket (triggers graceful shutdown)
     sendWorkerStop(id);
 
-    // Cancel the ACA job execution via Azure API
-    if (acaConfig) {
-      stopWorkerJob(acaConfig, session.acaExecutionName).catch((err) => {
-        console.warn(`[session-manager] Failed to stop ACA job ${session.acaExecutionName}:`, err);
-      });
-    }
+    // Tear down the container/job via whichever backend started it
+    session.containerSpawner.stop(session.acaExecutionName).catch((err) => {
+      console.warn(`[session-manager] Failed to stop worker ${session.acaExecutionName}:`, err);
+    });
     session.acaExecutionName = null;
+    session.containerSpawner = null;
 
     // Reject any pending prompt awaiter
     if (session.acaPromptRejecter) {
@@ -912,21 +1067,23 @@ export async function sendPrompt(id: number, text: string, image?: { data: strin
   if (!session || session.meta.status !== "running") return false;
   if (!session.meta.interactive) return false;
 
-  // Must have either a local runner or a connected ACA worker
+  // Must have either a local KiroRunner (forceLocal sessions) or a connected
+  // containerized worker (ACA or local WSL/Docker — both look identical here,
+  // since both connect over the same internal WebSocket).
   const hasLocalRunner = !!session.runner;
-  const hasAcaWorker = ACA_MODE && isWorkerConnected(id);
-  if (!hasLocalRunner && !hasAcaWorker) return false;
+  const hasContainerWorker = !!session.containerSpawner && isWorkerConnected(id);
+  if (!hasLocalRunner && !hasContainerWorker) return false;
 
-  // Image attachments are only supported in local worker mode
-  if (image && hasAcaWorker) {
-    throw new Error("Image attachments are not supported for sessions running in remote worker mode");
+  // Image attachments are only supported for the in-process KiroRunner path.
+  if (image && hasContainerWorker) {
+    throw new Error("Image attachments are not supported for sessions running in a containerized worker");
   }
 
   appendOutput(session, { timestamp: now(), stream: "system", text: `▶ ${text}` });
   setActivity(session, { type: "working", detail: "Processing prompt..." });
 
   // Run prompt in background
-  const promptFn = hasAcaWorker
+  const promptFn = hasContainerWorker
     ? streamPromptAca(session, text)
     : streamPrompt(session, text, image);
 
@@ -2200,15 +2357,16 @@ async function runSessionAca(managed: ManagedSession): Promise<void> {
   managed.abortController = new AbortController();
   const { signal } = managed.abortController;
 
-  if (!acaConfig) {
-    throw new Error("ACA mode enabled but configuration is missing");
-  }
+  const spawner = resolveContainerSpawner();
+  managed.containerSpawner = spawner;
 
   try {
     appendOutput(managed, {
       timestamp: now(),
       stream: "system",
-      text: "Requesting ACA Job execution...",
+      text: spawner.kind === "aca"
+        ? "Requesting ACA Job execution..."
+        : "Starting local worker container (kirofactory-docker WSL distro)...",
     });
 
     // Resolve git workspace options from the session's tab configuration.
@@ -2293,7 +2451,7 @@ async function runSessionAca(managed: ManagedSession): Promise<void> {
     // cross-session credential sharing.
     let mcpSidecar: McpProxySidecarConfig | null = null;
 
-    if (acaConfig.proxyImage) {
+    if (spawner.hasProxyImage()) {
       try {
         // 1. Resolve effective MCP config: tab-level toggles merged with session overrides
         let effectiveMcpConfig: TabMcpConfig = { ...DEFAULT_MCP_CONFIG };
@@ -2379,8 +2537,7 @@ async function runSessionAca(managed: ManagedSession): Promise<void> {
         buildPersistentBranchName(meta.id, meta.name);
     }
 
-    const execution = await startWorkerJob(
-      acaConfig,
+    const execution = await spawner.start(
       meta.id,
       meta.agent,
       meta.userId,
@@ -2397,13 +2554,13 @@ async function runSessionAca(managed: ManagedSession): Promise<void> {
       agent: meta.agent,
       executionName: execution.executionName,
       status: execution.status,
-      msg: `ACA worker job started: ${execution.executionName}`,
+      msg: `${spawner.kind === "aca" ? "ACA worker job" : "Local worker container"} started: ${execution.executionName}`,
     });
 
     appendOutput(managed, {
       timestamp: now(),
       stream: "system",
-      text: `ACA Job started: ${execution.executionName} (status: ${execution.status})`,
+      text: `${spawner.kind === "aca" ? "ACA Job" : "Local container"} started: ${execution.executionName} (status: ${execution.status})`,
     });
 
     setActivity(managed, { type: "working", detail: "Waiting for worker to connect..." });
@@ -2473,10 +2630,11 @@ async function waitForWorkerOrAbort(
   signal: AbortSignal
 ): Promise<void> {
   const WORKER_CONNECT_TIMEOUT_MS = 180_000; // 3 minutes for container pull + start
-  const STATUS_POLL_INTERVAL_MS = 10_000; // Check ACA job status every 10s
+  const STATUS_POLL_INTERVAL_MS = 10_000; // Check worker job/container status every 10s
   const startTime = Date.now();
   let lastStatusCheck = 0;
   let lastLoggedStatus = "";
+  const spawner = managed.containerSpawner;
 
   log.info("worker-wait-started", {
     component: "session-manager",
@@ -2492,18 +2650,18 @@ async function waitForWorkerOrAbort(
     if (elapsed > WORKER_CONNECT_TIMEOUT_MS) {
       // Before throwing, try one final status check for diagnostic context
       let finalStatus = "unknown";
-      if (acaConfig && managed.acaExecutionName) {
+      if (spawner && managed.acaExecutionName) {
         try {
-          const jobStatus = await getWorkerJobStatus(acaConfig, managed.acaExecutionName);
+          const jobStatus = await spawner.status(managed.acaExecutionName);
           finalStatus = jobStatus.status;
         } catch { /* best effort */ }
       }
 
       const errorMsg =
         `Worker did not connect within ${WORKER_CONNECT_TIMEOUT_MS / 1000}s. ` +
-        `ACA job status at timeout: "${finalStatus}". ` +
+        `${spawner?.kind === "wsl" ? "Local container" : "ACA job"} status at timeout: "${finalStatus}". ` +
         `The container may have failed to start, crashed during init, or cannot reach the orchestrator URL. ` +
-        `Check the worker container logs in Azure Portal for more details.`;
+        `Check the worker container logs${spawner?.kind === "wsl" ? " (docker logs " + managed.acaExecutionName + " inside the kirofactory-docker WSL distro)" : " in Azure Portal"} for more details.`;
 
       log.error("worker-connect-timeout", {
         component: "session-manager",
@@ -2518,11 +2676,11 @@ async function waitForWorkerOrAbort(
       throw new Error(errorMsg);
     }
 
-    // Periodically poll ACA job execution status to detect early failures
-    if (acaConfig && managed.acaExecutionName && elapsed - lastStatusCheck >= STATUS_POLL_INTERVAL_MS) {
+    // Periodically poll worker job/container status to detect early failures
+    if (spawner && managed.acaExecutionName && elapsed - lastStatusCheck >= STATUS_POLL_INTERVAL_MS) {
       lastStatusCheck = elapsed;
       try {
-        const jobStatus = await getWorkerJobStatus(acaConfig, managed.acaExecutionName);
+        const jobStatus = await spawner.status(managed.acaExecutionName);
         const statusStr = jobStatus.status;
 
         // Log status changes
@@ -2547,13 +2705,16 @@ async function waitForWorkerOrAbort(
         }
 
         // Detect terminal failure states — bail out early instead of waiting the full timeout
-        const failedStates = ["failed", "terminated", "degraded", "unknown"];
+        const failedStates = ["failed", "terminated", "degraded", "unknown", "exited"];
         if (failedStates.includes(statusStr.toLowerCase())) {
-          const errorMsg =
-            `ACA worker job entered terminal state "${statusStr}" before connecting. ` +
-            `Execution: ${managed.acaExecutionName}. ` +
-            `The container likely crashed during startup. ` +
-            `Check Azure Portal → Container Apps Jobs → ${managed.acaExecutionName} → Logs for details.`;
+          const errorMsg = spawner.kind === "wsl"
+            ? `Local worker container entered terminal state "${statusStr}" before connecting. ` +
+              `Container: ${managed.acaExecutionName}. The container likely crashed during startup. ` +
+              `Check its logs: wsl -d kirofactory-docker -- docker logs ${managed.acaExecutionName}`
+            : `ACA worker job entered terminal state "${statusStr}" before connecting. ` +
+              `Execution: ${managed.acaExecutionName}. ` +
+              `The container likely crashed during startup. ` +
+              `Check Azure Portal → Container Apps Jobs → ${managed.acaExecutionName} → Logs for details.`;
 
           log.error("worker-early-failure", {
             component: "session-manager",
@@ -3528,10 +3689,12 @@ function initWorkerEventHandler(): void {
   setWorkerEventHandler(handler);
 }
 
-// Initialize the worker event handler immediately (runs at module load time)
-if (ACA_MODE) {
-  initWorkerEventHandler();
-}
+// Initialize the worker event handler immediately (runs at module load time).
+// Always initialized — both ACA and local WSL/Docker workers connect back
+// over the same internal WebSocket, so this is needed in both modes, not
+// just ACA_MODE. (forceLocal/KiroRunner sessions don't use this at all, so
+// there's no meaningful "no containerized workers ever" case to skip it for.)
+initWorkerEventHandler();
 
 // ---------------------------------------------------------------------------
 // Cleanup on process exit

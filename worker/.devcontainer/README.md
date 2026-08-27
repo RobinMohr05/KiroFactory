@@ -1,49 +1,74 @@
-# Worker devcontainer — design in progress
+# Worker devcontainer
 
-> **Status:** planning stage. Nothing in this folder is implemented yet — this file records the
-> agreed design so implementation can proceed incrementally. See
-> [`ARCHITECTURE.md` §12](../../ARCHITECTURE.md#12-devcontainer-based-worker-design-in-progress)
-> for the full writeup; this file is the worker-local pointer to it plus setup instructions once
-> they exist.
+This is the build definition for the KiroFactory worker — the container that runs `kiro-cli`,
+clones the target repository, and executes agent sessions. The **same image** built here is used
+both by the hosted ACA Job (production) and by local development sessions (via a dedicated WSL2
+distro). See [`ARCHITECTURE.md` §12](../../ARCHITECTURE.md#12-devcontainer-based-worker-wsl2--docker-for-local-sessions)
+for the full design writeup; this file covers the practical local setup.
 
-## What this replaces
+## What replaced what
 
-`worker/Dockerfile` (the current hand-rolled `node:22-slim` image) will be replaced by a
-`devcontainer.json` + `Dockerfile` pair in this folder, built with the standard
-[devcontainer CLI](https://containers.dev/implementors/features/) spec instead of a plain
-`docker build`. Same runtime contents as today — git, curl, node, `kiro-cli` — just defined in a
-way that's usable both for the hosted (ACA) build and, eventually, for local development.
+This replaced `worker/Dockerfile` (deleted). Same runtime contents — git, curl, node, `kiro-cli`
+— just defined via the [devcontainer spec](https://containers.dev/implementors/features/)
+(`devcontainer.json` + `Dockerfile`) so it's buildable with the standard `devcontainer build` CLI
+in addition to plain `docker build`.
 
-## Why: one image, one code path
+Local sessions no longer use `backend/src/agent/kiro-runner.ts`'s bare host `kiro-cli acp` spawn
+— that module still exists, but only for `forceLocal` sessions (the task planner's pre-warmed
+session pool, a separate concern). Every regular dev session — interactive or loop, editor or
+inspector agent — now runs `worker/worker.js` inside a container, exactly like production.
 
-Today there are two separate implementations of "run kiro-cli and stream output":
+## Local setup (one-time)
 
-- `worker/worker.js` — what actually runs in production (ACA Job, WebSocket callback to the
-  orchestrator).
-- `backend/src/agent/kiro-runner.ts` — a **separate** ACP-over-stdio implementation used only for
-  local-mode sessions (`WORKER_MODE=local`), spawned as a bare child process directly on the
-  orchestrator's own host, no container involved.
+Local sessions run inside a **dedicated WSL2 distro** (`kirofactory-docker`) — a minimal
+`Ubuntu-24.04` base with **Docker Engine** installed via the official `get.docker.com` script (not
+Docker Desktop) — kept separate from any general-purpose WSL distro you already have.
 
-The plan converges both onto `worker.js`, running inside this devcontainer image, for both
-environments — see ARCHITECTURE.md §12 for the reasoning and the concurrency model (fresh
-container per session, same isolation model as separate ACA Job executions).
+```powershell
+# Provision the distro (idempotent — safe to re-run, e.g. to repair a broken install):
+pwsh worker/.devcontainer/setup-wsl.ps1
+```
 
-## Planned local setup (not yet implemented)
+Then build the worker image inside the distro (or via `devcontainer build`):
 
-Local sessions will run inside a **dedicated WSL2 distro** (working name `kirofactory-docker`) —
-a minimal `Ubuntu-24.04` base with **Docker Engine** installed via the official
-`get.docker.com` script (not Docker Desktop) — kept separate from any general-purpose WSL distro
-you already have. A `setup-wsl.ps1` script (planned, not yet written) will create and provision
-it idempotently, so no manual one-time setup is required on a fresh machine — the orchestrator
-will trigger this automatically before the first local session start if the distro isn't already
-there.
+```powershell
+wsl -d kirofactory-docker -- docker build -f /mnt/c/Projects/1_Work/19_Misc/KiroFactory/worker/.devcontainer/Dockerfile -t kirofactory-worker:local /mnt/c/Projects/1_Work/19_Misc/KiroFactory/worker/
+```
 
-Each local session becomes a fresh, one-shot `docker run` inside that distro from this image —
-mirroring exactly how `backend/src/aca-worker-spawner.ts` starts a fresh ACA Job execution per
-session today. The git clone happens entirely inside the container's own filesystem; nothing is
-mounted in from the Windows host.
+(Adjust the path to wherever this repo is checked out on the Windows side — WSL sees Windows
+drives under `/mnt/<drive letter>/`.)
 
-## Current status
+Set `ACA_WORKER_SECRET` (or `WSL_WORKER_SECRET`) in `backend/.env` — this is the only strictly
+required piece of local WSL configuration; `backend/src/wsl-worker-spawner.ts`'s
+`loadWslConfig()` returns `null` (disabling local mode) without it. See `ARCHITECTURE.md` §12's
+configuration table for the full list of optional `WSL_*` overrides.
 
-Nothing here yet. `worker/Dockerfile` is still the live production image — see the root
-[`ARCHITECTURE.md`](../../ARCHITECTURE.md) §3(c) and §6 for how it's built and deployed today.
+## How it's used
+
+`backend/src/wsl-worker-spawner.ts` starts a **fresh Docker container per session**
+(`docker run -d --rm`, one-shot — not a long-lived `devcontainer up` shell) from this image,
+inside the `kirofactory-docker` distro, mirroring exactly how `backend/src/aca-worker-spawner.ts`
+starts a fresh ACA Job execution per session in production. The git clone happens entirely inside
+the container's own filesystem; nothing is mounted in from the Windows host. Multiple sessions
+run as multiple concurrent containers — Docker's normal container isolation is the concurrency
+boundary, the same way separate ACA Job executions are in production.
+
+Before starting a local session, the spawner runs a cheap health check
+(`setup-wsl.ps1 -CheckOnly`) against the distro; if it's missing or unhealthy, the session fails
+with an actionable error pointing back at this script rather than hanging or failing obscurely.
+
+## Troubleshooting
+
+See `ARCHITECTURE.md` §12's troubleshooting table for the full list. Quick reference:
+
+```powershell
+# Re-provision / repair the distro:
+pwsh worker/.devcontainer/setup-wsl.ps1
+
+# Health check only, no mutation:
+pwsh worker/.devcontainer/setup-wsl.ps1 -CheckOnly
+
+# Inspect a running/exited session container directly:
+wsl -d kirofactory-docker -- docker logs kirofactory-worker-<sessionId>
+wsl -d kirofactory-docker -- docker exec -it kirofactory-worker-<sessionId> bash
+```

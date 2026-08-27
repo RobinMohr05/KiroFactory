@@ -192,6 +192,11 @@ describe("local-mode git-delivery MCP wiring (runLoopMode)", () => {
       intervalSeconds: 0,
       userId: 1,
       tabIds: [1],
+      // forceLocal: this test exercises runLoopMode()'s (KiroRunner-based)
+      // git-delivery MCP wiring directly. Without this, startSession() now
+      // routes non-forceLocal sessions through runSessionAca() (container
+      // worker, ACA or WSL/Docker) instead — see ARCHITECTURE.md §12.
+      forceLocal: true,
     };
     const session = await createSession(input);
 
@@ -248,6 +253,11 @@ describe("local-mode git-delivery MCP wiring (runLoopMode)", () => {
       intervalSeconds: 0,
       userId: 1,
       tabIds: [1],
+      // forceLocal: this test exercises runLoopMode()'s (KiroRunner-based)
+      // git-delivery MCP wiring directly. Without this, startSession() now
+      // routes non-forceLocal sessions through runSessionAca() (container
+      // worker, ACA or WSL/Docker) instead — see ARCHITECTURE.md §12.
+      forceLocal: true,
     };
     const session = await createSession(input);
 
@@ -295,6 +305,11 @@ describe("local-mode git-delivery MCP wiring (runLoopMode)", () => {
       intervalSeconds: 0,
       userId: 1,
       tabIds: [1],
+      // forceLocal: this test exercises runLoopMode()'s (KiroRunner-based)
+      // git-delivery MCP wiring directly. Without this, startSession() now
+      // routes non-forceLocal sessions through runSessionAca() (container
+      // worker, ACA or WSL/Docker) instead — see ARCHITECTURE.md §12.
+      forceLocal: true,
     };
     const session = await createSession(input);
 
@@ -363,6 +378,11 @@ describe("local-mode git-delivery MCP wiring (runLoopMode)", () => {
       intervalSeconds: 0,
       userId: 1,
       tabIds: [1],
+      // forceLocal: this test exercises runLoopMode()'s (KiroRunner-based)
+      // git-delivery MCP wiring directly. Without this, startSession() now
+      // routes non-forceLocal sessions through runSessionAca() (container
+      // worker, ACA or WSL/Docker) instead — see ARCHITECTURE.md §12.
+      forceLocal: true,
     };
     const session = await createSession(input);
 
