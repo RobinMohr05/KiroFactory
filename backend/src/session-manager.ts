@@ -18,7 +18,7 @@ import { claimTask, resolveTask, resetTask, getAvailableTaskCount, waitForTaskAv
 import type { ClaimedTask } from "./agent/task-claimer.js";
 import { buildDevPrompt, buildReviewPrompt } from "./agent/prompt-builder.js";
 import { hasLocalGitChanges } from "./agent/local-git-check.js";
-import { buildPersistentBranchName } from "./agent/repo-url-parser.js";
+import { buildPersistentBranchName, buildTaskBranchName } from "./agent/repo-url-parser.js";
 import { TabMcpConfig, DEFAULT_MCP_CONFIG, resolveGitProvider, type GitProvider } from "./types.js";
 import {
   getAllSessionsFromDb,
@@ -39,7 +39,15 @@ import { recordError } from "./error-store.js";
 import { log, logSessionEvent, logWorkerEvent, toErrorFields } from "./logger.js";
 import { getAgentTabs, getTabById } from "./db/tabs.js";
 import { getAgentByName } from "./db/agents.js";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { materializeAgentConfigIfMissing, encodeAgentConfigBase64 } from "./agent/agent-config-writer.js";
+import {
+  buildDeliveryResultPath,
+  buildLocalGitDeliveryServer,
+  buildLocalPrReviewServer,
+  type LocalGitDeliveryContext,
+  type DeliveryResult,
+} from "./agent/local-git-delivery.js";
 import { buildProxyServersConfig, buildLocalMcpServerEntries, type SessionCredentials } from "./mcp-proxy-config.js";
 import {
   loadAcaConfig,
@@ -1235,6 +1243,63 @@ async function runLoopMode(
   // ANY tab. A session assigned to specific tabs only claims from those.
   const effectiveTabIds: number[] | undefined = meta.tabIds;
 
+  // ─── Resolve git delivery context once per loop start ─────────────────
+  // Mirrors runSessionAca's gitOptions resolution (tab -> repositoryUrl ->
+  // provider -> PAT), so local editor-kind sessions can get the same
+  // git-delivery/pr-review MCP tools the ACA path has. Resolved once here
+  // (not per task) since it's session/tab-scoped, not task-scoped — only
+  // TASK_BRANCH_NAME and the other per-task env vars vary per claimed task.
+  // Non-fatal on failure: a session with no repo configured (or no stored
+  // PAT) simply gets no git-delivery server, exactly like the ACA path logs
+  // a warning and continues without pushing.
+  let gitContext: LocalGitDeliveryContext | null = null;
+  if (stages.kind === "editor" && effectiveTabIds && effectiveTabIds.length > 0) {
+    try {
+      for (const tabId of effectiveTabIds) {
+        const tab = await getTabById(tabId);
+        if (tab?.repositoryUrl) {
+          const owner = await getUserById(meta.userId);
+          const provider = resolveGitProvider(tab.gitProvider, owner?.defaultGitProvider, tab.repositoryUrl);
+
+          let githubPat: string | undefined;
+          let azureDevOpsPat: string | undefined;
+          if (provider === "github") {
+            githubPat = (await getDecryptedCredential(meta.userId, "githubPat")) || undefined;
+          } else if (provider === "azure-devops") {
+            azureDevOpsPat = (await getDecryptedCredential(meta.userId, "azureDevOpsPat")) || undefined;
+          }
+
+          gitContext = {
+            repositoryUrl: tab.repositoryUrl,
+            gitProvider: provider ?? null,
+            devBranch: "develop",
+            githubPat,
+            azureDevOpsPat,
+          };
+
+          const hasCredential = !!githubPat || !!azureDevOpsPat;
+          appendOutput(managed, {
+            timestamp: now(),
+            stream: hasCredential ? "system" : "stderr",
+            text: provider
+              ? `Git delivery: ${provider} configured for tab "${tab.name}"` +
+                (hasCredential ? "" : ` — no ${provider === "github" ? "githubPat" : "azureDevOpsPat"} credential stored, push will fail`)
+              : `Git provider could not be determined for ${tab.repositoryUrl} — git-delivery tools will not be available.`,
+          });
+          break;
+        }
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      appendOutput(managed, {
+        timestamp: now(),
+        stream: "stderr",
+        text: `Warning: Could not resolve git delivery context: ${msg}. Continuing without git-delivery MCP tools.`,
+      });
+      gitContext = null;
+    }
+  }
+
   const runsLabel = maxRuns === 0 ? "endless" : `${maxRuns} run(s)`;
   appendOutput(managed, {
     timestamp: now(),
@@ -1317,9 +1382,52 @@ async function runLoopMode(
     // task (first attempt, rework pass on an existing branch, inspector
     // review), so the agent always reads the current code/PR state fresh
     // instead of relying on memory of a prior turn.
+    //
+    // For editor-kind tasks with a resolved git context, also (re)inject the
+    // git-delivery MCP server (+ pr-review if this task already has a PR —
+    // a rework pass) with THIS task's env vars (branch name, task id/title).
+    // These are only known now, after claiming — see local-git-delivery.ts's
+    // doc comment for why this can't be resolved once at loop start like
+    // gitContext itself. deliveryResultPath is recomputed per task so a
+    // stale result from a previous task can never be misread as this one's.
     let success = true;
+    let deliveryResultPath: string | null = null;
+    let taskBranchName: string | null = null;
+    if (stages.kind === "editor" && gitContext) {
+      taskBranchName = buildTaskBranchName(task.type, task.id, task.title);
+      deliveryResultPath = buildDeliveryResultPath(meta.id);
+      // Clear any leftover result from a previous task before this turn runs,
+      // so a crash/skip can't cause a stale file to be misattributed below.
+      try { if (existsSync(deliveryResultPath)) unlinkSync(deliveryResultPath); } catch { /* best effort */ }
+    }
     try {
-      await managed.runner?.newSession();
+      let overrideServers: import("./agent/kiro-runner.js").McpServerEntry[] | undefined;
+      if (taskBranchName && deliveryResultPath && gitContext) {
+        const taskDeliveryCtx = {
+          taskId: task.id,
+          taskTitle: task.title,
+          taskDescription: task.description,
+          taskType: task.type,
+          taskBranchName,
+          pullRequestUrl: task.pullRequestUrl,
+        };
+        const servers = [
+          buildLocalGitDeliveryServer(meta.cwd, gitContext, taskDeliveryCtx, deliveryResultPath),
+          // pr-review is only useful once a PR exists to fetch comments from.
+          task.pullRequestUrl
+            ? buildLocalPrReviewServer(meta.id, gitContext, taskDeliveryCtx, "editor")
+            : null,
+        ].filter((s): s is import("./agent/kiro-runner.js").McpServerEntry => s !== null);
+        if (servers.length > 0) {
+          overrideServers = servers;
+          appendOutput(managed, {
+            timestamp: now(),
+            stream: "system",
+            text: `Git delivery tools for this task: ${servers.map((s) => s.name).join(", ")} (branch: ${taskBranchName})`,
+          });
+        }
+      }
+      await managed.runner?.newSession(undefined, overrideServers);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       appendOutput(managed, {
@@ -1395,6 +1503,40 @@ async function runLoopMode(
       });
     }
 
+    // Read back the git-delivery result (if the task had a git context and the
+    // agent called submit_task_changes this turn) BEFORE deciding task state —
+    // mirrors worker.js's own DELIVERY_RESULT_PATH read-back in finishPromptTurn.
+    // hasChanges below folds into the existing hasLocalGitChanges commit gate
+    // so a successful MCP-driven commit/push is recognized exactly like a
+    // manually-committed change was already recognized; branchName/prUrl (when
+    // present) are the ONLY new git facts this turn produced, so they're what
+    // gets persisted onto the task alongside its resolved/reset state.
+    let deliveryResult: DeliveryResult | null = null;
+    if (deliveryResultPath) {
+      try {
+        if (existsSync(deliveryResultPath)) {
+          deliveryResult = JSON.parse(readFileSync(deliveryResultPath, "utf-8")) as DeliveryResult;
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        appendOutput(managed, {
+          timestamp: now(),
+          stream: "stderr",
+          text: `Warning: could not read git delivery result: ${msg}`,
+        });
+      }
+    }
+    const deliveredBranchName = deliveryResult?.branchName || taskBranchName || undefined;
+    const deliveredPrUrl = deliveryResult?.prUrl || undefined;
+    const hasDeliveredChanges = !!deliveryResult?.committed || !!deliveryResult?.pushed;
+    if (deliveryResult?.error && !deliveryResult.pushed) {
+      appendOutput(managed, {
+        timestamp: now(),
+        stream: "stderr",
+        text: `✖ Git delivery reported an error: ${deliveryResult.error}`,
+      });
+    }
+
     // Update task state
     if (signal.aborted) {
       // Session was stopped mid-task — reset to claim state
@@ -1431,16 +1573,16 @@ async function runLoopMode(
           stream: "system",
           text: `Task ${task.id} sent back to "todo" — reviewer/QA requested changes (see PR comments).`,
         });
-      } else if (stages.kind === "editor" && !hasLocalGitChanges(meta.cwd)) {
+      } else if (stages.kind === "editor" && !hasDeliveredChanges && !hasLocalGitChanges(meta.cwd)) {
         // Local-mode commit gate (task #598): an editor-kind agent that ends its
         // turn with no verdict AND no observable git change (working tree diff,
-        // or commits ahead of the base branch) produced no detectable outcome at
-        // all. This is the local equivalent of the hasChanges/committed
-        // cross-check runLoopModeAca() gets from the ACA worker — without it, a
-        // turn that silently did nothing (e.g. told to use git-delivery MCP tools
-        // that aren't wired into local KiroRunner sessions) was unconditionally
-        // marked resolved. Inspector-kind agents are exempt: they never produce
-        // file changes by design, so this check only applies to editors.
+        // commits ahead of the base branch, OR a successful git-delivery MCP
+        // commit/push this turn) produced no detectable outcome at all. This is
+        // the local equivalent of the hasChanges/committed cross-check
+        // runLoopModeAca() gets from the ACA worker — without it, a turn that
+        // silently did nothing was unconditionally marked resolved. Inspector-kind
+        // agents are exempt: they never produce file changes by design, so this
+        // check only applies to editors.
         await resetTask(task.id, stages.claimState);
         appendOutput(managed, {
           timestamp: now(),
@@ -1456,6 +1598,21 @@ async function runLoopMode(
           taskId: task.id,
           taskTitle: task.title,
           userId: meta.userId,
+        });
+      } else if (stages.kind === "editor" && (deliveredBranchName || deliveredPrUrl)) {
+        // Editor-kind task with new git-delivery facts this turn — persist
+        // the branch name / PR URL alongside the resolve so the next stage
+        // (reviewer/QA) and any future rework pass on this task know where
+        // to look. Undefined fields are omitted (tri-state semantics —
+        // see resolveTask's own doc comment), so a value this turn didn't
+        // produce (e.g. no PR yet because push failed) doesn't overwrite an
+        // existing one from a prior turn.
+        await resolveTask(task.id, stages.resolveState, deliveredBranchName, deliveredPrUrl);
+        appendOutput(managed, {
+          timestamp: now(),
+          stream: "system",
+          text: `Task ${task.id} marked as "${stages.resolveState}" ✓` +
+            (deliveredPrUrl ? ` — PR: ${deliveredPrUrl}` : deliveredBranchName ? ` — branch: ${deliveredBranchName}` : ""),
         });
       } else {
         await resolveTask(task.id, stages.resolveState);

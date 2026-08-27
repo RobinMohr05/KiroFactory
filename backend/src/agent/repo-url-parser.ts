@@ -49,3 +49,22 @@ export function buildPersistentBranchName(
   }
   return `s${sessionId}`;
 }
+
+/**
+ * Build a deterministic per-task branch name: [type]/#[id]_[slug]
+ * Example: bug/#598_local-mode-pipeline-has-no-commit-gate
+ *
+ * Mirrors `worker/worker.js`'s `buildBranchName()` exactly — the ACA path's
+ * git-delivery MCP server (`TASK_BRANCH_NAME`) and this local counterpart
+ * must compute the identical name for the same task, since either path may
+ * pick up a task another path previously started (task.branch persisted in
+ * the DB is otherwise the only source of truth once a branch already
+ * exists remotely).
+ */
+export function buildTaskBranchName(
+  taskType: string,
+  taskId: number,
+  taskTitle: string
+): string {
+  return `${taskType}/#${taskId}_${slugifyTitle(taskTitle)}`;
+}

@@ -414,13 +414,29 @@ export class KiroRunner {
    * see session-manager.ts's runLoopMode. Reuses the same cwd/mcpServers the
    * runner was created with, unless overridden.
    *
+   * `overrideMcpServers`/`overrideRawMcpServers`, when provided, REPLACE
+   * (not merge with) the servers the runner was created with, for this and
+   * every subsequent `newSession()` call until overridden again. This lets
+   * loop-mode inject task-scoped servers (e.g. git-delivery, whose env vars
+   * — branch name, task ID — are only known once a task is claimed) without
+   * paying the cost of respawning the kiro-cli subprocess per task. Omit
+   * either parameter to leave that half of the server list unchanged from
+   * whatever it was set to previously (by `create()` or an earlier
+   * `newSession()` call).
+   *
    * This does NOT respawn the kiro-cli process or redo `initialize` — only
    * `session/new` is re-issued, which is all that's needed since kiro-cli
    * scopes conversation state to sessionId.
    */
-  async newSession(overrideCwd?: string): Promise<void> {
+  async newSession(
+    overrideCwd?: string,
+    overrideMcpServers?: McpServerEntry[],
+    overrideRawMcpServers?: unknown[]
+  ): Promise<void> {
     if (overrideCwd) assertNotContainerPathOnWindows(overrideCwd);
     const cwd = overrideCwd ? getShortPath(resolve(overrideCwd)) : this.sessionCwd;
+    if (overrideMcpServers) this.sessionMcpServers = overrideMcpServers;
+    if (overrideRawMcpServers) this.sessionRawMcpServers = overrideRawMcpServers;
     this._mcpServerInitFailures = [];
     const result = await this.conn.newSession({
       cwd,

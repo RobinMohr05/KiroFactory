@@ -7,7 +7,7 @@
 
 import { describe, it, expect } from "vitest";
 
-import { buildPersistentBranchName } from "../agent/repo-url-parser.js";
+import { buildPersistentBranchName, buildTaskBranchName } from "../agent/repo-url-parser.js";
 
 describe("buildPersistentBranchName", () => {
   it("should produce a slugified branch name with session ID suffix", () => {
@@ -39,5 +39,34 @@ describe("buildPersistentBranchName", () => {
   it("should handle empty session name gracefully", () => {
     const result = buildPersistentBranchName(5, "");
     expect(result).toBe("s5");
+  });
+});
+
+describe("buildTaskBranchName", () => {
+  it("should produce a [type]/#[id]_[slug] branch name", () => {
+    const result = buildTaskBranchName("bug", 598, "Local-mode pipeline has no commit gate");
+    expect(result).toBe("bug/#598_local-mode-pipeline-has-no-commit-gate");
+  });
+
+  it("should match worker.js's buildBranchName format for feature tasks", () => {
+    const result = buildTaskBranchName("feature", 42, "Add dark mode toggle");
+    expect(result).toBe("feature/#42_add-dark-mode-toggle");
+  });
+
+  it("should handle special characters in the task title", () => {
+    const result = buildTaskBranchName("improvement", 7, "Refactor: cleanup (v2)!");
+    expect(result).toBe("improvement/#7_refactor-cleanup-v2");
+  });
+
+  it("should produce the same branch name for the same task every time (determinism)", () => {
+    const a = buildTaskBranchName("bug", 100, "Fix the thing");
+    const b = buildTaskBranchName("bug", 100, "Fix the thing");
+    expect(a).toBe(b);
+  });
+
+  it("should produce different branch names for different task IDs with the same title", () => {
+    const a = buildTaskBranchName("bug", 1, "Duplicate title");
+    const b = buildTaskBranchName("bug", 2, "Duplicate title");
+    expect(a).not.toBe(b);
   });
 });
