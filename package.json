@@ -1,13 +1,18 @@
 {
   "name": "vibecode-heaven",
   "private": true,
-  "workspaces": ["backend", "frontend"],
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
   "scripts": {
-    "dev": "concurrently \"npm run dev -w backend\" \"npm run dev -w frontend\"",
+    "dev": "concurrently -k -s first \"npm run dev -w backend\" \"npm run wait-for-backend && npm run dev -w frontend\"",
+    "wait-for-backend": "wait-on http://localhost:3500/api/health",
     "build": "npm run build -w backend && npm run build -w frontend",
     "start": "npm run start -w backend"
   },
   "devDependencies": {
-    "concurrently": "^9.1.0"
+    "concurrently": "^9.1.0",
+    "wait-on": "7.2.0"
   }
 }
