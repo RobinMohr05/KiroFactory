@@ -86,6 +86,50 @@ describe('TaskPlannerModal - session leak prevention', () => {
     expect(deleteCalls[0][0]).toBe('/api/task-planner/100');
   });
 
+  it('cleans up the orphaned session when unmount happens BEFORE /start resolves (true StrictMode timing)', async () => {
+    // React StrictMode's mount->cleanup->remount cycle runs the cleanup
+    // synchronously, immediately after mount — well before any in-flight
+    // network request has a chance to resolve. Use a manually-controlled
+    // deferred promise so we can unmount while /start is still pending,
+    // then resolve it afterward, to reproduce that exact ordering.
+    let resolveStart: ((value: { ok: boolean; json: () => Promise<{ sessionId: number }> }) => void) | null = null;
+    const startPromise = new Promise<{ ok: boolean; json: () => Promise<{ sessionId: number }> }>((resolve) => {
+      resolveStart = resolve;
+    });
+
+    apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (url === '/api/task-planner/start' && opts?.method === 'POST') {
+        return startPromise;
+      }
+      if (opts?.method === 'DELETE') {
+        return { ok: true, json: async () => ({}) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+
+    mockUseApp({ currentTabId: 1 });
+
+    const { unmount } = render(<TaskPlannerModal onClose={vi.fn()} />);
+
+    // Unmount immediately — /start is still pending, so at this point
+    // createdSessionId is still null inside the effect closure.
+    unmount();
+
+    // Now let /start resolve, AFTER cleanup has already run.
+    await act(async () => {
+      resolveStart!({ ok: true, json: async () => ({ sessionId: 100 }) });
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    // The session created by the now-cancelled effect must still be deleted —
+    // not silently abandoned/leaked as a live backend session + kiro-cli process.
+    const deleteCalls = apiFetchMock.mock.calls.filter(
+      ([url, opts]) => typeof url === 'string' && url.includes('/api/task-planner/') && opts?.method === 'DELETE'
+    );
+    expect(deleteCalls.length).toBe(1);
+    expect(deleteCalls[0][0]).toBe('/api/task-planner/100');
+  });
+
   it('cleans up session on unmount even if fetch already resolved', async () => {
     apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
       if (url === '/api/task-planner/start' && opts?.method === 'POST') {
