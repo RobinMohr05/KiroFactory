@@ -15,8 +15,6 @@ interface AppState {
   activeAgentId: number | null;
   activeView: ViewTab;
   currentSort: 'priority' | 'updated' | 'created';
-  boardSessions: { id: number; name: string; agent?: string; status: string }[];
-  boardAgents: string[];
   highlightedTaskId: number | null;
 }
 
@@ -62,8 +60,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [activeAgentId, setActiveAgentId] = useState<number | null>(null);
   const [currentSort, setCurrentSort] = useState<'priority' | 'updated' | 'created'>('priority');
   const [activeView, setActiveView] = useState<ViewTab>('boards');
-  const [boardSessions, setBoardSessions] = useState<{ id: number; name: string; agent?: string; status: string }[]>([]);
-  const [boardAgents, setBoardAgents] = useState<string[]>([]);
   const [highlightedTaskId, setHighlightedTaskId] = useState<number | null>(null);
 
   const pendingOps = useRef<Set<string>>(new Set());
@@ -110,8 +106,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!res.ok) return;
       const data = await res.json();
       setTasks(data.tasks || []);
-      setBoardSessions(data.sessions || []);
-      setBoardAgents(data.agents || []);
     } catch (e) {
       console.error('Failed to fetch tab tasks:', e);
     }
@@ -470,8 +464,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     activeAgentId,
     activeView,
     currentSort,
-    boardSessions,
-    boardAgents,
     highlightedTaskId,
     setCurrentTabId,
     setActiveSessionId,
