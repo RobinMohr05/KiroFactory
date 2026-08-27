@@ -177,7 +177,15 @@ export interface User {
   email: string;
   createdAt: string;
   defaultGitProvider?: string | null;
+  uiViewMode?: UiViewMode;
 }
+
+/**
+ * Top-level UI layout mode. "easy" is a simplified, session-only view;
+ * "advanced" is the full app (tabs/boards, sessions, agents, errors, usage).
+ * Written to extend to additional modes later — don't assume exactly two.
+ */
+export type UiViewMode = 'easy' | 'advanced';
 
 export type ViewTab = 'boards' | 'sessions' | 'agents' | 'errors' | 'usage';
 

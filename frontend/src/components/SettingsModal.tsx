@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { apiFetch } from '../utils/api';
+import { ViewModeSlider } from './ViewModeSlider';
+import type { UiViewMode } from '../types';
 
 interface CredentialStatus {
   [key: string]: boolean;
@@ -20,7 +22,7 @@ const CREDENTIAL_ROWS = [
 ];
 
 export function SettingsModal({ onClose }: SettingsModalProps) {
-  const { user } = useApp();
+  const { user, setUiViewMode } = useApp();
 
   // Change password state
   const [currentPw, setCurrentPw] = useState('');
@@ -257,6 +259,23 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
           ) : (
             <p>Not logged in</p>
           )}
+        </div>
+
+        <div className="settings-section">
+          <h3 className="settings-section-title">Interface Mode</h3>
+          <p className="credentials-description">
+            Easy mode gives you a simple chat-style view for getting started. Advanced mode
+            unlocks the full board/sessions/agents workflow for loop engineering. Switching
+            requires confirmation either way.
+          </p>
+          <ViewModeSlider<UiViewMode>
+            steps={[
+              { value: 'easy', label: 'Easy' },
+              { value: 'advanced', label: 'Advanced' },
+            ]}
+            value={user?.uiViewMode || 'easy'}
+            onConfirm={setUiViewMode}
+          />
         </div>
 
         <form className="settings-section" onSubmit={handleChangePassword}>

@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState, useCallback, type ReactNode } from 'react';
-import type { Tab, Task, Session, Agent, AgentError, OutputEntry, SessionActivity, User, ViewTab, WsMessage } from '../types';
+import type { Tab, Task, Session, Agent, AgentError, OutputEntry, SessionActivity, User, ViewTab, UiViewMode, WsMessage } from '../types';
 import { apiFetch } from '../utils/api';
 
 interface AppState {
@@ -37,6 +37,13 @@ interface AppContextValue extends AppState {
   fetchErrors: () => Promise<void>;
   logout: () => Promise<void>;
   pendingOps: React.MutableRefObject<Set<string>>;
+  /**
+   * Switch the user's top-level UI view mode. Persists to the backend first;
+   * only updates local `user` state (which App.tsx gates layout on) if the
+   * API call succeeds. Throws on failure so callers (the confirmation UI)
+   * can show an error instead of silently flipping the view.
+   */
+  setUiViewMode: (mode: UiViewMode) => Promise<void>;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -149,6 +156,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
       await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' });
     } catch { /* ignore */ }
     window.location.href = '/login.html';
+  }, []);
+
+  const setUiViewMode = useCallback(async (mode: UiViewMode) => {
+    const res = await apiFetch('/api/auth/me/view-mode', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ uiViewMode: mode }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || `Failed to switch view mode (HTTP ${res.status})`);
+    }
+    const data = await res.json();
+    setUser(data.user);
   }, []);
 
   // --- WebSocket ---
@@ -483,6 +504,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     fetchErrors,
     logout,
     pendingOps,
+    setUiViewMode,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

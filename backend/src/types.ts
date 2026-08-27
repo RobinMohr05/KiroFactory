@@ -9,9 +9,32 @@ export interface User {
    * Null means "always derive from the repository URL".
    */
   defaultGitProvider: GitProvider | null;
+  /**
+   * Which top-level UI layout the user sees. "easy" is a simplified,
+   * session-only view aimed at people just getting into loop engineering;
+   * "advanced" is the full app (tabs/boards, sessions, agents, errors, usage).
+   * Defaults to "easy" for new accounts. Switching requires explicit
+   * confirmation client-side (see ViewModeSlider) since "advanced" exposes
+   * loop engineering concepts some users are still wary of.
+   */
+  uiViewMode: UiViewMode;
   createdAt: string;
   updatedAt: string;
   // NOTE: password_hash and kiro_api_key_encrypted are NEVER returned in API responses
+}
+
+/**
+ * Top-level UI layout mode. Currently two stops, but the slider/persistence
+ * plumbing is written to extend to additional modes later (see
+ * ViewModeSlider's `steps` prop) — do not assume exactly two values when
+ * adding new call sites.
+ */
+export type UiViewMode = "easy" | "advanced";
+
+export const UI_VIEW_MODES: UiViewMode[] = ["easy", "advanced"];
+
+export function isUiViewMode(value: unknown): value is UiViewMode {
+  return typeof value === "string" && (UI_VIEW_MODES as string[]).includes(value);
 }
 
 // ─── Git providers ───────────────────────────────────────────────────────────
