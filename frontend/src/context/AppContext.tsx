@@ -340,14 +340,31 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const connectWebSocket = useCallback(() => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+
+    // Guard against React 18 StrictMode's dev-only double-invoke of this
+    // effect: mount -> cleanup -> mount happens synchronously, but
+    // WebSocket.close() is asynchronous, so the first socket can still be
+    // OPEN (and still registered in the server's per-user client set) when
+    // the second socket connects. Without this guard, every broadcast is
+    // briefly delivered twice to the same tab (visible as duplicated lines
+    // in the session output log). Tagging each socket and checking it's
+    // still the "current" one before acting on open/message/close ensures a
+    // superseded socket is inert — it gets forced closed and never invokes
+    // handleWsMessage — even during that overlap window.
+    const isCurrent = () => wsRef.current === ws;
     wsRef.current = ws;
 
     ws.addEventListener('open', () => {
+      if (!isCurrent()) {
+        ws.close();
+        return;
+      }
       setConnected(true);
       wsHasConnectedOnce.current = true;
     });
 
     ws.addEventListener('close', (event) => {
+      if (!isCurrent()) return;
       setConnected(false);
       wsRef.current = null;
       if (event.code === 4001) {
@@ -367,6 +384,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
 
     ws.addEventListener('message', (event) => {
+      if (!isCurrent()) return;
       try {
         const message = JSON.parse(event.data) as WsMessage;
         handleWsMessage(message);
@@ -385,7 +403,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     fetchErrors();
 
     return () => {
-      if (wsRef.current) wsRef.current.close();
+      // Detach immediately so a stale socket (still closing async) never
+      // gets treated as current — see the isCurrent() guard in
+      // connectWebSocket for why this matters under StrictMode.
+      const staleWs = wsRef.current;
+      wsRef.current = null;
+      if (staleWs) staleWs.close();
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
     };
   }, [connectWebSocket, fetchTabs, fetchSessions, fetchAgents, fetchErrors]);
