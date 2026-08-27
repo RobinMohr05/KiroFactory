@@ -7,6 +7,7 @@ import {
   getSession,
   getSessionOutput,
   deleteSession,
+  getAllSessions,
   injectPendingRunner,
 } from "../session-manager.js";
 import { createTask } from "../db/tasks.js";
@@ -248,6 +249,21 @@ router.post("/start", async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
     const { tabId } = req.body as { tabId?: number };
+
+    // Enforce at most one Task Planner session per user at a time. A stray
+    // duplicate can otherwise be created by a double-fire of this route
+    // (e.g. a double-click on the "AI Planner" trigger, or — for the
+    // still-unmerged React rewrite of this modal — StrictMode's dev-mode
+    // double-mount). Planner sessions have no lasting value once superseded
+    // (they're a short-lived planning chat, not a deliverable), so deleting
+    // the old one outright is correct here — unlike a regular dev/loop
+    // session, there's nothing to preserve.
+    const stalePlanners = getAllSessions(userId).filter(
+      (s) => s.name === "Task Planner" && s.status === "running"
+    );
+    for (const stale of stalePlanners) {
+      deleteSession(stale.id);
+    }
 
     // Build the system prompt, optionally enriched with tab/repository context
     let systemPrompt = TASK_PLANNER_SYSTEM_PROMPT;

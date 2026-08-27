@@ -4392,7 +4392,17 @@ function prewarmPlannerSession() {
 /**
  * Open the AI Task Planner modal and start a new planning session.
  */
+let taskPlannerStarting = false;
+
 async function openTaskPlanner() {
+  // Guard against a double-fire (e.g. a double-click on the trigger button,
+  // or the modal being reopened before the previous /start call resolved)
+  // creating two backend sessions for one user action. The backend also
+  // enforces at most one running "Task Planner" session per user, but this
+  // avoids the wasted create-then-immediately-superseded round trip.
+  if (taskPlannerStarting) return;
+  taskPlannerStarting = true;
+
   // Hide the task form first
   hideTaskForm();
 
@@ -4436,6 +4446,8 @@ async function openTaskPlanner() {
     console.error('Failed to start task planner:', e);
     addPlannerMessage('system', 'Failed to start: ' + e.message);
     setTaskPlannerStatus('error');
+  } finally {
+    taskPlannerStarting = false;
   }
 }
 
