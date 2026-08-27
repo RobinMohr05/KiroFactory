@@ -368,10 +368,11 @@ concurrency-safe task-claiming design.
 
 ---
 
-## 11. Running locally without Azure or Docker
+## 11. Running locally without Azure
 
-The entire application can run on localhost with no Azure access and no Docker. This is the
-recommended path for new developers or any environment without Azure access.
+The core application (UI, board, task CRUD, auth, WebSocket sync) can run on localhost with no
+Azure access at all. This is the recommended path for new developers or any environment without
+Azure access.
 
 Unlike the old SQL Server Express LocalDB setup, there's no per-developer database anymore.
 Everyone connects to the **same shared AuraDB Free instance** used in production — an explicitly
@@ -392,10 +393,106 @@ your test data can show up in a teammate's local environment, and vice versa.
 There's no separate manual migration step — the constraint/index bootstrap in
 `backend/src/db/migrate.ts` runs automatically and idempotently on every startup.
 
-**What works without `kiro-cli`:** Everything except starting agent sessions. The full UI,
-task/board CRUD, auth, WebSocket sync, and drag-and-drop all work. Only the "Start session"
-action requires `kiro-cli` on PATH — if it's missing, the Errors tab shows a clear message
-instead of a raw Node.js error.
+**What works without a local Docker/WSL setup:** Everything except starting agent sessions. The
+full UI, task/board CRUD, auth, WebSocket sync, and drag-and-drop all work. Starting a session is
+being migrated onto the devcontainer/WSL design described in §12 below — see that section for
+what "Start session" will require going forward, and its current implementation status.
 
 For more detail (including the current status of the local seed script), see
 [`backend/README.md` § "Run entirely on localhost"](backend/README.md#run-entirely-on-localhost-no-azure-no-docker).
+
+---
+
+## 12. Devcontainer-based worker (design in progress)
+
+> **Status:** design/planning stage, not yet implemented. This section documents the agreed
+> direction so implementation can proceed incrementally without re-deriving the design. Update
+> this section as pieces land; don't let it go stale (see the "code wins over docs" steering
+> convention — once code exists, this section should describe what's actually there).
+
+### Why
+
+Today, local-mode sessions (`WORKER_MODE=local`) spawn `kiro-cli acp` as a **bare child process
+on the orchestrator's own host** (`backend/src/agent/kiro-runner.ts`, ACP-over-stdio, no
+container at all). This is a second, independently-maintained implementation of "run kiro-cli and
+stream output" — separate from `worker/worker.js`, which is what actually runs in production
+(ACA Job, WebSocket callback to the orchestrator). The two paths can drift apart in behavior.
+
+The goal is to converge both onto **one image and one code path** (`worker/worker.js`), so local
+dev sessions behave identically to production sessions, while still working out-of-the-box on a
+fresh developer machine.
+
+### Target shape
+
+- **One devcontainer definition**, living at `worker/.devcontainer/` (`devcontainer.json` +
+  `Dockerfile`), replacing today's `worker/Dockerfile`. Same runtime deps as today (git, curl,
+  node, `kiro-cli`), just defined via the devcontainer spec so it's buildable with the standard
+  `devcontainer build` CLI in addition to plain `docker build`.
+- **Hosted/production path (ACA):** unchanged in shape. `az acr build` (or `devcontainer build`
+  in CI) builds the same Dockerfile, pushes to `kiroFactory` ACR, and the ACA Job runs it headless
+  exactly as today — see §3(c) and §6.
+- **Local path:** instead of `kiro-runner.ts`'s bare host spawn, the orchestrator runs a **fresh
+  Docker container per session** (`docker run`, one-shot, not a long-lived `devcontainer up` shell)
+  from the *same* image, inside a **dedicated WSL2 distro** running Docker Engine. This mirrors
+  `aca-worker-spawner.ts`'s job-per-session model — a new module (working name
+  `wsl-worker-spawner.ts`) plays the same role for local Docker that `aca-worker-spawner.ts` plays
+  for ACA. `kiro-runner.ts` is retired once this lands.
+
+### Why concurrency "just works" here
+
+Each session gets its **own container**, not a shared sandbox — Docker's normal container
+isolation (separate filesystem, separate process namespace) is the isolation boundary, exactly
+like separate ACA Job executions are today. One WSL distro's Docker daemon can run any number of
+containers at once, so N concurrent local sessions = N concurrent containers, each on its own
+branch, own repo clone, own working directory, with no risk of collision even if two sessions
+target the same repository. Nothing is mounted in from the Windows host — **the git clone happens
+entirely inside the container's own filesystem** (physically backed by the WSL distro's virtual
+disk), so there's no Windows↔WSL filesystem I/O in the hot path, and the orchestrator never
+touches those files directly — it only talks to each container over its own WebSocket connection,
+same as it does with an ACA container today.
+
+### Dedicated WSL distro
+
+A WSL2 distro dedicated to this purpose (working name `kirofactory-docker`) runs Docker Engine
+directly (not Docker Desktop's Windows integration), kept separate from any general-purpose WSL
+distro a developer already has. Provisioning is automated and idempotent so it works on any
+developer's machine without manual setup:
+
+**Base image decision (confirmed):** minimal Ubuntu (`Ubuntu-24.04`, via `wsl --install -d
+Ubuntu-24.04 --name kirofactory-docker`) with **Docker Engine** installed inside it via the
+official `get.docker.com` convenience script — not Docker Desktop. This is the standard,
+well-documented "Docker Engine on WSL2 without Docker Desktop" pattern, and it's what "a
+Docker-optimized image" concretely means here: there is no standalone, redistributable minimal
+Docker-Engine WSL rootfs to `wsl --import` directly (Docker Desktop's own `docker-desktop` distro
+is not usable standalone/outside Docker Desktop), so the base + Docker Engine install is the
+right realization of that requirement.
+
+**Considered and rejected for now:** Microsoft's `wslc.exe` (built-in WSL container CLI,
+`wsl --update --pre-release`, requires WSL ≥2.9.3) would remove the need for a dedicated distro
+or a Docker Engine install step entirely — `wslc run`/`wslc build` are drop-in analogs to
+`docker run`/`docker build`. It's currently pre-release-only, so it was not chosen for a setup
+that needs to work reliably on other developers' machines without asking them to opt into
+pre-release WSL updates. Worth revisiting once it reaches general availability.
+
+- `worker/.devcontainer/setup-wsl.ps1` (planned) — checks whether `kirofactory-docker` already
+  exists (`wsl -l -v`); if not, creates it (`wsl --install -d <base-distro> --name
+  kirofactory-docker`) and installs Docker Engine inside it (`get.docker.com` script), starting
+  the daemon. Safe to re-run — skips steps already satisfied.
+- The new `wsl-worker-spawner.ts` module calls this (or a lightweight health check, e.g. `wsl -d
+  kirofactory-docker -- docker info`) lazily before the first local session start of a run,
+  auto-provisioning if missing rather than requiring a manual one-time step.
+- Session env vars (`SESSION_ID`, `REPO_URL`, `DEV_BRANCH`, `AGENT_CONFIG_JSON_B64`, etc. — the
+  same contract `worker.js` already expects from ACA) are passed to `docker run` inside that
+  distro. `ORCHESTRATOR_URL` points at `ws://host.docker.internal:3500/internal/worker` (or the
+  WSL-visible host address) instead of the ACA ingress FQDN — this is the only meaningful
+  difference `worker.js` needs to tolerate between the two environments, and it already only
+  knows "connect back over WebSocket," not "I'm running in ACA," so no code changes should be
+  needed there.
+
+### Open follow-ups
+
+- `worker/.devcontainer/README.md` should document the WSL distro setup, provisioning, and
+  troubleshooting (WSL not started, daemon not running in the distro, etc.) once the setup script
+  exists.
+- Once implemented, §11 above should be rewritten to state the real requirement plainly (WSL2 +
+  Docker via the dedicated distro) instead of pointing here.
