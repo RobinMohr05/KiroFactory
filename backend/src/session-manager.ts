@@ -40,7 +40,7 @@ import { log, logSessionEvent, logWorkerEvent, toErrorFields } from "./logger.js
 import { getAgentTabs, getTabById } from "./db/tabs.js";
 import { getAgentByName } from "./db/agents.js";
 import { materializeAgentConfigIfMissing, encodeAgentConfigBase64 } from "./agent/agent-config-writer.js";
-import { buildProxyServersConfig, type SessionCredentials } from "./mcp-proxy-config.js";
+import { buildProxyServersConfig, buildLocalMcpServerEntries, type SessionCredentials } from "./mcp-proxy-config.js";
 import {
   loadAcaConfig,
   startWorkerJob,
@@ -1008,16 +1008,73 @@ async function runSession(managed: ManagedSession): Promise<void> {
     }
 
     if (!managed.runner) {
+      // Resolve tab-level MCP toggles (Atlassian/Azure DevOps/AWS API/AWS
+      // Docs) into direct stdio MCP servers for this local session. This is
+      // the local counterpart to the ACA path's `buildProxyServersConfig()`
+      // (~line 2114 below) — same toggle/credential resolution, but no
+      // proxy sidecar: KiroRunner already spawns kiro-cli as a direct child
+      // process on this host, so each MCP server can be spawned the same
+      // way. Session-level overrides (`meta.mcpServers`) are appended after
+      // and are not de-duplicated against tab servers by name — an explicit
+      // session-level entry with the same name as a tab-toggle server will
+      // simply appear twice in the payload; kiro-cli's own session/new
+      // handling determines precedence in that case.
+      let tabMcpServers: Array<{ name: string; command: string; args: string[]; env: Array<{ name: string; value: string }> }> = [];
+      try {
+        let effectiveMcpConfig: TabMcpConfig = { ...DEFAULT_MCP_CONFIG };
+        if (meta.tabIds && meta.tabIds.length > 0) {
+          for (const tabId of meta.tabIds) {
+            const tab = await getTabById(tabId);
+            if (tab) {
+              effectiveMcpConfig = { ...tab.mcpConfig };
+              break;
+            }
+          }
+        }
+        if (meta.mcpConfigOverride) {
+          effectiveMcpConfig = { ...effectiveMcpConfig, ...meta.mcpConfigOverride };
+        }
+
+        const rawCreds = meta.userId ? await getAllDecryptedCredentials(meta.userId) : {};
+        const credentials: SessionCredentials = {
+          azureDevOpsPat: rawCreds.azureDevOpsPat,
+          atlassianApiToken: rawCreds.atlassianApiToken,
+          atlassianUsername: rawCreds.atlassianUsername,
+          awsAccessKeyId: rawCreds.awsAccessKeyId,
+          awsSecretAccessKey: rawCreds.awsSecretAccessKey,
+        };
+
+        tabMcpServers = buildLocalMcpServerEntries(effectiveMcpConfig, credentials);
+        if (tabMcpServers.length > 0) {
+          appendOutput(managed, {
+            timestamp: now(),
+            stream: "system",
+            text: `MCP servers from tab config: ${tabMcpServers.map((s) => s.name).join(", ")}`,
+          });
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        appendOutput(managed, {
+          timestamp: now(),
+          stream: "stderr",
+          text: `Warning: Could not resolve tab MCP config: ${msg}. Continuing without tab-configured MCP servers.`,
+        });
+        // Non-fatal — continue with only session-level mcpServers (if any).
+      }
+
       managed.runner = await KiroRunner.create({
         agent: meta.agent || undefined,
         cwd: meta.cwd,
         model: meta.model ?? null,
-        mcpServers: meta.mcpServers?.map((s) => ({
-          name: s.name,
-          command: s.command,
-          args: s.args,
-          env: s.env,
-        })),
+        mcpServers: [
+          ...tabMcpServers,
+          ...(meta.mcpServers?.map((s) => ({
+            name: s.name,
+            command: s.command,
+            args: s.args,
+            env: s.env,
+          })) ?? []),
+        ],
         rawMcpServers: meta.rawMcpServers,
         kiroApiKey,
       });

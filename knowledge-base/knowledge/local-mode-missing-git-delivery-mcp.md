@@ -41,6 +41,49 @@ This is a substantial, multi-file design change (new local git-workspace setup +
 resolution + per-task MCP server rewiring), not a one-line fix. Flagged to the user rather than
 silently implemented; not yet built as of this note.
 
+## Related, separate gap — FIXED 2026-08-27: tab-toggle MCP servers (Atlassian/Azure DevOps/AWS)
+
+A second, distinct instance of the same disease surfaced independently: a local
+`code-reviewer-agent` session's transcript showed only the hardcoded `verdict` server plus the
+`FALLBACK_TOOLS` set (`read`, `write`, `shell`, `grep`, `glob`, `code`) — none of the tab's
+enabled MCP servers (Atlassian, Azure DevOps, AWS API, AWS Docs) were available, even though the
+same tab/agent worked correctly when run via the ACA/hosted path.
+
+Root cause (distinct from the git-delivery gap above, though same shape): `mcp-proxy-config.ts`'s
+`buildProxyServersConfig()` — which resolves a tab's `mcpConfig` toggles + per-user decrypted
+credentials into MCP server definitions — was only ever called from `runSessionAca`'s ACA branch
+(~line 2114 in `session-manager.ts`), because its output was packaged for a **proxy sidecar
+container** that only exists in ACA. The local path's `runSession()` → `KiroRunner.create()` call
+only ever received `meta.mcpServers`/`meta.rawMcpServers` (session-level overrides) — tab-level
+toggles were never resolved into anything for local sessions.
+
+Unlike the git-delivery gap, this one didn't need a sidecar-shaped fix: locally, `KiroRunner`
+already spawns `kiro-cli` (and can spawn each MCP server) as direct stdio child processes on the
+same host — no container boundary to cross. Fix applied:
+
+- `mcp-proxy-config.ts`: added `buildLocalMcpServerEntries(mcpConfig, credentials)`, which reuses
+  the exact same `buildAtlassianServer`/`buildAzureDevopsServer`/`buildAwsApiServer`/
+  `buildAwsDocsServer` builders as `buildProxyServersConfig`, but returns a flat
+  `LocalMcpServerEntry[]` (structurally identical to `KiroRunner`'s `McpServerEntry`) instead of
+  a `servers.json`-shaped map — no sidecar packaging, no Base64 env var.
+- `session-manager.ts`'s local `runSession()`: in the cold-create branch (`!managed.runner`),
+  resolves the session's tab `mcpConfig` (first tab in `meta.tabIds`, merged with
+  `meta.mcpConfigOverride` if set — same precedence as the ACA path) and decrypts the owning
+  user's credentials, then calls `buildLocalMcpServerEntries()` and prepends the result to the
+  `mcpServers` array passed into `KiroRunner.create()`, ahead of the existing
+  `meta.mcpServers`-derived entries. Wrapped in try/catch — a resolution failure logs a `stderr`
+  warning and falls back to session-level servers only, non-fatal (mirrors the ACA branch's own
+  error handling).
+- Scoped to the cold-create path only: the pooled-runner reuse branch (`managed.pendingRunner` →
+  `newSession()`) does not re-resolve or re-inject MCP servers, consistent with `KiroRunner`'s
+  existing design — `sessionMcpServers` is set once at `create()` time, not on `newSession()`.
+
+Verified: `tsc` build clean, full backend suite green (24 files / 215 tests, no regressions).
+
+Still NOT covered by this fix: the git-delivery/pr-review/pr-complete gap above remains open —
+those are task-scoped (branch name, task ID) and would need the more invasive per-task rewiring
+described in that section, not just a toggle/credential lookup at session-create time.
+
 ## Separate, fixed: double log line output (StrictMode WebSocket race)
 
 Root cause: `frontend/src/main.tsx` wraps the app in `<StrictMode>`. `AppContext.tsx`'s init
