@@ -3344,6 +3344,12 @@ textarea:focus {
   border-bottom-color: var(--accent-primary);
 }
 
+.session-log-copy-btn {
+  margin-left: auto;
+  margin-right: 0.5rem;
+  align-self: center;
+}
+
 .session-detail-tab-content {
   flex: 1;
   min-height: 0;
