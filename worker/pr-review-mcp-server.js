@@ -206,13 +206,13 @@ const REVIEW_THREADS_QUERY = `
           nodes {
             id
             isResolved
+            diffSide
             comments(first: 20) {
               nodes {
                 databaseId
                 path
                 line
                 originalLine
-                diffSide
                 body
                 author { login }
                 createdAt
@@ -336,7 +336,7 @@ async function githubGetPrComments(owner, repo, prNumber) {
         threadId: thread.id,
         path: firstComment.path,
         line: firstComment.line ?? firstComment.originalLine ?? null,
-        side: firstComment.diffSide || null,
+        side: thread.diffSide || null,
         body: firstComment.body,
         user: firstComment.author?.login || null,
         createdAt: firstComment.createdAt,

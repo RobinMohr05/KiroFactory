@@ -265,6 +265,70 @@ describe('TaskPlannerModal - session leak prevention', () => {
   });
 });
 
+describe('TaskPlannerModal - readiness race', () => {
+  let apiFetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiFetchMock = vi.mocked(api.apiFetch);
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('does not mark the session ready off the /start HTTP response alone', async () => {
+    // Regression test for: UI showed "Ready" and enabled Send immediately after
+    // POST /start resolved, but the backend's kiro-cli child process (session.runner)
+    // is spawned asynchronously by startSession() and may not exist yet — so a
+    // message sent at that point fails server-side with "Could not send message —
+    // session may not be running". Readiness must wait for the WS 'idle'/'completed'
+    // session-activity event, not the HTTP response.
+    apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (url === '/api/task-planner/start' && opts?.method === 'POST') {
+        return { ok: true, json: async () => ({ sessionId: 7 }) };
+      }
+      if (opts?.method === 'DELETE') {
+        return { ok: true, json: async () => ({}) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+
+    mockUseApp({ currentTabId: 1 });
+
+    const { getByText, getByPlaceholderText } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
+
+    // Let /start resolve.
+    await act(async () => {
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    // Status must still show "Connecting..." and Send must remain disabled —
+    // the runner has not been confirmed alive yet.
+    expect(getByText('Connecting...')).toBeTruthy();
+    const sendBtn = getByText('Send') as HTMLButtonElement;
+    expect(sendBtn.disabled).toBe(true);
+    const input = getByPlaceholderText('Describe the task you want to create...') as HTMLTextAreaElement;
+    // Textarea is never disabled — users can type while connecting/thinking.
+    // Only the Send button gates on readiness.
+    expect(input.disabled).toBe(false);
+
+    // Now simulate the real readiness signal: the backend's 'idle' session-activity
+    // WS event, fired once session.runner exists and the initial prompt was sent.
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('ws-session-activity', {
+        detail: { sessionId: 7, activity: { type: 'idle', detail: 'Waiting for prompts...' } },
+      }));
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    expect(getByText('Ready')).toBeTruthy();
+    // The textarea is never disabled (users can type at any status), so
+    // just confirm the Send button becomes enabled once ready with text.
+    expect(input.disabled).toBe(false);
+  });
+});
+
 describe('TaskPlannerModal - Create manually instead', () => {
   let apiFetchMock: ReturnType<typeof vi.fn>;
 
@@ -320,6 +384,195 @@ describe('TaskPlannerModal - Create manually instead', () => {
   });
 });
 
+describe('TaskPlannerModal - textarea always typeable', () => {
+  let apiFetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiFetchMock = vi.mocked(api.apiFetch);
+    apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (url === '/api/task-planner/start' && opts?.method === 'POST') {
+        return { ok: true, json: async () => ({ sessionId: 10 }) };
+      }
+      if (opts?.method === 'DELETE') {
+        return { ok: true, json: async () => ({}) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    mockUseApp({ currentTabId: 1 });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('textarea is not disabled when ready is false (connecting state)', async () => {
+    const { getByPlaceholderText, getByText } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
+
+    // Let /start resolve — session created but no WS idle event yet, so ready=false.
+    await act(async () => {
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    // Confirm we're still in connecting state (not ready).
+    expect(getByText('Connecting...')).toBeTruthy();
+
+    // Textarea must NOT be disabled — user should be able to type while waiting.
+    const input = getByPlaceholderText('Describe the task you want to create...') as HTMLTextAreaElement;
+    expect(input.disabled).toBe(false);
+  });
+
+  it('Send button remains disabled when ready is false even with text typed', async () => {
+    const { getByPlaceholderText, getByText } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
+
+    await act(async () => {
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    // Type some text while not ready.
+    const input = getByPlaceholderText('Describe the task you want to create...') as HTMLTextAreaElement;
+    await act(async () => {
+      const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')!.set!;
+      nativeInputValueSetter.call(input, 'my next message');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    // Send button must still be disabled (ready is false).
+    const sendBtn = getByText('Send') as HTMLButtonElement;
+    expect(sendBtn.disabled).toBe(true);
+  });
+
+  it('pressing Enter while not ready does not clear the typed text', async () => {
+    const { getByPlaceholderText, getByText } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
+
+    await act(async () => {
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    // Confirm not ready.
+    expect(getByText('Connecting...')).toBeTruthy();
+
+    const input = getByPlaceholderText('Describe the task you want to create...') as HTMLTextAreaElement;
+
+    // Type some text.
+    await act(async () => {
+      const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')!.set!;
+      nativeInputValueSetter.call(input, 'queued message');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    // Press Enter (without Shift) — handleSend should early-return, preserving text.
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+
+    // The text must still be there (not cleared by handleSend).
+    expect(input.value).toBe('queued message');
+
+    // No message was sent to the API (handleSend early-returned).
+    const messageCalls = apiFetchMock.mock.calls.filter(
+      ([url, opts]) => typeof url === 'string' && url.includes('/message') && opts?.method === 'POST'
+    );
+    expect(messageCalls.length).toBe(0);
+  });
+});
+
+describe('TaskPlannerModal - task JSON parsing', () => {
+  let apiFetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiFetchMock = vi.mocked(api.apiFetch);
+    apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (url === '/api/task-planner/start' && opts?.method === 'POST') {
+        return { ok: true, json: async () => ({ sessionId: 9 }) };
+      }
+      if (opts?.method === 'DELETE') {
+        return { ok: true, json: async () => ({}) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    mockUseApp({ currentTabId: 1 });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  function dispatchAssistantMessage(sessionId: number, text: string) {
+    // Simulate the backend streaming the assistant's final message via WS,
+    // the same path tryParseTask() is wired to through the 'idle' activity event.
+    window.dispatchEvent(new CustomEvent('ws-session-output', {
+      detail: { sessionId, entry: { stream: 'stdout', text } },
+    }));
+    window.dispatchEvent(new CustomEvent('ws-session-activity', {
+      detail: { sessionId, activity: { type: 'idle' } },
+    }));
+  }
+
+  it('recovers a task block whose long strings were line-wrapped, including a split \\" escape', async () => {
+    const malformed = '```json:task\n{\n  "title": "Merge \\"+ Task\\" and \\"AI Planner\\" into one entry point",\n  "description": "In frontend/src/components/TasksPanel.tsx, the toolbar currently renders two separate buttons that both\n create tasks: #newTaskBtn (\\"+ Task\\", opens TaskModal). Keep the button\'s id as newTaskBtn, label as \\"+ Task\\\n", and use a plain icon.",\n  "priority": 3,\n  "type": "improvement",\n  "files": ["frontend/src/components/TasksPanel.tsx"]\n}\n```';
+
+    const { getByText } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    await act(async () => {
+      dispatchAssistantMessage(9, malformed);
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    expect(getByText('✅ Task ready to create! Click "Create Task" to add it to your board.')).toBeTruthy();
+    const createBtn = getByText('Create Task') as HTMLButtonElement;
+    expect(createBtn.disabled).toBe(false);
+  });
+
+  it('resolves title/priority/type even when the line wrap lands inside a key name, not just a value', async () => {
+    const trailingWrapInKey = '```json:task\n{\n  "title\n": "Allow typing in Task Planner input while agent is busy",\n  "description": "Some description",\n  "priority": 3,\n  "type": "improvement",\n  "files": ["frontend/src/components/TaskPlannerModal.tsx"]\n}\n```';
+
+    const { getByText } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    await act(async () => {
+      dispatchAssistantMessage(9, trailingWrapInKey);
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    expect(getByText('✅ Task ready to create! Click "Create Task" to add it to your board.')).toBeTruthy();
+    expect((getByText('Create Task') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('resolves title even when the line wrap lands right after the opening quote of a key', async () => {
+    const leadingWrapInKey = '```json:task\n{"\ntitle": "Allow typing in Task Planner input while agent is busy", "priority": 3, "type": "improvement"}\n```';
+
+    const { getByText } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    await act(async () => {
+      dispatchAssistantMessage(9, leadingWrapInKey);
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    expect(getByText('✅ Task ready to create! Click "Create Task" to add it to your board.')).toBeTruthy();
+    expect((getByText('Create Task') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('surfaces a visible error instead of silently disabling Create Task on truly invalid JSON', async () => {
+    const brokenBeyondRepair = '```json:task\n{\n  "title": "Something,\n  "priority": 2,\n```';
+
+    const { getByText } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    await act(async () => {
+      dispatchAssistantMessage(9, brokenBeyondRepair);
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    expect(getByText(/Could not parse the task block above/)).toBeTruthy();
+    const createBtn = getByText('Create Task') as HTMLButtonElement;
+    expect(createBtn.disabled).toBe(true);
+  });
+});
+
 describe('TaskPlannerModal - modal CSS class structure', () => {
   let apiFetchMock: ReturnType<typeof vi.fn>;
 
@@ -361,5 +614,70 @@ describe('TaskPlannerModal - modal CSS class structure', () => {
   it('does not use "task-planner-content" class anywhere', () => {
     const { container } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
     expect(container.querySelector('.task-planner-content')).toBeNull();
+  });
+});
+
+describe('TaskPlannerModal - attachment cap message deduplication', () => {
+  let apiFetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiFetchMock = vi.mocked(api.apiFetch);
+    apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (url === '/api/task-planner/start' && opts?.method === 'POST') {
+        return { ok: true, json: async () => ({ sessionId: 20 }) };
+      }
+      if (opts?.method === 'DELETE') {
+        return { ok: true, json: async () => ({}) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    mockUseApp({ currentTabId: 1 });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('shows at most one cap-exceeded message when pasting more images than remaining slots', async () => {
+    // Pasting 5 images when 0 are attached should add exactly 3 (the cap)
+    // and show at most ONE "Maximum of 3 images per message." system message —
+    // NOT one per rejected file.
+    const { container, getAllByText, queryAllByText } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    // Create 5 small PNG files
+    const pngBytes = new Uint8Array([0x89, 0x50, 0x4E, 0x47]); // PNG header
+    const files: File[] = [];
+    for (let i = 0; i < 5; i++) {
+      files.push(new File([pngBytes], `image${i + 1}.png`, { type: 'image/png' }));
+    }
+
+    // Simulate a paste event with all 5 images
+    const dataTransfer = {
+      items: files.map(f => ({
+        kind: 'file' as const,
+        type: f.type,
+        getAsFile: () => f,
+      })),
+      get length() { return this.items.length; },
+    };
+
+    await act(async () => {
+      const pasteEvent = new Event('paste', { bubbles: true }) as any;
+      pasteEvent.clipboardData = dataTransfer;
+      window.dispatchEvent(pasteEvent);
+      // Let FileReader onload callbacks fire
+      await new Promise(r => setTimeout(r, 50));
+    });
+
+    // Exactly 3 attachment chips should be rendered (the cap)
+    const chips = container.querySelectorAll('.task-planner-attachment');
+    expect(chips.length).toBe(3);
+
+    // The cap-exceeded message should appear at most ONCE — not twice for
+    // the 2 rejected files.
+    const capMessages = queryAllByText(/Maximum of 3 images per message/);
+    expect(capMessages.length).toBe(1);
   });
 });

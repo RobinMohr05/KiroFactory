@@ -12,6 +12,8 @@ import { fileURLToPath } from "url";
 import { setupWebSocket } from "./websocket-handler.js";
 import { setupWorkerWebSocket } from "./worker-ws-handler.js";
 import { isAcaModeEnabled, loadAcaConfig, verifyAcaAccess } from "./aca-worker-spawner.js";
+import { isWslModeEnabled, loadWslConfig } from "./wsl-worker-spawner.js";
+import { startWslDiagnosticsCollector, stopWslDiagnosticsCollector } from "./wsl-diagnostics-collector.js";
 import { requireAuth, isPublicPath } from "./middleware/auth.js";
 import authRouter from "./routes/auth.js";
 import tasksRouter from "./routes/tasks.js";
@@ -39,10 +41,11 @@ const corsOrigin = process.env.NODE_ENV === "production"
   ? false // Same-origin only — no cross-origin requests needed
   : true; // Development: allow all origins for convenience
 app.use(cors({ origin: corsOrigin }));
-// Route-specific body-parser limit for task-planner (image uploads send base64 in JSON,
-// easily exceeding the default 100KB). Must be registered BEFORE the global parser so
-// that large payloads to this path are parsed here rather than rejected by the default.
-app.use("/api/task-planner", express.json({ limit: "15mb" }));
+// Route-specific body-parser limit for task-planner (multi-image uploads send base64 in JSON:
+// up to 3 images × 10 MB raw × 4/3 base64 expansion ≈ 40 MB + JSON overhead → 50 MB).
+// Must be registered BEFORE the global parser so that large payloads to this path are
+// parsed here rather than rejected by the default.
+app.use("/api/task-planner", express.json({ limit: "50mb" }));
 app.use(express.json());
 app.use(cookieParser());
 
@@ -231,6 +234,19 @@ async function start(): Promise<void> {
         });
     }
   }
+
+  // WSL/Docker diagnostics collector: only meaningful when local WSL worker
+  // mode is actually configured — a production/ACA-only deployment has no
+  // WSL distro to watch, and starting this unconditionally would just spawn
+  // wsl.exe processes that immediately fail on a machine without WSL at all.
+  // See wsl-diagnostics-collector.ts's module doc comment for why this exists
+  // and runs continuously rather than being started reactively on demand.
+  if (isWslModeEnabled()) {
+    const wslConfig = loadWslConfig();
+    if (wslConfig) {
+      startWslDiagnosticsCollector(wslConfig.distroName);
+    }
+  }
 }
 
 // ─── Graceful Shutdown ───────────────────────────────────────────────────────
@@ -238,6 +254,7 @@ async function start(): Promise<void> {
 async function shutdown(): Promise<void> {
   log.info("shutdown", { component: "startup", msg: "Shutting down..." });
 
+  stopWslDiagnosticsCollector();
   await shutdownAllSessions();
   await plannerPool.shutdown();
   server.close();

@@ -35,7 +35,7 @@ import { getUserKiroApiKey, getUserById } from "./db/users.js";
 import { getAllDecryptedCredentials, getDecryptedCredential } from "./db/credentials.js";
 import { isDbAvailable } from "./db/connection.js";
 import { getTaskAutoMergePrs, areAllGroupTasksDone } from "./db/tasks.js";
-import { recordError } from "./error-store.js";
+import { recordError, type RecordErrorInput } from "./error-store.js";
 import { log, logSessionEvent, logWorkerEvent, toErrorFields } from "./logger.js";
 import { getAgentTabs, getTabById } from "./db/tabs.js";
 import { getAgentByName } from "./db/agents.js";
@@ -508,6 +508,23 @@ function now(): string {
  * Record an error both in the in-memory error store (for live UI) and persist
  * it to the DB as an ErrorEvent node linked to the session (for historical review).
  */
+/** How many trailing output lines to snapshot into an AgentError's recentOutput field. */
+const ERROR_RECENT_OUTPUT_LINES = 25;
+
+/**
+ * Record an error both in the in-memory error store (for live UI) and persist
+ * it to the DB as an ErrorEvent node linked to the session (for historical review).
+ *
+ * `managed`, when provided, is used to automatically enrich the error with
+ * context that previously existed only in memory and was never attached to
+ * the error record: a trailing snippet of the session's own output log (see
+ * appendOutput()) and current turn stats (turn number, tool call count,
+ * elapsed turn duration). This was the main reason agent errors were hard to
+ * diagnose from the Errors/Logs tab alone — the flat message/context strings
+ * (e.g. "Worker disconnected") threw away everything about what the agent
+ * was actually doing right before the failure, even though that history was
+ * sitting right there in session.meta.output the whole time.
+ */
 function recordSessionError(input: {
   sessionId: number;
   sessionName: string;
@@ -517,8 +534,48 @@ function recordSessionError(input: {
   taskId?: number;
   taskTitle?: string;
   userId: number;
+  /** Raw error object, when available — its stack trace is attached if present. */
+  err?: unknown;
+  /** The live session, for automatic recentOutput/turn-stats enrichment. */
+  managed?: ManagedSession;
 }): void {
-  recordError(input);
+  const stack = input.err instanceof Error ? input.err.stack : undefined;
+
+  let recentOutput: RecordErrorInput["recentOutput"];
+  let turnNumber: number | undefined;
+  let turnDurationMs: number | undefined;
+  let toolCallCount: number | undefined;
+  if (input.managed) {
+    const output = input.managed.meta.output;
+    if (output.length > 0) {
+      recentOutput = output.slice(-ERROR_RECENT_OUTPUT_LINES).map((e) => ({
+        timestamp: e.timestamp,
+        stream: e.stream,
+        text: e.text,
+      }));
+    }
+    turnNumber = input.managed.turnNumber || undefined;
+    toolCallCount = input.managed.turnToolCallCount || undefined;
+    if (input.managed.turnStartedAt) {
+      turnDurationMs = Date.parse(now()) - Date.parse(input.managed.turnStartedAt);
+    }
+  }
+
+  recordError({
+    sessionId: input.sessionId,
+    sessionName: input.sessionName,
+    agent: input.agent,
+    message: input.message,
+    context: input.context,
+    taskId: input.taskId,
+    taskTitle: input.taskTitle,
+    userId: input.userId,
+    stack,
+    recentOutput,
+    turnNumber,
+    turnDurationMs,
+    toolCallCount,
+  });
 
   // Persist to DB — fire-and-forget, non-fatal
   if (isDbAvailable()) {
@@ -1030,6 +1087,8 @@ export async function startSession(id: number): Promise<boolean> {
       taskId: session.meta.currentTaskId,
       taskTitle: undefined,
       userId: session.meta.userId,
+      err,
+      managed: session,
     });
   });
 
@@ -1087,7 +1146,7 @@ export async function stopSession(id: number): Promise<boolean> {
   return true;
 }
 
-export async function sendPrompt(id: number, text: string, image?: { data: string; mimeType: string }): Promise<boolean> {
+export async function sendPrompt(id: number, text: string, images?: { data: string; mimeType: string }[]): Promise<boolean> {
   const session = sessions.get(id);
   if (!session || session.meta.status !== "running") return false;
   if (!session.meta.interactive) return false;
@@ -1100,7 +1159,7 @@ export async function sendPrompt(id: number, text: string, image?: { data: strin
   if (!hasLocalRunner && !hasContainerWorker) return false;
 
   // Image attachments are only supported for the in-process KiroRunner path.
-  if (image && hasContainerWorker) {
+  if (images && images.length > 0 && hasContainerWorker) {
     throw new Error("Image attachments are not supported for sessions running in a containerized worker");
   }
 
@@ -1110,7 +1169,7 @@ export async function sendPrompt(id: number, text: string, image?: { data: strin
   // Run prompt in background
   const promptFn = hasContainerWorker
     ? streamPromptAca(session, text)
-    : streamPrompt(session, text, image);
+    : streamPrompt(session, text, images);
 
   promptFn.catch((err) => {
     const msg = err instanceof Error ? err.message : String(err);
@@ -1657,6 +1716,8 @@ async function runLoopMode(
         taskId: task.id,
         taskTitle: task.title,
         userId: meta.userId,
+        err,
+        managed,
       });
     }
 
@@ -1682,6 +1743,7 @@ async function runLoopMode(
         taskId: task.id,
         taskTitle: task.title,
         userId: meta.userId,
+        managed,
       });
     }
 
@@ -1780,6 +1842,7 @@ async function runLoopMode(
           taskId: task.id,
           taskTitle: task.title,
           userId: meta.userId,
+          managed,
         });
       } else if (stages.kind === "editor" && (deliveredBranchName || deliveredPrUrl)) {
         // Editor-kind task with new git-delivery facts this turn — persist
@@ -1902,6 +1965,8 @@ async function runStandaloneLoopLocal(
         message: msg,
         context: `Error in standalone loop iteration ${iteration}`,
         userId: meta.userId,
+        err,
+        managed,
       });
     }
 
@@ -1918,7 +1983,7 @@ async function runStandaloneLoopLocal(
   }
 }
 
-async function streamPrompt(managed: ManagedSession, text: string, image?: { data: string; mimeType: string }, taskMeta?: { id: number; title: string }): Promise<void> {
+async function streamPrompt(managed: ManagedSession, text: string, images?: { data: string; mimeType: string }[], taskMeta?: { id: number; title: string }): Promise<void> {
   if (!managed.runner) return;
 
   // ─── Turn start ───
@@ -1955,7 +2020,7 @@ async function streamPrompt(managed: ManagedSession, text: string, image?: { dat
   }
 
   try {
-    for await (const update of managed.runner.prompt(text, image)) {
+    for await (const update of managed.runner.prompt(text, images)) {
       if (managed.abortController?.signal.aborted) break;
       processUpdate(managed, update);
     }
@@ -2991,6 +3056,7 @@ async function runStandaloneLoopAca(
           message: promptResult.error,
           context: `Standalone loop iteration ${iteration} reported error. stopReason: ${promptResult.stopReason ?? "none"}, tool calls: ${promptResult.toolCalls ?? 0}, duration: ${Math.round((promptResult.durationMs ?? 0) / 1000)}s.`,
           userId: meta.userId,
+          managed,
         });
       }
       if (promptResult.stopReason === "cancelled") {
@@ -3014,6 +3080,8 @@ async function runStandaloneLoopAca(
         message: msg,
         context: `Error in standalone loop iteration ${iteration}`,
         userId: meta.userId,
+        err,
+        managed,
       });
     }
 
@@ -3283,6 +3351,8 @@ async function runLoopModeAca(
         taskId: task.id,
         taskTitle: task.title,
         userId: meta.userId,
+        err,
+        managed,
       });
     }
 
@@ -3336,6 +3406,7 @@ async function runLoopModeAca(
         taskId: task.id,
         taskTitle: task.title,
         userId: meta.userId,
+        managed,
       });
     }
 
@@ -3364,6 +3435,7 @@ async function runLoopModeAca(
         taskId: task.id,
         taskTitle: task.title,
         userId: meta.userId,
+        managed,
       });
     }
 
@@ -3400,6 +3472,7 @@ async function runLoopModeAca(
         taskId: task.id,
         taskTitle: task.title,
         userId: meta.userId,
+        managed,
       });
     }
 
@@ -3426,6 +3499,7 @@ async function runLoopModeAca(
         taskId: task.id,
         taskTitle: task.title,
         userId: meta.userId,
+        managed,
       });
     }
 
@@ -3549,6 +3623,7 @@ async function runLoopModeAca(
           taskId: task.id,
           taskTitle: task.title,
           userId: meta.userId,
+          managed,
         });
       } else {
         appendOutput(managed, {

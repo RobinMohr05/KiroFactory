@@ -28,6 +28,7 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { getUserKiroApiKey } from "./db/users.js";
+import { log, toErrorFields } from "./logger.js";
 import type { ProxyServersConfig } from "./mcp-proxy-config.js";
 import { encodeServersConfigBase64, buildProxyCredentialEnvVars, type SessionCredentials } from "./mcp-proxy-config.js";
 
@@ -136,6 +137,29 @@ function setupScriptPath(): string {
 }
 
 /**
+ * Distinct, precisely-diagnosed causes a health-check failure can have.
+ * Kept as a named enum (rather than re-matching the same regexes in multiple
+ * places) so logging and the retry decision both reason about the same
+ * classification instead of drifting out of sync with each other.
+ */
+type HealthCheckFailureCause =
+  /** wsl.exe/powershell.exe missing from PATH — nothing a restart can fix. */
+  | "wsl-not-installed"
+  /** setup-wsl.ps1 reported the distro itself doesn't exist — needs provisioning, not a restart. */
+  | "distro-missing"
+  /** Distro exists but Docker isn't responding inside it — the stale/hung WSL VM pattern. */
+  | "docker-not-responding"
+  /** Didn't match any known pattern — treated conservatively as non-retryable. */
+  | "unknown";
+
+function classifyHealthCheckFailure(rawMessage: string): HealthCheckFailureCause {
+  if (/not recognized|not found|ENOENT/i.test(rawMessage)) return "wsl-not-installed";
+  if (/does not exist/i.test(rawMessage)) return "distro-missing";
+  if (/Docker is not responding/i.test(rawMessage)) return "docker-not-responding";
+  return "unknown";
+}
+
+/**
  * Preflight health check, run once before the first `wsl.exe -d <distro>`
  * call of a session start.
  *
@@ -154,8 +178,93 @@ function setupScriptPath(): string {
  * run`/`docker network create` call is attempted. A failure here is a real,
  * correctly-diagnosed problem (distro missing, Docker not running) rather
  * than an artifact of first-contact timing.
+ *
+ * Self-healing retry: "docker-not-responding" is very often not "Docker
+ * isn't provisioned" but a stale/hung WSL2 VM networking state — `wsl -l -v`
+ * reports the distro as "Running" while the WSL platform itself can't reach
+ * it (Windows error 0x8007274c, "connected host has failed to respond").
+ * This has been observed repeatedly in practice and its only known fix is a
+ * full `wsl --shutdown` (tears down and recreates the VM state) followed by
+ * a fresh check. Rather than surfacing that as a hard failure requiring
+ * manual intervention every time, retry once automatically for exactly that
+ * cause. Every other cause ("wsl-not-installed", "distro-missing",
+ * "unknown") is not retried — no VM restart fixes a missing binary or an
+ * unprovisioned distro, so retrying would just add latency to an error the
+ * user needs to act on directly.
  */
-async function ensureDistroHealthy(config: WslWorkerConfig): Promise<void> {
+async function ensureDistroHealthy(config: WslWorkerConfig, sessionId: number): Promise<void> {
+  const firstAttempt = await runHealthCheck(config);
+  if (firstAttempt.ok) return;
+
+  const cause = classifyHealthCheckFailure(firstAttempt.rawMessage);
+  log.warn("wsl-health-check-failed", {
+    component: "wsl-spawner",
+    sessionId,
+    distroName: config.distroName,
+    cause,
+    error: firstAttempt.rawMessage,
+    willRetryWithShutdown: cause === "docker-not-responding",
+    msg: `WSL health check failed for "${config.distroName}" (cause: ${cause})`,
+  });
+
+  if (cause !== "docker-not-responding") {
+    throw buildHealthCheckError(cause, firstAttempt.rawMessage, config, { retried: false });
+  }
+
+  log.info("wsl-health-check-retry", {
+    component: "wsl-spawner",
+    sessionId,
+    distroName: config.distroName,
+    msg: `Running 'wsl --shutdown' to clear stale VM state, then retrying health check for "${config.distroName}"`,
+  });
+
+  try {
+    await execFileAsync("wsl.exe", ["--shutdown"], { maxBuffer: 10 * 1024 * 1024 });
+  } catch (err) {
+    // wsl --shutdown itself failing is unusual and worth its own log line —
+    // fall through to the retry anyway, since the health check is the real
+    // signal of whether things recovered.
+    log.warn("wsl-shutdown-failed", {
+      component: "wsl-spawner",
+      sessionId,
+      distroName: config.distroName,
+      ...toErrorFields(err),
+      msg: `'wsl --shutdown' itself failed while recovering "${config.distroName}" — retrying health check anyway`,
+    });
+  }
+
+  // wsl --shutdown returns once the shutdown command is issued, but the VM
+  // teardown itself is asynchronous — give it a moment to fully complete
+  // before the retry's cold-start could otherwise race it.
+  await new Promise((resolve) => setTimeout(resolve, 3000));
+
+  const retryAttempt = await runHealthCheck(config);
+  if (retryAttempt.ok) {
+    log.info("wsl-health-check-recovered", {
+      component: "wsl-spawner",
+      sessionId,
+      distroName: config.distroName,
+      msg: `WSL health check for "${config.distroName}" recovered after 'wsl --shutdown'`,
+    });
+    return;
+  }
+
+  const retryCause = classifyHealthCheckFailure(retryAttempt.rawMessage);
+  log.error("wsl-health-check-retry-failed", {
+    component: "wsl-spawner",
+    sessionId,
+    distroName: config.distroName,
+    cause: retryCause,
+    error: retryAttempt.rawMessage,
+    msg: `WSL health check for "${config.distroName}" still failing after 'wsl --shutdown' + retry (cause: ${retryCause})`,
+  });
+  throw buildHealthCheckError(retryCause, retryAttempt.rawMessage, config, { retried: true });
+}
+
+/** Result of a single health-check attempt — never throws, always resolves with ok/rawMessage. */
+async function runHealthCheck(
+  config: WslWorkerConfig
+): Promise<{ ok: true } | { ok: false; rawMessage: string }> {
   try {
     await execFileAsync(
       "powershell.exe",
@@ -168,20 +277,39 @@ async function ensureDistroHealthy(config: WslWorkerConfig): Promise<void> {
       ],
       { maxBuffer: 10 * 1024 * 1024 }
     );
+    return { ok: true };
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (/not recognized|not found|ENOENT/i.test(msg)) {
-      throw new Error(
-        `WSL preflight failed: 'wsl.exe' or 'powershell.exe' was not found on PATH. WSL2 must ` +
-          `be installed on this machine. See worker/.devcontainer/README.md.`
-      );
-    }
-    throw new Error(
-      `WSL distro "${config.distroName}" failed its health check. Run ` +
-        `worker/.devcontainer/setup-wsl.ps1 to provision or repair it. See ARCHITECTURE.md §12. ` +
-        `(${msg})`
+    return { ok: false, rawMessage: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+function buildHealthCheckError(
+  cause: HealthCheckFailureCause,
+  rawMessage: string,
+  config: WslWorkerConfig,
+  context: { retried: boolean }
+): Error {
+  if (cause === "wsl-not-installed") {
+    return new Error(
+      `WSL preflight failed: 'wsl.exe' or 'powershell.exe' was not found on PATH. WSL2 must ` +
+        `be installed on this machine. See worker/.devcontainer/README.md.`
     );
   }
+  if (cause === "distro-missing") {
+    return new Error(
+      `WSL distro "${config.distroName}" does not exist yet. Run ` +
+        `worker/.devcontainer/setup-wsl.ps1 to provision it (creates the distro and installs ` +
+        `Docker Engine). See ARCHITECTURE.md §12.`
+    );
+  }
+  const retrySuffix = context.retried
+    ? ", even after an automatic 'wsl --shutdown' + retry"
+    : "";
+  return new Error(
+    `WSL distro "${config.distroName}" failed its health check${retrySuffix}. Run ` +
+      `worker/.devcontainer/setup-wsl.ps1 to provision or repair it. See ARCHITECTURE.md §12. ` +
+      `(${rawMessage})`
+  );
 }
 
 /**
@@ -283,7 +411,7 @@ export async function startWorkerJob(
   // accurately-diagnosed error, rather than letting it surface as a
   // misleading spawn failure on the first session-critical docker call
   // below. See ensureDistroHealthy()'s doc comment for why this exists.
-  await ensureDistroHealthy(config);
+  await ensureDistroHealthy(config, sessionId);
 
   try {
     // Fresh per-session Docker network — the local analogue of ACA's
@@ -379,7 +507,16 @@ export async function startWorkerJob(
 
     return { executionName: name, status: "Running", publishedPort };
   } catch (err) {
-    throw new Error(explainWslError("job start", config, err));
+    const explained = explainWslError("job start", config, err);
+    log.error("wsl-job-start-failed", {
+      component: "wsl-spawner",
+      sessionId,
+      distroName: config.distroName,
+      containerName: name,
+      ...toErrorFields(err),
+      msg: explained,
+    });
+    throw new Error(explained);
   }
 }
 
@@ -470,7 +607,13 @@ export async function stopWorkerJob(
     // "No such container" is fine — it may have already exited (--rm cleans it up).
     const msg = err instanceof Error ? err.message : String(err);
     if (!/No such container/i.test(msg)) {
-      console.warn(`[wsl-spawner] ${explainWslError(`stop of container ${executionName}`, config, err)}`);
+      log.warn("wsl-job-stop-failed", {
+        component: "wsl-spawner",
+        distroName: config.distroName,
+        containerName: executionName,
+        ...toErrorFields(err),
+        msg: explainWslError(`stop of container ${executionName}`, config, err),
+      });
     }
   }
 
@@ -479,8 +622,26 @@ export async function stopWorkerJob(
   const sessionIdMatch = executionName.match(/kirofactory-worker-(\d+)/);
   if (sessionIdMatch) {
     const sessionId = Number(sessionIdMatch[1]);
-    await runInDistro(config.distroName, ["docker", "stop", proxyContainerName(sessionId)]).catch(() => {});
-    await runInDistro(config.distroName, ["docker", "network", "rm", sessionNetworkName(sessionId)]).catch(() => {});
+    await runInDistro(config.distroName, ["docker", "stop", proxyContainerName(sessionId)]).catch((err) => {
+      log.warn("wsl-proxy-stop-failed", {
+        component: "wsl-spawner",
+        distroName: config.distroName,
+        sessionId,
+        containerName: proxyContainerName(sessionId),
+        ...toErrorFields(err),
+        msg: `Failed to stop MCP proxy sidecar for session ${sessionId} — may be leaked if it wasn't already stopped`,
+      });
+    });
+    await runInDistro(config.distroName, ["docker", "network", "rm", sessionNetworkName(sessionId)]).catch((err) => {
+      log.warn("wsl-network-cleanup-failed", {
+        component: "wsl-spawner",
+        distroName: config.distroName,
+        sessionId,
+        networkName: sessionNetworkName(sessionId),
+        ...toErrorFields(err),
+        msg: `Failed to remove per-session Docker network for session ${sessionId} — may be leaked`,
+      });
+    });
   }
 }
 

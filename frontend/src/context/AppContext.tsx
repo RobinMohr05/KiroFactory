@@ -349,6 +349,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setErrors([]);
         break;
       }
+      case 'wsl-diagnostic-line': {
+        // No app-wide state to update — the "WSL/Docker Logs" sub-tab listens
+        // for this directly via the custom event, matching the ws-session-*
+        // pattern used for session output/activity elsewhere in this file.
+        window.dispatchEvent(new CustomEvent('ws-wsl-diagnostic-line', { detail: message }));
+        break;
+      }
       case 'connected':
         break;
     }

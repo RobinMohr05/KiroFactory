@@ -56,12 +56,12 @@ describe('App', () => {
     expect(screen.getByText('code')).toBeInTheDocument();
   });
 
-  it('renders the view tabs (Tasks, Sessions, Agents, Errors)', async () => {
+  it('renders the view tabs (Tasks, Sessions, Agents, Logs)', async () => {
     await act(async () => { renderApp(); });
     expect(screen.getByRole('tab', { name: /tasks/i })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /sessions/i })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /agents/i })).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: /errors/i })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /logs/i })).toBeInTheDocument();
   });
 
   it('renders the kanban columns', async () => {

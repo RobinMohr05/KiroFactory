@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useApp } from '../context/AppContext';
 import { apiFetch } from '../utils/api';
+import { renderPlannerMarkdown } from '../utils/renderPlannerMarkdown';
 import type { OutputEntry, SessionActivity } from '../types';
 
 interface TaskPlannerModalProps {
@@ -21,8 +22,15 @@ interface ParsedTask {
   files?: string[];
 }
 
+interface Attachment {
+  data: string;
+  mimeType: string;
+  fileName: string;
+}
+
 const ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
 const MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB
+const MAX_ATTACHMENTS = 3;
 
 export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModalProps) {
   const { currentTabId, setTasks } = useApp();
@@ -32,9 +40,8 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
   const [ready, setReady] = useState(false);
   const [status, setStatus] = useState<'connecting' | 'ready' | 'thinking' | 'error'>('connecting');
   const [parsedTask, setParsedTask] = useState<ParsedTask | null>(null);
-  const [imageData, setImageData] = useState<string | null>(null);
-  const [imageMimeType, setImageMimeType] = useState<string | null>(null);
-  const [imageFileName, setImageFileName] = useState<string | null>(null);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const attachmentsRef = useRef<Attachment[]>([]);
   const messagesRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -46,6 +53,11 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
   useEffect(() => {
     sessionIdRef.current = sessionId;
   }, [sessionId]);
+
+  // Keep attachments ref in sync for paste/file-input handlers
+  useEffect(() => {
+    attachmentsRef.current = attachments;
+  }, [attachments]);
 
   // Start the planner session
   useEffect(() => {
@@ -113,8 +125,19 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
         }
         adopted = true;
         setSessionId(data.sessionId);
-        setReady(true);
-        setStatus('ready');
+        // Do NOT mark ready here — the HTTP 201 only means the session
+        // record was created and startSession() was called; the actual
+        // kiro-cli child process spawn (session.runner) happens
+        // asynchronously afterwards (see session-manager.ts's runSession(),
+        // which is fired-and-forgotten by startSession() rather than
+        // awaited). Sending a message before that spawn completes hits
+        // sendPrompt()'s `!session.runner` guard and fails with "Could not
+        // send message — session may not be running", even though the UI
+        // already said "Ready". The real readiness signal is the
+        // 'idle'/'completed' WS session-activity event handled below, which
+        // only fires once the runner exists and the initial prompt has been
+        // sent — so just focus the input and leave status as 'connecting'
+        // until that event arrives.
         inputRef.current?.focus();
       } catch (e: any) {
         if (cancelled) return;
@@ -198,50 +221,223 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
     setMessages(prev => [...prev, { role, text }]);
   };
 
+  /**
+   * Attempt to recover from the most common way the planner LLM's output
+   * breaks a ```json:task block: long string values (title/description) get
+   * line-wrapped by the markdown renderer or by the model itself, leaving
+   * literal newline (and sometimes tab/CR) control characters embedded
+   * inside what must be a single-line JSON string. JSON.parse rejects raw
+   * control characters in strings outright ("Bad control character in
+   * string literal"), even though the surrounding quote escaping (\") is
+   * otherwise completely correct.
+   *
+   * Worse, the wrap can land *inside* an escape sequence itself — e.g. a
+   * `\"` meant to close a quoted phrase gets split into `\` <newline> `"`,
+   * which isn't a valid JSON escape (`\<newline>`) and would otherwise trip
+   * up a naive scanner (it would consume the newline as "the escaped
+   * character" and copy it through verbatim). So repair happens in two
+   * passes:
+   *   1. Collapse any backslash immediately followed by raw newline/CR back
+   *      together (`\` + line-break(s) -> `\`), rejoining escape sequences
+   *      that got split across a wrap.
+   *   2. String-aware scan: track whether we're inside a JSON string
+   *      (respecting escape sequences, which now consume their real target
+   *      character again) and replace any remaining raw newline/CR/tab
+   *      found *inside* a string with its proper \n/\r/\t escape.
+   * Characters outside strings (structural whitespace between tokens) are
+   * left untouched throughout.
+   *
+   * A wrap can also land *inside a key name* rather than a value — e.g.
+   * `"title\n": ...` or `{"\ntitle": ...}`. That still parses as valid JSON
+   * after the repair above, but produces a key literally named "title\n" or
+   * "\ntitle" instead of "title", so `parsed.title` reads as undefined even
+   * though a human (and the AI itself, re-reading its own output) would say
+   * the field is "obviously" present. This previously surfaced as an
+   * inconsistent "missing required fields" false-positive that even a
+   * verbatim resend didn't reliably fix, since the wrap position — and
+   * therefore whether it happened to land inside a key vs. a value — shifts
+   * with the surrounding text on each resend. Fix: normalize every key by
+   * stripping leading/trailing whitespace (including escaped \n/\r/\t left
+   * by the repair pass) after parsing, since no key in this schema is ever
+   * legitimately whitespace-padded.
+   */
+  const parseTaskJsonLeniently = (raw: string): ParsedTask | null => {
+    const normalizeKeys = (obj: unknown): unknown => {
+      if (Array.isArray(obj)) return obj.map(normalizeKeys);
+      if (obj && typeof obj === 'object') {
+        const out: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(obj)) {
+          out[k.replace(/^(?:\s|\\[nrt])+|(?:\s|\\[nrt])+$/g, '')] = normalizeKeys(v);
+        }
+        return out;
+      }
+      return obj;
+    };
+
+    try {
+      return normalizeKeys(JSON.parse(raw)) as ParsedTask;
+    } catch {
+      // Fall through to recovery below.
+    }
+    try {
+      const rejoined = raw.replace(/\\[\r\n]+/g, '\\');
+
+      let repaired = '';
+      let inString = false;
+      for (let i = 0; i < rejoined.length; i++) {
+        const ch = rejoined[i];
+        if (ch === '\\' && inString) {
+          // Escape sequence — copy the backslash and whatever follows verbatim,
+          // don't reinterpret it.
+          repaired += ch;
+          if (i + 1 < rejoined.length) {
+            repaired += rejoined[i + 1];
+            i++;
+          }
+          continue;
+        }
+        if (ch === '"') {
+          inString = !inString;
+          repaired += ch;
+          continue;
+        }
+        if (inString && (ch === '\n' || ch === '\r' || ch === '\t')) {
+          repaired += ch === '\n' ? '\\n' : ch === '\r' ? '\\r' : '\\t';
+          continue;
+        }
+        repaired += ch;
+      }
+      return normalizeKeys(JSON.parse(repaired)) as ParsedTask;
+    } catch {
+      return null;
+    }
+  };
+
   const tryParseTask = (text: string) => {
-    // Look for ```json:task block
-    const jsonMatch = text.match(/```json:task\s*\n([\s\S]*?)\n```/);
-    if (jsonMatch) {
-      try {
-        const parsed = JSON.parse(jsonMatch[1]);
-        if (parsed.title && parsed.priority && parsed.type) {
-          setParsedTask(parsed);
-          addMessage('system', '✅ Task ready to create! Click "Create Task" to add it to your board.');
-          return;
-        }
-      } catch { /* not valid JSON */ }
+    // Look for ```json:task block first, falling back to a plain ```json block.
+    const jsonMatch = text.match(/```json:task\s*\n([\s\S]*?)\n```/) ?? text.match(/```json\s*\n([\s\S]*?)\n```/);
+    if (!jsonMatch) return;
+
+    const raw = jsonMatch[1];
+    const parsed = parseTaskJsonLeniently(raw);
+    if (parsed) {
+      if (parsed.title && parsed.priority && parsed.type) {
+        setParsedTask(parsed);
+        addMessage('system', '✅ Task ready to create! Click "Create Task" to add it to your board.');
+      } else {
+        addMessage('system', '⚠️ The AI produced a task block missing required fields (title/priority/type) — ask it to resend the task.');
+      }
+      return;
     }
-    // Fallback: standard ```json block
-    const fallbackMatch = text.match(/```json\s*\n([\s\S]*?)\n```/);
-    if (fallbackMatch) {
-      try {
-        const parsed = JSON.parse(fallbackMatch[1]);
-        if (parsed.title && parsed.priority && parsed.type) {
-          setParsedTask(parsed);
-          addMessage('system', '✅ Task ready to create! Click "Create Task" to add it to your board.');
-        }
-      } catch { /* not valid JSON */ }
+
+    // Both the strict parse and the lenient recovery pass failed. Surface this
+    // instead of leaving "Create Task" silently disabled with no explanation —
+    // previously a malformed ```json:task block left parsedTask stuck at null
+    // with zero user-visible feedback about why the button wouldn't enable.
+    addMessage('system', '⚠️ Could not parse the task block above (invalid JSON) — ask the AI to resend it as a single-line JSON value (no line-wrapped strings).');
+  };
+
+  /** Validate and add a single file as an attachment. */
+  const addAttachment = useCallback((file: File) => {
+    // Validate before reading
+    if (!ALLOWED_MIME_TYPES.includes(file.type)) {
+      addMessage('system', `Unsupported image type: ${file.type}. Allowed: JPEG, PNG, GIF, WebP.`);
+      return;
     }
+
+    if (file.size > MAX_IMAGE_SIZE) {
+      addMessage('system', `Image too large: ${(file.size / 1024 / 1024).toFixed(1)}MB exceeds the 10MB limit.`);
+      return;
+    }
+
+    // Read the file asynchronously, then update attachments
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      const base64 = dataUrl.split(',')[1];
+      setAttachments(current => {
+        if (current.length >= MAX_ATTACHMENTS) {
+          // Silently reject — callers (paste handler, file-picker) show their
+          // own single cap-exceeded message for the entire batch, so we avoid
+          // firing a duplicate per rejected file.
+          return current;
+        }
+        return [...current, { data: base64, mimeType: file.type, fileName: file.name }];
+      });
+    };
+    reader.onerror = () => {
+      addMessage('system', 'Failed to read image file.');
+    };
+    reader.readAsDataURL(file);
+  }, []);
+
+  // Paste event listener — attach image(s) from clipboard when modal is open
+  useEffect(() => {
+    const handlePaste = (e: ClipboardEvent) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+
+      const imageFiles: File[] = [];
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        if (item.kind === 'file' && ALLOWED_MIME_TYPES.includes(item.type)) {
+          const file = item.getAsFile();
+          if (file) imageFiles.push(file);
+        }
+      }
+
+      if (imageFiles.length === 0) return;
+
+      // Prevent the default paste behavior for image content
+      e.preventDefault();
+
+      // Pre-calculate remaining slots to avoid duplicate cap messages
+      const remaining = MAX_ATTACHMENTS - attachmentsRef.current.length;
+      const toAdd = imageFiles.slice(0, remaining);
+      const dropped = imageFiles.length - toAdd.length;
+
+      for (const file of toAdd) {
+        addAttachment(file);
+      }
+
+      if (dropped > 0) {
+        addMessage('system', `Maximum of ${MAX_ATTACHMENTS} images per message.`);
+      }
+    };
+
+    window.addEventListener('paste', handlePaste);
+    return () => {
+      window.removeEventListener('paste', handlePaste);
+    };
+  }, [addAttachment]);
+
+  const removeAttachment = (index: number) => {
+    setAttachments(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const clearAttachments = () => {
+    setAttachments([]);
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   const handleSend = async () => {
     const text = inputText.trim();
     if (!text || !sessionId || !ready) return;
 
-    const attachedImage = imageData ? { data: imageData, mimeType: imageMimeType } : null;
-    const attachedFileName = imageFileName;
-    const displayText = attachedFileName ? `${text}\n📎 ${attachedFileName}` : text;
+    const currentAttachments = [...attachments];
+    const fileLines = currentAttachments.map(a => `📎 ${a.fileName}`).join('\n');
+    const displayText = fileLines ? `${text}\n${fileLines}` : text;
 
     addMessage('user', displayText);
     setInputText('');
     setReady(false);
     setStatus('thinking');
-    clearAttachment();
+    clearAttachments();
 
     try {
       const body: Record<string, unknown> = { message: text };
-      if (attachedImage) {
-        body.image = attachedImage;
+      if (currentAttachments.length > 0) {
+        body.images = currentAttachments.map(a => ({ data: a.data, mimeType: a.mimeType }));
       }
       const res = await apiFetch(`/api/task-planner/${sessionId}/message`, {
         method: 'POST',
@@ -309,33 +505,22 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
     onSwitchToManual();
   };
 
-  const handleImageSelect = (file: File) => {
-    if (!ALLOWED_MIME_TYPES.includes(file.type)) {
-      addMessage('system', `Unsupported image type: ${file.type}. Allowed: JPEG, PNG, GIF, WebP.`);
-      return;
-    }
-    if (file.size > MAX_IMAGE_SIZE) {
-      addMessage('system', `Image too large: ${(file.size / 1024 / 1024).toFixed(1)}MB exceeds the 10MB limit.`);
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = () => {
-      const dataUrl = reader.result as string;
-      const base64 = dataUrl.split(',')[1];
-      setImageData(base64);
-      setImageMimeType(file.type);
-      setImageFileName(file.name);
-    };
-    reader.onerror = () => {
-      addMessage('system', 'Failed to read image file.');
-    };
-    reader.readAsDataURL(file);
-  };
+  /** Handle file picker selection — supports multiple files. */
+  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files) return;
 
-  const clearAttachment = () => {
-    setImageData(null);
-    setImageMimeType(null);
-    setImageFileName(null);
+    // Pre-calculate remaining slots to avoid duplicate cap messages
+    const remaining = MAX_ATTACHMENTS - attachmentsRef.current.length;
+    const dropped = files.length - remaining;
+
+    for (let i = 0; i < Math.min(files.length, remaining); i++) {
+      addAttachment(files[i]);
+    }
+    if (dropped > 0) {
+      addMessage('system', `Maximum of ${MAX_ATTACHMENTS} images per message.`);
+    }
+    // Reset the input so the same file(s) can be re-selected
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -357,18 +542,36 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
           {messages.map((msg, i) => {
             const isPartial = msg.text.startsWith('__PARTIAL__');
             const displayText = isPartial ? msg.text.slice('__PARTIAL__'.length) : msg.text;
+            if (msg.role === 'user') {
+              return (
+                <div key={i} className={`planner-message ${msg.role}`}>
+                  {displayText}
+                </div>
+              );
+            }
             return (
-              <div key={i} className={`planner-message ${msg.role}`}>
-                {displayText}
-              </div>
+              <div
+                key={i}
+                className={`planner-message ${msg.role}`}
+                dangerouslySetInnerHTML={{ __html: renderPlannerMarkdown(displayText) }}
+              />
             );
           })}
         </div>
         <div className="task-planner-input-area">
-          {imageFileName && (
-            <div className="task-planner-attachment">
-              <span className="task-planner-attachment-name">📎 {imageFileName}</span>
-              <button type="button" className="task-planner-attachment-remove" onClick={clearAttachment} title="Remove attachment">✕</button>
+          {attachments.length > 0 && (
+            <div className="task-planner-attachments">
+              {attachments.map((att, idx) => (
+                <div key={idx} className="task-planner-attachment">
+                  <span className="attachment-filename">{att.fileName}</span>
+                  <button
+                    type="button"
+                    className="attachment-remove"
+                    onClick={() => removeAttachment(idx)}
+                    title="Remove attachment"
+                  >✕</button>
+                </div>
+              ))}
             </div>
           )}
           <div className="task-planner-input-row">
@@ -387,7 +590,6 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
                   handleSend();
                 }
               }}
-              disabled={!ready}
               rows={1}
             />
             <button className="btn btn-primary btn-sm" disabled={!ready || !inputText.trim()} onClick={handleSend}>Send</button>
@@ -396,8 +598,9 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
             type="file"
             ref={fileInputRef}
             accept="image/jpeg,image/png,image/gif,image/webp"
+            multiple
             style={{ display: 'none' }}
-            onChange={(e) => { const f = e.target.files?.[0]; if (f) handleImageSelect(f); }}
+            onChange={handleFileInputChange}
           />
         </div>
         <div className="task-planner-actions">

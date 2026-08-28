@@ -724,7 +724,62 @@ function verifyPushAccess() {
   }
 }
 
-function setupRepo() {
+/**
+ * Run a shell command asynchronously (via spawn, not execSync) and resolve
+ * once it exits. Unlike exec()/execFileArgs() (both execSync-based), this
+ * does NOT block the Node.js event loop for the command's duration.
+ *
+ * Use this for any step slow enough that blocking the event loop would
+ * starve the WebSocket connection to the orchestrator — most notably
+ * `npm ci`/`npm install`, which can run for 10s-300s. A blocked event loop
+ * can't process incoming/outgoing WS frames (including the ws library's own
+ * ping/pong keepalive), which — especially compounded by the local WSL2
+ * network path already being one hop flakier than a real socket — showed up
+ * in practice as "Worker disconnected" errors landing consistently right at
+ * the "Installing dependencies..." step, even though the container and the
+ * npm install itself were both completing successfully underneath. See
+ * ARCHITECTURE.md §12 troubleshooting table.
+ */
+function execAsync(cmd, opts = {}) {
+  return new Promise((resolve, reject) => {
+    logInfo("exec-async", { cmd: redactSecrets(cmd) });
+    const child = spawn(cmd, {
+      shell: true,
+      cwd: opts.cwd,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", ...opts.env },
+    });
+
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.on("data", (d) => { stdout += d; });
+    child.stderr?.on("data", (d) => { stderr += d; });
+
+    const timeoutMs = opts.timeout ?? 300_000;
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error(`Command timed out after ${timeoutMs}ms: ${redactSecrets(cmd)}`));
+    }, timeoutMs);
+
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) {
+        resolve(stdout.trim());
+      } else {
+        const err = new Error(
+          redactSecrets(`Command failed with exit code ${code}: ${cmd}\n${stderr.trim()}`)
+        );
+        reject(err);
+      }
+    });
+  });
+}
+
+async function setupRepo() {
   if (!REPO_URL) {
     logInfo("No REPO_URL — working in empty workspace");
     mkdirSync(WORKSPACE, { recursive: true });
@@ -805,9 +860,9 @@ function setupRepo() {
   sendOutput("Installing dependencies...", "system");
   try {
     if (existsSync(`${WORKSPACE}/package-lock.json`)) {
-      exec("npm ci --include=dev", { cwd: WORKSPACE, timeout: 300_000 });
+      await execAsync("npm ci --include=dev", { cwd: WORKSPACE, timeout: 300_000 });
     } else if (existsSync(`${WORKSPACE}/package.json`)) {
-      exec("npm install --include=dev", { cwd: WORKSPACE, timeout: 300_000 });
+      await execAsync("npm install --include=dev", { cwd: WORKSPACE, timeout: 300_000 });
     }
   } catch (err) {
     sendOutput(`Warning: npm install failed: ${err?.message || err}`, "stderr");
@@ -1528,8 +1583,8 @@ async function onAuthenticated() {
   // the repo is cloned and kiro-cli has started.
   sendReady("pending-handshake");
 
-  // Set up the git workspace (may throw → caller reports and shuts down).
-  setupRepo();
+  // Set up the git workspace (may throw/reject → caller reports and shuts down).
+  await setupRepo();
 
   // Spawn the persistent kiro-cli acp process.
   spawnKiro();
@@ -2627,9 +2682,19 @@ function spawnKiro() {
     clearReadyTimeout();
     clearPromptTimer();
     logInfo("kiro-cli exited", { code, signal, hadInFlightPrompt: currentPromptId !== null });
-    if (currentPromptId !== null) {
-      sendOutput(`kiro-cli exited mid-prompt (code: ${code}, signal: ${signal})`, "stderr");
-    }
+    // Always surface kiro-cli's exit in the UI-visible session output, not
+    // just the mid-prompt case — otherwise a process that dies during the
+    // initial handshake (before any prompt is in flight, e.g. right after
+    // "creating session...") leaves zero visible signal between that line
+    // and the eventual "Worker shutdown" message. That gap is exactly what
+    // made a prior mid-handshake exit-0 failure indistinguishable from a
+    // real, intentional shutdown from the UI/logs alone.
+    sendOutput(
+      currentPromptId !== null
+        ? `kiro-cli exited mid-prompt (code: ${code}, signal: ${signal})`
+        : `kiro-cli exited (code: ${code}, signal: ${signal})`,
+      code === 0 && signal === null ? "system" : "stderr"
+    );
     kiroProc = null;
     kiroReady = false;
     acpSessionId = null;
