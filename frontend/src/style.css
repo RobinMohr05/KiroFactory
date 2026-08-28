@@ -1280,6 +1280,28 @@ textarea:focus {
     opacity: 1;
     pointer-events: auto;
   }
+
+  /* Modals: full-screen on mobile */
+  .modal-backdrop {
+    align-items: stretch;
+    justify-content: stretch;
+  }
+
+  .modal:not(.modal-confirm),
+  .modal-wide,
+  .task-planner-modal {
+    width: 100vw;
+    height: 100dvh;
+    max-height: 100dvh;
+    max-width: none;
+    border-radius: 0;
+    margin: 0;
+  }
+
+  .modal-confirm {
+    align-self: center;
+    margin-inline: auto;
+  }
 }
 
 /* =============================================================================
@@ -2288,6 +2310,7 @@ textarea:focus {
   max-height: min(90vh, 900px);
 }
 
+/* ===== Confirm Modal (compact) ===== */
 .modal-confirm {
   max-width: 420px;
 }
@@ -4613,23 +4636,6 @@ textarea:focus {
     overflow-x: auto;
     margin: 0 -0.75rem;
     padding: 0 0.75rem;
-  }
-
-  /* Modals */
-  .modal-backdrop {
-    align-items: stretch;
-    justify-content: stretch;
-  }
-
-  .modal:not(.modal-confirm),
-  .modal-wide,
-  .task-planner-modal {
-    width: 100vw;
-    height: 100dvh;
-    max-height: 100dvh;
-    max-width: none;
-    border-radius: 0;
-    margin: 0;
   }
 
   /* Toolbar on mobile */
