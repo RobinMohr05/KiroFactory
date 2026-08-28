@@ -36,6 +36,25 @@ export interface AgentError {
   tabIds?: number[];
   /** Owner user ID — errors belong to the account that owns the session */
   userId: number;
+  /**
+   * Stack trace, when the underlying failure was a real JS Error object (not
+   * every failure path here throws — some are "the agent finished but did
+   * nothing," which has no stack to show). Previously always dropped even
+   * when available, since every call site only ever passed `err.message`.
+   */
+  stack?: string;
+  /**
+   * A trailing snippet of this session's own output log (see
+   * appendOutput()/session.meta.output) captured at the moment the error was
+   * recorded — the single richest source of "what was the agent actually
+   * doing right before this," and previously never attached to the error
+   * record at all despite already existing in memory for every session.
+   */
+  recentOutput?: { timestamp: string; stream: "stdout" | "stderr" | "system"; text: string }[];
+  /** Turn-level stats, when the error happened during/around a specific turn. */
+  turnNumber?: number;
+  turnDurationMs?: number;
+  toolCallCount?: number;
 }
 
 export interface RecordErrorInput {
@@ -50,6 +69,11 @@ export interface RecordErrorInput {
   tabIds?: number[];
   /** Owner user ID — inherited from the session that produced the error */
   userId: number;
+  stack?: string;
+  recentOutput?: { timestamp: string; stream: "stdout" | "stderr" | "system"; text: string }[];
+  turnNumber?: number;
+  turnDurationMs?: number;
+  toolCallCount?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -80,6 +104,11 @@ export function recordError(input: RecordErrorInput): AgentError {
     taskCreated: false,
     tabIds: input.tabIds,
     userId: input.userId,
+    stack: input.stack,
+    recentOutput: input.recentOutput,
+    turnNumber: input.turnNumber,
+    turnDurationMs: input.turnDurationMs,
+    toolCallCount: input.toolCallCount,
   };
 
   errors.unshift(error); // newest first

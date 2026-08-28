@@ -25,6 +25,111 @@ function mockUseApp(overrides: Partial<ReturnType<typeof AppContext.useApp>> = {
   return base;
 }
 
+describe('ErrorsPanel - agent error diagnostic detail', () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('shows turn stats and a collapsible diagnostic detail section when present', () => {
+    mockUseApp({
+      errors: [
+        {
+          id: 'e1',
+          message: 'Worker disconnected',
+          context: 'Error while executing task "Fix bug" (ID: 42, type: bug, priority: P2)',
+          agent: 'developer-agent',
+          sessionName: 'Dev Loop',
+          taskId: 42,
+          taskTitle: 'Fix bug',
+          timestamp: '2026-08-28T18:24:19.000Z',
+          taskCreated: false,
+          turnNumber: 1,
+          toolCallCount: 3,
+          turnDurationMs: 14000,
+          stack: 'Error: Worker disconnected\n    at streamPromptAca (session-manager.ts:3300)',
+          recentOutput: [
+            { timestamp: '2026-08-28T18:24:06.000Z', stream: 'system', text: 'kiro-cli ACP initialized — creating session...' },
+            { timestamp: '2026-08-28T18:24:18.000Z', stream: 'stderr', text: 'kiro-cli exited (code: null, signal: SIGTERM)' },
+          ],
+        },
+      ],
+    });
+
+    render(<ErrorsPanel />);
+
+    expect(screen.getByText('🔄 Turn 1')).toBeInTheDocument();
+    expect(screen.getByText('🔧 3 tool calls')).toBeInTheDocument();
+    expect(screen.getByText('⏱ 14s into turn')).toBeInTheDocument();
+
+    // Detail is collapsed by default (native <details>) but its content is
+    // present in the DOM either way — assert it's there and findable.
+    expect(screen.getByText(/Show diagnostic detail/)).toBeInTheDocument();
+    expect(screen.getByText(/kiro-cli exited \(code: null, signal: SIGTERM\)/)).toBeInTheDocument();
+    expect(screen.getByText(/at streamPromptAca/)).toBeInTheDocument();
+  });
+
+  it('does not show the diagnostic detail section when no enrichment data is present', () => {
+    mockUseApp({
+      errors: [
+        {
+          id: 'e2',
+          message: 'Task "X" failed 3 consecutive times — blocked for this session',
+          context: 'Task ID: 7. Manual investigation is required.',
+          agent: 'developer-agent',
+          sessionName: 'Dev Loop',
+          timestamp: '2026-08-28T18:24:19.000Z',
+          taskCreated: false,
+        },
+      ],
+    });
+
+    render(<ErrorsPanel />);
+    expect(screen.queryByText(/Show diagnostic detail/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/🔄 Turn/)).not.toBeInTheDocument();
+  });
+
+  it('copies the full error detail (message, context, turn stats, output, stack) to the clipboard', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+
+    mockUseApp({
+      errors: [
+        {
+          id: 'e3',
+          message: 'Worker disconnected',
+          context: 'Error while executing task "Fix bug" (ID: 42, type: bug, priority: P2)',
+          agent: 'developer-agent',
+          sessionName: 'Dev Loop',
+          taskId: 42,
+          taskTitle: 'Fix bug',
+          timestamp: '2026-08-28T18:24:19.000Z',
+          taskCreated: false,
+          turnNumber: 1,
+          toolCallCount: 3,
+          turnDurationMs: 14000,
+          stack: 'Error: Worker disconnected\n    at streamPromptAca (session-manager.ts:3300)',
+          recentOutput: [
+            { timestamp: '2026-08-28T18:24:18.000Z', stream: 'stderr', text: 'kiro-cli exited (code: null, signal: SIGTERM)' },
+          ],
+        },
+      ],
+    });
+
+    render(<ErrorsPanel />);
+    fireEvent.click(screen.getByText('📋 Copy full detail'));
+
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledTimes(1);
+    });
+    const copied = writeText.mock.calls[0][0] as string;
+    expect(copied).toContain('Worker disconnected');
+    expect(copied).toContain('Fix bug');
+    expect(copied).toContain('Turn: 1');
+    expect(copied).toContain('SIGTERM');
+    expect(copied).toContain('at streamPromptAca');
+  });
+});
+
 describe('ErrorsPanel - sub-tab switcher', () => {
   let apiFetchMock: ReturnType<typeof vi.fn>;
 

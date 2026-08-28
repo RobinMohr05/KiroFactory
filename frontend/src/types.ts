@@ -170,6 +170,13 @@ export interface AgentError {
   timestamp: string;
   taskCreated?: boolean;
   createdTaskId?: number;
+  /** Stack trace, when the underlying failure was a real JS Error object. */
+  stack?: string;
+  /** Trailing snippet of the session's own output log, captured at error time. */
+  recentOutput?: { timestamp: string; stream: 'stdout' | 'stderr' | 'system'; text: string }[];
+  turnNumber?: number;
+  turnDurationMs?: number;
+  toolCallCount?: number;
 }
 
 /** One line of host-machine WSL/Docker diagnostic data — see the "WSL/Docker Logs" sub-tab. */

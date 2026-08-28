@@ -2716,6 +2716,44 @@ textarea:focus {
   word-break: break-word;
 }
 
+.error-card-details {
+  margin-bottom: 0.75rem;
+}
+
+.error-card-details summary {
+  cursor: pointer;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  padding: 0.25rem 0;
+}
+
+.error-card-details summary:hover {
+  color: var(--text-primary);
+}
+
+.error-recent-output,
+.error-stack-trace {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.75rem;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-sm);
+  padding: 0.5rem 0.75rem;
+  margin: 0.4rem 0;
+  max-height: 260px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-secondary);
+}
+
+.error-stack-trace {
+  color: var(--ta-rapid-red);
+}
+
+.error-copy-detail-btn {
+  margin-top: 0.25rem;
+}
+
 .error-card-actions {
   display: flex;
   align-items: center;
