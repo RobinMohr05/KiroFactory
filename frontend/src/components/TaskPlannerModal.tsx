@@ -112,8 +112,19 @@ export function TaskPlannerModal({ onClose }: TaskPlannerModalProps) {
         }
         adopted = true;
         setSessionId(data.sessionId);
-        setReady(true);
-        setStatus('ready');
+        // Do NOT mark ready here — the HTTP 201 only means the session
+        // record was created and startSession() was called; the actual
+        // kiro-cli child process spawn (session.runner) happens
+        // asynchronously afterwards (see session-manager.ts's runSession(),
+        // which is fired-and-forgotten by startSession() rather than
+        // awaited). Sending a message before that spawn completes hits
+        // sendPrompt()'s `!session.runner` guard and fails with "Could not
+        // send message — session may not be running", even though the UI
+        // already said "Ready". The real readiness signal is the
+        // 'idle'/'completed' WS session-activity event handled below, which
+        // only fires once the runner exists and the initial prompt has been
+        // sent — so just focus the input and leave status as 'connecting'
+        // until that event arrives.
         inputRef.current?.focus();
       } catch (e: any) {
         if (cancelled) return;

@@ -265,6 +265,69 @@ describe('TaskPlannerModal - session leak prevention', () => {
   });
 });
 
+describe('TaskPlannerModal - readiness race', () => {
+  let apiFetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiFetchMock = vi.mocked(api.apiFetch);
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('does not mark the session ready off the /start HTTP response alone', async () => {
+    // Regression test for: UI showed "Ready" and enabled Send immediately after
+    // POST /start resolved, but the backend's kiro-cli child process (session.runner)
+    // is spawned asynchronously by startSession() and may not exist yet — so a
+    // message sent at that point fails server-side with "Could not send message —
+    // session may not be running". Readiness must wait for the WS 'idle'/'completed'
+    // session-activity event, not the HTTP response.
+    apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (url === '/api/task-planner/start' && opts?.method === 'POST') {
+        return { ok: true, json: async () => ({ sessionId: 7 }) };
+      }
+      if (opts?.method === 'DELETE') {
+        return { ok: true, json: async () => ({}) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+
+    mockUseApp({ currentTabId: 1 });
+
+    const { getByText, getByPlaceholderText } = render(<TaskPlannerModal onClose={vi.fn()} />);
+
+    // Let /start resolve.
+    await act(async () => {
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    // Status must still show "Connecting..." and Send must remain disabled —
+    // the runner has not been confirmed alive yet.
+    expect(getByText('Connecting...')).toBeTruthy();
+    const sendBtn = getByText('Send') as HTMLButtonElement;
+    expect(sendBtn.disabled).toBe(true);
+    const input = getByPlaceholderText('Describe the task you want to create...') as HTMLTextAreaElement;
+    expect(input.disabled).toBe(true);
+
+    // Now simulate the real readiness signal: the backend's 'idle' session-activity
+    // WS event, fired once session.runner exists and the initial prompt was sent.
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('ws-session-activity', {
+        detail: { sessionId: 7, activity: { type: 'idle', detail: 'Waiting for prompts...' } },
+      }));
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    expect(getByText('Ready')).toBeTruthy();
+    // The textarea itself is gated purely on `ready` (no text requirement) —
+    // assert on that rather than the Send button, which is also disabled
+    // when the input is empty regardless of readiness.
+    expect(input.disabled).toBe(false);
+  });
+});
+
 describe('TaskPlannerModal - modal CSS class structure', () => {
   let apiFetchMock: ReturnType<typeof vi.fn>;
 
