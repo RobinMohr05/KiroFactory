@@ -276,8 +276,8 @@ export function TaskPlannerModal({ onClose }: TaskPlannerModalProps) {
   const statusDotClass = status === 'ready' ? 'status-dot connected' : status === 'thinking' ? 'status-dot thinking' : 'status-dot';
 
   return (
-    <div className="modal-backdrop task-planner-modal" onClick={(e) => { if (e.target === e.currentTarget) handleClose(); }}>
-      <div className="modal modal-wide task-planner-content" role="dialog" aria-labelledby="taskPlannerTitle">
+    <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) handleClose(); }}>
+      <div className="modal modal-wide task-planner-modal" role="dialog" aria-labelledby="taskPlannerTitle">
         <div className="task-planner-header">
           <h2 id="taskPlannerTitle">AI Task Planner</h2>
           <div className="task-planner-status">

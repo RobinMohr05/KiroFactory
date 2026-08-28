@@ -175,3 +175,47 @@ describe('TaskPlannerModal - session leak prevention', () => {
     expect(deleteCalls.length).toBe(1);
   });
 });
+
+describe('TaskPlannerModal - modal CSS class structure', () => {
+  let apiFetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiFetchMock = vi.mocked(api.apiFetch);
+    apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (url === '/api/task-planner/start' && opts?.method === 'POST') {
+        return { ok: true, json: async () => ({ sessionId: 1 }) };
+      }
+      if (opts?.method === 'DELETE') {
+        return { ok: true, json: async () => ({}) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    mockUseApp({ currentTabId: 1 });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('backdrop div has only "modal-backdrop" class, not "task-planner-modal"', () => {
+    const { container } = render(<TaskPlannerModal onClose={vi.fn()} />);
+    const backdrop = container.querySelector('.modal-backdrop');
+    expect(backdrop).toBeTruthy();
+    expect(backdrop!.className).toBe('modal-backdrop');
+  });
+
+  it('dialog div has "modal", "modal-wide", and "task-planner-modal" classes', () => {
+    const { container } = render(<TaskPlannerModal onClose={vi.fn()} />);
+    const dialog = container.querySelector('[role="dialog"]');
+    expect(dialog).toBeTruthy();
+    expect(dialog!.classList.contains('modal')).toBe(true);
+    expect(dialog!.classList.contains('modal-wide')).toBe(true);
+    expect(dialog!.classList.contains('task-planner-modal')).toBe(true);
+  });
+
+  it('does not use "task-planner-content" class anywhere', () => {
+    const { container } = render(<TaskPlannerModal onClose={vi.fn()} />);
+    expect(container.querySelector('.task-planner-content')).toBeNull();
+  });
+});
