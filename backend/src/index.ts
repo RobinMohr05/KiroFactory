@@ -41,10 +41,11 @@ const corsOrigin = process.env.NODE_ENV === "production"
   ? false // Same-origin only — no cross-origin requests needed
   : true; // Development: allow all origins for convenience
 app.use(cors({ origin: corsOrigin }));
-// Route-specific body-parser limit for task-planner (image uploads send base64 in JSON,
-// easily exceeding the default 100KB). Must be registered BEFORE the global parser so
-// that large payloads to this path are parsed here rather than rejected by the default.
-app.use("/api/task-planner", express.json({ limit: "15mb" }));
+// Route-specific body-parser limit for task-planner (multi-image uploads send base64 in JSON:
+// up to 3 images × 10 MB raw × 4/3 base64 expansion ≈ 40 MB + JSON overhead → 50 MB).
+// Must be registered BEFORE the global parser so that large payloads to this path are
+// parsed here rather than rejected by the default.
+app.use("/api/task-planner", express.json({ limit: "50mb" }));
 app.use(express.json());
 app.use(cookieParser());
 
