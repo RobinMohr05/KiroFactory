@@ -208,6 +208,72 @@ export function TaskPlannerModal({ onClose }: TaskPlannerModalProps) {
     setMessages(prev => [...prev, { role, text }]);
   };
 
+  /**
+   * Attempt to recover from the most common way the planner LLM's output
+   * breaks a ```json:task block: long string values (title/description) get
+   * line-wrapped by the markdown renderer or by the model itself, leaving
+   * literal newline (and sometimes tab/CR) control characters embedded
+   * inside what must be a single-line JSON string. JSON.parse rejects raw
+   * control characters in strings outright ("Bad control character in
+   * string literal"), even though the surrounding quote escaping (\") is
+   * otherwise completely correct.
+   *
+   * Worse, the wrap can land *inside* an escape sequence itself — e.g. a
+   * `\"` meant to close a quoted phrase gets split into `\` <newline> `"`,
+   * which isn't a valid JSON escape (`\<newline>`) and would otherwise trip
+   * up a naive scanner (it would consume the newline as "the escaped
+   * character" and copy it through verbatim). So repair happens in two
+   * passes:
+   *   1. Collapse any backslash immediately followed by raw newline/CR back
+   *      together (`\` + line-break(s) -> `\`), rejoining escape sequences
+   *      that got split across a wrap.
+   *   2. String-aware scan: track whether we're inside a JSON string
+   *      (respecting escape sequences, which now consume their real target
+   *      character again) and replace any remaining raw newline/CR/tab
+   *      found *inside* a string with its proper \n/\r/\t escape.
+   * Characters outside strings (structural whitespace between tokens) are
+   * left untouched throughout.
+   */
+  const parseTaskJsonLeniently = (raw: string): ParsedTask | null => {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      // Fall through to recovery below.
+    }
+    try {
+      const rejoined = raw.replace(/\\[\r\n]+/g, '\\');
+
+      let repaired = '';
+      let inString = false;
+      for (let i = 0; i < rejoined.length; i++) {
+        const ch = rejoined[i];
+        if (ch === '\\' && inString) {
+          // Escape sequence — copy the backslash and whatever follows verbatim,
+          // don't reinterpret it.
+          repaired += ch;
+          if (i + 1 < rejoined.length) {
+            repaired += rejoined[i + 1];
+            i++;
+          }
+          continue;
+        }
+        if (ch === '"') {
+          inString = !inString;
+          repaired += ch;
+          continue;
+        }
+        if (inString && (ch === '\n' || ch === '\r' || ch === '\t')) {
+          repaired += ch === '\n' ? '\\n' : ch === '\r' ? '\\r' : '\\t';
+          continue;
+        }
+        repaired += ch;
+      }
+      return JSON.parse(repaired);
+    } catch {
+      return null;
+    }
+  };
+
   const tryParseTask = (text: string) => {
     // Look for ```json:task block first, falling back to a plain ```json block.
     const jsonMatch = text.match(/```json:task\s*\n([\s\S]*?)\n```/) ?? text.match(/```json\s*\n([\s\S]*?)\n```/);
@@ -227,48 +293,9 @@ export function TaskPlannerModal({ onClose }: TaskPlannerModalProps) {
 
     // Both the strict parse and the lenient recovery pass failed. Surface this
     // instead of leaving "Create Task" silently disabled with no explanation —
-    // previously a malformed ```json:task block (e.g. unescaped quotes inside
-    // string values) left parsedTask stuck at null with zero user-visible
-    // feedback about why the button wouldn't enable.
-    addMessage('system', '⚠️ Could not parse the task block above (invalid JSON) — ask the AI to resend it, e.g. "please resend the task JSON, make sure all quotes inside string values are properly escaped".');
-  };
-
-  /**
-   * Attempt to recover from the most common way the planner LLM emits
-   * malformed ```json:task blocks: literal, un-escaped double quotes used
-   * to set off inline phrases/identifiers inside a string value (e.g.
-   * "title": "Merge "+ Task" and "AI Planner" into one entry point") instead
-   * of properly escaping them as \" or using single quotes/backticks. Plain
-   * JSON.parse rejects this outright. If strict parsing fails, retry once
-   * after escaping any doubled-up quote runs that aren't already valid
-   * string delimiters or escapes.
-   */
-  const parseTaskJsonLeniently = (raw: string): ParsedTask | null => {
-    try {
-      return JSON.parse(raw);
-    } catch {
-      // Fall through to recovery below.
-    }
-    try {
-      // Escape any `"` that is not: preceded by a backslash (already escaped),
-      // or immediately preceded/followed by JSON structural characters
-      // ( { } [ ] : , ) or whitespace-then-structural (i.e. a real string
-      // delimiter). Everything else is treated as a stray literal quote
-      // inside a string value and gets escaped.
-      const repaired = raw.replace(/(\\)?"/g, (match, backslash, offset, full) => {
-        if (backslash) return match; // already escaped
-        const before = full.slice(0, offset).trimEnd();
-        const after = full.slice(offset + 1).trimStart();
-        const isDelimiter =
-          before === '' || /[{[:,]$/.test(before) || // opening a string value/key
-          after === '' || /^[}\]:,]/.test(after); // closing a string value/key
-        return isDelimiter ? '"' : '\\"';
-      });
-      const parsed = JSON.parse(repaired);
-      return parsed;
-    } catch {
-      return null;
-    }
+    // previously a malformed ```json:task block left parsedTask stuck at null
+    // with zero user-visible feedback about why the button wouldn't enable.
+    addMessage('system', '⚠️ Could not parse the task block above (invalid JSON) — ask the AI to resend it as a single-line JSON value (no line-wrapped strings).');
   };
 
   const handleSend = async () => {

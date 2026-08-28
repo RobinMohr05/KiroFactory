@@ -361,14 +361,18 @@ describe('TaskPlannerModal - task JSON parsing', () => {
     }));
   }
 
-  it('recovers a task block with unescaped literal quotes around inline phrases', async () => {
-    // Regression test for the exact failure mode from the bug report: the AI
-    // wrapped inline phrases like "+ Task" and "AI Planner" in literal quotes
-    // inside a JSON string value without escaping them, producing invalid
-    // JSON that JSON.parse rejects outright. Create Task must still become
-    // clickable via the lenient recovery pass instead of silently staying
-    // disabled with no feedback.
-    const malformed = '```json:task\n{\n  "title": "Merge "+ Task" and "AI Planner" into one entry point",\n  "description": "Do the thing",\n  "priority": 2,\n  "type": "improvement",\n  "files": ["frontend/src/components/TasksPanel.tsx"]\n}\n```';
+  it('recovers a task block whose long strings were line-wrapped, including a split \\" escape', async () => {
+    // Regression test for the exact failure mode from the bug report: quotes
+    // inside string values ARE correctly escaped (\"...\"), but long
+    // title/description values got line-wrapped (by the model or a markdown
+    // renderer) leaving literal newline control characters embedded inside
+    // the JSON strings — which plain JSON.parse rejects outright with "Bad
+    // control character in string literal". The wrap even splits one \"
+    // escape sequence itself across two lines (`\` at end of line, `"` at
+    // start of next), which a naive newline-escaping scanner would corrupt
+    // by treating the newline as the escaped character. Create Task must
+    // still become clickable via the lenient recovery pass.
+    const malformed = '```json:task\n{\n  "title": "Merge \\"+ Task\\" and \\"AI Planner\\" into one entry point",\n  "description": "In frontend/src/components/TasksPanel.tsx, the toolbar currently renders two separate buttons that both\n create tasks: #newTaskBtn (\\"+ Task\\", opens TaskModal). Keep the button\'s id as newTaskBtn, label as \\"+ Task\\\n", and use a plain icon.",\n  "priority": 3,\n  "type": "improvement",\n  "files": ["frontend/src/components/TasksPanel.tsx"]\n}\n```';
 
     const { getByText } = render(<TaskPlannerModal onClose={vi.fn()} />);
     await act(async () => { await new Promise(r => setTimeout(r, 10)); });
