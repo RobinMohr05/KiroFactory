@@ -3473,6 +3473,13 @@ textarea:focus {
   border-radius: var(--radius);
 }
 
+.task-planner-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  padding: 0.25rem 0;
+}
+
 .task-planner-attachment {
   display: inline-flex;
   align-items: center;
@@ -4647,6 +4654,23 @@ textarea:focus {
     overflow-x: auto;
     margin: 0 -0.75rem;
     padding: 0 0.75rem;
+  }
+
+  /* Modals */
+  .modal-backdrop {
+    align-items: stretch;
+    justify-content: stretch;
+  }
+
+  .modal:not(.modal-confirm),
+  .modal-wide,
+  .task-planner-modal {
+    width: 100vw;
+    height: 100dvh;
+    max-height: 100dvh;
+    max-width: none;
+    border-radius: 0;
+    margin: 0;
   }
 
   /* Toolbar on mobile */

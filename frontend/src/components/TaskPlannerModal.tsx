@@ -21,8 +21,15 @@ interface ParsedTask {
   files?: string[];
 }
 
+interface Attachment {
+  data: string;
+  mimeType: string;
+  fileName: string;
+}
+
 const ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
 const MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB
+const MAX_ATTACHMENTS = 3;
 
 export function TaskPlannerModal({ onClose }: TaskPlannerModalProps) {
   const { currentTabId, setTasks } = useApp();
@@ -32,9 +39,8 @@ export function TaskPlannerModal({ onClose }: TaskPlannerModalProps) {
   const [ready, setReady] = useState(false);
   const [status, setStatus] = useState<'connecting' | 'ready' | 'thinking' | 'error'>('connecting');
   const [parsedTask, setParsedTask] = useState<ParsedTask | null>(null);
-  const [imageData, setImageData] = useState<string | null>(null);
-  const [imageMimeType, setImageMimeType] = useState<string | null>(null);
-  const [imageFileName, setImageFileName] = useState<string | null>(null);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const attachmentsRef = useRef<Attachment[]>([]);
   const messagesRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -46,6 +52,11 @@ export function TaskPlannerModal({ onClose }: TaskPlannerModalProps) {
   useEffect(() => {
     sessionIdRef.current = sessionId;
   }, [sessionId]);
+
+  // Keep attachments ref in sync for paste/file-input handlers
+  useEffect(() => {
+    attachmentsRef.current = attachments;
+  }, [attachments]);
 
   // Start the planner session
   useEffect(() => {
@@ -325,24 +336,107 @@ export function TaskPlannerModal({ onClose }: TaskPlannerModalProps) {
     addMessage('system', '⚠️ Could not parse the task block above (invalid JSON) — ask the AI to resend it as a single-line JSON value (no line-wrapped strings).');
   };
 
+  /** Validate and add a single file as an attachment. */
+  const addAttachment = useCallback((file: File) => {
+    // Validate before reading
+    if (!ALLOWED_MIME_TYPES.includes(file.type)) {
+      addMessage('system', `Unsupported image type: ${file.type}. Allowed: JPEG, PNG, GIF, WebP.`);
+      return;
+    }
+
+    if (file.size > MAX_IMAGE_SIZE) {
+      addMessage('system', `Image too large: ${(file.size / 1024 / 1024).toFixed(1)}MB exceeds the 10MB limit.`);
+      return;
+    }
+
+    // Read the file asynchronously, then update attachments
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      const base64 = dataUrl.split(',')[1];
+      setAttachments(current => {
+        if (current.length >= MAX_ATTACHMENTS) {
+          // Silently reject — callers (paste handler, file-picker) show their
+          // own single cap-exceeded message for the entire batch, so we avoid
+          // firing a duplicate per rejected file.
+          return current;
+        }
+        return [...current, { data: base64, mimeType: file.type, fileName: file.name }];
+      });
+    };
+    reader.onerror = () => {
+      addMessage('system', 'Failed to read image file.');
+    };
+    reader.readAsDataURL(file);
+  }, []);
+
+  // Paste event listener — attach image(s) from clipboard when modal is open
+  useEffect(() => {
+    const handlePaste = (e: ClipboardEvent) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+
+      const imageFiles: File[] = [];
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        if (item.kind === 'file' && ALLOWED_MIME_TYPES.includes(item.type)) {
+          const file = item.getAsFile();
+          if (file) imageFiles.push(file);
+        }
+      }
+
+      if (imageFiles.length === 0) return;
+
+      // Prevent the default paste behavior for image content
+      e.preventDefault();
+
+      // Pre-calculate remaining slots to avoid duplicate cap messages
+      const remaining = MAX_ATTACHMENTS - attachmentsRef.current.length;
+      const toAdd = imageFiles.slice(0, remaining);
+      const dropped = imageFiles.length - toAdd.length;
+
+      for (const file of toAdd) {
+        addAttachment(file);
+      }
+
+      if (dropped > 0) {
+        addMessage('system', `Maximum of ${MAX_ATTACHMENTS} images per message.`);
+      }
+    };
+
+    window.addEventListener('paste', handlePaste);
+    return () => {
+      window.removeEventListener('paste', handlePaste);
+    };
+  }, [addAttachment]);
+
+  const removeAttachment = (index: number) => {
+    setAttachments(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const clearAttachments = () => {
+    setAttachments([]);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
   const handleSend = async () => {
     const text = inputText.trim();
     if (!text || !sessionId || !ready) return;
 
-    const attachedImage = imageData ? { data: imageData, mimeType: imageMimeType } : null;
-    const attachedFileName = imageFileName;
-    const displayText = attachedFileName ? `${text}\n📎 ${attachedFileName}` : text;
+    const currentAttachments = [...attachments];
+    const fileLines = currentAttachments.map(a => `📎 ${a.fileName}`).join('\n');
+    const displayText = fileLines ? `${text}\n${fileLines}` : text;
 
     addMessage('user', displayText);
     setInputText('');
     setReady(false);
     setStatus('thinking');
-    clearAttachment();
+    clearAttachments();
 
     try {
       const body: Record<string, unknown> = { message: text };
-      if (attachedImage) {
-        body.image = attachedImage;
+      if (currentAttachments.length > 0) {
+        body.images = currentAttachments.map(a => ({ data: a.data, mimeType: a.mimeType }));
       }
       const res = await apiFetch(`/api/task-planner/${sessionId}/message`, {
         method: 'POST',
@@ -405,33 +499,22 @@ export function TaskPlannerModal({ onClose }: TaskPlannerModalProps) {
     onClose();
   };
 
-  const handleImageSelect = (file: File) => {
-    if (!ALLOWED_MIME_TYPES.includes(file.type)) {
-      addMessage('system', `Unsupported image type: ${file.type}. Allowed: JPEG, PNG, GIF, WebP.`);
-      return;
-    }
-    if (file.size > MAX_IMAGE_SIZE) {
-      addMessage('system', `Image too large: ${(file.size / 1024 / 1024).toFixed(1)}MB exceeds the 10MB limit.`);
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = () => {
-      const dataUrl = reader.result as string;
-      const base64 = dataUrl.split(',')[1];
-      setImageData(base64);
-      setImageMimeType(file.type);
-      setImageFileName(file.name);
-    };
-    reader.onerror = () => {
-      addMessage('system', 'Failed to read image file.');
-    };
-    reader.readAsDataURL(file);
-  };
+  /** Handle file picker selection — supports multiple files. */
+  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files) return;
 
-  const clearAttachment = () => {
-    setImageData(null);
-    setImageMimeType(null);
-    setImageFileName(null);
+    // Pre-calculate remaining slots to avoid duplicate cap messages
+    const remaining = MAX_ATTACHMENTS - attachmentsRef.current.length;
+    const dropped = files.length - remaining;
+
+    for (let i = 0; i < Math.min(files.length, remaining); i++) {
+      addAttachment(files[i]);
+    }
+    if (dropped > 0) {
+      addMessage('system', `Maximum of ${MAX_ATTACHMENTS} images per message.`);
+    }
+    // Reset the input so the same file(s) can be re-selected
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -470,10 +553,19 @@ export function TaskPlannerModal({ onClose }: TaskPlannerModalProps) {
           })}
         </div>
         <div className="task-planner-input-area">
-          {imageFileName && (
-            <div className="task-planner-attachment">
-              <span className="task-planner-attachment-name">📎 {imageFileName}</span>
-              <button type="button" className="task-planner-attachment-remove" onClick={clearAttachment} title="Remove attachment">✕</button>
+          {attachments.length > 0 && (
+            <div className="task-planner-attachments">
+              {attachments.map((att, idx) => (
+                <div key={idx} className="task-planner-attachment">
+                  <span className="attachment-filename">{att.fileName}</span>
+                  <button
+                    type="button"
+                    className="attachment-remove"
+                    onClick={() => removeAttachment(idx)}
+                    title="Remove attachment"
+                  >✕</button>
+                </div>
+              ))}
             </div>
           )}
           <div className="task-planner-input-row">
@@ -500,8 +592,9 @@ export function TaskPlannerModal({ onClose }: TaskPlannerModalProps) {
             type="file"
             ref={fileInputRef}
             accept="image/jpeg,image/png,image/gif,image/webp"
+            multiple
             style={{ display: 'none' }}
-            onChange={(e) => { const f = e.target.files?.[0]; if (f) handleImageSelect(f); }}
+            onChange={handleFileInputChange}
           />
         </div>
         <div className="task-planner-actions">

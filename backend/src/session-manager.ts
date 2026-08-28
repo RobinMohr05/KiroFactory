@@ -1146,7 +1146,7 @@ export async function stopSession(id: number): Promise<boolean> {
   return true;
 }
 
-export async function sendPrompt(id: number, text: string, image?: { data: string; mimeType: string }): Promise<boolean> {
+export async function sendPrompt(id: number, text: string, images?: { data: string; mimeType: string }[]): Promise<boolean> {
   const session = sessions.get(id);
   if (!session || session.meta.status !== "running") return false;
   if (!session.meta.interactive) return false;
@@ -1159,7 +1159,7 @@ export async function sendPrompt(id: number, text: string, image?: { data: strin
   if (!hasLocalRunner && !hasContainerWorker) return false;
 
   // Image attachments are only supported for the in-process KiroRunner path.
-  if (image && hasContainerWorker) {
+  if (images && images.length > 0 && hasContainerWorker) {
     throw new Error("Image attachments are not supported for sessions running in a containerized worker");
   }
 
@@ -1169,7 +1169,7 @@ export async function sendPrompt(id: number, text: string, image?: { data: strin
   // Run prompt in background
   const promptFn = hasContainerWorker
     ? streamPromptAca(session, text)
-    : streamPrompt(session, text, image);
+    : streamPrompt(session, text, images);
 
   promptFn.catch((err) => {
     const msg = err instanceof Error ? err.message : String(err);
@@ -1983,7 +1983,7 @@ async function runStandaloneLoopLocal(
   }
 }
 
-async function streamPrompt(managed: ManagedSession, text: string, image?: { data: string; mimeType: string }, taskMeta?: { id: number; title: string }): Promise<void> {
+async function streamPrompt(managed: ManagedSession, text: string, images?: { data: string; mimeType: string }[], taskMeta?: { id: number; title: string }): Promise<void> {
   if (!managed.runner) return;
 
   // ─── Turn start ───
@@ -2020,7 +2020,7 @@ async function streamPrompt(managed: ManagedSession, text: string, image?: { dat
   }
 
   try {
-    for await (const update of managed.runner.prompt(text, image)) {
+    for await (const update of managed.runner.prompt(text, images)) {
       if (managed.abortController?.signal.aborted) break;
       processUpdate(managed, update);
     }
