@@ -67,31 +67,5 @@ describe('Mobile responsive styles (≤480px)', () => {
     });
   });
 
-  describe('Modals at ≤480px', () => {
-    it('should make .modal near-full-width on mobile', () => {
-      const block = get480Block();
-      // width should be calc(100vw - 2rem) or similar
-      expect(block).toMatch(/\.modal\s*\{[^}]*width:\s*calc\(100vw\s*-\s*2rem\)/);
-    });
-
-    it('should set .modal max-width to 100%', () => {
-      const block = get480Block();
-      expect(block).toMatch(/\.modal\s*\{[^}]*max-width:\s*100%/);
-    });
-
-    it('should ensure .modal is scrollable with overflow-y: auto', () => {
-      const block = get480Block();
-      expect(block).toMatch(/\.modal\s*\{[^}]*overflow-y:\s*auto/);
-    });
-
-    it('should reduce .modal padding on mobile', () => {
-      const block = get480Block();
-      expect(block).toMatch(/\.modal\s*\{[^}]*padding:\s*1rem/);
-    });
-
-    it('should ensure modal-wide also gets mobile treatment', () => {
-      const block = get480Block();
-      expect(block).toMatch(/\.modal-wide\s*\{[^}]*max-width:\s*100%/);
-    });
-  });
+  /* Modal rules have moved from 480px to 768px — no modal tests here anymore */
 });
