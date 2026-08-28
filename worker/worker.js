@@ -2682,9 +2682,19 @@ function spawnKiro() {
     clearReadyTimeout();
     clearPromptTimer();
     logInfo("kiro-cli exited", { code, signal, hadInFlightPrompt: currentPromptId !== null });
-    if (currentPromptId !== null) {
-      sendOutput(`kiro-cli exited mid-prompt (code: ${code}, signal: ${signal})`, "stderr");
-    }
+    // Always surface kiro-cli's exit in the UI-visible session output, not
+    // just the mid-prompt case — otherwise a process that dies during the
+    // initial handshake (before any prompt is in flight, e.g. right after
+    // "creating session...") leaves zero visible signal between that line
+    // and the eventual "Worker shutdown" message. That gap is exactly what
+    // made a prior mid-handshake exit-0 failure indistinguishable from a
+    // real, intentional shutdown from the UI/logs alone.
+    sendOutput(
+      currentPromptId !== null
+        ? `kiro-cli exited mid-prompt (code: ${code}, signal: ${signal})`
+        : `kiro-cli exited (code: ${code}, signal: ${signal})`,
+      code === 0 && signal === null ? "system" : "stderr"
+    );
     kiroProc = null;
     kiroReady = false;
     acpSessionId = null;
