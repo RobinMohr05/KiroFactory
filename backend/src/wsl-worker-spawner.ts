@@ -25,6 +25,8 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 import { getUserKiroApiKey } from "./db/users.js";
 import type { ProxyServersConfig } from "./mcp-proxy-config.js";
 import { encodeServersConfigBase64, buildProxyCredentialEnvVars, type SessionCredentials } from "./mcp-proxy-config.js";
@@ -124,6 +126,65 @@ async function runInDistro(
 }
 
 /**
+ * Absolute path to setup-wsl.ps1, resolved relative to this file so it works
+ * regardless of cwd (backend runs from backend/, this script lives under
+ * worker/.devcontainer/ two levels up from the repo root).
+ */
+function setupScriptPath(): string {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  return path.resolve(here, "..", "..", "worker", ".devcontainer", "setup-wsl.ps1");
+}
+
+/**
+ * Preflight health check, run once before the first `wsl.exe -d <distro>`
+ * call of a session start.
+ *
+ * Why this exists: the very first `wsl.exe` invocation from this process can
+ * hit a cold-start race — if the WSL2 utility VM or the dedicated distro has
+ * been idle long enough to be torn down, spawning `wsl.exe` blocks on
+ * waking it up. If that wake-up is slow, Node's execFile can surface it as a
+ * spawn-level ENOENT/"not recognized" error even though wsl.exe is correctly
+ * on PATH — which then gets (mis)reported by explainWslError() as "WSL2 must
+ * be installed," even when it demonstrably already is. A bare retry from the
+ * caller papers over this without confirming *why* it failed.
+ *
+ * `setup-wsl.ps1 -CheckOnly` runs `wsl.exe -l -v` + `wsl.exe -d <distro> --
+ * docker info`, which forces the same cold start deterministically, with its
+ * own PowerShell-side error handling, before any session-critical `docker
+ * run`/`docker network create` call is attempted. A failure here is a real,
+ * correctly-diagnosed problem (distro missing, Docker not running) rather
+ * than an artifact of first-contact timing.
+ */
+async function ensureDistroHealthy(config: WslWorkerConfig): Promise<void> {
+  try {
+    await execFileAsync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", setupScriptPath(),
+        "-DistroName", config.distroName,
+        "-CheckOnly",
+      ],
+      { maxBuffer: 10 * 1024 * 1024 }
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/not recognized|not found|ENOENT/i.test(msg)) {
+      throw new Error(
+        `WSL preflight failed: 'wsl.exe' or 'powershell.exe' was not found on PATH. WSL2 must ` +
+          `be installed on this machine. See worker/.devcontainer/README.md.`
+      );
+    }
+    throw new Error(
+      `WSL distro "${config.distroName}" failed its health check. Run ` +
+        `worker/.devcontainer/setup-wsl.ps1 to provision or repair it. See ARCHITECTURE.md §12. ` +
+        `(${msg})`
+    );
+  }
+}
+
+/**
  * Turn a failed `docker` invocation inside the distro into an actionable
  * error message. The most common failure is the distro or its Docker daemon
  * not being provisioned yet — see worker/.devcontainer/setup-wsl.ps1.
@@ -217,6 +278,12 @@ export async function startWorkerJob(
 
   const name = containerName(sessionId);
   const network = sessionNetworkName(sessionId);
+
+  // Preflight: force the WSL cold-start (if any) to happen here, with an
+  // accurately-diagnosed error, rather than letting it surface as a
+  // misleading spawn failure on the first session-critical docker call
+  // below. See ensureDistroHealthy()'s doc comment for why this exists.
+  await ensureDistroHealthy(config);
 
   try {
     // Fresh per-session Docker network — the local analogue of ACA's
