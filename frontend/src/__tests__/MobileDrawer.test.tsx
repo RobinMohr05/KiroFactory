@@ -52,7 +52,7 @@ describe('MobileDrawer', () => {
     expect(screen.getByRole('button', { name: /^tasks$/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^sessions$/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^agents$/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /^errors$/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^logs$/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^usage$/i })).toBeInTheDocument();
   });
 

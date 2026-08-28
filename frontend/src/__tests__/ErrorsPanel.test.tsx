@@ -113,4 +113,100 @@ describe('ErrorsPanel - sub-tab switcher', () => {
       expect(screen.getByText('OOM killed process 42')).toBeInTheDocument();
     });
   });
+
+  it('filters lines by the search box', async () => {
+    mockUseApp({ errors: [] });
+    apiFetchMock.mockImplementation(async (url: string) => {
+      if (url === '/api/errors/wsl-diagnostics') {
+        return {
+          ok: true,
+          json: async () => [
+            { id: 1, timestamp: '2026-01-01T00:00:00Z', source: 'docker-events', text: 'container kirofactory-worker-1 killed (signal: 15)', containerName: 'kirofactory-worker-1' },
+            { id: 2, timestamp: '2026-01-01T00:00:01Z', source: 'dmesg', text: 'OOM killed process 42' },
+          ],
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+
+    render(<ErrorsPanel />);
+    fireEvent.click(screen.getByRole('tab', { name: 'WSL/Docker Logs' }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/container kirofactory-worker-1 killed/)).toBeInTheDocument();
+    });
+    expect(screen.getByText('OOM killed process 42')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText('Search logs…'), { target: { value: 'OOM' } });
+
+    expect(screen.queryByText(/container kirofactory-worker-1 killed/)).not.toBeInTheDocument();
+    expect(screen.getByText('OOM killed process 42')).toBeInTheDocument();
+    expect(screen.getByText('1 of 2 lines match')).toBeInTheDocument();
+  });
+
+  it('shows a no-match message when the search query matches nothing', async () => {
+    mockUseApp({ errors: [] });
+    apiFetchMock.mockImplementation(async (url: string) => {
+      if (url === '/api/errors/wsl-diagnostics') {
+        return {
+          ok: true,
+          json: async () => [
+            { id: 1, timestamp: '2026-01-01T00:00:00Z', source: 'dmesg', text: 'something happened' },
+          ],
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+
+    render(<ErrorsPanel />);
+    fireEvent.click(screen.getByRole('tab', { name: 'WSL/Docker Logs' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('something happened')).toBeInTheDocument();
+    });
+
+    fireEvent.change(screen.getByPlaceholderText('Search logs…'), { target: { value: 'nonexistent-xyz' } });
+
+    expect(screen.getByText('No lines match your search.')).toBeInTheDocument();
+  });
+
+  it('copies all visible lines to the clipboard, respecting an active search filter', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+
+    mockUseApp({ errors: [] });
+    apiFetchMock.mockImplementation(async (url: string) => {
+      if (url === '/api/errors/wsl-diagnostics') {
+        return {
+          ok: true,
+          json: async () => [
+            { id: 1, timestamp: '2026-01-01T00:00:00Z', source: 'docker-events', text: 'container kirofactory-worker-1 killed (signal: 15)', containerName: 'kirofactory-worker-1' },
+            { id: 2, timestamp: '2026-01-01T00:00:01Z', source: 'dmesg', text: 'OOM killed process 42' },
+          ],
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+
+    render(<ErrorsPanel />);
+    fireEvent.click(screen.getByRole('tab', { name: 'WSL/Docker Logs' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('OOM killed process 42')).toBeInTheDocument();
+    });
+
+    fireEvent.change(screen.getByPlaceholderText('Search logs…'), { target: { value: 'OOM' } });
+    fireEvent.click(screen.getByTitle('Copy all visible lines to clipboard'));
+
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledTimes(1);
+    });
+    const copiedText = writeText.mock.calls[0][0] as string;
+    expect(copiedText).toContain('OOM killed process 42');
+    expect(copiedText).not.toContain('kirofactory-worker-1 killed');
+
+    await waitFor(() => {
+      expect(screen.getByText('✓ Copied')).toBeInTheDocument();
+    });
+  });
 });

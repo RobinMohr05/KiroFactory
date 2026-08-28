@@ -51,7 +51,7 @@ export function ViewTabs() {
         aria-controls="panel-errors"
         onClick={() => handleTabClick('/errors')}
       >
-        Errors{' '}
+        Logs{' '}
         {unreadErrorCount > 0 && (
           <span className="error-badge">{unreadErrorCount > 99 ? '99+' : unreadErrorCount}</span>
         )}

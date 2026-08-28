@@ -2523,6 +2523,38 @@ textarea:focus {
 
 .wsl-diagnostics-toolbar {
   margin-bottom: 0.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.wsl-diagnostics-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+.wsl-diagnostics-search {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  padding: 0.3rem 0.6rem;
+  font-size: 0.8rem;
+  color: var(--text-primary);
+  width: 220px;
+}
+
+.wsl-diagnostics-search-status {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  margin-bottom: 0.4rem;
+}
+
+.wsl-diagnostics-copy-btn {
+  white-space: nowrap;
 }
 
 .wsl-diagnostics-hint {

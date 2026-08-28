@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { apiFetch, formatErrorTime } from '../utils/api';
 import type { WslDiagnosticLine } from '../types';
 
@@ -9,6 +9,14 @@ const SOURCE_LABELS: Record<WslDiagnosticLine['source'], string> = {
   dmesg: 'dmesg',
   'container-log': 'container log',
 };
+
+/** Plain-text rendering of a line, matching what's shown on screen — used for both copy-all and per-line text. */
+function formatLineForCopy(line: WslDiagnosticLine): string {
+  const parts = [formatErrorTime(line.timestamp), `[${SOURCE_LABELS[line.source]}]`];
+  if (line.containerName) parts.push(line.containerName);
+  parts.push(line.text);
+  return parts.join(' ');
+}
 
 /**
  * "WSL/Docker Logs" sub-tab of the Errors panel — live view of the backend's
@@ -29,6 +37,8 @@ export function WslDiagnosticsPanel() {
   const [lines, setLines] = useState<WslDiagnosticLine[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [autoScroll, setAutoScroll] = useState(true);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'failed'>('idle');
   const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -60,11 +70,21 @@ export function WslDiagnosticsPanel() {
     return () => window.removeEventListener('ws-wsl-diagnostic-line', handler);
   }, []);
 
+  const filteredLines = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return lines;
+    return lines.filter(line =>
+      line.text.toLowerCase().includes(query) ||
+      line.source.toLowerCase().includes(query) ||
+      (line.containerName?.toLowerCase().includes(query) ?? false)
+    );
+  }, [lines, searchQuery]);
+
   useEffect(() => {
     if (autoScroll && listRef.current) {
       listRef.current.scrollTop = listRef.current.scrollHeight;
     }
-  }, [lines, autoScroll]);
+  }, [filteredLines, autoScroll]);
 
   const handleScroll = () => {
     const el = listRef.current;
@@ -76,24 +96,61 @@ export function WslDiagnosticsPanel() {
     setAutoScroll(nearBottom);
   };
 
+  const handleCopyAll = async () => {
+    // Copy exactly what's currently visible (respects an active search filter),
+    // so "copy all" while searching copies the filtered set, not everything.
+    const text = filteredLines.map(formatLineForCopy).join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopyStatus('copied');
+    } catch {
+      setCopyStatus('failed');
+    }
+    setTimeout(() => setCopyStatus('idle'), 2000);
+  };
+
   return (
     <div className="wsl-diagnostics-panel">
       <div className="wsl-diagnostics-toolbar">
         <span className="wsl-diagnostics-hint">
           Live capture of docker events, dmesg, and per-container logs from the local kirofactory-docker WSL distro.
         </span>
+        <div className="wsl-diagnostics-actions">
+          <input
+            type="search"
+            className="wsl-diagnostics-search"
+            placeholder="Search logs…"
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+            aria-label="Search WSL/Docker logs"
+          />
+          <button
+            className="btn btn-sm wsl-diagnostics-copy-btn"
+            onClick={handleCopyAll}
+            disabled={filteredLines.length === 0}
+            title="Copy all visible lines to clipboard"
+          >
+            {copyStatus === 'copied' ? '✓ Copied' : copyStatus === 'failed' ? '✕ Copy failed' : '📋 Copy All'}
+          </button>
+        </div>
       </div>
       {loadError && (
         <div className="wsl-diagnostics-error">Failed to load: {loadError}</div>
       )}
+      {searchQuery && (
+        <div className="wsl-diagnostics-search-status">
+          {filteredLines.length} of {lines.length} line{lines.length === 1 ? '' : 's'} match
+        </div>
+      )}
       <div className="wsl-diagnostics-list" ref={listRef} onScroll={handleScroll}>
-        {lines.length === 0 && !loadError ? (
+        {filteredLines.length === 0 && !loadError ? (
           <div className="errors-empty">
-            No WSL/Docker diagnostics captured yet. This tab only has data when local (WSL/Docker) worker
-            mode is configured on this machine — see ARCHITECTURE.md §12.
+            {lines.length === 0
+              ? 'No WSL/Docker diagnostics captured yet. This tab only has data when local (WSL/Docker) worker mode is configured on this machine — see ARCHITECTURE.md §12.'
+              : 'No lines match your search.'}
           </div>
         ) : (
-          lines.map(line => (
+          filteredLines.map(line => (
             <div key={line.id} className={`wsl-diagnostic-line wsl-diagnostic-line-${line.source}`}>
               <span className="wsl-diagnostic-time">{formatErrorTime(line.timestamp)}</span>
               <span className={`wsl-diagnostic-source wsl-diagnostic-source-${line.source}`}>{SOURCE_LABELS[line.source]}</span>

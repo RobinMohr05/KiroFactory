@@ -55,7 +55,7 @@ export function MobileDrawer({ open, onClose, monthlyCredits }: MobileDrawerProp
     { view: 'boards', label: 'Tasks' },
     { view: 'sessions', label: 'Sessions' },
     { view: 'agents', label: 'Agents' },
-    { view: 'errors', label: 'Errors' },
+    { view: 'errors', label: 'Logs' },
     { view: 'usage', label: 'Usage' },
   ];
 
