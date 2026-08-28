@@ -39,6 +39,7 @@ export function TaskPlannerModal({ onClose }: TaskPlannerModalProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const partialMessageRef = useRef<string>('');
   const sessionIdRef = useRef<number | null>(null);
+  const cleanedUpSessionRef = useRef<Set<number>>(new Set());
 
   // Keep ref in sync for WS handler
   useEffect(() => {
@@ -58,7 +59,10 @@ export function TaskPlannerModal({ onClose }: TaskPlannerModalProps) {
       if (createdSessionId !== null && (!adopted || sessionIdRef.current === createdSessionId)) {
         const idToDelete = createdSessionId;
         createdSessionId = null; // guard against a second call double-deleting
-        apiFetch(`/api/task-planner/${idToDelete}`, { method: 'DELETE' }).catch(() => { /* ignore cleanup errors */ });
+        if (!cleanedUpSessionRef.current.has(idToDelete)) {
+          cleanedUpSessionRef.current.add(idToDelete);
+          apiFetch(`/api/task-planner/${idToDelete}`, { method: 'DELETE' }).catch(() => { /* ignore cleanup errors */ });
+        }
       }
       // Retract this run's own "Starting..." message if this run never got
       // adopted (e.g. StrictMode's synchronous mount->cleanup->remount in dev
@@ -289,7 +293,8 @@ export function TaskPlannerModal({ onClose }: TaskPlannerModalProps) {
   };
 
   const handleClose = async () => {
-    if (sessionId) {
+    if (sessionId && !cleanedUpSessionRef.current.has(sessionId)) {
+      cleanedUpSessionRef.current.add(sessionId);
       try {
         await apiFetch(`/api/task-planner/${sessionId}`, { method: 'DELETE' });
       } catch { /* ignore cleanup errors */ }
