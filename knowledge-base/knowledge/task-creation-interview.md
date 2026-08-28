@@ -1,8 +1,8 @@
----
-inclusion: always
----
-
 # Task Creation Interview
+
+> Moved here from `.kiro/steering/task-creation-interview.md` on 2026-08-26 — only relevant
+> when the user asks to create a task, not on every request. See `.kiro/steering/task-origin-convention.md`
+> for the terminology/DB-layer rules that remain in steering.
 
 Applies whenever the user asks you to create one or more tasks (e.g. "create
 a task for...", "add a task to...", "file a task about..."). See

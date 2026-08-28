@@ -24,10 +24,6 @@ const baseMockContext = {
   tabs: [{ id: 1, name: 'Test Tab', repositoryUrl: 'https://github.com/test/repo' }],
   fetchTabTasks: vi.fn(),
   pendingOps: { current: new Set() },
-  boardSessions: [],
-  boardAgents: [],
-  setActiveSessionId: vi.fn(),
-  setActiveView: vi.fn(),
   highlightedTaskId: null,
   setHighlightedTaskId: vi.fn(),
 };

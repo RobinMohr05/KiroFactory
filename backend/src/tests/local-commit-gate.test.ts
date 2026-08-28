@@ -167,6 +167,11 @@ describe("local-mode commit gate (runLoopMode)", () => {
       runs: 1, // Run once then stop
       intervalSeconds: 0,
       userId: 1,
+      // forceLocal: this test exercises runLoopMode()'s (KiroRunner-based)
+      // commit gate directly. Without this, startSession() now routes
+      // non-forceLocal sessions through runSessionAca() (container worker,
+      // ACA or WSL/Docker) instead — see ARCHITECTURE.md §12.
+      forceLocal: true,
     };
     const session = await createSession(input);
 
@@ -211,6 +216,7 @@ describe("local-mode commit gate (runLoopMode)", () => {
       runs: 1,
       intervalSeconds: 0,
       userId: 1,
+      forceLocal: true,
     };
     const session = await createSession(input);
 
@@ -261,6 +267,7 @@ describe("local-mode commit gate (runLoopMode)", () => {
       runs: 1,
       intervalSeconds: 0,
       userId: 1,
+      forceLocal: true,
     };
     const session = await createSession(input);
 

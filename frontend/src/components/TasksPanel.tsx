@@ -19,7 +19,7 @@ const COLUMNS: { state: TaskState; label: string }[] = [
 ];
 
 export function TasksPanel() {
-  const { tasks, setTasks, currentSort, setCurrentSort, currentTabId, tabs, fetchTabTasks, pendingOps, boardSessions, boardAgents, setActiveSessionId, setActiveView, highlightedTaskId, setHighlightedTaskId } = useApp();
+  const { tasks, setTasks, currentSort, setCurrentSort, currentTabId, tabs, fetchTabTasks, pendingOps, highlightedTaskId, setHighlightedTaskId } = useApp();
   const [editingTask, setEditingTask] = useState<Task | null | undefined>(undefined);
   const [showPlanner, setShowPlanner] = useState(false);
   const isMobile = useMobileBreakpoint();
@@ -81,15 +81,6 @@ export function TasksPanel() {
     if (currentTabId) await fetchTabTasks(currentTabId);
   };
 
-  const handleSessionClick = (sessionId: number) => {
-    setActiveSessionId(sessionId);
-    setActiveView('sessions');
-  };
-
-  const handleAgentClick = (_agentName: string) => {
-    setActiveView('agents');
-  };
-
   return (
     <section id="panel-boards" role="tabpanel" aria-labelledby="tab-boards">
       <div className="toolbar">
@@ -149,45 +140,6 @@ export function TasksPanel() {
               </div>
             );
           })}
-        </div>
-      )}
-
-      {(boardSessions.length > 0 || boardAgents.length > 0) && (
-        <div className="board-members">
-          <div className="board-members-section">
-            <h4>Sessions <span className="column-count">{boardSessions.length}</span></h4>
-            <div className="board-members-list" id="board-sessions-list">
-              {boardSessions.length === 0 ? (
-                <p className="board-members-empty">No sessions assigned to this board.</p>
-              ) : (
-                boardSessions.map(session => (
-                  <div key={session.id} className="board-member-chip" style={{ cursor: 'pointer' }} onClick={() => handleSessionClick(session.id)}>
-                    <span className={`chip-status status-${session.status}`}></span>
-                    <span className="chip-name">{session.name}</span>
-                    <span className="chip-detail">{session.agent || 'Interactive'} · {session.status}</span>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-          <div className="board-members-section">
-            <h4>Agents <span className="column-count">{boardAgents.length}</span></h4>
-            <div className="board-members-list" id="board-agents-list">
-              {boardAgents.length === 0 ? (
-                <p className="board-members-empty">No agents assigned to this board.</p>
-              ) : (
-                boardAgents.map((agentName, i) => {
-                  const initials = (agentName || '?').substring(0, 2).toUpperCase();
-                  return (
-                    <div key={i} className="board-member-chip" style={{ cursor: 'pointer' }} onClick={() => handleAgentClick(agentName)}>
-                      <span className="agent-item-icon" style={{ width: 24, height: 24, fontSize: '0.6rem', lineHeight: '24px' }}>{initials}</span>
-                      <span className="chip-name">{agentName}</span>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
         </div>
       )}
 

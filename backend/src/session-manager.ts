@@ -18,7 +18,7 @@ import { claimTask, resolveTask, resetTask, getAvailableTaskCount, waitForTaskAv
 import type { ClaimedTask } from "./agent/task-claimer.js";
 import { buildDevPrompt, buildReviewPrompt } from "./agent/prompt-builder.js";
 import { hasLocalGitChanges } from "./agent/local-git-check.js";
-import { buildPersistentBranchName } from "./agent/repo-url-parser.js";
+import { buildPersistentBranchName, buildTaskBranchName } from "./agent/repo-url-parser.js";
 import { TabMcpConfig, DEFAULT_MCP_CONFIG, resolveGitProvider, type GitProvider } from "./types.js";
 import {
   getAllSessionsFromDb,
@@ -39,23 +39,41 @@ import { recordError } from "./error-store.js";
 import { log, logSessionEvent, logWorkerEvent, toErrorFields } from "./logger.js";
 import { getAgentTabs, getTabById } from "./db/tabs.js";
 import { getAgentByName } from "./db/agents.js";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { materializeAgentConfigIfMissing, encodeAgentConfigBase64 } from "./agent/agent-config-writer.js";
-import { buildProxyServersConfig, type SessionCredentials } from "./mcp-proxy-config.js";
+import {
+  buildDeliveryResultPath,
+  buildLocalGitDeliveryServer,
+  buildLocalPrReviewServer,
+  type LocalGitDeliveryContext,
+  type DeliveryResult,
+} from "./agent/local-git-delivery.js";
+import { buildProxyServersConfig, buildLocalMcpServerEntries, type SessionCredentials } from "./mcp-proxy-config.js";
 import {
   loadAcaConfig,
-  startWorkerJob,
-  stopWorkerJob,
-  getWorkerJobStatus,
+  startWorkerJob as startAcaWorkerJob,
+  stopWorkerJob as stopAcaWorkerJob,
+  getWorkerJobStatus as getAcaWorkerJobStatus,
   isAcaModeEnabled,
   type AcaWorkerConfig,
   type AcaJobExecution,
   type McpProxySidecarConfig,
 } from "./aca-worker-spawner.js";
 import {
+  loadWslConfig,
+  startWorkerJob as startWslWorkerJob,
+  stopWorkerJob as stopWslWorkerJob,
+  getWorkerJobStatus as getWslWorkerJobStatus,
+  captureContainerLogs as captureWslContainerLogs,
+  isWslModeEnabled,
+  type WslWorkerConfig,
+} from "./wsl-worker-spawner.js";
+import {
   setWorkerEventHandler,
   sendWorkerPrompt,
   sendWorkerStop,
   isWorkerConnected,
+  connectToLocalWorker,
   type WorkerEventHandler,
 } from "./worker-ws-handler.js";
 import type {
@@ -82,11 +100,20 @@ const DEFAULT_CWD = resolve(import.meta.dirname, "../.."); // project root
 // ---------------------------------------------------------------------------
 
 const acaConfig = loadAcaConfig();
+const wslConfig = loadWslConfig();
 
 /**
- * WORKER_MODE controls how sessions spawn agent processes:
- * - "local"  — Spawn kiro-cli as a local child process (default for development)
- * - "remote" — Launch ACA Job, worker connects back via internal WebSocket
+ * WORKER_MODE controls how non-forceLocal sessions spawn agent processes:
+ * - "remote" — Launch an Azure Container Apps Job; worker connects back via
+ *   internal WebSocket.
+ * - "local"  — Launch a local Docker container inside the dedicated WSL2
+ *   distro (see ARCHITECTURE.md §12); worker connects back via the same
+ *   internal WebSocket mechanism as "remote". This replaced the old bare
+ *   `kiro-cli acp` child-process spawn (KiroRunner) for this path.
+ *
+ * `forceLocal` sessions (the task planner's pre-warmed pool) are a separate
+ * concern entirely and always use KiroRunner regardless of WORKER_MODE — see
+ * the `useLocal` dispatch in startSession().
  *
  * If WORKER_MODE is not set, auto-detect based on ACA config presence.
  */
@@ -101,22 +128,157 @@ const WORKER_MODE: "local" | "remote" = (() => {
 const ACA_MODE = WORKER_MODE === "remote";
 
 /**
- * Absolute path the ACA worker container clones the repository into
- * (WORKSPACE in worker/worker.js).
+ * Absolute path both the ACA worker container and the local WSL/Docker worker
+ * container clone the repository into (WORKSPACE in worker/worker.js — the
+ * same image, hence the same path, is used for both).
  *
- * Prompts for remote workers must use this, not `meta.cwd`: the orchestrator's
- * own cwd is /app inside its container, and telling the agent that /app is the
- * working directory sends it exploring the orchestrator's image layout instead
- * of the checked-out repository.
+ * Prompts for containerized workers must use this, not `meta.cwd`: the
+ * orchestrator's own cwd is /app inside its container, and telling the agent
+ * that /app is the working directory sends it exploring the orchestrator's
+ * image layout instead of the checked-out repository.
  */
 const ACA_WORKSPACE_PATH = "/workspace";
+
+// ---------------------------------------------------------------------------
+// Container worker spawner abstraction
+//
+// runSessionAca()/waitForWorkerOrAbort() below are shared between the ACA
+// (hosted) and WSL/Docker (local) execution paths — both spawn a container
+// running the same worker/.devcontainer image, and both connect back over
+// the same internal WebSocket. Only how the container is *started* differs,
+// so that's the one seam abstracted here rather than forking the (much
+// larger) turn-execution/loop logic a second time.
+// ---------------------------------------------------------------------------
+
+/** A spawned worker container/job, regardless of which backend started it. */
+interface ContainerWorkerExecution {
+  executionName: string;
+  status: string;
+}
+
+/** Status of a previously-started worker container/job. */
+interface ContainerWorkerStatus {
+  status: string;
+  startTime?: string;
+  endTime?: string;
+}
+
+/**
+ * Uniform surface over aca-worker-spawner.ts and wsl-worker-spawner.ts.
+ * Both modules already share this exact function shape by construction
+ * (wsl-worker-spawner.ts was written as a structural parallel) — this
+ * interface just names that shape so callers don't need to know which
+ * backend they're talking to.
+ */
+interface ContainerWorkerSpawner {
+  readonly kind: "aca" | "wsl";
+  start(
+    sessionId: number,
+    agentName: string,
+    userId: number,
+    timeoutSeconds: number,
+    mcpSidecar: McpProxySidecarConfig | null | undefined,
+    gitOptions: unknown,
+    agentKind: "editor" | "inspector" | undefined,
+    agentConfigBase64: string | undefined
+  ): Promise<ContainerWorkerExecution>;
+  stop(executionName: string): Promise<void>;
+  status(executionName: string): Promise<ContainerWorkerStatus>;
+  /** Whether this backend's MCP proxy sidecar image is configured (gates sidecar setup). */
+  hasProxyImage(): boolean;
+}
+
+function makeAcaSpawner(config: AcaWorkerConfig): ContainerWorkerSpawner {
+  return {
+    kind: "aca",
+    start: (sessionId, agentName, userId, timeoutSeconds, mcpSidecar, gitOptions, agentKind, agentConfigBase64) =>
+      startAcaWorkerJob(
+        config,
+        sessionId,
+        agentName,
+        userId,
+        timeoutSeconds,
+        mcpSidecar,
+        gitOptions as Parameters<typeof startAcaWorkerJob>[6],
+        agentKind,
+        agentConfigBase64
+      ),
+    stop: (executionName) => stopAcaWorkerJob(config, executionName),
+    status: (executionName) => getAcaWorkerJobStatus(config, executionName),
+    hasProxyImage: () => !!config.proxyImage,
+  };
+}
+
+function makeWslSpawner(config: WslWorkerConfig): ContainerWorkerSpawner {
+  return {
+    kind: "wsl",
+    start: async (sessionId, agentName, userId, timeoutSeconds, mcpSidecar, gitOptions, agentKind, agentConfigBase64) => {
+      const execution = await startWslWorkerJob(
+        config,
+        sessionId,
+        agentName,
+        userId,
+        timeoutSeconds,
+        mcpSidecar,
+        gitOptions as Parameters<typeof startWslWorkerJob>[6],
+        agentKind,
+        agentConfigBase64
+      );
+
+      // Reversed connection direction (see wsl-worker-spawner.ts's module doc
+      // comment): the worker container listens, and the backend dials into
+      // it here — rather than the worker dialing the orchestrator's
+      // /internal/worker endpoint like the ACA path does. If this fails, the
+      // container is still running but unreachable — stop it rather than
+      // leaving an orphaned container behind for a session that never
+      // actually started from the caller's point of view.
+      try {
+        await connectToLocalWorker(`ws://localhost:${execution.publishedPort}`, sessionId);
+      } catch (err) {
+        await stopWslWorkerJob(config, execution.executionName).catch(() => {});
+        throw err;
+      }
+
+      return execution;
+    },
+    stop: (executionName) => stopWslWorkerJob(config, executionName),
+    status: (executionName) => getWslWorkerJobStatus(config, executionName),
+    hasProxyImage: () => !!config.proxyImage,
+  };
+}
+
+/**
+ * Resolve which container backend a given session should use.
+ *
+ * - `forceLocal` sessions never reach this — they use KiroRunner (see
+ *   startSession()'s `useLocal` dispatch).
+ * - Otherwise: ACA in remote mode, WSL/Docker in local mode.
+ *
+ * Throws if the resolved mode's configuration is missing, mirroring the
+ * previous `if (!acaConfig) throw ...` guard at the top of runSessionAca().
+ */
+function resolveContainerSpawner(): ContainerWorkerSpawner {
+  if (ACA_MODE) {
+    if (!acaConfig) {
+      throw new Error("ACA mode enabled but configuration is missing");
+    }
+    return makeAcaSpawner(acaConfig);
+  }
+  if (!wslConfig) {
+    throw new Error(
+      "Local worker mode requires WSL/Docker configuration (ACA_WORKER_SECRET or WSL_WORKER_SECRET) " +
+      "but none is set. See worker/.devcontainer/README.md."
+    );
+  }
+  return makeWslSpawner(wslConfig);
+}
 
 log.info("worker-mode", {
   component: "session-manager",
   mode: ACA_MODE ? "remote" : "local",
   msg: ACA_MODE
     ? "Remote worker mode — sessions spawn as Azure Container Apps Jobs"
-    : "Local worker mode — sessions spawn kiro-cli as child processes",
+    : "Local worker mode — sessions spawn as local Docker containers inside the kirofactory-docker WSL distro",
 });
 
 // ---------------------------------------------------------------------------
@@ -125,7 +287,7 @@ log.info("worker-mode", {
 
 const sessions = new Map<number, ManagedSession>();
 
-interface ManagedSession {
+export interface ManagedSession {
   meta: Session;
   runner: KiroRunner | null;
   abortController: AbortController | null;
@@ -139,6 +301,8 @@ interface ManagedSession {
   lastToolCount: number;
   /** ACA Job execution name (set when running in ACA mode) */
   acaExecutionName: string | null;
+  /** Which container backend (ACA or WSL/Docker) started acaExecutionName, if any — set by runSessionAca(). */
+  containerSpawner: ContainerWorkerSpawner | null;
   /** Resolver for awaiting prompt completion from ACA worker */
   acaPromptResolver: ((result: unknown) => void) | null;
   /** Rejecter for awaiting prompt completion from ACA worker */
@@ -258,6 +422,7 @@ export async function initSessions(): Promise<void> {
       lastToolLabel: "",
       lastToolCount: 0,
       acaExecutionName: null,
+      containerSpawner: null,
       acaPromptResolver: null,
       acaPromptRejecter: null,
       totalCreditsUsed: 0,
@@ -526,6 +691,7 @@ export async function createSession(input: CreateSessionInput): Promise<Session>
     lastToolLabel: "",
     lastToolCount: 0,
     acaExecutionName: null,
+    containerSpawner: null,
     acaPromptResolver: null,
     acaPromptRejecter: null,
     totalCreditsUsed: 0,
@@ -801,27 +967,47 @@ export async function startSession(id: number): Promise<boolean> {
   session.lastGeneratedToolCallId = null;
   setStatus(session, "running");
   setActivity(session, { type: "working", detail: "Starting ACP session..." });
-  logSessionEvent("session-started", id, { agent: session.meta.agent, name: session.meta.name, mode: ACA_MODE ? "remote" : "local" });
+  logSessionEvent("session-started", id, { agent: session.meta.agent, name: session.meta.name, mode: session.meta.forceLocal ? "kiro-runner" : (ACA_MODE ? "remote" : "local-container") });
 
   appendOutput(session, {
     timestamp: now(),
     stream: "system",
-    text: ACA_MODE && !session.meta.forceLocal
+    text: session.meta.forceLocal
       ? session.meta.agent
-        ? `Starting ACA worker for agent "${session.meta.agent}"...`
-        : `Starting ACA worker (no agent)...`
-      : session.meta.agent
         ? `Starting agent "${session.meta.agent}" in ${session.meta.cwd}...`
-        : `Starting interactive session in ${session.meta.cwd}...`,
+        : `Starting interactive session in ${session.meta.cwd}...`
+      : ACA_MODE
+        ? session.meta.agent
+          ? `Starting ACA worker for agent "${session.meta.agent}"...`
+          : `Starting ACA worker (no agent)...`
+        : session.meta.agent
+          ? `Starting local worker container for agent "${session.meta.agent}"...`
+          : `Starting local worker container (no agent)...`,
   });
 
-  // Spawn async — don't block the caller
-  // forceLocal sessions (e.g. task planner) always use the local KiroRunner
-  // child process, even when the global worker mode is "remote" (ACA_MODE).
-  const useLocal = session.meta.forceLocal || !ACA_MODE;
-  const launcher = useLocal ? runSession(session) : runSessionAca(session);
+  // Spawn async — don't block the caller.
+  //
+  // forceLocal sessions (e.g. the task planner's pre-warmed pool) always use
+  // the in-process KiroRunner (bare `kiro-cli acp` child process) regardless
+  // of WORKER_MODE — that's a separate low-latency planning concern, not the
+  // dev-session worker path this module otherwise manages.
+  //
+  // Every other session goes through runSessionAca(), which spawns a
+  // containerized worker via whichever backend resolveContainerSpawner()
+  // picks: an ACA Job in remote mode, or a local Docker container inside the
+  // dedicated kirofactory-docker WSL distro in local mode (see
+  // ARCHITECTURE.md §12). Both connect back over the same internal
+  // WebSocket, so runSessionAca()'s turn/loop logic needs no further
+  // branching between the two.
+  const launcher = session.meta.forceLocal ? runSession(session) : runSessionAca(session);
   launcher.catch((err) => {
-    const msg = err instanceof Error ? err.message : String(err);
+    // Never surface a blank "Fatal:" line — a thrown Error with an empty
+    // .message (seen from some socket-level failures, e.g. certain ws
+    // "error" events) used to produce exactly that, with the only trace of
+    // the real cause left in the stack passed to logSessionEvent below.
+    // Falling back through name → toString() → a generic placeholder means
+    // there's always *something* actionable in the UI-visible line too.
+    const msg = toErrorFields(err).error;
     appendOutput(session, { timestamp: now(), stream: "stderr", text: `Fatal: ${msg}` });
     setStatus(session, "error");
     setActivity(session, { type: "idle" });
@@ -861,18 +1047,20 @@ export async function stopSession(id: number): Promise<boolean> {
   // Flush any remaining buffered agent message text
   flushMessageBuffer(session);
 
-  // ACA mode: send stop to worker + cancel the ACA job
-  if (ACA_MODE && session.acaExecutionName) {
+  // Containerized worker (ACA or local WSL/Docker): send stop to worker + tear down the container.
+  // Gated on containerSpawner (set by runSessionAca() when it started the container),
+  // not on ACA_MODE — local WSL/Docker sessions need teardown too, and ACA_MODE is
+  // false for those.
+  if (session.containerSpawner && session.acaExecutionName) {
     // Send stop signal to worker via WebSocket (triggers graceful shutdown)
     sendWorkerStop(id);
 
-    // Cancel the ACA job execution via Azure API
-    if (acaConfig) {
-      stopWorkerJob(acaConfig, session.acaExecutionName).catch((err) => {
-        console.warn(`[session-manager] Failed to stop ACA job ${session.acaExecutionName}:`, err);
-      });
-    }
+    // Tear down the container/job via whichever backend started it
+    session.containerSpawner.stop(session.acaExecutionName).catch((err) => {
+      console.warn(`[session-manager] Failed to stop worker ${session.acaExecutionName}:`, err);
+    });
     session.acaExecutionName = null;
+    session.containerSpawner = null;
 
     // Reject any pending prompt awaiter
     if (session.acaPromptRejecter) {
@@ -904,21 +1092,23 @@ export async function sendPrompt(id: number, text: string, image?: { data: strin
   if (!session || session.meta.status !== "running") return false;
   if (!session.meta.interactive) return false;
 
-  // Must have either a local runner or a connected ACA worker
+  // Must have either a local KiroRunner (forceLocal sessions) or a connected
+  // containerized worker (ACA or local WSL/Docker — both look identical here,
+  // since both connect over the same internal WebSocket).
   const hasLocalRunner = !!session.runner;
-  const hasAcaWorker = ACA_MODE && isWorkerConnected(id);
-  if (!hasLocalRunner && !hasAcaWorker) return false;
+  const hasContainerWorker = !!session.containerSpawner && isWorkerConnected(id);
+  if (!hasLocalRunner && !hasContainerWorker) return false;
 
-  // Image attachments are only supported in local worker mode
-  if (image && hasAcaWorker) {
-    throw new Error("Image attachments are not supported for sessions running in remote worker mode");
+  // Image attachments are only supported for the in-process KiroRunner path.
+  if (image && hasContainerWorker) {
+    throw new Error("Image attachments are not supported for sessions running in a containerized worker");
   }
 
   appendOutput(session, { timestamp: now(), stream: "system", text: `▶ ${text}` });
   setActivity(session, { type: "working", detail: "Processing prompt..." });
 
   // Run prompt in background
-  const promptFn = hasAcaWorker
+  const promptFn = hasContainerWorker
     ? streamPromptAca(session, text)
     : streamPrompt(session, text, image);
 
@@ -1008,16 +1198,73 @@ async function runSession(managed: ManagedSession): Promise<void> {
     }
 
     if (!managed.runner) {
+      // Resolve tab-level MCP toggles (Atlassian/Azure DevOps/AWS API/AWS
+      // Docs) into direct stdio MCP servers for this local session. This is
+      // the local counterpart to the ACA path's `buildProxyServersConfig()`
+      // (~line 2114 below) — same toggle/credential resolution, but no
+      // proxy sidecar: KiroRunner already spawns kiro-cli as a direct child
+      // process on this host, so each MCP server can be spawned the same
+      // way. Session-level overrides (`meta.mcpServers`) are appended after
+      // and are not de-duplicated against tab servers by name — an explicit
+      // session-level entry with the same name as a tab-toggle server will
+      // simply appear twice in the payload; kiro-cli's own session/new
+      // handling determines precedence in that case.
+      let tabMcpServers: Array<{ name: string; command: string; args: string[]; env: Array<{ name: string; value: string }> }> = [];
+      try {
+        let effectiveMcpConfig: TabMcpConfig = { ...DEFAULT_MCP_CONFIG };
+        if (meta.tabIds && meta.tabIds.length > 0) {
+          for (const tabId of meta.tabIds) {
+            const tab = await getTabById(tabId);
+            if (tab) {
+              effectiveMcpConfig = { ...tab.mcpConfig };
+              break;
+            }
+          }
+        }
+        if (meta.mcpConfigOverride) {
+          effectiveMcpConfig = { ...effectiveMcpConfig, ...meta.mcpConfigOverride };
+        }
+
+        const rawCreds = meta.userId ? await getAllDecryptedCredentials(meta.userId) : {};
+        const credentials: SessionCredentials = {
+          azureDevOpsPat: rawCreds.azureDevOpsPat,
+          atlassianApiToken: rawCreds.atlassianApiToken,
+          atlassianUsername: rawCreds.atlassianUsername,
+          awsAccessKeyId: rawCreds.awsAccessKeyId,
+          awsSecretAccessKey: rawCreds.awsSecretAccessKey,
+        };
+
+        tabMcpServers = buildLocalMcpServerEntries(effectiveMcpConfig, credentials);
+        if (tabMcpServers.length > 0) {
+          appendOutput(managed, {
+            timestamp: now(),
+            stream: "system",
+            text: `MCP servers from tab config: ${tabMcpServers.map((s) => s.name).join(", ")}`,
+          });
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        appendOutput(managed, {
+          timestamp: now(),
+          stream: "stderr",
+          text: `Warning: Could not resolve tab MCP config: ${msg}. Continuing without tab-configured MCP servers.`,
+        });
+        // Non-fatal — continue with only session-level mcpServers (if any).
+      }
+
       managed.runner = await KiroRunner.create({
         agent: meta.agent || undefined,
         cwd: meta.cwd,
         model: meta.model ?? null,
-        mcpServers: meta.mcpServers?.map((s) => ({
-          name: s.name,
-          command: s.command,
-          args: s.args,
-          env: s.env,
-        })),
+        mcpServers: [
+          ...tabMcpServers,
+          ...(meta.mcpServers?.map((s) => ({
+            name: s.name,
+            command: s.command,
+            args: s.args,
+            env: s.env,
+          })) ?? []),
+        ],
         rawMcpServers: meta.rawMcpServers,
         kiroApiKey,
       });
@@ -1178,6 +1425,63 @@ async function runLoopMode(
   // ANY tab. A session assigned to specific tabs only claims from those.
   const effectiveTabIds: number[] | undefined = meta.tabIds;
 
+  // ─── Resolve git delivery context once per loop start ─────────────────
+  // Mirrors runSessionAca's gitOptions resolution (tab -> repositoryUrl ->
+  // provider -> PAT), so local editor-kind sessions can get the same
+  // git-delivery/pr-review MCP tools the ACA path has. Resolved once here
+  // (not per task) since it's session/tab-scoped, not task-scoped — only
+  // TASK_BRANCH_NAME and the other per-task env vars vary per claimed task.
+  // Non-fatal on failure: a session with no repo configured (or no stored
+  // PAT) simply gets no git-delivery server, exactly like the ACA path logs
+  // a warning and continues without pushing.
+  let gitContext: LocalGitDeliveryContext | null = null;
+  if (stages.kind === "editor" && effectiveTabIds && effectiveTabIds.length > 0) {
+    try {
+      for (const tabId of effectiveTabIds) {
+        const tab = await getTabById(tabId);
+        if (tab?.repositoryUrl) {
+          const owner = await getUserById(meta.userId);
+          const provider = resolveGitProvider(tab.gitProvider, owner?.defaultGitProvider, tab.repositoryUrl);
+
+          let githubPat: string | undefined;
+          let azureDevOpsPat: string | undefined;
+          if (provider === "github") {
+            githubPat = (await getDecryptedCredential(meta.userId, "githubPat")) || undefined;
+          } else if (provider === "azure-devops") {
+            azureDevOpsPat = (await getDecryptedCredential(meta.userId, "azureDevOpsPat")) || undefined;
+          }
+
+          gitContext = {
+            repositoryUrl: tab.repositoryUrl,
+            gitProvider: provider ?? null,
+            devBranch: "develop",
+            githubPat,
+            azureDevOpsPat,
+          };
+
+          const hasCredential = !!githubPat || !!azureDevOpsPat;
+          appendOutput(managed, {
+            timestamp: now(),
+            stream: hasCredential ? "system" : "stderr",
+            text: provider
+              ? `Git delivery: ${provider} configured for tab "${tab.name}"` +
+                (hasCredential ? "" : ` — no ${provider === "github" ? "githubPat" : "azureDevOpsPat"} credential stored, push will fail`)
+              : `Git provider could not be determined for ${tab.repositoryUrl} — git-delivery tools will not be available.`,
+          });
+          break;
+        }
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      appendOutput(managed, {
+        timestamp: now(),
+        stream: "stderr",
+        text: `Warning: Could not resolve git delivery context: ${msg}. Continuing without git-delivery MCP tools.`,
+      });
+      gitContext = null;
+    }
+  }
+
   const runsLabel = maxRuns === 0 ? "endless" : `${maxRuns} run(s)`;
   appendOutput(managed, {
     timestamp: now(),
@@ -1260,9 +1564,52 @@ async function runLoopMode(
     // task (first attempt, rework pass on an existing branch, inspector
     // review), so the agent always reads the current code/PR state fresh
     // instead of relying on memory of a prior turn.
+    //
+    // For editor-kind tasks with a resolved git context, also (re)inject the
+    // git-delivery MCP server (+ pr-review if this task already has a PR —
+    // a rework pass) with THIS task's env vars (branch name, task id/title).
+    // These are only known now, after claiming — see local-git-delivery.ts's
+    // doc comment for why this can't be resolved once at loop start like
+    // gitContext itself. deliveryResultPath is recomputed per task so a
+    // stale result from a previous task can never be misread as this one's.
     let success = true;
+    let deliveryResultPath: string | null = null;
+    let taskBranchName: string | null = null;
+    if (stages.kind === "editor" && gitContext) {
+      taskBranchName = buildTaskBranchName(task.type, task.id, task.title);
+      deliveryResultPath = buildDeliveryResultPath(meta.id);
+      // Clear any leftover result from a previous task before this turn runs,
+      // so a crash/skip can't cause a stale file to be misattributed below.
+      try { if (existsSync(deliveryResultPath)) unlinkSync(deliveryResultPath); } catch { /* best effort */ }
+    }
     try {
-      await managed.runner?.newSession();
+      let overrideServers: import("./agent/kiro-runner.js").McpServerEntry[] | undefined;
+      if (taskBranchName && deliveryResultPath && gitContext) {
+        const taskDeliveryCtx = {
+          taskId: task.id,
+          taskTitle: task.title,
+          taskDescription: task.description,
+          taskType: task.type,
+          taskBranchName,
+          pullRequestUrl: task.pullRequestUrl,
+        };
+        const servers = [
+          buildLocalGitDeliveryServer(meta.cwd, gitContext, taskDeliveryCtx, deliveryResultPath),
+          // pr-review is only useful once a PR exists to fetch comments from.
+          task.pullRequestUrl
+            ? buildLocalPrReviewServer(meta.id, gitContext, taskDeliveryCtx, "editor")
+            : null,
+        ].filter((s): s is import("./agent/kiro-runner.js").McpServerEntry => s !== null);
+        if (servers.length > 0) {
+          overrideServers = servers;
+          appendOutput(managed, {
+            timestamp: now(),
+            stream: "system",
+            text: `Git delivery tools for this task: ${servers.map((s) => s.name).join(", ")} (branch: ${taskBranchName})`,
+          });
+        }
+      }
+      await managed.runner?.newSession(undefined, overrideServers);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       appendOutput(managed, {
@@ -1338,6 +1685,40 @@ async function runLoopMode(
       });
     }
 
+    // Read back the git-delivery result (if the task had a git context and the
+    // agent called submit_task_changes this turn) BEFORE deciding task state —
+    // mirrors worker.js's own DELIVERY_RESULT_PATH read-back in finishPromptTurn.
+    // hasChanges below folds into the existing hasLocalGitChanges commit gate
+    // so a successful MCP-driven commit/push is recognized exactly like a
+    // manually-committed change was already recognized; branchName/prUrl (when
+    // present) are the ONLY new git facts this turn produced, so they're what
+    // gets persisted onto the task alongside its resolved/reset state.
+    let deliveryResult: DeliveryResult | null = null;
+    if (deliveryResultPath) {
+      try {
+        if (existsSync(deliveryResultPath)) {
+          deliveryResult = JSON.parse(readFileSync(deliveryResultPath, "utf-8")) as DeliveryResult;
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        appendOutput(managed, {
+          timestamp: now(),
+          stream: "stderr",
+          text: `Warning: could not read git delivery result: ${msg}`,
+        });
+      }
+    }
+    const deliveredBranchName = deliveryResult?.branchName || taskBranchName || undefined;
+    const deliveredPrUrl = deliveryResult?.prUrl || undefined;
+    const hasDeliveredChanges = !!deliveryResult?.committed || !!deliveryResult?.pushed;
+    if (deliveryResult?.error && !deliveryResult.pushed) {
+      appendOutput(managed, {
+        timestamp: now(),
+        stream: "stderr",
+        text: `✖ Git delivery reported an error: ${deliveryResult.error}`,
+      });
+    }
+
     // Update task state
     if (signal.aborted) {
       // Session was stopped mid-task — reset to claim state
@@ -1374,16 +1755,16 @@ async function runLoopMode(
           stream: "system",
           text: `Task ${task.id} sent back to "todo" — reviewer/QA requested changes (see PR comments).`,
         });
-      } else if (stages.kind === "editor" && !hasLocalGitChanges(meta.cwd)) {
+      } else if (stages.kind === "editor" && !hasDeliveredChanges && !hasLocalGitChanges(meta.cwd)) {
         // Local-mode commit gate (task #598): an editor-kind agent that ends its
         // turn with no verdict AND no observable git change (working tree diff,
-        // or commits ahead of the base branch) produced no detectable outcome at
-        // all. This is the local equivalent of the hasChanges/committed
-        // cross-check runLoopModeAca() gets from the ACA worker — without it, a
-        // turn that silently did nothing (e.g. told to use git-delivery MCP tools
-        // that aren't wired into local KiroRunner sessions) was unconditionally
-        // marked resolved. Inspector-kind agents are exempt: they never produce
-        // file changes by design, so this check only applies to editors.
+        // commits ahead of the base branch, OR a successful git-delivery MCP
+        // commit/push this turn) produced no detectable outcome at all. This is
+        // the local equivalent of the hasChanges/committed cross-check
+        // runLoopModeAca() gets from the ACA worker — without it, a turn that
+        // silently did nothing was unconditionally marked resolved. Inspector-kind
+        // agents are exempt: they never produce file changes by design, so this
+        // check only applies to editors.
         await resetTask(task.id, stages.claimState);
         appendOutput(managed, {
           timestamp: now(),
@@ -1399,6 +1780,21 @@ async function runLoopMode(
           taskId: task.id,
           taskTitle: task.title,
           userId: meta.userId,
+        });
+      } else if (stages.kind === "editor" && (deliveredBranchName || deliveredPrUrl)) {
+        // Editor-kind task with new git-delivery facts this turn — persist
+        // the branch name / PR URL alongside the resolve so the next stage
+        // (reviewer/QA) and any future rework pass on this task know where
+        // to look. Undefined fields are omitted (tri-state semantics —
+        // see resolveTask's own doc comment), so a value this turn didn't
+        // produce (e.g. no PR yet because push failed) doesn't overwrite an
+        // existing one from a prior turn.
+        await resolveTask(task.id, stages.resolveState, deliveredBranchName, deliveredPrUrl);
+        appendOutput(managed, {
+          timestamp: now(),
+          stream: "system",
+          text: `Task ${task.id} marked as "${stages.resolveState}" ✓` +
+            (deliveredPrUrl ? ` — PR: ${deliveredPrUrl}` : deliveredBranchName ? ` — branch: ${deliveredBranchName}` : ""),
         });
       } else {
         await resolveTask(task.id, stages.resolveState);
@@ -1745,6 +2141,50 @@ function formatToolName(name: string): string {
   return words.join(" ");
 }
 
+/**
+ * Try to extract a `{ verdict, reason }` payload from a tool call's content
+ * blocks and, if found, record it onto `managed.turnVerdict`.
+ *
+ * This is the sole source of truth for verdict capture — deliberately NOT
+ * gated on toolCallId correlation with a prior `tool_call` announcement (see
+ * the removed `verdictToolCallId`/name-matching approach this replaced).
+ * kiro-cli does not reliably emit MCP tool-call announcements as a
+ * `sessionUpdate: "tool_call"` update before their completion; sometimes the
+ * announcement instead falls into the catch-all `default:` case below (no
+ * `toolCallId`, no `title` matching "report_verdict"), which meant the old
+ * approach's `managed.verdictToolCallId` was never set, so a matching
+ * `tool_call_update` never captured the verdict even though the tool call
+ * genuinely completed successfully with a valid verdict payload (see task
+ * about task #597 resetting to "todo" with "no verdict reported" despite
+ * report_verdict having actually run and returned no_action_needed).
+ *
+ * Matching on content shape instead of on ID/name correlation is robust to
+ * that — any completed tool call whose output happens to contain valid JSON
+ * `{"verdict": "resolved" | "no_action_needed" | "changes_requested", ...}`
+ * is accepted, regardless of which update type announced it or whether a
+ * toolCallId was ever available to correlate against.
+ */
+const VALID_TURN_VERDICTS = new Set(["resolved", "no_action_needed", "changes_requested"]);
+
+export function tryCaptureVerdictFromContent(
+  managed: ManagedSession,
+  content: unknown,
+): void {
+  if (!Array.isArray(content)) return;
+  for (const block of content as Array<{ type?: string; text?: string }>) {
+    if (block?.type === "text" && block.text) {
+      try {
+        const parsed = JSON.parse(block.text);
+        if (parsed && typeof parsed.verdict === "string" && VALID_TURN_VERDICTS.has(parsed.verdict)) {
+          managed.turnVerdict = parsed.verdict;
+        }
+      } catch {
+        /* not JSON — ignore */
+      }
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 
 function processUpdate(managed: ManagedSession, update: SessionUpdateChunk): void {
@@ -1792,14 +2232,6 @@ function processUpdate(managed: ManagedSession, update: SessionUpdateChunk): voi
           icon,
           status: "running",
         });
-
-        // Track report_verdict tool calls so we can capture the verdict from the update.
-        // kiro-cli reports MCP tool titles as "Running: @<server>/<tool>" (e.g.
-        // "Running: @verdict/report_verdict"), never the bare tool name — an exact
-        // match against "report_verdict" never fires. Match by substring instead.
-        if (rawName.includes("report_verdict")) {
-          managed.verdictToolCallId = (update as { toolCallId?: string }).toolCallId ?? null;
-        }
         break;
       }
 
@@ -1813,27 +2245,12 @@ function processUpdate(managed: ManagedSession, update: SessionUpdateChunk): voi
         }
 
         if (update.status === "completed") {
-          // Check if this is a completed report_verdict call — capture the verdict
-          if (
-            managed.verdictToolCallId &&
-            tcUpdateId === managed.verdictToolCallId
-          ) {
-            // Extract verdict from tool output content
-            const content = (update as { content?: Array<{ type?: string; text?: string }> }).content;
-            if (Array.isArray(content)) {
-              for (const block of content) {
-                if (block?.type === "text" && block.text) {
-                  try {
-                    const parsed = JSON.parse(block.text);
-                    if (parsed?.verdict) {
-                      managed.turnVerdict = parsed.verdict;
-                    }
-                  } catch { /* not JSON — ignore */ }
-                }
-              }
-            }
-            managed.verdictToolCallId = null;
-          }
+          // Capture a verdict from this update's content, regardless of
+          // whether a prior "tool_call" announcement was seen for it — see
+          // tryCaptureVerdictFromContent's doc comment for why toolCallId
+          // correlation alone is not reliable enough to gate this on.
+          const completedContent = (update as { content?: unknown }).content;
+          tryCaptureVerdictFromContent(managed, completedContent);
 
           // Emit structured session-tool-call-update event
           if (tcUpdateId) {
@@ -1927,7 +2344,13 @@ function processUpdate(managed: ManagedSession, update: SessionUpdateChunk): voi
       }
 
       default:
-        // Other update types — show only if meaningful, with a clean format
+        // Other update types — capture a verdict from content here too, in
+        // case kiro-cli never emits a recognized "tool_call"/"tool_call_update"
+        // pair for this MCP call (observed in practice — see
+        // tryCaptureVerdictFromContent's doc comment).
+        tryCaptureVerdictFromContent(managed, (update as { content?: unknown }).content);
+
+        // Show only if meaningful, with a clean format
         if (update.title || update.status) {
           const label = update.title || update.status || "";
           appendOutput(managed, {
@@ -1959,15 +2382,16 @@ async function runSessionAca(managed: ManagedSession): Promise<void> {
   managed.abortController = new AbortController();
   const { signal } = managed.abortController;
 
-  if (!acaConfig) {
-    throw new Error("ACA mode enabled but configuration is missing");
-  }
+  const spawner = resolveContainerSpawner();
+  managed.containerSpawner = spawner;
 
   try {
     appendOutput(managed, {
       timestamp: now(),
       stream: "system",
-      text: "Requesting ACA Job execution...",
+      text: spawner.kind === "aca"
+        ? "Requesting ACA Job execution..."
+        : "Starting local worker container (kirofactory-docker WSL distro)...",
     });
 
     // Resolve git workspace options from the session's tab configuration.
@@ -2052,7 +2476,7 @@ async function runSessionAca(managed: ManagedSession): Promise<void> {
     // cross-session credential sharing.
     let mcpSidecar: McpProxySidecarConfig | null = null;
 
-    if (acaConfig.proxyImage) {
+    if (spawner.hasProxyImage()) {
       try {
         // 1. Resolve effective MCP config: tab-level toggles merged with session overrides
         let effectiveMcpConfig: TabMcpConfig = { ...DEFAULT_MCP_CONFIG };
@@ -2138,8 +2562,7 @@ async function runSessionAca(managed: ManagedSession): Promise<void> {
         buildPersistentBranchName(meta.id, meta.name);
     }
 
-    const execution = await startWorkerJob(
-      acaConfig,
+    const execution = await spawner.start(
       meta.id,
       meta.agent,
       meta.userId,
@@ -2156,13 +2579,13 @@ async function runSessionAca(managed: ManagedSession): Promise<void> {
       agent: meta.agent,
       executionName: execution.executionName,
       status: execution.status,
-      msg: `ACA worker job started: ${execution.executionName}`,
+      msg: `${spawner.kind === "aca" ? "ACA worker job" : "Local worker container"} started: ${execution.executionName}`,
     });
 
     appendOutput(managed, {
       timestamp: now(),
       stream: "system",
-      text: `ACA Job started: ${execution.executionName} (status: ${execution.status})`,
+      text: `${spawner.kind === "aca" ? "ACA Job" : "Local container"} started: ${execution.executionName} (status: ${execution.status})`,
     });
 
     setActivity(managed, { type: "working", detail: "Waiting for worker to connect..." });
@@ -2232,10 +2655,11 @@ async function waitForWorkerOrAbort(
   signal: AbortSignal
 ): Promise<void> {
   const WORKER_CONNECT_TIMEOUT_MS = 180_000; // 3 minutes for container pull + start
-  const STATUS_POLL_INTERVAL_MS = 10_000; // Check ACA job status every 10s
+  const STATUS_POLL_INTERVAL_MS = 10_000; // Check worker job/container status every 10s
   const startTime = Date.now();
   let lastStatusCheck = 0;
   let lastLoggedStatus = "";
+  const spawner = managed.containerSpawner;
 
   log.info("worker-wait-started", {
     component: "session-manager",
@@ -2251,18 +2675,18 @@ async function waitForWorkerOrAbort(
     if (elapsed > WORKER_CONNECT_TIMEOUT_MS) {
       // Before throwing, try one final status check for diagnostic context
       let finalStatus = "unknown";
-      if (acaConfig && managed.acaExecutionName) {
+      if (spawner && managed.acaExecutionName) {
         try {
-          const jobStatus = await getWorkerJobStatus(acaConfig, managed.acaExecutionName);
+          const jobStatus = await spawner.status(managed.acaExecutionName);
           finalStatus = jobStatus.status;
         } catch { /* best effort */ }
       }
 
       const errorMsg =
         `Worker did not connect within ${WORKER_CONNECT_TIMEOUT_MS / 1000}s. ` +
-        `ACA job status at timeout: "${finalStatus}". ` +
+        `${spawner?.kind === "wsl" ? "Local container" : "ACA job"} status at timeout: "${finalStatus}". ` +
         `The container may have failed to start, crashed during init, or cannot reach the orchestrator URL. ` +
-        `Check the worker container logs in Azure Portal for more details.`;
+        `Check the worker container logs${spawner?.kind === "wsl" ? " (docker logs " + managed.acaExecutionName + " inside the kirofactory-docker WSL distro)" : " in Azure Portal"} for more details.`;
 
       log.error("worker-connect-timeout", {
         component: "session-manager",
@@ -2277,11 +2701,11 @@ async function waitForWorkerOrAbort(
       throw new Error(errorMsg);
     }
 
-    // Periodically poll ACA job execution status to detect early failures
-    if (acaConfig && managed.acaExecutionName && elapsed - lastStatusCheck >= STATUS_POLL_INTERVAL_MS) {
+    // Periodically poll worker job/container status to detect early failures
+    if (spawner && managed.acaExecutionName && elapsed - lastStatusCheck >= STATUS_POLL_INTERVAL_MS) {
       lastStatusCheck = elapsed;
       try {
-        const jobStatus = await getWorkerJobStatus(acaConfig, managed.acaExecutionName);
+        const jobStatus = await spawner.status(managed.acaExecutionName);
         const statusStr = jobStatus.status;
 
         // Log status changes
@@ -2306,13 +2730,16 @@ async function waitForWorkerOrAbort(
         }
 
         // Detect terminal failure states — bail out early instead of waiting the full timeout
-        const failedStates = ["failed", "terminated", "degraded", "unknown"];
+        const failedStates = ["failed", "terminated", "degraded", "unknown", "exited"];
         if (failedStates.includes(statusStr.toLowerCase())) {
-          const errorMsg =
-            `ACA worker job entered terminal state "${statusStr}" before connecting. ` +
-            `Execution: ${managed.acaExecutionName}. ` +
-            `The container likely crashed during startup. ` +
-            `Check Azure Portal → Container Apps Jobs → ${managed.acaExecutionName} → Logs for details.`;
+          const errorMsg = spawner.kind === "wsl"
+            ? `Local worker container entered terminal state "${statusStr}" before connecting. ` +
+              `Container: ${managed.acaExecutionName}. The container likely crashed during startup. ` +
+              `Check its logs: wsl -d kirofactory-docker -- docker logs ${managed.acaExecutionName}`
+            : `ACA worker job entered terminal state "${statusStr}" before connecting. ` +
+              `Execution: ${managed.acaExecutionName}. ` +
+              `The container likely crashed during startup. ` +
+              `Check Azure Portal → Container Apps Jobs → ${managed.acaExecutionName} → Logs for details.`;
 
           log.error("worker-early-failure", {
             component: "session-manager",
@@ -3152,6 +3579,59 @@ async function runLoopModeAca(
 // ACA Worker Event Handler Registration
 // ---------------------------------------------------------------------------
 
+/** Cap on how much of each container's captured logs gets appended to the session's own output. */
+const CAPTURED_CONTAINER_LOG_CHAR_LIMIT = 4000;
+
+/**
+ * Best-effort `docker logs` capture for a session's worker container and MCP proxy sidecar,
+ * fired on unexpected exits (crashes, or a clean exit before any turn completed — see the two
+ * call sites in initWorkerEventHandler below).
+ *
+ * Local WSL/Docker mode only: both containers run with `--rm`, self-deleting on exit, so their
+ * logs are gone within roughly a second of the disconnect being detected unless fetched
+ * immediately (see wsl-worker-spawner.ts's captureContainerLogs() doc comment for the exact
+ * timing). ACA mode is not covered here — ACA job execution logs are retained by Azure and
+ * queryable after the fact through Log Analytics, so there's no equivalent loss-of-evidence
+ * problem to race against there.
+ *
+ * Never throws and never blocks the caller — this is fire-and-forget diagnostic capture, not
+ * part of the session lifecycle itself.
+ */
+function captureContainerLogsOnFailure(session: ManagedSession, sessionId: number): void {
+  if (session.containerSpawner?.kind !== "wsl" || !wslConfig) return;
+
+  captureWslContainerLogs(wslConfig, sessionId)
+    .then((results) => {
+      for (const { containerName, logs, error } of results) {
+        if (logs === null) {
+          logWorkerEvent("worker-container-logs-unavailable", sessionId, { containerName, error });
+          continue;
+        }
+        const truncated = logs.length > CAPTURED_CONTAINER_LOG_CHAR_LIMIT;
+        const snippet = truncated ? logs.slice(-CAPTURED_CONTAINER_LOG_CHAR_LIMIT) : logs;
+        logWorkerEvent("worker-container-logs-captured", sessionId, {
+          containerName,
+          fullLength: logs.length,
+          truncated,
+        });
+        appendOutput(session, {
+          timestamp: now(),
+          stream: "system",
+          text:
+            `── Captured container logs: ${containerName}${truncated ? ` (last ${CAPTURED_CONTAINER_LOG_CHAR_LIMIT} chars)` : ""} ──\n` +
+            snippet,
+        });
+      }
+    })
+    .catch((err) => {
+      // captureWslContainerLogs() itself is documented to never reject, but guard anyway —
+      // this must never throw into the caller's event-handling path.
+      logWorkerEvent("worker-container-logs-capture-failed", sessionId, {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+}
+
 /**
  * Register callbacks so the worker-ws-handler routes incoming worker messages
  * to the correct session in session-manager.
@@ -3253,6 +3733,14 @@ function initWorkerEventHandler(): void {
       });
 
       appendOutput(session, { timestamp: now(), stream: "system", text: reason });
+
+      // Best-effort container-level log capture for unexpected exits — see
+      // captureContainerLogsOnFailure()'s doc comment for why this races
+      // container --rm removal and must fire as early as possible.
+      if (crashed) {
+        captureContainerLogsOnFailure(session, sessionId);
+      }
+
       // Reject any pending prompt awaiter
       if (session.acaPromptRejecter) {
         session.acaPromptRejecter(new Error(reason));
@@ -3264,17 +3752,42 @@ function initWorkerEventHandler(): void {
     onWorkerShutdown(sessionId: number, exitCode: number) {
       const session = sessions.get(sessionId);
       if (!session) return;
-      logWorkerEvent(exitCode === 0 ? "worker-exited" : "worker-crashed", sessionId, {
+
+      // exitCode 0 with zero completed turns AND containerSpawner still set is the
+      // "died mid-handshake, exited cleanly" pattern: kiro-cli or the container
+      // died on its own before completing any work. This must be distinguished
+      // from a legitimate exit-0 zero-turn shutdown — an intentional user/backend
+      // stop (stopSession()) already sends "stop" to the worker and synchronously
+      // nulls containerSpawner/acaExecutionName in the same tick, before this
+      // async callback can ever run, so containerSpawner still being non-null here
+      // means the worker exited on its own, not because it was told to.
+      const suspiciousEarlyExit =
+        exitCode === 0 && session.turnCountThisRun === 0 && session.containerSpawner !== null;
+      const isFailure = exitCode !== 0 || suspiciousEarlyExit;
+
+      logWorkerEvent(isFailure ? "worker-crashed" : "worker-exited", sessionId, {
         agent: session.meta.agent,
         exitCode,
+        suspiciousEarlyExit,
         msg: `Worker shutdown (exit code: ${exitCode})`,
       });
       appendOutput(session, {
         timestamp: now(),
         stream: "system",
-        text: `Worker shutdown (exit code: ${exitCode})`,
+        text: suspiciousEarlyExit
+          ? `Worker shutdown (exit code: ${exitCode}) — exited before completing any task turn; treating as a failure.`
+          : `Worker shutdown (exit code: ${exitCode})`,
       });
-      if (exitCode === 0) {
+
+      // exitCode 0 with zero completed turns is the "died mid-handshake, exited
+      // cleanly" pattern (see worker-container-mid-handshake-exit.md) that
+      // otherwise looks identical to a normal completed session — capture logs
+      // for it too, not just nonzero exits.
+      if (exitCode !== 0 || session.turnCountThisRun === 0) {
+        captureContainerLogsOnFailure(session, sessionId);
+      }
+
+      if (!isFailure) {
         setStatus(session, "completed");
         setActivity(session, { type: "completed" });
       } else {
@@ -3287,10 +3800,12 @@ function initWorkerEventHandler(): void {
   setWorkerEventHandler(handler);
 }
 
-// Initialize the worker event handler immediately (runs at module load time)
-if (ACA_MODE) {
-  initWorkerEventHandler();
-}
+// Initialize the worker event handler immediately (runs at module load time).
+// Always initialized — both ACA and local WSL/Docker workers connect back
+// over the same internal WebSocket, so this is needed in both modes, not
+// just ACA_MODE. (forceLocal/KiroRunner sessions don't use this at all, so
+// there's no meaningful "no containerized workers ever" case to skip it for.)
+initWorkerEventHandler();
 
 // ---------------------------------------------------------------------------
 // Cleanup on process exit

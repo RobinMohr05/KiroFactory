@@ -166,22 +166,15 @@ server.on("upgrade", (req, socket, head) => {
 const PORT = Number(process.env.PORT) || 3500;
 
 async function start(): Promise<void> {
-  // Attempt database connection — non-fatal if it fails
-  await tryConnect();
-
-  if (isDbAvailable()) {
-    await runMigration();
-    log.info("db-ready", { component: "startup", msg: "Database migrated and ready" });
-
-    // Restore sessions from DB (requires DB connection)
-    await initSessions();
-  } else {
-    log.warn("db-unavailable-at-startup", {
-      component: "startup",
-      msg: "Server starting WITHOUT database connectivity — task/tab features unavailable until the DB is reachable",
-    });
-  }
-
+  // Bind the port immediately rather than waiting on DB connect + migration +
+  // session restore first. Those steps talk to AuraDB over the network and can
+  // legitimately take 10-20+ seconds (cold start, retries in tryConnect()) —
+  // holding the port closed for that whole window meant any client/dev-proxy
+  // request arriving before then (e.g. Vite's /api and /ws proxy, or a browser
+  // tab opened right after `npm run dev`) failed with ECONNREFUSED instead of
+  // getting a normal response. DB-dependent routes already guard on
+  // isDbAvailable() via requireDb and return a clean 503 in the meantime, so
+  // there's no unguarded path that would misbehave with the DB not yet ready.
   server.listen(PORT, () => {
     log.info("server-listening", {
       component: "startup",
@@ -198,6 +191,23 @@ async function start(): Promise<void> {
       });
     }
   });
+
+  // Database connect + migration + session restore now run in the background,
+  // after the port is already accepting connections.
+  await tryConnect();
+
+  if (isDbAvailable()) {
+    await runMigration();
+    log.info("db-ready", { component: "startup", msg: "Database migrated and ready" });
+
+    // Restore sessions from DB (requires DB connection)
+    await initSessions();
+  } else {
+    log.warn("db-unavailable-at-startup", {
+      component: "startup",
+      msg: "Server starting WITHOUT database connectivity — task/tab features unavailable until the DB is reachable",
+    });
+  }
 
   // ACA preflight: verify the managed identity can operate the worker job.
   // Non-blocking and non-fatal — it just surfaces RBAC/identity problems at boot

@@ -2,7 +2,16 @@ node_modules/
 dist/
 .env
 *.local
-.devcontainer
+/.devcontainer
 .temp/
 workspaces/
 planner-workspaces/
+
+# Obsidian knowledge base — raw drop-ins and superseded originals are personal/transient;
+# knowledge-base/knowledge/ (the curated notes) is intentionally NOT ignored.
+knowledge-base/input/*
+!knowledge-base/input/.gitkeep
+knowledge-base/archive/*
+!knowledge-base/archive/.gitkeep
+knowledge-base/.obsidian/workspace.json
+knowledge-base/.obsidian/workspace-mobile.json
