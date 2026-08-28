@@ -233,10 +233,36 @@ export function TaskPlannerModal({ onClose }: TaskPlannerModalProps) {
    *      found *inside* a string with its proper \n/\r/\t escape.
    * Characters outside strings (structural whitespace between tokens) are
    * left untouched throughout.
+   *
+   * A wrap can also land *inside a key name* rather than a value — e.g.
+   * `"title\n": ...` or `{"\ntitle": ...}`. That still parses as valid JSON
+   * after the repair above, but produces a key literally named "title\n" or
+   * "\ntitle" instead of "title", so `parsed.title` reads as undefined even
+   * though a human (and the AI itself, re-reading its own output) would say
+   * the field is "obviously" present. This previously surfaced as an
+   * inconsistent "missing required fields" false-positive that even a
+   * verbatim resend didn't reliably fix, since the wrap position — and
+   * therefore whether it happened to land inside a key vs. a value — shifts
+   * with the surrounding text on each resend. Fix: normalize every key by
+   * stripping leading/trailing whitespace (including escaped \n/\r/\t left
+   * by the repair pass) after parsing, since no key in this schema is ever
+   * legitimately whitespace-padded.
    */
   const parseTaskJsonLeniently = (raw: string): ParsedTask | null => {
+    const normalizeKeys = (obj: unknown): unknown => {
+      if (Array.isArray(obj)) return obj.map(normalizeKeys);
+      if (obj && typeof obj === 'object') {
+        const out: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(obj)) {
+          out[k.replace(/^(?:\s|\\[nrt])+|(?:\s|\\[nrt])+$/g, '')] = normalizeKeys(v);
+        }
+        return out;
+      }
+      return obj;
+    };
+
     try {
-      return JSON.parse(raw);
+      return normalizeKeys(JSON.parse(raw)) as ParsedTask;
     } catch {
       // Fall through to recovery below.
     }
@@ -268,7 +294,7 @@ export function TaskPlannerModal({ onClose }: TaskPlannerModalProps) {
         }
         repaired += ch;
       }
-      return JSON.parse(repaired);
+      return normalizeKeys(JSON.parse(repaired)) as ParsedTask;
     } catch {
       return null;
     }

@@ -387,6 +387,49 @@ describe('TaskPlannerModal - task JSON parsing', () => {
     expect(createBtn.disabled).toBe(false);
   });
 
+  it('resolves title/priority/type even when the line wrap lands inside a key name, not just a value', async () => {
+    // Regression test for a follow-up failure mode found after the previous
+    // fix: the string-repair pass correctly makes the JSON syntactically
+    // valid even when a line-wrap lands *inside a key name* rather than a
+    // value (e.g. `"title\n": ...` or `{"\ntitle": ...}`), but the resulting
+    // object then has a key literally named "title\n" or "\ntitle" instead
+    // of "title" — so `parsed.title` reads as undefined and the "missing
+    // required fields" warning fires even though a human reading the same
+    // block would see title/priority/type all clearly present. This was
+    // reported as inconsistent behavior across resends, because whether the
+    // wrap happens to land inside a key vs. a value shifts with the
+    // surrounding text each time. Key names must be normalized (trimmed of
+    // whitespace/escaped whitespace) after parsing, not just the JSON syntax
+    // repaired.
+    const trailingWrapInKey = '```json:task\n{\n  "title\n": "Allow typing in Task Planner input while agent is busy",\n  "description": "Some description",\n  "priority": 3,\n  "type": "improvement",\n  "files": ["frontend/src/components/TaskPlannerModal.tsx"]\n}\n```';
+
+    const { getByText } = render(<TaskPlannerModal onClose={vi.fn()} />);
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    await act(async () => {
+      dispatchAssistantMessage(9, trailingWrapInKey);
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    expect(getByText('✅ Task ready to create! Click "Create Task" to add it to your board.')).toBeTruthy();
+    expect((getByText('Create Task') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('resolves title even when the line wrap lands right after the opening quote of a key', async () => {
+    const leadingWrapInKey = '```json:task\n{"\ntitle": "Allow typing in Task Planner input while agent is busy", "priority": 3, "type": "improvement"}\n```';
+
+    const { getByText } = render(<TaskPlannerModal onClose={vi.fn()} />);
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    await act(async () => {
+      dispatchAssistantMessage(9, leadingWrapInKey);
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    expect(getByText('✅ Task ready to create! Click "Create Task" to add it to your board.')).toBeTruthy();
+    expect((getByText('Create Task') as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it('surfaces a visible error instead of silently disabling Create Task on truly invalid JSON', async () => {
     // Malformed beyond recovery (truncated block) — must not fail silently.
     const brokenBeyondRepair = '```json:task\n{\n  "title": "Something,\n  "priority": 2,\n```';
