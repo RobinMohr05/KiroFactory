@@ -63,7 +63,7 @@ describe('TaskPlannerModal - session leak prevention', () => {
 
     // Simulate StrictMode: mount -> unmount -> mount
     // First mount
-    const { unmount: unmount1 } = render(<TaskPlannerModal onClose={vi.fn()} />);
+    const { unmount: unmount1 } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
 
     // Let the first session start resolve
     await act(async () => {
@@ -109,7 +109,7 @@ describe('TaskPlannerModal - session leak prevention', () => {
 
     mockUseApp({ currentTabId: 1 });
 
-    const { unmount } = render(<TaskPlannerModal onClose={vi.fn()} />);
+    const { unmount } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
 
     // Unmount immediately — /start is still pending, so at this point
     // createdSessionId is still null inside the effect closure.
@@ -146,7 +146,7 @@ describe('TaskPlannerModal - session leak prevention', () => {
 
     mockUseApp({ currentTabId: 1 });
 
-    const { unmount } = render(<TaskPlannerModal onClose={vi.fn()} />);
+    const { unmount } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
 
     // Let the session start resolve
     await act(async () => {
@@ -195,12 +195,12 @@ describe('TaskPlannerModal - session leak prevention', () => {
 
     mockUseApp({ currentTabId: 1 });
 
-    const { rerender, getAllByText } = render(<TaskPlannerModal onClose={vi.fn()} />);
+    const { rerender, getAllByText } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
 
     // Force the effect to re-run on the SAME instance (StrictMode-style
     // cleanup->rerun without unmount) WHILE the first /start is still pending.
     mockUseApp({ currentTabId: 2 });
-    rerender(<TaskPlannerModal onClose={vi.fn()} />);
+    rerender(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
 
     // Now resolve the first (now-cancelled) /start call, and let the second
     // run's /start (which resolves synchronously) settle too.
@@ -231,7 +231,7 @@ describe('TaskPlannerModal - session leak prevention', () => {
     const onClose = vi.fn();
     mockUseApp({ currentTabId: 1 });
 
-    const { getByText, unmount } = render(<TaskPlannerModal onClose={onClose} />);
+    const { getByText, unmount } = render(<TaskPlannerModal onClose={onClose} onSwitchToManual={vi.fn()} />);
 
     // Let the session start resolve
     await act(async () => {
@@ -296,7 +296,7 @@ describe('TaskPlannerModal - readiness race', () => {
 
     mockUseApp({ currentTabId: 1 });
 
-    const { getByText, getByPlaceholderText } = render(<TaskPlannerModal onClose={vi.fn()} />);
+    const { getByText, getByPlaceholderText } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
 
     // Let /start resolve.
     await act(async () => {
@@ -329,6 +329,61 @@ describe('TaskPlannerModal - readiness race', () => {
   });
 });
 
+describe('TaskPlannerModal - Create manually instead', () => {
+  let apiFetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiFetchMock = vi.mocked(api.apiFetch);
+    apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (url === '/api/task-planner/start' && opts?.method === 'POST') {
+        return { ok: true, json: async () => ({ sessionId: 1 }) };
+      }
+      if (opts?.method === 'DELETE') {
+        return { ok: true, json: async () => ({}) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    mockUseApp({ currentTabId: 1 });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('renders a "Create manually instead" button in the actions area', async () => {
+    const { getByText } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+    expect(getByText('Create manually instead')).toBeInTheDocument();
+  });
+
+  it('clicking "Create manually instead" calls handleClose cleanup then onSwitchToManual', async () => {
+    const onClose = vi.fn();
+    const onSwitchToManual = vi.fn();
+    const { getByText } = render(<TaskPlannerModal onClose={onClose} onSwitchToManual={onSwitchToManual} />);
+
+    // Let session start resolve
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    // Click "Create manually instead"
+    await act(async () => {
+      getByText('Create manually instead').click();
+    });
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    // Should have called DELETE for cleanup (same as Cancel)
+    const deleteCalls = apiFetchMock.mock.calls.filter(
+      ([url, opts]) => typeof url === 'string' && url.includes('/api/task-planner/') && opts?.method === 'DELETE'
+    );
+    expect(deleteCalls.length).toBe(1);
+
+    // onClose should have been called (from handleClose)
+    expect(onClose).toHaveBeenCalled();
+    // onSwitchToManual should have been called after cleanup
+    expect(onSwitchToManual).toHaveBeenCalled();
+  });
+});
+
 describe('TaskPlannerModal - textarea always typeable', () => {
   let apiFetchMock: ReturnType<typeof vi.fn>;
 
@@ -352,7 +407,7 @@ describe('TaskPlannerModal - textarea always typeable', () => {
   });
 
   it('textarea is not disabled when ready is false (connecting state)', async () => {
-    const { getByPlaceholderText, getByText } = render(<TaskPlannerModal onClose={vi.fn()} />);
+    const { getByPlaceholderText, getByText } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
 
     // Let /start resolve — session created but no WS idle event yet, so ready=false.
     await act(async () => {
@@ -368,7 +423,7 @@ describe('TaskPlannerModal - textarea always typeable', () => {
   });
 
   it('Send button remains disabled when ready is false even with text typed', async () => {
-    const { getByPlaceholderText, getByText } = render(<TaskPlannerModal onClose={vi.fn()} />);
+    const { getByPlaceholderText, getByText } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
 
     await act(async () => {
       await new Promise(r => setTimeout(r, 10));
@@ -388,7 +443,7 @@ describe('TaskPlannerModal - textarea always typeable', () => {
   });
 
   it('pressing Enter while not ready does not clear the typed text', async () => {
-    const { getByPlaceholderText, getByText } = render(<TaskPlannerModal onClose={vi.fn()} />);
+    const { getByPlaceholderText, getByText } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
 
     await act(async () => {
       await new Promise(r => setTimeout(r, 10));
@@ -456,19 +511,9 @@ describe('TaskPlannerModal - task JSON parsing', () => {
   }
 
   it('recovers a task block whose long strings were line-wrapped, including a split \\" escape', async () => {
-    // Regression test for the exact failure mode from the bug report: quotes
-    // inside string values ARE correctly escaped (\"...\"), but long
-    // title/description values got line-wrapped (by the model or a markdown
-    // renderer) leaving literal newline control characters embedded inside
-    // the JSON strings — which plain JSON.parse rejects outright with "Bad
-    // control character in string literal". The wrap even splits one \"
-    // escape sequence itself across two lines (`\` at end of line, `"` at
-    // start of next), which a naive newline-escaping scanner would corrupt
-    // by treating the newline as the escaped character. Create Task must
-    // still become clickable via the lenient recovery pass.
     const malformed = '```json:task\n{\n  "title": "Merge \\"+ Task\\" and \\"AI Planner\\" into one entry point",\n  "description": "In frontend/src/components/TasksPanel.tsx, the toolbar currently renders two separate buttons that both\n create tasks: #newTaskBtn (\\"+ Task\\", opens TaskModal). Keep the button\'s id as newTaskBtn, label as \\"+ Task\\\n", and use a plain icon.",\n  "priority": 3,\n  "type": "improvement",\n  "files": ["frontend/src/components/TasksPanel.tsx"]\n}\n```';
 
-    const { getByText } = render(<TaskPlannerModal onClose={vi.fn()} />);
+    const { getByText } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
     await act(async () => { await new Promise(r => setTimeout(r, 10)); });
 
     await act(async () => {
@@ -482,22 +527,9 @@ describe('TaskPlannerModal - task JSON parsing', () => {
   });
 
   it('resolves title/priority/type even when the line wrap lands inside a key name, not just a value', async () => {
-    // Regression test for a follow-up failure mode found after the previous
-    // fix: the string-repair pass correctly makes the JSON syntactically
-    // valid even when a line-wrap lands *inside a key name* rather than a
-    // value (e.g. `"title\n": ...` or `{"\ntitle": ...}`), but the resulting
-    // object then has a key literally named "title\n" or "\ntitle" instead
-    // of "title" — so `parsed.title` reads as undefined and the "missing
-    // required fields" warning fires even though a human reading the same
-    // block would see title/priority/type all clearly present. This was
-    // reported as inconsistent behavior across resends, because whether the
-    // wrap happens to land inside a key vs. a value shifts with the
-    // surrounding text each time. Key names must be normalized (trimmed of
-    // whitespace/escaped whitespace) after parsing, not just the JSON syntax
-    // repaired.
     const trailingWrapInKey = '```json:task\n{\n  "title\n": "Allow typing in Task Planner input while agent is busy",\n  "description": "Some description",\n  "priority": 3,\n  "type": "improvement",\n  "files": ["frontend/src/components/TaskPlannerModal.tsx"]\n}\n```';
 
-    const { getByText } = render(<TaskPlannerModal onClose={vi.fn()} />);
+    const { getByText } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
     await act(async () => { await new Promise(r => setTimeout(r, 10)); });
 
     await act(async () => {
@@ -512,7 +544,7 @@ describe('TaskPlannerModal - task JSON parsing', () => {
   it('resolves title even when the line wrap lands right after the opening quote of a key', async () => {
     const leadingWrapInKey = '```json:task\n{"\ntitle": "Allow typing in Task Planner input while agent is busy", "priority": 3, "type": "improvement"}\n```';
 
-    const { getByText } = render(<TaskPlannerModal onClose={vi.fn()} />);
+    const { getByText } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
     await act(async () => { await new Promise(r => setTimeout(r, 10)); });
 
     await act(async () => {
@@ -525,10 +557,9 @@ describe('TaskPlannerModal - task JSON parsing', () => {
   });
 
   it('surfaces a visible error instead of silently disabling Create Task on truly invalid JSON', async () => {
-    // Malformed beyond recovery (truncated block) — must not fail silently.
     const brokenBeyondRepair = '```json:task\n{\n  "title": "Something,\n  "priority": 2,\n```';
 
-    const { getByText } = render(<TaskPlannerModal onClose={vi.fn()} />);
+    const { getByText } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
     await act(async () => { await new Promise(r => setTimeout(r, 10)); });
 
     await act(async () => {
@@ -565,14 +596,14 @@ describe('TaskPlannerModal - modal CSS class structure', () => {
   });
 
   it('backdrop div has only "modal-backdrop" class, not "task-planner-modal"', () => {
-    const { container } = render(<TaskPlannerModal onClose={vi.fn()} />);
+    const { container } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
     const backdrop = container.querySelector('.modal-backdrop');
     expect(backdrop).toBeTruthy();
     expect(backdrop!.className).toBe('modal-backdrop');
   });
 
   it('dialog div has "modal", "modal-wide", and "task-planner-modal" classes', () => {
-    const { container } = render(<TaskPlannerModal onClose={vi.fn()} />);
+    const { container } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
     const dialog = container.querySelector('[role="dialog"]');
     expect(dialog).toBeTruthy();
     expect(dialog!.classList.contains('modal')).toBe(true);
@@ -581,7 +612,7 @@ describe('TaskPlannerModal - modal CSS class structure', () => {
   });
 
   it('does not use "task-planner-content" class anywhere', () => {
-    const { container } = render(<TaskPlannerModal onClose={vi.fn()} />);
+    const { container } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
     expect(container.querySelector('.task-planner-content')).toBeNull();
   });
 });
@@ -612,7 +643,7 @@ describe('TaskPlannerModal - attachment cap message deduplication', () => {
     // Pasting 5 images when 0 are attached should add exactly 3 (the cap)
     // and show at most ONE "Maximum of 3 images per message." system message —
     // NOT one per rejected file.
-    const { container, getAllByText, queryAllByText } = render(<TaskPlannerModal onClose={vi.fn()} />);
+    const { container, getAllByText, queryAllByText } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
     await act(async () => { await new Promise(r => setTimeout(r, 10)); });
 
     // Create 5 small PNG files

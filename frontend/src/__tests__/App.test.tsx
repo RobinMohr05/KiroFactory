@@ -76,6 +76,11 @@ describe('App', () => {
     await act(async () => { renderApp(); });
     expect(screen.getByText('+ Task')).toBeInTheDocument();
   });
+
+  it('does not render a separate AI Planner button', async () => {
+    await act(async () => { renderApp(); });
+    expect(document.getElementById('aiPlannerBtn')).toBeNull();
+  });
 });
 
 describe('App — Easy/Advanced view mode gating', () => {

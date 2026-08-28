@@ -6,6 +6,7 @@ import type { OutputEntry, SessionActivity } from '../types';
 
 interface TaskPlannerModalProps {
   onClose: () => void;
+  onSwitchToManual: () => void;
 }
 
 interface PlannerMessage {
@@ -31,7 +32,7 @@ const ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'
 const MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB
 const MAX_ATTACHMENTS = 3;
 
-export function TaskPlannerModal({ onClose }: TaskPlannerModalProps) {
+export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModalProps) {
   const { currentTabId, setTasks } = useApp();
   const [messages, setMessages] = useState<PlannerMessage[]>([]);
   const [inputText, setInputText] = useState('');
@@ -499,6 +500,11 @@ export function TaskPlannerModal({ onClose }: TaskPlannerModalProps) {
     onClose();
   };
 
+  const handleSwitchToManual = async () => {
+    await handleClose();
+    onSwitchToManual();
+  };
+
   /** Handle file picker selection — supports multiple files. */
   const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -599,6 +605,7 @@ export function TaskPlannerModal({ onClose }: TaskPlannerModalProps) {
         </div>
         <div className="task-planner-actions">
           <button className="btn btn-secondary btn-sm" onClick={handleClose}>Cancel</button>
+          <button className="btn btn-secondary btn-sm" onClick={handleSwitchToManual}>Create manually instead</button>
           <button className="btn btn-primary btn-sm" disabled={!parsedTask} onClick={handleCreateTask}>Create Task</button>
         </div>
       </div>
