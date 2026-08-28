@@ -158,7 +158,7 @@ export function TabModal({ tab, onClose, onSave }: TabModalProps) {
 
       {showAutoMergeConfirm && (
         <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) cancelAutoMerge(); }}>
-          <div className="modal" role="dialog" aria-labelledby="confirmAutoMergeTitle">
+          <div className="modal modal-confirm" role="dialog" aria-labelledby="confirmAutoMergeTitle">
             <h2 id="confirmAutoMergeTitle">Enable Auto-complete PRs?</h2>
             <p>
               Enabling Auto-complete PRs means the QA agent will automatically merge approved
