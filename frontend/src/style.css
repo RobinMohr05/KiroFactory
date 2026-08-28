@@ -3591,24 +3591,6 @@ textarea:focus {
   padding: 0.5rem 1.25rem;
 }
 
-/* AI Planner button in task form */
-.btn-ai-planner {
-  background: linear-gradient(135deg, var(--ta-mango), #e67a00);
-  color: var(--ta-rubber);
-  font-weight: 600;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-}
-
-.btn-ai-planner:hover {
-  background: linear-gradient(135deg, #e67a00, #cc6d00);
-}
-
-.btn-ai-planner .ai-icon {
-  font-size: 1rem;
-}
-
 /* Dark mode adjustments */
 [data-theme="dark"] .task-planner-modal {
   background: var(--bg-secondary);
