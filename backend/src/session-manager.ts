@@ -3752,15 +3752,31 @@ function initWorkerEventHandler(): void {
     onWorkerShutdown(sessionId: number, exitCode: number) {
       const session = sessions.get(sessionId);
       if (!session) return;
-      logWorkerEvent(exitCode === 0 ? "worker-exited" : "worker-crashed", sessionId, {
+
+      // exitCode 0 with zero completed turns AND containerSpawner still set is the
+      // "died mid-handshake, exited cleanly" pattern: kiro-cli or the container
+      // died on its own before completing any work. This must be distinguished
+      // from a legitimate exit-0 zero-turn shutdown — an intentional user/backend
+      // stop (stopSession()) already sends "stop" to the worker and synchronously
+      // nulls containerSpawner/acaExecutionName in the same tick, before this
+      // async callback can ever run, so containerSpawner still being non-null here
+      // means the worker exited on its own, not because it was told to.
+      const suspiciousEarlyExit =
+        exitCode === 0 && session.turnCountThisRun === 0 && session.containerSpawner !== null;
+      const isFailure = exitCode !== 0 || suspiciousEarlyExit;
+
+      logWorkerEvent(isFailure ? "worker-crashed" : "worker-exited", sessionId, {
         agent: session.meta.agent,
         exitCode,
+        suspiciousEarlyExit,
         msg: `Worker shutdown (exit code: ${exitCode})`,
       });
       appendOutput(session, {
         timestamp: now(),
         stream: "system",
-        text: `Worker shutdown (exit code: ${exitCode})`,
+        text: suspiciousEarlyExit
+          ? `Worker shutdown (exit code: ${exitCode}) — exited before completing any task turn; treating as a failure.`
+          : `Worker shutdown (exit code: ${exitCode})`,
       });
 
       // exitCode 0 with zero completed turns is the "died mid-handshake, exited
@@ -3771,7 +3787,7 @@ function initWorkerEventHandler(): void {
         captureContainerLogsOnFailure(session, sessionId);
       }
 
-      if (exitCode === 0) {
+      if (!isFailure) {
         setStatus(session, "completed");
         setActivity(session, { type: "completed" });
       } else {
