@@ -63,7 +63,7 @@ describe('TaskPlannerModal - session leak prevention', () => {
 
     // Simulate StrictMode: mount -> unmount -> mount
     // First mount
-    const { unmount: unmount1 } = render(<TaskPlannerModal onClose={vi.fn()} />);
+    const { unmount: unmount1 } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
 
     // Let the first session start resolve
     await act(async () => {
@@ -109,7 +109,7 @@ describe('TaskPlannerModal - session leak prevention', () => {
 
     mockUseApp({ currentTabId: 1 });
 
-    const { unmount } = render(<TaskPlannerModal onClose={vi.fn()} />);
+    const { unmount } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
 
     // Unmount immediately — /start is still pending, so at this point
     // createdSessionId is still null inside the effect closure.
@@ -146,7 +146,7 @@ describe('TaskPlannerModal - session leak prevention', () => {
 
     mockUseApp({ currentTabId: 1 });
 
-    const { unmount } = render(<TaskPlannerModal onClose={vi.fn()} />);
+    const { unmount } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
 
     // Let the session start resolve
     await act(async () => {
@@ -195,12 +195,12 @@ describe('TaskPlannerModal - session leak prevention', () => {
 
     mockUseApp({ currentTabId: 1 });
 
-    const { rerender, getAllByText } = render(<TaskPlannerModal onClose={vi.fn()} />);
+    const { rerender, getAllByText } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
 
     // Force the effect to re-run on the SAME instance (StrictMode-style
     // cleanup->rerun without unmount) WHILE the first /start is still pending.
     mockUseApp({ currentTabId: 2 });
-    rerender(<TaskPlannerModal onClose={vi.fn()} />);
+    rerender(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
 
     // Now resolve the first (now-cancelled) /start call, and let the second
     // run's /start (which resolves synchronously) settle too.
@@ -231,7 +231,7 @@ describe('TaskPlannerModal - session leak prevention', () => {
     const onClose = vi.fn();
     mockUseApp({ currentTabId: 1 });
 
-    const { getByText, unmount } = render(<TaskPlannerModal onClose={onClose} />);
+    const { getByText, unmount } = render(<TaskPlannerModal onClose={onClose} onSwitchToManual={vi.fn()} />);
 
     // Let the session start resolve
     await act(async () => {
@@ -265,6 +265,61 @@ describe('TaskPlannerModal - session leak prevention', () => {
   });
 });
 
+describe('TaskPlannerModal - Create manually instead', () => {
+  let apiFetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiFetchMock = vi.mocked(api.apiFetch);
+    apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (url === '/api/task-planner/start' && opts?.method === 'POST') {
+        return { ok: true, json: async () => ({ sessionId: 1 }) };
+      }
+      if (opts?.method === 'DELETE') {
+        return { ok: true, json: async () => ({}) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    mockUseApp({ currentTabId: 1 });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('renders a "Create manually instead" button in the actions area', async () => {
+    const { getByText } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+    expect(getByText('Create manually instead')).toBeInTheDocument();
+  });
+
+  it('clicking "Create manually instead" calls handleClose cleanup then onSwitchToManual', async () => {
+    const onClose = vi.fn();
+    const onSwitchToManual = vi.fn();
+    const { getByText } = render(<TaskPlannerModal onClose={onClose} onSwitchToManual={onSwitchToManual} />);
+
+    // Let session start resolve
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    // Click "Create manually instead"
+    await act(async () => {
+      getByText('Create manually instead').click();
+    });
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    // Should have called DELETE for cleanup (same as Cancel)
+    const deleteCalls = apiFetchMock.mock.calls.filter(
+      ([url, opts]) => typeof url === 'string' && url.includes('/api/task-planner/') && opts?.method === 'DELETE'
+    );
+    expect(deleteCalls.length).toBe(1);
+
+    // onClose should have been called (from handleClose)
+    expect(onClose).toHaveBeenCalled();
+    // onSwitchToManual should have been called after cleanup
+    expect(onSwitchToManual).toHaveBeenCalled();
+  });
+});
+
 describe('TaskPlannerModal - modal CSS class structure', () => {
   let apiFetchMock: ReturnType<typeof vi.fn>;
 
@@ -288,14 +343,14 @@ describe('TaskPlannerModal - modal CSS class structure', () => {
   });
 
   it('backdrop div has only "modal-backdrop" class, not "task-planner-modal"', () => {
-    const { container } = render(<TaskPlannerModal onClose={vi.fn()} />);
+    const { container } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
     const backdrop = container.querySelector('.modal-backdrop');
     expect(backdrop).toBeTruthy();
     expect(backdrop!.className).toBe('modal-backdrop');
   });
 
   it('dialog div has "modal", "modal-wide", and "task-planner-modal" classes', () => {
-    const { container } = render(<TaskPlannerModal onClose={vi.fn()} />);
+    const { container } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
     const dialog = container.querySelector('[role="dialog"]');
     expect(dialog).toBeTruthy();
     expect(dialog!.classList.contains('modal')).toBe(true);
@@ -304,7 +359,7 @@ describe('TaskPlannerModal - modal CSS class structure', () => {
   });
 
   it('does not use "task-planner-content" class anywhere', () => {
-    const { container } = render(<TaskPlannerModal onClose={vi.fn()} />);
+    const { container } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
     expect(container.querySelector('.task-planner-content')).toBeNull();
   });
 });

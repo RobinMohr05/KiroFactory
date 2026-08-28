@@ -5,6 +5,7 @@ import type { OutputEntry, SessionActivity } from '../types';
 
 interface TaskPlannerModalProps {
   onClose: () => void;
+  onSwitchToManual: () => void;
 }
 
 interface PlannerMessage {
@@ -23,7 +24,7 @@ interface ParsedTask {
 const ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
 const MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB
 
-export function TaskPlannerModal({ onClose }: TaskPlannerModalProps) {
+export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModalProps) {
   const { currentTabId, setTasks } = useApp();
   const [messages, setMessages] = useState<PlannerMessage[]>([]);
   const [inputText, setInputText] = useState('');
@@ -303,6 +304,11 @@ export function TaskPlannerModal({ onClose }: TaskPlannerModalProps) {
     onClose();
   };
 
+  const handleSwitchToManual = async () => {
+    await handleClose();
+    onSwitchToManual();
+  };
+
   const handleImageSelect = (file: File) => {
     if (!ALLOWED_MIME_TYPES.includes(file.type)) {
       addMessage('system', `Unsupported image type: ${file.type}. Allowed: JPEG, PNG, GIF, WebP.`);
@@ -396,6 +402,7 @@ export function TaskPlannerModal({ onClose }: TaskPlannerModalProps) {
         </div>
         <div className="task-planner-actions">
           <button className="btn btn-secondary btn-sm" onClick={handleClose}>Cancel</button>
+          <button className="btn btn-secondary btn-sm" onClick={handleSwitchToManual}>Create manually instead</button>
           <button className="btn btn-primary btn-sm" disabled={!parsedTask} onClick={handleCreateTask}>Create Task</button>
         </div>
       </div>

@@ -84,11 +84,7 @@ export function TasksPanel() {
   return (
     <section id="panel-boards" role="tabpanel" aria-labelledby="tab-boards">
       <div className="toolbar">
-        <button className="btn btn-primary" id="newTaskBtn" onClick={() => setEditingTask(null)}>+ Task</button>
-        <button className="btn btn-secondary btn-sm" id="aiPlannerBtn" onClick={() => setShowPlanner(true)} title="AI Task Planner">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 2a2 2 0 012 2c0 .74-.4 1.39-1 1.73V7h1a7 7 0 017 7h1a2 2 0 110 4h-1a7 7 0 01-7 7h-1v1.27c.6.34 1 .99 1 1.73a2 2 0 11-4 0c0-.74.4-1.39 1-1.73V25h-1a7 7 0 01-7-7H3a2 2 0 110-4h1a7 7 0 017-7h1V5.73c-.6-.34-1-.99-1-1.73a2 2 0 012-2z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-          AI Planner
-        </button>
+        <button className="btn btn-primary" id="newTaskBtn" onClick={() => setShowPlanner(true)}>+ Task</button>
         <select
           id="taskSortSelect"
           className="sort-select"
@@ -148,7 +144,7 @@ export function TasksPanel() {
       )}
 
       {showPlanner && (
-        <TaskPlannerModal onClose={() => setShowPlanner(false)} />
+        <TaskPlannerModal onClose={() => setShowPlanner(false)} onSwitchToManual={() => setEditingTask(null)} />
       )}
     </section>
   );

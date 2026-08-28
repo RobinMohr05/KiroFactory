@@ -13,6 +13,23 @@ vi.mock('../hooks/useMobileBreakpoint', () => ({
   useMobileBreakpoint: vi.fn(),
 }));
 
+// Mock apiFetch so TaskPlannerModal doesn't make real requests
+vi.mock('../utils/api', async () => {
+  const actual = await vi.importActual<typeof import('../utils/api')>('../utils/api');
+  return {
+    ...actual,
+    apiFetch: vi.fn().mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (url === '/api/task-planner/start' && opts?.method === 'POST') {
+        return { ok: true, json: async () => ({ sessionId: 99 }) };
+      }
+      if (opts?.method === 'DELETE') {
+        return { ok: true, json: async () => ({}) };
+      }
+      return { ok: true, json: async () => ({}) };
+    }),
+  };
+});
+
 const baseMockContext = {
   tasks: [
     { id: 1, title: 'Test task', type: 'bug', priority: 1, state: 'todo', isBlocked: false },
@@ -58,5 +75,26 @@ describe('TasksPanel - mobile view', () => {
     // The TaskModal should now render (it renders when editingTask !== undefined)
     // We check for the modal backdrop / form elements
     expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+});
+
+describe('TasksPanel - + Task button behavior', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(AppContext.useApp).mockReturnValue(baseMockContext as any);
+    vi.mocked(MobileBreakpoint.useMobileBreakpoint).mockReturnValue(false);
+  });
+
+  it('clicking + Task opens the TaskPlannerModal, not TaskModal', () => {
+    render(<MemoryRouter><TasksPanel /></MemoryRouter>);
+    const newTaskBtn = document.getElementById('newTaskBtn')!;
+    fireEvent.click(newTaskBtn);
+    // TaskPlannerModal renders with a title "AI Task Planner"
+    expect(screen.getByText('AI Task Planner')).toBeInTheDocument();
+  });
+
+  it('does not render a separate #aiPlannerBtn', () => {
+    render(<MemoryRouter><TasksPanel /></MemoryRouter>);
+    expect(document.getElementById('aiPlannerBtn')).toBeNull();
   });
 });
