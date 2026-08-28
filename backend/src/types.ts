@@ -29,9 +29,9 @@ export interface User {
  * ViewModeSlider's `steps` prop) — do not assume exactly two values when
  * adding new call sites.
  */
-export type UiViewMode = "easy" | "advanced";
+export type UiViewMode = "easy" | "advanced" | "looper";
 
-export const UI_VIEW_MODES: UiViewMode[] = ["easy", "advanced"];
+export const UI_VIEW_MODES: UiViewMode[] = ["easy", "advanced", "looper"];
 
 export function isUiViewMode(value: unknown): value is UiViewMode {
   return typeof value === "string" && (UI_VIEW_MODES as string[]).includes(value);
@@ -480,6 +480,33 @@ export interface UpdateSessionInput {
   tabIds?: number[];
 }
 
+// ─── Flocks (auto-scaling session pools) ─────────────────────────────────────
+
+export type FlockStatus = "running" | "stopped";
+
+export interface Flock {
+  id: number;
+  name: string;
+  userId: number;
+  agentName: string;
+  tabIds: number[];
+  model?: string;
+  maxConcurrency: number;
+  idleTimeoutSeconds: number;
+  status: FlockStatus;
+  createdAt: string;
+}
+
+export interface CreateFlockInput {
+  name: string;
+  userId: number;
+  agentName: string;
+  tabIds: number[];
+  model?: string;
+  maxConcurrency?: number;
+  idleTimeoutSeconds?: number;
+}
+
 // ─── WebSocket Messages ──────────────────────────────────────────────────────
 
 export type WsServerMessage =
@@ -506,6 +533,9 @@ export type WsServerMessage =
   | { type: "error-created"; error: AgentError }
   | { type: "error-dismissed"; errorId: string }
   | { type: "errors-cleared" }
+  | { type: "flock-created"; flock: Flock }
+  | { type: "flock-updated"; flock: Flock }
+  | { type: "flock-deleted"; flockId: number }
   | { type: "wsl-diagnostic-line"; line: WslDiagnosticLine }
   | { type: "connected"; message: string };
 

@@ -193,6 +193,30 @@ describe('Routing', () => {
       });
       expect(screen.getByRole('tabpanel', { name: /usage/i })).toBeInTheDocument();
     });
+
+    it('looper mode renders the full Advanced-style layout', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockImplementation((url: string) => {
+        if (url === '/api/auth/me') {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () => Promise.resolve({ user: { id: 1, email: 'test@test.com', createdAt: '2024-01-01', uiViewMode: 'looper' } }),
+          });
+        }
+        if (url === '/api/tabs') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) });
+        if (url === '/api/sessions') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) });
+        if (url === '/api/agents') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) });
+        if (url === '/api/errors') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) });
+        if (url === '/api/flocks') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) });
+        if (url === '/api/usage/current-month') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ totalCostEur: 0 }) });
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) });
+      }));
+
+      await act(async () => {
+        renderWithRouter(['/tasks']);
+      });
+      expect(screen.getByText('To Do')).toBeInTheDocument();
+    });
   });
 
   describe('auth guard', () => {

@@ -17,7 +17,7 @@
 import type { ManagedTransaction } from "neo4j-driver";
 import { writeQuery } from "./connection.js";
 
-export type CounterLabel = "User" | "Tab" | "Task" | "Agent" | "Session" | "Turn";
+export type CounterLabel = "User" | "Tab" | "Task" | "Agent" | "Session" | "Turn" | "Flock";
 
 /**
  * Allocates and returns the next integer ID for the given label.

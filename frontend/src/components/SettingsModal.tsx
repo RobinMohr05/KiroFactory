@@ -265,13 +265,14 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
           <h3 className="settings-section-title">Interface Mode</h3>
           <p className="credentials-description">
             Easy mode gives you a simple chat-style view for getting started. Advanced mode
-            unlocks the full board/sessions/agents workflow for loop engineering. Switching
-            requires confirmation either way.
+            unlocks the full board/sessions/agents workflow for loop engineering. Looper mode
+            adds the ability to auto-scale a pool of sessions against a task queue.
           </p>
           <ViewModeSlider<UiViewMode>
             steps={[
               { value: 'easy', label: 'Easy' },
               { value: 'advanced', label: 'Advanced' },
+              { value: 'looper', label: 'Looper' },
             ]}
             value={user?.uiViewMode || 'easy'}
             onConfirm={setUiViewMode}

@@ -201,9 +201,28 @@ export interface User {
  * "advanced" is the full app (tabs/boards, sessions, agents, errors, usage).
  * Written to extend to additional modes later — don't assume exactly two.
  */
-export type UiViewMode = 'easy' | 'advanced';
+export type UiViewMode = 'easy' | 'advanced' | 'looper';
 
 export type ViewTab = 'boards' | 'sessions' | 'agents' | 'errors' | 'usage';
+
+// ─── Flocks (auto-scaling session pools) ─────────────────────────────────────
+
+export type FlockStatus = 'running' | 'stopped';
+
+export interface Flock {
+  id: number;
+  name: string;
+  userId: number;
+  agentName: string;
+  tabIds: number[];
+  model?: string;
+  maxConcurrency: number;
+  idleTimeoutSeconds: number;
+  status: FlockStatus;
+  createdAt: string;
+  /** Populated from GET /api/flocks — number of currently running sessions. */
+  runningSessionCount?: number;
+}
 
 export type WsMessage =
   | { type: 'task-created'; task: Task }
@@ -226,5 +245,8 @@ export type WsMessage =
   | { type: 'error-created'; error: AgentError }
   | { type: 'error-dismissed'; errorId: string }
   | { type: 'errors-cleared' }
+  | { type: 'flock-created'; flock: Flock }
+  | { type: 'flock-updated'; flock: Flock }
+  | { type: 'flock-deleted'; flockId: number }
   | { type: 'wsl-diagnostic-line'; line: WslDiagnosticLine }
   | { type: 'connected' };
