@@ -34,10 +34,13 @@ function createValidationApp() {
   app.use(express.json({ limit: "15mb" }));
 
   app.post("/api/task-planner/:sessionId/message", (req, res) => {
-    const { message, images } = req.body as {
+    const { message, images: rawImages, image } = req.body as {
       message: string;
       images?: { data: string; mimeType: string }[];
+      image?: { data: string; mimeType: string };
     };
+    // Backward compat: accept legacy singular `image` field from app.js
+    const images = rawImages ?? (image ? [image] : undefined);
 
     if (!message || !message.trim()) {
       res.status(400).json({ error: "message is required" });
@@ -210,5 +213,59 @@ describe("Task Planner multi-image route validation", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.imageCount).toBe(0);
+  });
+});
+
+describe("Task Planner backward compatibility — legacy singular `image` field", () => {
+  let app: express.Express;
+
+  beforeEach(() => {
+    app = createValidationApp();
+  });
+
+  it("normalizes legacy singular `image` object into images array", async () => {
+    const res = await request(app)
+      .post("/api/task-planner/1/message")
+      .send({
+        message: "from vanilla JS frontend",
+        image: { data: "iVBORw0KGgo=", mimeType: "image/png" },
+      })
+      .set("Content-Type", "application/json");
+
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.imageCount).toBe(1);
+  });
+
+  it("prefers `images` (plural) over `image` (singular) when both are sent", async () => {
+    const res = await request(app)
+      .post("/api/task-planner/1/message")
+      .send({
+        message: "both fields",
+        images: [
+          { data: "iVBORw0KGgo=", mimeType: "image/png" },
+          { data: "R0lGODlhAQABAA==", mimeType: "image/gif" },
+        ],
+        image: { data: "/9j/4AAQSkZJ", mimeType: "image/jpeg" },
+      })
+      .set("Content-Type", "application/json");
+
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    // Should use the `images` array, not the singular `image`
+    expect(res.body.imageCount).toBe(2);
+  });
+
+  it("validates the legacy singular image the same way (rejects bad mime type)", async () => {
+    const res = await request(app)
+      .post("/api/task-planner/1/message")
+      .send({
+        message: "bad type via legacy field",
+        image: { data: "baddata", mimeType: "image/bmp" },
+      })
+      .set("Content-Type", "application/json");
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("unsupported type");
   });
 });

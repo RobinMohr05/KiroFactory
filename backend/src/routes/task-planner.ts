@@ -420,7 +420,13 @@ router.post("/:sessionId/message", async (req: Request, res: Response) => {
       return;
     }
 
-    const { message, images } = req.body as { message: string; images?: { data: string; mimeType: string }[] };
+    const { message, images: rawImages, image } = req.body as {
+      message: string;
+      images?: { data: string; mimeType: string }[];
+      image?: { data: string; mimeType: string };
+    };
+    // Backward compat: accept legacy singular `image` field from app.js
+    const images = rawImages ?? (image ? [image] : undefined);
     if (!message || !message.trim()) {
       res.status(400).json({ error: "message is required" });
       return;

@@ -356,7 +356,9 @@ export function TaskPlannerModal({ onClose }: TaskPlannerModalProps) {
       const base64 = dataUrl.split(',')[1];
       setAttachments(current => {
         if (current.length >= MAX_ATTACHMENTS) {
-          addMessage('system', `Maximum of ${MAX_ATTACHMENTS} images per message.`);
+          // Silently reject — callers (paste handler, file-picker) show their
+          // own single cap-exceeded message for the entire batch, so we avoid
+          // firing a duplicate per rejected file.
           return current;
         }
         return [...current, { data: base64, mimeType: file.type, fileName: file.name }];
@@ -503,7 +505,7 @@ export function TaskPlannerModal({ onClose }: TaskPlannerModalProps) {
     if (!files) return;
 
     // Pre-calculate remaining slots to avoid duplicate cap messages
-    const remaining = MAX_ATTACHMENTS - attachments.length;
+    const remaining = MAX_ATTACHMENTS - attachmentsRef.current.length;
     const dropped = files.length - remaining;
 
     for (let i = 0; i < Math.min(files.length, remaining); i++) {
