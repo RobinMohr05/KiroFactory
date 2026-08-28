@@ -78,5 +78,13 @@ describe('Modal responsive styles (≤768px)', () => {
       // .modal-confirm needs align-self: center to override the backdrop stretch
       expect(block).toMatch(/\.modal-confirm\s*\{[^}]*align-self:\s*center/);
     });
+
+    it('should horizontally center .modal-confirm with margin-inline: auto', () => {
+      const block = get768ModalBlock();
+      // The backdrop uses justify-content: stretch, which left-aligns items that don't
+      // fill the container. .modal-confirm keeps its constrained width (max-width: 420px),
+      // so it needs margin-inline: auto (or margin: 0 auto) for horizontal centering.
+      expect(block).toMatch(/\.modal-confirm\s*\{[^}]*margin-inline:\s*auto/);
+    });
   });
 });
