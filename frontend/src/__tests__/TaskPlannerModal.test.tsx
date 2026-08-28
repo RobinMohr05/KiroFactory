@@ -169,6 +169,51 @@ describe('TaskPlannerModal - session leak prevention', () => {
     expect(deleteCalls[0][0]).toBe('/api/task-planner/42');
   });
 
+  it('does not show a duplicate "Starting..." message under StrictMode double-invoke', async () => {
+    // Reproduces the real StrictMode dev race: the effect's cleanup for the
+    // FIRST run fires before its /start call has resolved (so that run is
+    // cancelled pre-adoption), then the SECOND run's /start resolves and is
+    // adopted. Both runs call setMessages on the same component instance, so
+    // a naive unconditional addMessage() at the top of the effect leaves two
+    // "Starting..." lines behind even though only one session is ever live.
+    let resolveFirstStart: ((value: { ok: boolean; json: () => Promise<{ sessionId: number }> }) => void) | null = null;
+    const firstStartPromise = new Promise<{ ok: boolean; json: () => Promise<{ sessionId: number }> }>((resolve) => {
+      resolveFirstStart = resolve;
+    });
+    let startCallCount = 0;
+    apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (url === '/api/task-planner/start' && opts?.method === 'POST') {
+        startCallCount++;
+        if (startCallCount === 1) return firstStartPromise;
+        return { ok: true, json: async () => ({ sessionId: 200 }) };
+      }
+      if (opts?.method === 'DELETE') {
+        return { ok: true, json: async () => ({}) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+
+    mockUseApp({ currentTabId: 1 });
+
+    const { rerender, getAllByText } = render(<TaskPlannerModal onClose={vi.fn()} />);
+
+    // Force the effect to re-run on the SAME instance (StrictMode-style
+    // cleanup->rerun without unmount) WHILE the first /start is still pending.
+    mockUseApp({ currentTabId: 2 });
+    rerender(<TaskPlannerModal onClose={vi.fn()} />);
+
+    // Now resolve the first (now-cancelled) /start call, and let the second
+    // run's /start (which resolves synchronously) settle too.
+    await act(async () => {
+      resolveFirstStart!({ ok: true, json: async () => ({ sessionId: 100 }) });
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    // Only one "Starting AI Task Planner..." line should be visible — the
+    // first run's message must have been retracted since it was never adopted.
+    expect(getAllByText('Starting AI Task Planner...').length).toBe(1);
+  });
+
   it('does not double-delete when handleClose is used normally', async () => {
     apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
       if (url === '/api/task-planner/start' && opts?.method === 'POST') {

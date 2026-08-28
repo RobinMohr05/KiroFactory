@@ -60,10 +60,28 @@ export function TaskPlannerModal({ onClose }: TaskPlannerModalProps) {
         createdSessionId = null; // guard against a second call double-deleting
         apiFetch(`/api/task-planner/${idToDelete}`, { method: 'DELETE' }).catch(() => { /* ignore cleanup errors */ });
       }
+      // Retract this run's own "Starting..." message if this run never got
+      // adopted (e.g. StrictMode's synchronous mount->cleanup->remount in dev
+      // cancels the first run before its /start call resolves) — otherwise a
+      // real unmount-with-adopted-session (closing the modal normally) would
+      // incorrectly erase the legitimate "Starting..." line too.
+      if (startingMessageAdded && !adopted) {
+        startingMessageAdded = false;
+        setMessages(prev => {
+          const idx = prev.findIndex(m => m === startingMessageRef);
+          if (idx === -1) return prev;
+          return [...prev.slice(0, idx), ...prev.slice(idx + 1)];
+        });
+      }
     };
 
+    let startingMessageAdded = false;
+    let startingMessageRef: PlannerMessage | null = null;
+
     (async () => {
-      addMessage('system', 'Starting AI Task Planner...');
+      startingMessageRef = { role: 'system', text: 'Starting AI Task Planner...' };
+      startingMessageAdded = true;
+      setMessages(prev => [...prev, startingMessageRef as PlannerMessage]);
       try {
         const res = await apiFetch('/api/task-planner/start', {
           method: 'POST',
