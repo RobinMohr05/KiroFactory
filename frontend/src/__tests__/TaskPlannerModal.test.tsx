@@ -309,7 +309,9 @@ describe('TaskPlannerModal - readiness race', () => {
     const sendBtn = getByText('Send') as HTMLButtonElement;
     expect(sendBtn.disabled).toBe(true);
     const input = getByPlaceholderText('Describe the task you want to create...') as HTMLTextAreaElement;
-    expect(input.disabled).toBe(true);
+    // Textarea is never disabled — users can type while connecting/thinking.
+    // Only the Send button gates on readiness.
+    expect(input.disabled).toBe(false);
 
     // Now simulate the real readiness signal: the backend's 'idle' session-activity
     // WS event, fired once session.runner exists and the initial prompt was sent.
@@ -321,10 +323,102 @@ describe('TaskPlannerModal - readiness race', () => {
     });
 
     expect(getByText('Ready')).toBeTruthy();
-    // The textarea itself is gated purely on `ready` (no text requirement) —
-    // assert on that rather than the Send button, which is also disabled
-    // when the input is empty regardless of readiness.
+    // The textarea is never disabled (users can type at any status), so
+    // just confirm the Send button becomes enabled once ready with text.
     expect(input.disabled).toBe(false);
+  });
+});
+
+describe('TaskPlannerModal - textarea always typeable', () => {
+  let apiFetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiFetchMock = vi.mocked(api.apiFetch);
+    apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (url === '/api/task-planner/start' && opts?.method === 'POST') {
+        return { ok: true, json: async () => ({ sessionId: 10 }) };
+      }
+      if (opts?.method === 'DELETE') {
+        return { ok: true, json: async () => ({}) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    mockUseApp({ currentTabId: 1 });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('textarea is not disabled when ready is false (connecting state)', async () => {
+    const { getByPlaceholderText, getByText } = render(<TaskPlannerModal onClose={vi.fn()} />);
+
+    // Let /start resolve — session created but no WS idle event yet, so ready=false.
+    await act(async () => {
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    // Confirm we're still in connecting state (not ready).
+    expect(getByText('Connecting...')).toBeTruthy();
+
+    // Textarea must NOT be disabled — user should be able to type while waiting.
+    const input = getByPlaceholderText('Describe the task you want to create...') as HTMLTextAreaElement;
+    expect(input.disabled).toBe(false);
+  });
+
+  it('Send button remains disabled when ready is false even with text typed', async () => {
+    const { getByPlaceholderText, getByText } = render(<TaskPlannerModal onClose={vi.fn()} />);
+
+    await act(async () => {
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    // Type some text while not ready.
+    const input = getByPlaceholderText('Describe the task you want to create...') as HTMLTextAreaElement;
+    await act(async () => {
+      const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')!.set!;
+      nativeInputValueSetter.call(input, 'my next message');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    // Send button must still be disabled (ready is false).
+    const sendBtn = getByText('Send') as HTMLButtonElement;
+    expect(sendBtn.disabled).toBe(true);
+  });
+
+  it('pressing Enter while not ready does not clear the typed text', async () => {
+    const { getByPlaceholderText, getByText } = render(<TaskPlannerModal onClose={vi.fn()} />);
+
+    await act(async () => {
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    // Confirm not ready.
+    expect(getByText('Connecting...')).toBeTruthy();
+
+    const input = getByPlaceholderText('Describe the task you want to create...') as HTMLTextAreaElement;
+
+    // Type some text.
+    await act(async () => {
+      const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')!.set!;
+      nativeInputValueSetter.call(input, 'queued message');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    // Press Enter (without Shift) — handleSend should early-return, preserving text.
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+
+    // The text must still be there (not cleared by handleSend).
+    expect(input.value).toBe('queued message');
+
+    // No message was sent to the API (handleSend early-returned).
+    const messageCalls = apiFetchMock.mock.calls.filter(
+      ([url, opts]) => typeof url === 'string' && url.includes('/message') && opts?.method === 'POST'
+    );
+    expect(messageCalls.length).toBe(0);
   });
 });
 

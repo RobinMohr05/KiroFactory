@@ -482,7 +482,6 @@ export function TaskPlannerModal({ onClose }: TaskPlannerModalProps) {
                   handleSend();
                 }
               }}
-              disabled={!ready}
               rows={1}
             />
             <button className="btn btn-primary btn-sm" disabled={!ready || !inputText.trim()} onClick={handleSend}>Send</button>
