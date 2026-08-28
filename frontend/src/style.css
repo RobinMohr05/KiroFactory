@@ -2486,6 +2486,124 @@ textarea:focus {
   color: var(--text-primary);
 }
 
+.errors-subtabs {
+  display: flex;
+  gap: 0.25rem;
+  border-bottom: 1px solid var(--border-color);
+  margin-bottom: 1rem;
+}
+
+.errors-subtab-btn {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 0.5rem 0.9rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.errors-subtab-btn:hover {
+  color: var(--text-primary);
+}
+
+.errors-subtab-btn.active {
+  color: var(--text-primary);
+  border-bottom-color: var(--ta-orange, #ff8200);
+  font-weight: 600;
+}
+
+.wsl-diagnostics-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+}
+
+.wsl-diagnostics-toolbar {
+  margin-bottom: 0.5rem;
+}
+
+.wsl-diagnostics-hint {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.wsl-diagnostics-error {
+  color: var(--ta-rapid-red);
+  font-size: 0.85rem;
+  margin-bottom: 0.5rem;
+}
+
+.wsl-diagnostics-list {
+  flex: 1;
+  overflow-y: auto;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  padding: 0.5rem;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.78rem;
+}
+
+.wsl-diagnostic-line {
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+  padding: 0.15rem 0.25rem;
+  border-radius: 3px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.wsl-diagnostic-line:hover {
+  background: var(--bg-hover, rgba(255, 255, 255, 0.04));
+}
+
+.wsl-diagnostic-time {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.wsl-diagnostic-source {
+  flex-shrink: 0;
+  padding: 0 0.35rem;
+  border-radius: 3px;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.wsl-diagnostic-source-docker-events {
+  background: rgba(59, 130, 246, 0.18);
+  color: #60a5fa;
+}
+
+.wsl-diagnostic-source-dmesg {
+  background: rgba(234, 179, 8, 0.18);
+  color: #eab308;
+}
+
+.wsl-diagnostic-source-container-log {
+  background: rgba(168, 85, 247, 0.18);
+  color: #c084fc;
+}
+
+.wsl-diagnostic-container {
+  flex-shrink: 0;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.wsl-diagnostic-text {
+  color: var(--text-primary);
+}
+
+.wsl-diagnostic-line-container-log .wsl-diagnostic-text {
+  white-space: pre-wrap;
+}
+
 .errors-list {
   flex: 1;
   overflow-y: auto;

@@ -12,6 +12,8 @@ import { fileURLToPath } from "url";
 import { setupWebSocket } from "./websocket-handler.js";
 import { setupWorkerWebSocket } from "./worker-ws-handler.js";
 import { isAcaModeEnabled, loadAcaConfig, verifyAcaAccess } from "./aca-worker-spawner.js";
+import { isWslModeEnabled, loadWslConfig } from "./wsl-worker-spawner.js";
+import { startWslDiagnosticsCollector, stopWslDiagnosticsCollector } from "./wsl-diagnostics-collector.js";
 import { requireAuth, isPublicPath } from "./middleware/auth.js";
 import authRouter from "./routes/auth.js";
 import tasksRouter from "./routes/tasks.js";
@@ -231,6 +233,19 @@ async function start(): Promise<void> {
         });
     }
   }
+
+  // WSL/Docker diagnostics collector: only meaningful when local WSL worker
+  // mode is actually configured — a production/ACA-only deployment has no
+  // WSL distro to watch, and starting this unconditionally would just spawn
+  // wsl.exe processes that immediately fail on a machine without WSL at all.
+  // See wsl-diagnostics-collector.ts's module doc comment for why this exists
+  // and runs continuously rather than being started reactively on demand.
+  if (isWslModeEnabled()) {
+    const wslConfig = loadWslConfig();
+    if (wslConfig) {
+      startWslDiagnosticsCollector(wslConfig.distroName);
+    }
+  }
 }
 
 // ─── Graceful Shutdown ───────────────────────────────────────────────────────
@@ -238,6 +253,7 @@ async function start(): Promise<void> {
 async function shutdown(): Promise<void> {
   log.info("shutdown", { component: "startup", msg: "Shutting down..." });
 
+  stopWslDiagnosticsCollector();
   await shutdownAllSessions();
   await plannerPool.shutdown();
   server.close();

@@ -172,6 +172,15 @@ export interface AgentError {
   createdTaskId?: number;
 }
 
+/** One line of host-machine WSL/Docker diagnostic data — see the "WSL/Docker Logs" sub-tab. */
+export interface WslDiagnosticLine {
+  id: number;
+  timestamp: string;
+  source: 'docker-events' | 'dmesg' | 'container-log';
+  text: string;
+  containerName?: string;
+}
+
 export interface User {
   id: number;
   email: string;
@@ -210,4 +219,5 @@ export type WsMessage =
   | { type: 'error-created'; error: AgentError }
   | { type: 'error-dismissed'; errorId: string }
   | { type: 'errors-cleared' }
+  | { type: 'wsl-diagnostic-line'; line: WslDiagnosticLine }
   | { type: 'connected' };

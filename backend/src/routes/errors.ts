@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import { getErrorsByUserId, getErrorById, markErrorTaskCreated, dismissError, clearErrorsByUserId } from "../error-store.js";
+import { getDiagnosticBuffer } from "../wsl-diagnostics-collector.js";
 import { createTask } from "../db/tasks.js";
 import { getAllTabs } from "../db/tabs.js";
 import { broadcastToUser } from "../websocket-handler.js";
@@ -12,6 +13,32 @@ const router = Router();
 
 // All error routes require authentication
 router.use(requireAuth);
+
+// GET /api/errors/wsl-diagnostics — current WSL/Docker diagnostics ring buffer
+// (docker events, dmesg, per-container log captures) for the "WSL/Docker Logs"
+// sub-tab's initial load. Live updates after this arrive over the WebSocket
+// as 'wsl-diagnostic-line' messages — see wsl-diagnostics-collector.ts.
+// Deliberately placed BEFORE the "/:id" routes below so a literal path
+// segment "wsl-diagnostics" is never captured by the ":id" param instead.
+//
+// Not scoped by userId — this is host-machine-level data (see
+// broadcastToAll()'s doc comment), not per-account data. Still behind
+// requireAuth like every other route in this file: any authenticated user of
+// this backend can see it, but no anonymous access.
+router.get("/wsl-diagnostics", (_req: Request, res: Response) => {
+  try {
+    res.json(getDiagnosticBuffer());
+  } catch (err) {
+    log.error("route-error", {
+      component: "errors",
+      method: "GET",
+      path: "/api/errors/wsl-diagnostics",
+      ...toErrorFields(err),
+      msg: "Failed to fetch WSL diagnostics buffer",
+    });
+    res.status(500).json({ error: "Failed to fetch WSL diagnostics" });
+  }
+});
 
 // GET /api/errors — list agent errors for the authenticated user (newest first)
 router.get("/", (req: Request, res: Response) => {

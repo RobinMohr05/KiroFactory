@@ -194,3 +194,26 @@ export function broadcastToUser(userId: number, msg: WsServerMessage): void {
     }
   }
 }
+
+/**
+ * Send a message to every currently authenticated WebSocket connection,
+ * regardless of which user it belongs to.
+ *
+ * Unlike broadcastToUser(), this is intentionally NOT scoped to a single
+ * account — it exists solely for host-machine-level data that has no
+ * per-user ownership concept at all, most notably WSL/Docker diagnostics
+ * (see wsl-diagnostics-collector.ts): there is exactly one local WSL distro
+ * per developer machine (see ARCHITECTURE.md §12 on the single-developer
+ * local-mode model), so "which user does this docker event belong to" is a
+ * meaningless question — every authenticated client on this machine should
+ * see it. Do NOT use this for tasks/tabs/sessions/agents/errors or any other
+ * per-account data; those must keep using broadcastToUser().
+ */
+export function broadcastToAll(msg: WsServerMessage): void {
+  const data = JSON.stringify(msg);
+  for (const client of clients.keys()) {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(data);
+    }
+  }
+}

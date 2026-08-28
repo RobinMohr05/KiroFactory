@@ -506,6 +506,7 @@ export type WsServerMessage =
   | { type: "error-created"; error: AgentError }
   | { type: "error-dismissed"; errorId: string }
   | { type: "errors-cleared" }
+  | { type: "wsl-diagnostic-line"; line: WslDiagnosticLine }
   | { type: "connected"; message: string };
 
 // ─── Turn Summary (used in session-turn-end WS event) ────────────────────────
@@ -539,6 +540,27 @@ export interface AgentError {
   tabIds?: number[];
   /** Owner user ID — errors belong to the account that owns the session */
   userId: number;
+}
+
+// ─── WSL / Docker Diagnostics ────────────────────────────────────────────────
+
+/**
+ * One line of host-machine WSL/Docker diagnostic data — see
+ * wsl-diagnostics-collector.ts. Unlike AgentError, this has no userId/owner:
+ * it's machine-level data (docker events, dmesg, container logs from the
+ * single local kirofactory-docker WSL distro), broadcast to every
+ * authenticated client via broadcastToAll() rather than scoped per-account.
+ */
+export interface WslDiagnosticLine {
+  /** Monotonically increasing ID within this backend process's lifetime — used for ring-buffer ordering and React list keys. */
+  id: number;
+  timestamp: string;
+  /** Which underlying stream this line came from. */
+  source: "docker-events" | "dmesg" | "container-log";
+  /** Raw text of the line. For docker-events, this is the parsed one-line summary, not the raw JSON — see formatDockerEvent(). */
+  text: string;
+  /** Container name, when the line is specifically about one container (docker-events container actions, or a container-log capture). */
+  containerName?: string;
 }
 
 export type WsClientMessage =
