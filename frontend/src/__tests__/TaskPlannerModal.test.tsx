@@ -328,6 +328,79 @@ describe('TaskPlannerModal - readiness race', () => {
   });
 });
 
+describe('TaskPlannerModal - task JSON parsing', () => {
+  let apiFetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiFetchMock = vi.mocked(api.apiFetch);
+    apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (url === '/api/task-planner/start' && opts?.method === 'POST') {
+        return { ok: true, json: async () => ({ sessionId: 9 }) };
+      }
+      if (opts?.method === 'DELETE') {
+        return { ok: true, json: async () => ({}) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    mockUseApp({ currentTabId: 1 });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  function dispatchAssistantMessage(sessionId: number, text: string) {
+    // Simulate the backend streaming the assistant's final message via WS,
+    // the same path tryParseTask() is wired to through the 'idle' activity event.
+    window.dispatchEvent(new CustomEvent('ws-session-output', {
+      detail: { sessionId, entry: { stream: 'stdout', text } },
+    }));
+    window.dispatchEvent(new CustomEvent('ws-session-activity', {
+      detail: { sessionId, activity: { type: 'idle' } },
+    }));
+  }
+
+  it('recovers a task block with unescaped literal quotes around inline phrases', async () => {
+    // Regression test for the exact failure mode from the bug report: the AI
+    // wrapped inline phrases like "+ Task" and "AI Planner" in literal quotes
+    // inside a JSON string value without escaping them, producing invalid
+    // JSON that JSON.parse rejects outright. Create Task must still become
+    // clickable via the lenient recovery pass instead of silently staying
+    // disabled with no feedback.
+    const malformed = '```json:task\n{\n  "title": "Merge "+ Task" and "AI Planner" into one entry point",\n  "description": "Do the thing",\n  "priority": 2,\n  "type": "improvement",\n  "files": ["frontend/src/components/TasksPanel.tsx"]\n}\n```';
+
+    const { getByText } = render(<TaskPlannerModal onClose={vi.fn()} />);
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    await act(async () => {
+      dispatchAssistantMessage(9, malformed);
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    expect(getByText('✅ Task ready to create! Click "Create Task" to add it to your board.')).toBeTruthy();
+    const createBtn = getByText('Create Task') as HTMLButtonElement;
+    expect(createBtn.disabled).toBe(false);
+  });
+
+  it('surfaces a visible error instead of silently disabling Create Task on truly invalid JSON', async () => {
+    // Malformed beyond recovery (truncated block) — must not fail silently.
+    const brokenBeyondRepair = '```json:task\n{\n  "title": "Something,\n  "priority": 2,\n```';
+
+    const { getByText } = render(<TaskPlannerModal onClose={vi.fn()} />);
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    await act(async () => {
+      dispatchAssistantMessage(9, brokenBeyondRepair);
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    expect(getByText(/Could not parse the task block above/)).toBeTruthy();
+    const createBtn = getByText('Create Task') as HTMLButtonElement;
+    expect(createBtn.disabled).toBe(true);
+  });
+});
+
 describe('TaskPlannerModal - modal CSS class structure', () => {
   let apiFetchMock: ReturnType<typeof vi.fn>;
 

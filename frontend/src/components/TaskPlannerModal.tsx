@@ -209,28 +209,65 @@ export function TaskPlannerModal({ onClose }: TaskPlannerModalProps) {
   };
 
   const tryParseTask = (text: string) => {
-    // Look for ```json:task block
-    const jsonMatch = text.match(/```json:task\s*\n([\s\S]*?)\n```/);
-    if (jsonMatch) {
-      try {
-        const parsed = JSON.parse(jsonMatch[1]);
-        if (parsed.title && parsed.priority && parsed.type) {
-          setParsedTask(parsed);
-          addMessage('system', '✅ Task ready to create! Click "Create Task" to add it to your board.');
-          return;
-        }
-      } catch { /* not valid JSON */ }
+    // Look for ```json:task block first, falling back to a plain ```json block.
+    const jsonMatch = text.match(/```json:task\s*\n([\s\S]*?)\n```/) ?? text.match(/```json\s*\n([\s\S]*?)\n```/);
+    if (!jsonMatch) return;
+
+    const raw = jsonMatch[1];
+    const parsed = parseTaskJsonLeniently(raw);
+    if (parsed) {
+      if (parsed.title && parsed.priority && parsed.type) {
+        setParsedTask(parsed);
+        addMessage('system', '✅ Task ready to create! Click "Create Task" to add it to your board.');
+      } else {
+        addMessage('system', '⚠️ The AI produced a task block missing required fields (title/priority/type) — ask it to resend the task.');
+      }
+      return;
     }
-    // Fallback: standard ```json block
-    const fallbackMatch = text.match(/```json\s*\n([\s\S]*?)\n```/);
-    if (fallbackMatch) {
-      try {
-        const parsed = JSON.parse(fallbackMatch[1]);
-        if (parsed.title && parsed.priority && parsed.type) {
-          setParsedTask(parsed);
-          addMessage('system', '✅ Task ready to create! Click "Create Task" to add it to your board.');
-        }
-      } catch { /* not valid JSON */ }
+
+    // Both the strict parse and the lenient recovery pass failed. Surface this
+    // instead of leaving "Create Task" silently disabled with no explanation —
+    // previously a malformed ```json:task block (e.g. unescaped quotes inside
+    // string values) left parsedTask stuck at null with zero user-visible
+    // feedback about why the button wouldn't enable.
+    addMessage('system', '⚠️ Could not parse the task block above (invalid JSON) — ask the AI to resend it, e.g. "please resend the task JSON, make sure all quotes inside string values are properly escaped".');
+  };
+
+  /**
+   * Attempt to recover from the most common way the planner LLM emits
+   * malformed ```json:task blocks: literal, un-escaped double quotes used
+   * to set off inline phrases/identifiers inside a string value (e.g.
+   * "title": "Merge "+ Task" and "AI Planner" into one entry point") instead
+   * of properly escaping them as \" or using single quotes/backticks. Plain
+   * JSON.parse rejects this outright. If strict parsing fails, retry once
+   * after escaping any doubled-up quote runs that aren't already valid
+   * string delimiters or escapes.
+   */
+  const parseTaskJsonLeniently = (raw: string): ParsedTask | null => {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      // Fall through to recovery below.
+    }
+    try {
+      // Escape any `"` that is not: preceded by a backslash (already escaped),
+      // or immediately preceded/followed by JSON structural characters
+      // ( { } [ ] : , ) or whitespace-then-structural (i.e. a real string
+      // delimiter). Everything else is treated as a stray literal quote
+      // inside a string value and gets escaped.
+      const repaired = raw.replace(/(\\)?"/g, (match, backslash, offset, full) => {
+        if (backslash) return match; // already escaped
+        const before = full.slice(0, offset).trimEnd();
+        const after = full.slice(offset + 1).trimStart();
+        const isDelimiter =
+          before === '' || /[{[:,]$/.test(before) || // opening a string value/key
+          after === '' || /^[}\]:,]/.test(after); // closing a string value/key
+        return isDelimiter ? '"' : '\\"';
+      });
+      const parsed = JSON.parse(repaired);
+      return parsed;
+    } catch {
+      return null;
     }
   };
 
