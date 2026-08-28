@@ -40,6 +40,7 @@ export function TaskPlannerModal({ onClose }: TaskPlannerModalProps) {
   const [status, setStatus] = useState<'connecting' | 'ready' | 'thinking' | 'error'>('connecting');
   const [parsedTask, setParsedTask] = useState<ParsedTask | null>(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const attachmentsRef = useRef<Attachment[]>([]);
   const messagesRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -51,6 +52,11 @@ export function TaskPlannerModal({ onClose }: TaskPlannerModalProps) {
   useEffect(() => {
     sessionIdRef.current = sessionId;
   }, [sessionId]);
+
+  // Keep attachments ref in sync for paste/file-input handlers
+  useEffect(() => {
+    attachmentsRef.current = attachments;
+  }, [attachments]);
 
   // Start the planner session
   useEffect(() => {
@@ -382,8 +388,17 @@ export function TaskPlannerModal({ onClose }: TaskPlannerModalProps) {
       // Prevent the default paste behavior for image content
       e.preventDefault();
 
-      for (const file of imageFiles) {
+      // Pre-calculate remaining slots to avoid duplicate cap messages
+      const remaining = MAX_ATTACHMENTS - attachmentsRef.current.length;
+      const toAdd = imageFiles.slice(0, remaining);
+      const dropped = imageFiles.length - toAdd.length;
+
+      for (const file of toAdd) {
         addAttachment(file);
+      }
+
+      if (dropped > 0) {
+        addMessage('system', `Maximum of ${MAX_ATTACHMENTS} images per message.`);
       }
     };
 
@@ -486,8 +501,16 @@ export function TaskPlannerModal({ onClose }: TaskPlannerModalProps) {
   const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files) return;
-    for (let i = 0; i < files.length; i++) {
+
+    // Pre-calculate remaining slots to avoid duplicate cap messages
+    const remaining = MAX_ATTACHMENTS - attachments.length;
+    const dropped = files.length - remaining;
+
+    for (let i = 0; i < Math.min(files.length, remaining); i++) {
       addAttachment(files[i]);
+    }
+    if (dropped > 0) {
+      addMessage('system', `Maximum of ${MAX_ATTACHMENTS} images per message.`);
     }
     // Reset the input so the same file(s) can be re-selected
     if (fileInputRef.current) fileInputRef.current.value = '';
