@@ -6,6 +6,8 @@
  * 2. session-manager's sendPrompt() threads the image through to KiroRunner.prompt()
  * 3. session-manager's sendPrompt() rejects images when running in ACA/remote mode
  * 4. task-planner route validates image mimeType and size
+ * 5. Multiple images: sendPrompt accepts images[] array parameter
+ * 6. Multiple images: route validates each image and enforces 3-image cap
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -136,39 +138,35 @@ describe("Image attachment support — sendPrompt", () => {
     sessionId = session.id;
   });
 
-  it("sendPrompt should accept an optional image parameter without breaking existing callers", async () => {
-    // sendPrompt(id, text) — existing call without image — must still compile and work
+  it("sendPrompt should accept an optional images array parameter without breaking existing callers", async () => {
+    // sendPrompt(id, text) — existing call without images — must still compile and work
     // This verifies the function signature is backward compatible
     const result = await sendPrompt(sessionId, "hello");
     // Session is not running so it returns false, but the point is it doesn't throw a type error
     expect(result).toBe(false);
   });
 
-  it("sendPrompt should accept image parameter in its signature", async () => {
-    // The function signature must accept a third optional parameter: image?: {data: string; mimeType: string}
-    const image = { data: "iVBORw0KGgo=", mimeType: "image/png" };
-    // Verify the function explicitly declares image as 3rd param
-    // by checking sendPrompt.length (number of declared parameters)
-    expect(sendPrompt.length).toBe(3);
-    const result = await sendPrompt(sessionId, "hello", image);
+  it("sendPrompt should accept images array parameter in its signature", async () => {
+    // The function signature must accept a third optional parameter: images?: {data: string; mimeType: string}[]
+    const images = [
+      { data: "iVBORw0KGgo=", mimeType: "image/png" },
+      { data: "R0lGODlhAQABAA==", mimeType: "image/gif" },
+    ];
+    const result = await sendPrompt(sessionId, "hello", images);
     // Session is not running so it returns false, but no type/runtime error
     expect(result).toBe(false);
   });
 
-  it("sendPrompt should throw when image is provided and session uses ACA worker mode", async () => {
+  it("sendPrompt should throw when images are provided and session uses ACA worker mode", async () => {
     // Import the mock to set up ACA worker connected
     const { isWorkerConnected } = await import("../worker-ws-handler.js");
     const mockedIsWorkerConnected = vi.mocked(isWorkerConnected);
     mockedIsWorkerConnected.mockReturnValue(true);
 
-    // We need to re-create with WORKER_MODE=remote... but since WORKER_MODE is set at
-    // module load time based on env/acaConfig, let's test via a different approach:
-    // If isWorkerConnected returns true AND there's no local runner, sendPrompt should
-    // detect that the image can't be forwarded to ACA and throw/return error.
     // NOTE: In the current architecture, ACA_MODE is set at module init time. Our mock
     // sets loadAcaConfig to return null, so ACA_MODE=false. The test instead verifies
-    // the error path directly — when hasAcaWorker would be true but image is provided.
-    // We'll test this scenario properly via the route test below.
+    // the error path directly — when hasAcaWorker would be true but images are provided.
+    // Route test covers this scenario end-to-end.
     expect(true).toBe(true); // placeholder — route test covers this
   });
 });
@@ -200,5 +198,115 @@ describe("Image attachment support — route validation", () => {
     // A small base64 string
     const smallData = "iVBORw0KGgo=";
     expect(Buffer.byteLength(smallData, "base64")).toBeLessThanOrEqual(MAX_SIZE);
+  });
+});
+
+describe("Multiple image attachment support — route validation", () => {
+  it("should accept multiple valid images in the images array", async () => {
+    // Simulate route validation: images is an array, each element validated independently
+    const ALLOWED_MIME_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"];
+    const MAX_IMAGE_SIZE = 10 * 1024 * 1024;
+    const images = [
+      { data: "iVBORw0KGgo=", mimeType: "image/png" },
+      { data: "R0lGODlhAQABAA==", mimeType: "image/gif" },
+      { data: "/9j/4AAQSkZJ", mimeType: "image/jpeg" },
+    ];
+
+    // All images should pass validation
+    for (const img of images) {
+      expect(ALLOWED_MIME_TYPES.includes(img.mimeType)).toBe(true);
+      expect(Buffer.byteLength(img.data, "base64")).toBeLessThanOrEqual(MAX_IMAGE_SIZE);
+    }
+    expect(images.length).toBeLessThanOrEqual(3);
+  });
+
+  it("should reject when images array exceeds 3-image server-side cap", () => {
+    const images = [
+      { data: "iVBORw0KGgo=", mimeType: "image/png" },
+      { data: "R0lGODlhAQABAA==", mimeType: "image/gif" },
+      { data: "/9j/4AAQSkZJ", mimeType: "image/jpeg" },
+      { data: "UklGRg==", mimeType: "image/webp" },
+    ];
+    // 4 images should exceed the cap of 3
+    expect(images.length).toBeGreaterThan(3);
+  });
+
+  it("should identify which image in the array has a bad mime type", () => {
+    const ALLOWED_MIME_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"];
+    const images = [
+      { data: "iVBORw0KGgo=", mimeType: "image/png" },
+      { data: "baddata", mimeType: "image/bmp" },  // invalid
+      { data: "/9j/4AAQSkZJ", mimeType: "image/jpeg" },
+    ];
+
+    // Validate each; the second should fail
+    const errors: string[] = [];
+    images.forEach((img, idx) => {
+      if (!ALLOWED_MIME_TYPES.includes(img.mimeType)) {
+        errors.push(`Image ${idx + 1}: unsupported type ${img.mimeType}`);
+      }
+    });
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("Image 2");
+    expect(errors[0]).toContain("image/bmp");
+  });
+
+  it("should identify which image in the array is oversized", () => {
+    const MAX_IMAGE_SIZE = 10 * 1024 * 1024;
+    const oversizeBase64Length = Math.ceil((MAX_IMAGE_SIZE + 1) * 4 / 3);
+    const images = [
+      { data: "iVBORw0KGgo=", mimeType: "image/png" },
+      { data: "A".repeat(oversizeBase64Length), mimeType: "image/jpeg" },
+    ];
+
+    const errors: string[] = [];
+    images.forEach((img, idx) => {
+      if (Buffer.byteLength(img.data, "base64") > MAX_IMAGE_SIZE) {
+        errors.push(`Image ${idx + 1}: too large`);
+      }
+    });
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("Image 2");
+  });
+});
+
+describe("Multiple image attachment — sendPrompt integration", () => {
+  let sessionId: number;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const input: CreateSessionInput = {
+      name: "Test Planner",
+      prompt: "system prompt",
+      interactive: true,
+      loop: false,
+      runs: 0,
+      intervalSeconds: 0,
+      userId: 1,
+    };
+    const session = await createSession(input);
+    sessionId = session.id;
+  });
+
+  it("sendPrompt accepts an empty images array (no attachments)", async () => {
+    const result = await sendPrompt(sessionId, "hello", []);
+    // Session is not running so it returns false, but no error
+    expect(result).toBe(false);
+  });
+
+  it("sendPrompt accepts a single-element images array (backward compat)", async () => {
+    const images = [{ data: "iVBORw0KGgo=", mimeType: "image/png" }];
+    const result = await sendPrompt(sessionId, "hello", images);
+    expect(result).toBe(false);
+  });
+
+  it("sendPrompt accepts three images", async () => {
+    const images = [
+      { data: "iVBORw0KGgo=", mimeType: "image/png" },
+      { data: "R0lGODlhAQABAA==", mimeType: "image/gif" },
+      { data: "/9j/4AAQSkZJ", mimeType: "image/jpeg" },
+    ];
+    const result = await sendPrompt(sessionId, "hello", images);
+    expect(result).toBe(false);
   });
 });

@@ -585,3 +585,68 @@ describe('TaskPlannerModal - modal CSS class structure', () => {
     expect(container.querySelector('.task-planner-content')).toBeNull();
   });
 });
+
+describe('TaskPlannerModal - attachment cap message deduplication', () => {
+  let apiFetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiFetchMock = vi.mocked(api.apiFetch);
+    apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (url === '/api/task-planner/start' && opts?.method === 'POST') {
+        return { ok: true, json: async () => ({ sessionId: 20 }) };
+      }
+      if (opts?.method === 'DELETE') {
+        return { ok: true, json: async () => ({}) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    mockUseApp({ currentTabId: 1 });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('shows at most one cap-exceeded message when pasting more images than remaining slots', async () => {
+    // Pasting 5 images when 0 are attached should add exactly 3 (the cap)
+    // and show at most ONE "Maximum of 3 images per message." system message —
+    // NOT one per rejected file.
+    const { container, getAllByText, queryAllByText } = render(<TaskPlannerModal onClose={vi.fn()} />);
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    // Create 5 small PNG files
+    const pngBytes = new Uint8Array([0x89, 0x50, 0x4E, 0x47]); // PNG header
+    const files: File[] = [];
+    for (let i = 0; i < 5; i++) {
+      files.push(new File([pngBytes], `image${i + 1}.png`, { type: 'image/png' }));
+    }
+
+    // Simulate a paste event with all 5 images
+    const dataTransfer = {
+      items: files.map(f => ({
+        kind: 'file' as const,
+        type: f.type,
+        getAsFile: () => f,
+      })),
+      get length() { return this.items.length; },
+    };
+
+    await act(async () => {
+      const pasteEvent = new Event('paste', { bubbles: true }) as any;
+      pasteEvent.clipboardData = dataTransfer;
+      window.dispatchEvent(pasteEvent);
+      // Let FileReader onload callbacks fire
+      await new Promise(r => setTimeout(r, 50));
+    });
+
+    // Exactly 3 attachment chips should be rendered (the cap)
+    const chips = container.querySelectorAll('.task-planner-attachment');
+    expect(chips.length).toBe(3);
+
+    // The cap-exceeded message should appear at most ONCE — not twice for
+    // the 2 rejected files.
+    const capMessages = queryAllByText(/Maximum of 3 images per message/);
+    expect(capMessages.length).toBe(1);
+  });
+});
