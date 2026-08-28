@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { useTheme } from '../hooks/useTheme';
 import { SettingsModal } from './SettingsModal';
@@ -6,8 +7,9 @@ import { MobileDrawer } from './MobileDrawer';
 import { apiFetch } from '../utils/api';
 
 export function Header() {
-  const { logout, setActiveView } = useApp();
+  const { logout } = useApp();
   const { toggleTheme } = useTheme();
+  const navigate = useNavigate();
   const [showSettings, setShowSettings] = useState(false);
   const [monthlyCredits, setMonthlyCredits] = useState<number>(0);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -42,7 +44,7 @@ export function Header() {
   }, [fetchMonthlyCredits]);
 
   const handleUsageClick = () => {
-    setActiveView('usage');
+    navigate('/usage');
   };
 
   return (

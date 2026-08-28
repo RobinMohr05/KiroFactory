@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, act } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { Header } from '../components/Header';
 import * as AppContext from '../context/AppContext';
 import * as api from '../utils/api';
@@ -41,7 +42,7 @@ describe('Header', () => {
 
   it('does NOT call fetchMonthlyCredits on ws-session-output events', async () => {
     await act(async () => {
-      render(<Header />);
+      render(<MemoryRouter><Header /></MemoryRouter>);
     });
 
     // Flush the initial fetch microtask
@@ -70,7 +71,7 @@ describe('Header', () => {
 
   it('calls fetchMonthlyCredits on ws-session-updated events', async () => {
     await act(async () => {
-      render(<Header />);
+      render(<MemoryRouter><Header /></MemoryRouter>);
     });
 
     // Flush the initial fetch microtask

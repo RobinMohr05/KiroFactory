@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import * as AppContext from '../context/AppContext';
 
 vi.mock('../context/AppContext', () => ({
@@ -9,6 +10,16 @@ vi.mock('../context/AppContext', () => ({
 vi.mock('../utils/api', () => ({
   apiFetch: vi.fn().mockResolvedValue({ ok: true, json: async () => [] }),
 }));
+
+const mockNavigate = vi.fn();
+vi.mock('react-router-dom', async () => {
+  const actual = await vi.importActual('react-router-dom');
+  return {
+    ...actual,
+    useNavigate: () => mockNavigate,
+    useParams: () => ({}),
+  };
+});
 
 import { AgentsPanel } from '../components/AgentsPanel';
 
@@ -47,7 +58,7 @@ describe('AgentsPanel - Mobile drill-down (≤480px)', () => {
 
   it('on mobile, shows only the agent list (detail panel is hidden)', () => {
     mockUseApp({ activeAgentId: 1 });
-    const { container } = render(<AgentsPanel />);
+    const { container } = render(<MemoryRouter><AgentsPanel /></MemoryRouter>);
 
     // The list panel should be visible
     const listPanel = container.querySelector('.agent-list-panel');
@@ -61,7 +72,7 @@ describe('AgentsPanel - Mobile drill-down (≤480px)', () => {
   it('on mobile, tapping an agent item shows the detail view', () => {
     const mockSetActiveAgentId = vi.fn();
     mockUseApp({ activeAgentId: null, setActiveAgentId: mockSetActiveAgentId });
-    render(<AgentsPanel />);
+    render(<MemoryRouter><AgentsPanel /></MemoryRouter>);
 
     // Click on an agent item
     fireEvent.click(screen.getByText('Developer Agent'));
@@ -72,7 +83,7 @@ describe('AgentsPanel - Mobile drill-down (≤480px)', () => {
 
   it('on mobile, when drilled into detail, list panel is hidden and detail is visible', () => {
     mockUseApp({ activeAgentId: 1 });
-    const { container } = render(<AgentsPanel />);
+    const { container } = render(<MemoryRouter><AgentsPanel /></MemoryRouter>);
 
     // Simulate tapping into an agent on mobile
     const listPanel = container.querySelector('.agent-list-panel');
@@ -88,7 +99,7 @@ describe('AgentsPanel - Mobile drill-down (≤480px)', () => {
 
   it('on mobile detail view, shows a back button', () => {
     mockUseApp({ activeAgentId: 1 });
-    const { container } = render(<AgentsPanel />);
+    const { container } = render(<MemoryRouter><AgentsPanel /></MemoryRouter>);
 
     // Drill into the agent
     const listPanel = container.querySelector('.agent-list-panel');
@@ -102,7 +113,7 @@ describe('AgentsPanel - Mobile drill-down (≤480px)', () => {
 
   it('on mobile, tapping the back button returns to the list view', () => {
     mockUseApp({ activeAgentId: 1 });
-    const { container } = render(<AgentsPanel />);
+    const { container } = render(<MemoryRouter><AgentsPanel /></MemoryRouter>);
 
     // Drill into the agent
     const listPanel = container.querySelector('.agent-list-panel');
@@ -124,7 +135,7 @@ describe('AgentsPanel - Mobile drill-down (≤480px)', () => {
     // Set desktop viewport
     mockMql.matches = false;
     mockUseApp({ activeAgentId: 1 });
-    const { container } = render(<AgentsPanel />);
+    const { container } = render(<MemoryRouter><AgentsPanel /></MemoryRouter>);
 
     // Both panels should be visible (no mobile-hidden class)
     const listPanel = container.querySelector('.agent-list-panel');
@@ -137,7 +148,7 @@ describe('AgentsPanel - Mobile drill-down (≤480px)', () => {
   it('on mobile, the back button is not rendered at desktop width', () => {
     mockMql.matches = false;
     mockUseApp({ activeAgentId: 1 });
-    const { container } = render(<AgentsPanel />);
+    const { container } = render(<MemoryRouter><AgentsPanel /></MemoryRouter>);
 
     expect(container.querySelector('.mobile-back-btn')).not.toBeInTheDocument();
   });

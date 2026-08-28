@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { TasksPanel } from '../components/TasksPanel';
 import * as AppContext from '../context/AppContext';
 import * as MobileBreakpoint from '../hooks/useMobileBreakpoint';
@@ -36,21 +37,21 @@ describe('TasksPanel - mobile view', () => {
 
   it('renders kanban grid on desktop (>480px)', () => {
     vi.mocked(MobileBreakpoint.useMobileBreakpoint).mockReturnValue(false);
-    const { container } = render(<TasksPanel />);
+    const { container } = render(<MemoryRouter><TasksPanel /></MemoryRouter>);
     expect(container.querySelector('.kanban')).toBeInTheDocument();
     expect(container.querySelector('.mobile-task-list')).not.toBeInTheDocument();
   });
 
   it('renders MobileTaskList instead of kanban on mobile (≤480px)', () => {
     vi.mocked(MobileBreakpoint.useMobileBreakpoint).mockReturnValue(true);
-    const { container } = render(<TasksPanel />);
+    const { container } = render(<MemoryRouter><TasksPanel /></MemoryRouter>);
     expect(container.querySelector('.kanban')).not.toBeInTheDocument();
     expect(container.querySelector('.mobile-task-list')).toBeInTheDocument();
   });
 
   it('opens task modal when a card is tapped on mobile', () => {
     vi.mocked(MobileBreakpoint.useMobileBreakpoint).mockReturnValue(true);
-    render(<TasksPanel />);
+    render(<MemoryRouter><TasksPanel /></MemoryRouter>);
     // Click on the first visible task card
     const card = screen.getByRole('article', { name: /Test task/i });
     fireEvent.click(card);

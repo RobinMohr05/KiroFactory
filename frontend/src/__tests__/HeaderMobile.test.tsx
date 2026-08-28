@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, act, fireEvent } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { Header } from '../components/Header';
 import * as AppContext from '../context/AppContext';
 import * as api from '../utils/api';
@@ -42,7 +43,7 @@ describe('Header - mobile scaffold', () => {
   it('does not render a connection-status element', async () => {
     let container: HTMLElement;
     await act(async () => {
-      const result = render(<Header />);
+      const result = render(<MemoryRouter><Header /></MemoryRouter>);
       container = result.container;
     });
     expect(container!.querySelector('.connection-status')).toBeNull();
@@ -50,14 +51,14 @@ describe('Header - mobile scaffold', () => {
 
   it('renders a hamburger menu button', async () => {
     await act(async () => {
-      render(<Header />);
+      render(<MemoryRouter><Header /></MemoryRouter>);
     });
     expect(screen.getByLabelText(/open menu/i)).toBeInTheDocument();
   });
 
   it('opens the MobileDrawer when hamburger is clicked', async () => {
     await act(async () => {
-      render(<Header />);
+      render(<MemoryRouter><Header /></MemoryRouter>);
     });
     const hamburger = screen.getByLabelText(/open menu/i);
     await act(async () => {
@@ -73,7 +74,7 @@ describe('Header - mobile scaffold', () => {
     const drawerSpy = vi.spyOn(drawerModule, 'MobileDrawer');
 
     const { rerender } = await act(async () => {
-      return render(<Header />);
+      return render(<MemoryRouter><Header /></MemoryRouter>);
     });
 
     // Trigger a re-render by clicking hamburger to open drawer

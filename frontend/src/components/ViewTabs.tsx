@@ -1,9 +1,15 @@
+import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 
 export function ViewTabs() {
-  const { errors, activeView, setActiveView } = useApp();
+  const { errors, activeView } = useApp();
+  const navigate = useNavigate();
 
   const unreadErrorCount = errors.filter(e => !e.taskCreated).length;
+
+  const handleTabClick = (path: string) => {
+    navigate(path);
+  };
 
   return (
     <nav className="tabs" role="tablist" aria-label="Views">
@@ -13,7 +19,7 @@ export function ViewTabs() {
         id="tab-boards"
         aria-selected={activeView === 'boards'}
         aria-controls="panel-boards"
-        onClick={() => setActiveView('boards')}
+        onClick={() => handleTabClick('/tasks')}
       >
         Tasks
       </button>
@@ -23,7 +29,7 @@ export function ViewTabs() {
         id="tab-sessions"
         aria-selected={activeView === 'sessions'}
         aria-controls="panel-sessions"
-        onClick={() => setActiveView('sessions')}
+        onClick={() => handleTabClick('/sessions')}
       >
         Sessions
       </button>
@@ -33,7 +39,7 @@ export function ViewTabs() {
         id="tab-agents"
         aria-selected={activeView === 'agents'}
         aria-controls="panel-agents"
-        onClick={() => setActiveView('agents')}
+        onClick={() => handleTabClick('/agents')}
       >
         Agents
       </button>
@@ -43,7 +49,7 @@ export function ViewTabs() {
         id="tab-errors"
         aria-selected={activeView === 'errors'}
         aria-controls="panel-errors"
-        onClick={() => setActiveView('errors')}
+        onClick={() => handleTabClick('/errors')}
       >
         Errors{' '}
         {unreadErrorCount > 0 && (
@@ -56,7 +62,7 @@ export function ViewTabs() {
         id="tab-usage"
         aria-selected={activeView === 'usage'}
         aria-controls="panel-usage"
-        onClick={() => setActiveView('usage')}
+        onClick={() => handleTabClick('/usage')}
       >
         Usage
       </button>

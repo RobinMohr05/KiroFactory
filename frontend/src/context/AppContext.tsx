@@ -81,7 +81,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       try {
         const res = await fetch('/api/auth/me', { credentials: 'same-origin' });
         if (res.status === 401) {
-          window.location.href = '/login.html';
+          const currentPath = window.location.pathname + window.location.search;
+          const returnTo = currentPath !== '/' && currentPath !== '/login' ? `?returnTo=${encodeURIComponent(currentPath)}` : '';
+          window.location.href = `/login.html${returnTo}`;
           return;
         }
         if (res.ok) {

@@ -1,0 +1,47 @@
+import { useEffect } from 'react';
+import { useLocation } from 'react-router-dom';
+import { useApp } from '../context/AppContext';
+
+/**
+ * Syncs the current route to the AppContext state (activeView, activeSessionId, activeAgentId).
+ * This hook should be called in AppLayout (inside the router context).
+ */
+export function useRouteSync() {
+  const location = useLocation();
+  const { setActiveView, setActiveSessionId, setActiveAgentId } = useApp();
+
+  useEffect(() => {
+    const path = location.pathname;
+
+    if (path.startsWith('/sessions')) {
+      setActiveView('sessions');
+      const match = path.match(/^\/sessions\/(\d+)/);
+      if (match) {
+        setActiveSessionId(Number(match[1]));
+      } else {
+        setActiveSessionId(null);
+      }
+    } else if (path.startsWith('/agents')) {
+      setActiveView('agents');
+      const match = path.match(/^\/agents\/(\d+)/);
+      if (match) {
+        setActiveAgentId(Number(match[1]));
+      } else {
+        setActiveAgentId(null);
+      }
+    } else if (path.startsWith('/errors')) {
+      setActiveView('errors');
+      setActiveSessionId(null);
+      setActiveAgentId(null);
+    } else if (path.startsWith('/usage')) {
+      setActiveView('usage');
+      setActiveSessionId(null);
+      setActiveAgentId(null);
+    } else {
+      // /tasks or anything else
+      setActiveView('boards');
+      setActiveSessionId(null);
+      setActiveAgentId(null);
+    }
+  }, [location.pathname, setActiveView, setActiveSessionId, setActiveAgentId]);
+}

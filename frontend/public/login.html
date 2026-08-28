@@ -103,8 +103,10 @@
       const switchToLogin = document.getElementById('switchToLogin');
 
       // Check if already authenticated — redirect to dashboard
+      const urlParams = new URLSearchParams(window.location.search);
+      const returnTo = urlParams.get('returnTo') || '/';
       fetch('/api/auth/me', { credentials: 'same-origin' })
-        .then(res => { if (res.ok) window.location.href = '/'; })
+        .then(res => { if (res.ok) window.location.href = returnTo; })
         .catch(() => {});
 
       // Check if registration is enabled
@@ -155,8 +157,8 @@
             return;
           }
 
-          // Success — redirect to dashboard
-          window.location.href = '/';
+          // Success — redirect to intended destination or dashboard
+          window.location.href = returnTo;
         } catch (err) {
           loginError.textContent = 'Network error. Please try again.';
           loginError.hidden = false;
@@ -195,8 +197,8 @@
             return;
           }
 
-          // Success — redirect to dashboard
-          window.location.href = '/';
+          // Success — redirect to intended destination or dashboard
+          window.location.href = returnTo;
         } catch (err) {
           registerError.textContent = 'Network error. Please try again.';
           registerError.hidden = false;
