@@ -3468,6 +3468,13 @@ textarea:focus {
   border-radius: var(--radius);
 }
 
+.task-planner-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  padding: 0.25rem 0;
+}
+
 .task-planner-attachment {
   display: inline-flex;
   align-items: center;

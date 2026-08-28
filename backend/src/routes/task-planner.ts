@@ -420,36 +420,51 @@ router.post("/:sessionId/message", async (req: Request, res: Response) => {
       return;
     }
 
-    const { message, image } = req.body as { message: string; image?: { data: string; mimeType: string } };
+    const { message, images } = req.body as { message: string; images?: { data: string; mimeType: string }[] };
     if (!message || !message.trim()) {
       res.status(400).json({ error: "message is required" });
       return;
     }
 
-    // Validate image if provided
-    if (image) {
+    // Validate images array if provided
+    if (images) {
+      if (!Array.isArray(images)) {
+        res.status(400).json({ error: "images must be an array" });
+        return;
+      }
+
+      const MAX_IMAGES = 3;
+      if (images.length > MAX_IMAGES) {
+        res.status(400).json({ error: `Too many images: ${images.length} exceeds the maximum of ${MAX_IMAGES}` });
+        return;
+      }
+
       const ALLOWED_MIME_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"];
       const MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB
 
-      if (!image.data || !image.mimeType) {
-        res.status(400).json({ error: "Image must include both 'data' (base64) and 'mimeType'" });
-        return;
-      }
+      for (let i = 0; i < images.length; i++) {
+        const img = images[i];
 
-      if (!ALLOWED_MIME_TYPES.includes(image.mimeType)) {
-        res.status(400).json({ error: `Unsupported image type: ${image.mimeType}. Allowed: ${ALLOWED_MIME_TYPES.join(", ")}` });
-        return;
-      }
+        if (!img.data || !img.mimeType) {
+          res.status(400).json({ error: `Image ${i + 1}: must include both 'data' (base64) and 'mimeType'` });
+          return;
+        }
 
-      const decodedSize = Buffer.byteLength(image.data, "base64");
-      if (decodedSize > MAX_IMAGE_SIZE) {
-        res.status(400).json({ error: `Image too large: ${(decodedSize / 1024 / 1024).toFixed(1)}MB exceeds the 10MB limit` });
-        return;
+        if (!ALLOWED_MIME_TYPES.includes(img.mimeType)) {
+          res.status(400).json({ error: `Image ${i + 1}: unsupported type ${img.mimeType}. Allowed: ${ALLOWED_MIME_TYPES.join(", ")}` });
+          return;
+        }
+
+        const decodedSize = Buffer.byteLength(img.data, "base64");
+        if (decodedSize > MAX_IMAGE_SIZE) {
+          res.status(400).json({ error: `Image ${i + 1}: too large (${(decodedSize / 1024 / 1024).toFixed(1)}MB exceeds the 10MB limit)` });
+          return;
+        }
       }
     }
 
     try {
-      const sent = await sendPrompt(sessionId, message.trim(), image);
+      const sent = await sendPrompt(sessionId, message.trim(), images);
       if (!sent) {
         res.status(400).json({ error: "Could not send message — session may not be running" });
         return;

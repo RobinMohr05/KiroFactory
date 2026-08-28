@@ -447,7 +447,7 @@ export class KiroRunner {
   }
 
   /** Send a prompt and yield streaming updates as they arrive. */
-  async *prompt(text: string, image?: { data: string; mimeType: string }): AsyncGenerator<SessionUpdateChunk> {
+  async *prompt(text: string, images?: { data: string; mimeType: string }[]): AsyncGenerator<SessionUpdateChunk> {
     if (!this.sessionId) throw new Error("No active session");
 
     this.turnDone = false;
@@ -458,8 +458,10 @@ export class KiroRunner {
     const contentBlocks: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [
       { type: "text" as const, text },
     ];
-    if (image) {
-      contentBlocks.push({ type: "image" as const, data: image.data, mimeType: image.mimeType });
+    if (images) {
+      for (const image of images) {
+        contentBlocks.push({ type: "image" as const, data: image.data, mimeType: image.mimeType });
+      }
     }
 
     const promptDone = this.conn
