@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useApp } from '../context/AppContext';
 import { apiFetch } from '../utils/api';
+import { renderPlannerMarkdown } from '../utils/renderPlannerMarkdown';
 import type { OutputEntry, SessionActivity } from '../types';
 
 interface TaskPlannerModalProps {
@@ -452,10 +453,19 @@ export function TaskPlannerModal({ onClose }: TaskPlannerModalProps) {
           {messages.map((msg, i) => {
             const isPartial = msg.text.startsWith('__PARTIAL__');
             const displayText = isPartial ? msg.text.slice('__PARTIAL__'.length) : msg.text;
+            if (msg.role === 'user') {
+              return (
+                <div key={i} className={`planner-message ${msg.role}`}>
+                  {displayText}
+                </div>
+              );
+            }
             return (
-              <div key={i} className={`planner-message ${msg.role}`}>
-                {displayText}
-              </div>
+              <div
+                key={i}
+                className={`planner-message ${msg.role}`}
+                dangerouslySetInnerHTML={{ __html: renderPlannerMarkdown(displayText) }}
+              />
             );
           })}
         </div>
