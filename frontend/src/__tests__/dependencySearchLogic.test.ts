@@ -1,34 +1,33 @@
 import { describe, it, expect } from "vitest";
 
 /**
- * Tests for the dependency combobox search logic (frontend/public/app.js).
+ * Tests for the dependency combobox search/filter logic used by TaskModal's
+ * getFilteredTasks(). The matching logic lives inline inside a useCallback in
+ * TaskModal.tsx, so we mirror the core predicate here to verify edge cases.
  *
- * Since the frontend is vanilla JS (no modules), we replicate the core matching
- * logic here to verify it handles edge cases — particularly the #id prefix
- * format shown in the placeholder text ("Search by title or #id…").
+ * Ported from backend/src/tests/dependency-search-logic.test.ts, which tested
+ * the equivalent logic from the now-deleted frontend/public/app.js (legacy
+ * vanilla-JS UI). The matching predicate is identical in the React version:
+ *   t.title.toLowerCase().includes(q) || String(t.id).includes(idQuery)
+ * where idQuery strips a leading '#' from the query.
  *
- * This function MUST be kept in sync with the actual logic in
- * `getFilteredTasks()` inside `populateTaskDependsOnSelect()` in app.js.
- * If the logic changes there, update this mirror.
+ * Keep this in sync with TaskModal.tsx's getFilteredTasks().
  */
 
-// ===== Mirror of getFilteredTasks matching logic from app.js =====
-// This MUST match the implementation in frontend/public/app.js exactly.
-// Update this when fixing the implementation.
+// Mirror of the matching predicate from TaskModal.tsx's getFilteredTasks()
 function matchesQuery(
   task: { id: number; title: string },
   query: string
 ): boolean {
   const q = query.toLowerCase().trim();
   if (!q) return false;
-  // Strip leading # for ID matching (placeholder shows "#id" format)
   const idQuery = q.startsWith("#") ? q.slice(1) : q;
   return (
     task.title.toLowerCase().includes(q) || String(task.id).includes(idQuery)
   );
 }
 
-describe("dependency combobox getFilteredTasks logic", () => {
+describe("dependency combobox getFilteredTasks logic (TaskModal.tsx)", () => {
   it("matches task by title substring (case-insensitive)", () => {
     const task = { id: 42, title: "Fix login page" };
     expect(matchesQuery(task, "login")).toBe(true);

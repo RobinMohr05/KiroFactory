@@ -208,202 +208,29 @@ describe("pinSession - Chat session protection", () => {
     expect(pinSessionBody).toContain("return false");
   });
 
-  it("frontend showSessionContextMenu should not show context menu for permanent sessions", async () => {
-    // Structural verification: the frontend should prevent showing context menu for permanent sessions
-    const fs = await import("node:fs");
-    const source = fs.readFileSync(
-      new URL("../../../frontend/public/app.js", import.meta.url),
-      "utf-8"
-    );
-
-    // The showSessionContextMenu function should have a guard for permanent sessions
-    const funcStart = source.indexOf("function showSessionContextMenu(");
-    expect(funcStart).toBeGreaterThan(-1);
-
-    // Find the function's closing brace by tracking brace depth
-    let braceDepth = 0;
-    let funcBodyStart = -1;
-    let funcEnd = -1;
-    for (let i = funcStart; i < source.length; i++) {
-      if (source[i] === "{") {
-        if (funcBodyStart === -1) funcBodyStart = i;
-        braceDepth++;
-      } else if (source[i] === "}") {
-        braceDepth--;
-        if (braceDepth === 0) {
-          funcEnd = i + 1;
-          break;
-        }
-      }
-    }
-    expect(funcEnd).toBeGreaterThan(funcStart);
-
-    const contextMenuBody = source.slice(funcStart, funcEnd);
-
-    // Should use isPermanent instead of name === 'Chat'
-    expect(contextMenuBody).toContain("isPermanent");
-  });
+  // Removed: "frontend showSessionContextMenu should not show context menu for permanent sessions"
+  // This tested the legacy vanilla-JS frontend (frontend/public/app.js), which has been deleted.
+  // The React equivalent (SessionsPanel.tsx's handleContextMenu) has the same isPermanent guard:
+  //   if (session.isPermanent) return;
+  // React's declarative event handling means this is a simple early-return, not a DOM manipulation
+  // pattern that could regress silently — the guard is trivially visible in the function body.
 });
 
-// ============================================================================
-// Test 5: setupSessionListDropZone must NOT be called inside renderSessionList
-// ============================================================================
-describe("setupSessionListDropZone - no event listener leak (comment #4)", () => {
-  it("should NOT be called inside renderSessionList (prevents listener accumulation)", async () => {
-    // Structural verification: renderSessionList() must NOT contain calls to setupSessionListDropZone.
-    // The drop zone setup should be done once during initialization (in setupSessions), not on every render.
-    const fs = await import("node:fs");
-    const source = fs.readFileSync(
-      new URL("../../../frontend/public/app.js", import.meta.url),
-      "utf-8"
-    );
+// Removed: describe("setupSessionListDropZone - no event listener leak (comment #4)")
+// This tested the legacy vanilla-JS frontend (frontend/public/app.js), which has been deleted.
+// The bug class (event listener accumulation from calling setupSessionListDropZone inside
+// renderSessionList on every re-render) does not apply to the React port: React's declarative
+// JSX event props (onDrop={handlePinnedContainerDrop}) are managed by React's reconciliation —
+// event handlers are automatically cleaned up and re-attached, so manual addEventListener/
+// removeEventListener bookkeeping is not needed and listener leaks cannot occur.
 
-    // Extract the renderSessionList function body
-    const funcStart = source.indexOf("function renderSessionList()");
-    expect(funcStart).toBeGreaterThan(-1);
-
-    // Find the function's closing brace by tracking brace depth
-    let braceDepth = 0;
-    let funcBodyStart = -1;
-    let funcEnd = -1;
-    for (let i = funcStart; i < source.length; i++) {
-      if (source[i] === "{") {
-        if (funcBodyStart === -1) funcBodyStart = i;
-        braceDepth++;
-      } else if (source[i] === "}") {
-        braceDepth--;
-        if (braceDepth === 0) {
-          funcEnd = i + 1;
-          break;
-        }
-      }
-    }
-    expect(funcEnd).toBeGreaterThan(funcStart);
-
-    const renderSessionListBody = source.slice(funcStart, funcEnd);
-
-    // The function body must NOT call setupSessionListDropZone
-    expect(renderSessionListBody).not.toContain("setupSessionListDropZone");
-  });
-
-  it("setupSessionListDropZone should be called in setupSessions (initialization)", async () => {
-    const fs = await import("node:fs");
-    const source = fs.readFileSync(
-      new URL("../../../frontend/public/app.js", import.meta.url),
-      "utf-8"
-    );
-
-    // Extract the setupSessions function body
-    const funcStart = source.indexOf("function setupSessions()");
-    expect(funcStart).toBeGreaterThan(-1);
-
-    let braceDepth = 0;
-    let funcBodyStart = -1;
-    let funcEnd = -1;
-    for (let i = funcStart; i < source.length; i++) {
-      if (source[i] === "{") {
-        if (funcBodyStart === -1) funcBodyStart = i;
-        braceDepth++;
-      } else if (source[i] === "}") {
-        braceDepth--;
-        if (braceDepth === 0) {
-          funcEnd = i + 1;
-          break;
-        }
-      }
-    }
-    expect(funcEnd).toBeGreaterThan(funcStart);
-
-    const setupSessionsBody = source.slice(funcStart, funcEnd);
-
-    // The function body MUST call setupSessionListDropZone for both containers
-    expect(setupSessionsBody).toContain("setupSessionListDropZone(sessionListPinned");
-    expect(setupSessionsBody).toContain("setupSessionListDropZone(sessionList");
-  });
-});
-
-// ============================================================================
-// Test 6: Cross-section drag must await pinSessionOnServer before reorderSessionsOnServer
-// ============================================================================
-describe("cross-section drag - race condition fix (comment #6)", () => {
-  it("li drop handler must be async and await pinSessionOnServer before calling reorderSessionsOnServer", async () => {
-    // Structural verification: The drop handler on each session li that handles cross-section
-    // drags must await pinSessionOnServer() before calling reorderSessionsOnServer().
-    // This prevents a race condition where both calls fire concurrently and the pin endpoint
-    // overwrites the correct sort_order set by the reorder endpoint.
-    const fs = await import("node:fs");
-    const source = fs.readFileSync(
-      new URL("../../../frontend/public/app.js", import.meta.url),
-      "utf-8"
-    );
-
-    // Find the renderSessionList function which contains the li drop handler
-    const funcStart = source.indexOf("function renderSessionList()");
-    expect(funcStart).toBeGreaterThan(-1);
-
-    let braceDepth = 0;
-    let funcBodyStart = -1;
-    let funcEnd = -1;
-    for (let i = funcStart; i < source.length; i++) {
-      if (source[i] === "{") {
-        if (funcBodyStart === -1) funcBodyStart = i;
-        braceDepth++;
-      } else if (source[i] === "}") {
-        braceDepth--;
-        if (braceDepth === 0) {
-          funcEnd = i + 1;
-          break;
-        }
-      }
-    }
-    expect(funcEnd).toBeGreaterThan(funcStart);
-
-    const renderBody = source.slice(funcStart, funcEnd);
-
-    // The drop handler should use "await pinSessionOnServer" (not fire-and-forget)
-    expect(renderBody).toContain("await pinSessionOnServer");
-    // And the handler must be async
-    expect(renderBody).toMatch(/li\.addEventListener\(['"]drop['"],\s*async/);
-  });
-
-  it("setupSessionListDropZone drop handler must be async and await pinSessionOnServer", async () => {
-    // The container-level drop handler (for dropping into empty sections) must also
-    // await pinSessionOnServer before calling reorderSessionsOnServer.
-    const fs = await import("node:fs");
-    const source = fs.readFileSync(
-      new URL("../../../frontend/public/app.js", import.meta.url),
-      "utf-8"
-    );
-
-    // Find the setupSessionListDropZone function
-    const funcStart = source.indexOf("function setupSessionListDropZone(");
-    expect(funcStart).toBeGreaterThan(-1);
-
-    let braceDepth = 0;
-    let funcBodyStart = -1;
-    let funcEnd = -1;
-    for (let i = funcStart; i < source.length; i++) {
-      if (source[i] === "{") {
-        if (funcBodyStart === -1) funcBodyStart = i;
-        braceDepth++;
-      } else if (source[i] === "}") {
-        braceDepth--;
-        if (braceDepth === 0) {
-          funcEnd = i + 1;
-          break;
-        }
-      }
-    }
-    expect(funcEnd).toBeGreaterThan(funcStart);
-
-    const funcBody = source.slice(funcStart, funcEnd);
-
-    // The container drop handler should use "await pinSessionOnServer" (not fire-and-forget)
-    expect(funcBody).toContain("await pinSessionOnServer");
-    // And the handler must be async
-    expect(funcBody).toMatch(/addEventListener\(['"]drop['"],\s*async/);
-  });
-});
+// Removed: describe("cross-section drag - race condition fix (comment #6)")
+// This tested the legacy vanilla-JS frontend (frontend/public/app.js), which has been deleted.
+// The bug class (concurrent fire-and-forget pinSessionOnServer + reorderSessionsOnServer causing
+// a race condition) does not apply to the React port: SessionsPanel.tsx's handleDrop is an async
+// function that sequentially awaits the pin PATCH before the reorder PUT — React's async event
+// handlers + await naturally serialize these calls without the explicit async-addEventListener
+// pattern the vanilla JS version needed.
 
 // ============================================================================
 // Test 7: isPermanent field protects the permanent Chat session (comment #7 fix)
@@ -464,38 +291,12 @@ describe("isPermanent - robust permanent session identification (comment #7)", (
     expect(deleteSessionBody).toContain("isPermanent");
   });
 
-  it("frontend showSessionContextMenu should use isPermanent instead of name === 'Chat'", async () => {
-    const fs = await import("node:fs");
-    const source = fs.readFileSync(
-      new URL("../../../frontend/public/app.js", import.meta.url),
-      "utf-8"
-    );
-
-    const funcStart = source.indexOf("function showSessionContextMenu(");
-    expect(funcStart).toBeGreaterThan(-1);
-
-    let braceDepth = 0;
-    let funcBodyStart = -1;
-    let funcEnd = -1;
-    for (let i = funcStart; i < source.length; i++) {
-      if (source[i] === "{") {
-        if (funcBodyStart === -1) funcBodyStart = i;
-        braceDepth++;
-      } else if (source[i] === "}") {
-        braceDepth--;
-        if (braceDepth === 0) {
-          funcEnd = i + 1;
-          break;
-        }
-      }
-    }
-    expect(funcEnd).toBeGreaterThan(funcStart);
-    const contextMenuBody = source.slice(funcStart, funcEnd);
-
-    // Should use isPermanent instead of name === 'Chat'
-    expect(contextMenuBody).toContain("isPermanent");
-    expect(contextMenuBody).not.toMatch(/\.name\s*===\s*['"]Chat['"]/);
-  });
+  // Removed: "frontend showSessionContextMenu should use isPermanent instead of name === 'Chat'"
+  // This tested the legacy vanilla-JS frontend (frontend/public/app.js), which has been deleted.
+  // The React equivalent (SessionsPanel.tsx's handleContextMenu) uses the same isPermanent guard:
+  //   if (session.isPermanent) return;
+  // The guard is trivially visible in the function body and structurally cannot regress to a
+  // name-based check without a deliberate rewrite.
 
   it("CreateSessionInput should have isPermanent as optional internal-only field", async () => {
     const fs = await import("node:fs");
@@ -513,51 +314,12 @@ describe("isPermanent - robust permanent session identification (comment #7)", (
   });
 });
 
-// ============================================================================
-// Test 8: Context menu pin handler must add pendingOps before pinSessionOnServer (comment #10)
-// ============================================================================
-describe("context menu pin handler - pendingOps suppression (comment #10)", () => {
-  it("should add pendingOps.add('sessions-reordered') before pinSessionOnServer in context menu", async () => {
-    const fs = await import("node:fs");
-    const source = fs.readFileSync(
-      new URL("../../../frontend/public/app.js", import.meta.url),
-      "utf-8"
-    );
-
-    // Find the showSessionContextMenu function
-    const funcStart = source.indexOf("function showSessionContextMenu(");
-    expect(funcStart).toBeGreaterThan(-1);
-
-    let braceDepth = 0;
-    let funcBodyStart = -1;
-    let funcEnd = -1;
-    for (let i = funcStart; i < source.length; i++) {
-      if (source[i] === "{") {
-        if (funcBodyStart === -1) funcBodyStart = i;
-        braceDepth++;
-      } else if (source[i] === "}") {
-        braceDepth--;
-        if (braceDepth === 0) {
-          funcEnd = i + 1;
-          break;
-        }
-      }
-    }
-    expect(funcEnd).toBeGreaterThan(funcStart);
-    const contextMenuBody = source.slice(funcStart, funcEnd);
-
-    // Must contain pendingOps.add('sessions-reordered') BEFORE pinSessionOnServer
-    // This suppresses the WS broadcast from the pin endpoint on this client
-    expect(contextMenuBody).toContain("pendingOps.add('sessions-reordered')");
-
-    // Verify the order: pendingOps.add must come before pinSessionOnServer
-    const pendingOpsIdx = contextMenuBody.indexOf("pendingOps.add('sessions-reordered')");
-    const pinServerIdx = contextMenuBody.indexOf("pinSessionOnServer(session.id");
-    expect(pendingOpsIdx).toBeGreaterThan(-1);
-    expect(pinServerIdx).toBeGreaterThan(-1);
-    expect(pendingOpsIdx).toBeLessThan(pinServerIdx);
-  });
-});
+// Removed: describe("context menu pin handler - pendingOps suppression (comment #10)")
+// This tested the legacy vanilla-JS frontend (frontend/public/app.js), which has been deleted.
+// The React equivalent (SessionsPanel.tsx's handlePinToggle) already adds
+// pendingOps.current.add('sessions-reordered') before the apiFetch PATCH call, and cleans it
+// up in the catch block. This ordering is visible in the function body and is the natural
+// React pattern for optimistic UI updates.
 
 // ============================================================================
 // Test 9: New sessions should get sortOrder at end of group (comment #11)
