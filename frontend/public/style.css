@@ -975,9 +975,8 @@ textarea:focus {
   border: 1px solid var(--border-color);
   border-radius: var(--radius);
   padding: 1.5rem;
-  width: 90%;
-  max-width: 480px;
-  max-height: 90vh;
+  width: min(92vw, 700px);
+  max-height: min(90vh, 800px);
   overflow-y: auto;
   box-shadow: var(--shadow-lg);
 }
@@ -1029,6 +1028,23 @@ textarea:focus {
 .form-actions-right {
   display: flex;
   gap: 0.75rem;
+}
+
+@media (max-width: 768px) {
+  .modal-backdrop {
+    align-items: stretch;
+    justify-content: stretch;
+  }
+  .modal:not(.modal-confirm),
+  .modal-wide,
+  .task-planner-modal {
+    width: 100vw;
+    height: 100dvh;
+    max-height: 100dvh;
+    max-width: none;
+    border-radius: 0;
+    margin: 0;
+  }
 }
 
 /* ===== Dependency Combobox ===== */
@@ -2233,7 +2249,12 @@ textarea:focus {
 
 /* ===== Agent Modal (wider) ===== */
 .modal-wide {
-  max-width: 640px;
+  width: min(92vw, 1000px);
+  max-height: min(90vh, 900px);
+}
+
+.modal-confirm {
+  max-width: 420px;
 }
 
 /* ===== Mode Toggle ===== */
@@ -2911,9 +2932,9 @@ textarea:focus {
 
 /* ===== Task Planner Chat Modal ===== */
 .task-planner-modal {
-  max-width: 600px;
-  height: 70vh;
-  max-height: 70vh;
+  width: min(92vw, 900px);
+  height: min(85vh, 900px);
+  max-height: min(85vh, 900px);
   display: flex;
   flex-direction: column;
   padding: 0;
