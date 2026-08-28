@@ -1,4 +1,9 @@
-# Vibecode Heaven Worker — Runs kiro-cli acp inside ACA Jobs
+# KiroFactory Worker devcontainer — runs kiro-cli acp both as an ACA Job (hosted)
+# and as a one-shot local Docker container inside the kirofactory-docker WSL distro.
+#
+# Build context is the worker/ folder (one level up from this file), same as the
+# Dockerfile it replaces: `docker build -f worker/.devcontainer/Dockerfile worker/`
+# or `devcontainer build --workspace-folder worker/`.
 FROM node:22-slim
 
 # Install git, curl, unzip (needed for clone/push and kiro-cli installer),

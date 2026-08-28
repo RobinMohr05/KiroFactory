@@ -1,8 +1,7 @@
----
-inclusion: always
----
-
 # Azure Infrastructure — Actual Resource Names (learned by discovery)
+
+> Moved here from `.kiro/steering/azure-infra-notes.md` on 2026-08-26 — deep infra/debugging
+> reference, only relevant when touching Azure resources or logs, not on every request.
 
 The `infra/*.sh` scripts use placeholder defaults (`kirofactory-rg`, `kirofactory-logs`,
 `kirofactory-orchestrator`) that do **not** match what is actually deployed. Don't trust

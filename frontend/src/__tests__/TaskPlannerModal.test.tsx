@@ -86,6 +86,50 @@ describe('TaskPlannerModal - session leak prevention', () => {
     expect(deleteCalls[0][0]).toBe('/api/task-planner/100');
   });
 
+  it('cleans up the orphaned session when unmount happens BEFORE /start resolves (true StrictMode timing)', async () => {
+    // React StrictMode's mount->cleanup->remount cycle runs the cleanup
+    // synchronously, immediately after mount — well before any in-flight
+    // network request has a chance to resolve. Use a manually-controlled
+    // deferred promise so we can unmount while /start is still pending,
+    // then resolve it afterward, to reproduce that exact ordering.
+    let resolveStart: ((value: { ok: boolean; json: () => Promise<{ sessionId: number }> }) => void) | null = null;
+    const startPromise = new Promise<{ ok: boolean; json: () => Promise<{ sessionId: number }> }>((resolve) => {
+      resolveStart = resolve;
+    });
+
+    apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (url === '/api/task-planner/start' && opts?.method === 'POST') {
+        return startPromise;
+      }
+      if (opts?.method === 'DELETE') {
+        return { ok: true, json: async () => ({}) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+
+    mockUseApp({ currentTabId: 1 });
+
+    const { unmount } = render(<TaskPlannerModal onClose={vi.fn()} />);
+
+    // Unmount immediately — /start is still pending, so at this point
+    // createdSessionId is still null inside the effect closure.
+    unmount();
+
+    // Now let /start resolve, AFTER cleanup has already run.
+    await act(async () => {
+      resolveStart!({ ok: true, json: async () => ({ sessionId: 100 }) });
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    // The session created by the now-cancelled effect must still be deleted —
+    // not silently abandoned/leaked as a live backend session + kiro-cli process.
+    const deleteCalls = apiFetchMock.mock.calls.filter(
+      ([url, opts]) => typeof url === 'string' && url.includes('/api/task-planner/') && opts?.method === 'DELETE'
+    );
+    expect(deleteCalls.length).toBe(1);
+    expect(deleteCalls[0][0]).toBe('/api/task-planner/100');
+  });
+
   it('cleans up session on unmount even if fetch already resolved', async () => {
     apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
       if (url === '/api/task-planner/start' && opts?.method === 'POST') {
@@ -123,6 +167,51 @@ describe('TaskPlannerModal - session leak prevention', () => {
     );
     expect(deleteCalls.length).toBe(1);
     expect(deleteCalls[0][0]).toBe('/api/task-planner/42');
+  });
+
+  it('does not show a duplicate "Starting..." message under StrictMode double-invoke', async () => {
+    // Reproduces the real StrictMode dev race: the effect's cleanup for the
+    // FIRST run fires before its /start call has resolved (so that run is
+    // cancelled pre-adoption), then the SECOND run's /start resolves and is
+    // adopted. Both runs call setMessages on the same component instance, so
+    // a naive unconditional addMessage() at the top of the effect leaves two
+    // "Starting..." lines behind even though only one session is ever live.
+    let resolveFirstStart: ((value: { ok: boolean; json: () => Promise<{ sessionId: number }> }) => void) | null = null;
+    const firstStartPromise = new Promise<{ ok: boolean; json: () => Promise<{ sessionId: number }> }>((resolve) => {
+      resolveFirstStart = resolve;
+    });
+    let startCallCount = 0;
+    apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (url === '/api/task-planner/start' && opts?.method === 'POST') {
+        startCallCount++;
+        if (startCallCount === 1) return firstStartPromise;
+        return { ok: true, json: async () => ({ sessionId: 200 }) };
+      }
+      if (opts?.method === 'DELETE') {
+        return { ok: true, json: async () => ({}) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+
+    mockUseApp({ currentTabId: 1 });
+
+    const { rerender, getAllByText } = render(<TaskPlannerModal onClose={vi.fn()} />);
+
+    // Force the effect to re-run on the SAME instance (StrictMode-style
+    // cleanup->rerun without unmount) WHILE the first /start is still pending.
+    mockUseApp({ currentTabId: 2 });
+    rerender(<TaskPlannerModal onClose={vi.fn()} />);
+
+    // Now resolve the first (now-cancelled) /start call, and let the second
+    // run's /start (which resolves synchronously) settle too.
+    await act(async () => {
+      resolveFirstStart!({ ok: true, json: async () => ({ sessionId: 100 }) });
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    // Only one "Starting AI Task Planner..." line should be visible — the
+    // first run's message must have been retracted since it was never adopted.
+    expect(getAllByText('Starting AI Task Planner...').length).toBe(1);
   });
 
   it('does not double-delete when handleClose is used normally', async () => {

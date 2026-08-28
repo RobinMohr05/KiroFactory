@@ -18,7 +18,7 @@
  */
 
 import { spawn, execSync, execFileSync } from "node:child_process";
-import { WebSocket } from "ws";
+import { WebSocket, WebSocketServer } from "ws";
 import { mkdirSync, existsSync, writeFileSync, appendFileSync, readFileSync, unlinkSync } from "node:fs";
 import { buildGroupPrContent, findSiblingPrUrl } from "./shared-branch-utils.js";
 import { buildSpawnEnv } from "./spawn-env.js";
@@ -34,6 +34,24 @@ const SESSION_ID = process.env.SESSION_ID;
 const SESSION_ID_NUM = Number(SESSION_ID);
 const ORCHESTRATOR_URL = process.env.ORCHESTRATOR_URL;
 const WORKER_SECRET = process.env.WORKER_SECRET;
+/**
+ * When set, the worker starts a local WebSocket SERVER and waits for the
+ * orchestrator to dial in, instead of dialing out to ORCHESTRATOR_URL.
+ *
+ * Set only by backend/src/wsl-worker-spawner.ts. Local WSL/Docker sessions run
+ * inside a WSL2 distro whose own outbound connections to the Windows host
+ * (VM → host) are blocked by Windows Firewall by default and require admin
+ * rights to allow — whereas the reverse direction (Windows host → WSL2 VM,
+ * e.g. via `docker port` + `localhost:<port>`) works out of the box with no
+ * firewall rule needed. Reversing which side dials avoids that boundary
+ * entirely. The ACA production path is unaffected — it never sets this var,
+ * so it keeps using connectWithRetry()'s dial-out behavior unchanged.
+ *
+ * The value is the local port to listen on (e.g. "9091"); everything past the
+ * initial transport setup (auth, message routing, heartbeat) is identical
+ * between both modes — see wireSocket() below.
+ */
+const WORKER_LISTEN_PORT = process.env.WORKER_LISTEN_MODE ? Number(process.env.WORKER_LISTEN_MODE) : null;
 const TASK_ID = process.env.TASK_ID;
 const AGENT_NAME = process.env.AGENT_NAME ?? "developer-agent";
 /** Agent kind: "editor" commits/pushes changes, "inspector" discards unexpected changes. */
@@ -125,11 +143,12 @@ function logError(msg, extra) {
 // Validation
 // ---------------------------------------------------------------------------
 
-if (!SESSION_ID || !ORCHESTRATOR_URL || !WORKER_SECRET) {
+if (!SESSION_ID || !WORKER_SECRET || (!ORCHESTRATOR_URL && !WORKER_LISTEN_PORT)) {
   logError("Missing required env vars", {
     hasSessionId: !!SESSION_ID,
     hasOrchestratorUrl: !!ORCHESTRATOR_URL,
     hasWorkerSecret: !!WORKER_SECRET,
+    hasListenPort: !!WORKER_LISTEN_PORT,
   });
   process.exit(1);
 }
@@ -156,21 +175,96 @@ let currentBranchName = null;
 function connectWithRetry(attempt = 1) {
   logInfo("Connecting to orchestrator", { url: ORCHESTRATOR_URL, attempt, maxAttempts: CONNECT_MAX_ATTEMPTS });
 
-  ws = new WebSocket(ORCHESTRATOR_URL);
+  const socket = new WebSocket(ORCHESTRATOR_URL);
 
   // If the socket neither opens nor errors (e.g. stuck TLS handshake), don't
   // hang forever — force a retry.
   const openTimeout = setTimeout(() => {
     if (!connected) {
       logError("Connection attempt timed out", { attempt });
-      try { ws.terminate(); } catch { /* noop */ }
+      try { socket.terminate(); } catch { /* noop */ }
     }
   }, CONNECT_RETRY_DELAY_MS);
 
+  wireSocket(socket, {
+    onOpen: () => clearTimeout(openTimeout),
+    onCloseBeforeAuth: () => {
+      clearTimeout(openTimeout);
+      logError("Socket closed before authentication", { attempt });
+      retryOrGiveUp(attempt);
+    },
+    onError: (err) => {
+      clearTimeout(openTimeout);
+      // Log but let the "close" handler drive retry/give-up so we don't do it twice.
+      logError("WebSocket error", { attempt, error: err?.message || String(err) });
+    },
+  });
+}
+
+/**
+ * Listen-mode counterpart to connectWithRetry(): start a local WebSocket
+ * server and wait for the orchestrator to dial in, instead of dialing out.
+ * See WORKER_LISTEN_PORT's doc comment above for why this exists.
+ *
+ * Only ever accepts (and authenticates) a single connection — one worker
+ * container serves exactly one session — after which the server is closed;
+ * a reconnect attempt after that point is treated the same as any other
+ * post-auth disconnect (session over, see wireSocket()'s onCloseAfterAuth).
+ */
+function listenForOrchestrator(port) {
+  logInfo("Waiting for orchestrator to connect", { port });
+
+  const wss = new WebSocketServer({ port, host: "0.0.0.0" });
+  let accepted = false;
+
+  wss.on("connection", (socket) => {
+    if (accepted) {
+      // Shouldn't happen (one session per container) — refuse extras rather
+      // than silently taking over the active connection.
+      try { socket.close(1013, "worker already has an active connection"); } catch { /* noop */ }
+      return;
+    }
+    accepted = true;
+    try { wss.close(); } catch { /* noop */ } // stop listening once we have our one connection
+
+    logInfo("Orchestrator connected");
+    connected = true;
+    startHeartbeat();
+
+    wireSocket(socket, {
+      onCloseBeforeAuth: () => {
+        logError("Socket closed before authentication — exiting (listen mode has no retry loop)");
+        process.exit(1);
+      },
+      onError: (err) => {
+        logError("WebSocket error", { error: err?.message || String(err) });
+      },
+    });
+  });
+
+  wss.on("error", (err) => {
+    logError("Failed to start listen-mode WebSocket server", { port, error: err?.message || String(err) });
+    process.exit(1);
+  });
+}
+
+/**
+ * Wire up the message/close/error handling shared by both connection modes.
+ * `socket` is already open by the time this is called (WebSocketServer only
+ * emits "connection" for an already-completed handshake; the dial-out path
+ * calls this immediately and relies on the "open" event below).
+ *
+ * `hooks.onOpen` — dial-out only: clear the connect-attempt timeout.
+ * `hooks.onCloseBeforeAuth` — socket closed before auth ever completed.
+ * `hooks.onError` — any socket error; the "close" handler drives retry/exit.
+ */
+function wireSocket(socket, hooks) {
+  ws = socket;
+
   ws.on("open", () => {
-    clearTimeout(openTimeout);
     connected = true;
     logInfo("WebSocket open — authenticating");
+    hooks.onOpen?.();
 
     ws.send(JSON.stringify({
       action: "worker-auth",
@@ -180,6 +274,17 @@ function connectWithRetry(attempt = 1) {
 
     startHeartbeat();
   });
+
+  // Listen-mode sockets are already open when handed to us — no "open" event
+  // will fire, so authenticate immediately instead of waiting for one.
+  if (socket.readyState === WebSocket.OPEN) {
+    logInfo("WebSocket open — authenticating");
+    ws.send(JSON.stringify({
+      action: "worker-auth",
+      sessionId: SESSION_ID_NUM,
+      secret: WORKER_SECRET,
+    }));
+  }
 
   ws.on("message", (data) => {
     let msg;
@@ -192,9 +297,7 @@ function connectWithRetry(attempt = 1) {
   });
 
   ws.on("close", (code, reason) => {
-    clearTimeout(openTimeout);
     stopHeartbeat();
-    const wasConnected = connected;
     connected = false;
 
     if (authenticated) {
@@ -204,15 +307,11 @@ function connectWithRetry(attempt = 1) {
       return;
     }
 
-    // Never authenticated — retry unless we've exhausted attempts.
-    logError("Socket closed before authentication", { code, reason: reason?.toString(), attempt });
-    retryOrGiveUp(attempt);
+    hooks.onCloseBeforeAuth?.();
   });
 
   ws.on("error", (err) => {
-    clearTimeout(openTimeout);
-    // Log but let the "close" handler drive retry/give-up so we don't do it twice.
-    logError("WebSocket error", { attempt, error: err?.message || String(err) });
+    hooks.onError?.(err);
   });
 }
 
@@ -2886,4 +2985,8 @@ process.on("SIGINT", () => gracefulShutdown(0));
 // Start
 // ---------------------------------------------------------------------------
 
-connectWithRetry();
+if (WORKER_LISTEN_PORT) {
+  listenForOrchestrator(WORKER_LISTEN_PORT);
+} else {
+  connectWithRetry();
+}

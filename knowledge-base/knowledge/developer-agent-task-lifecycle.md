@@ -1,8 +1,8 @@
----
-inclusion: always
----
-
 # Task Pipeline — How Agents Claim, Execute, and Resolve Tasks
+
+> Moved here from `.kiro/steering/developer-agent-task-lifecycle.md` on 2026-08-26 — deep
+> pipeline internals, only relevant when debugging/working the task pipeline itself, not on
+> every request.
 
 This document describes how Vibecode Heaven tasks move through the board autonomously. There
 is **no standalone agent script** — everything below is driven by `session-manager.ts` calling

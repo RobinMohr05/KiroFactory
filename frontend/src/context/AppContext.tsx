@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState, useCallback, type ReactNode } from 'react';
-import type { Tab, Task, Session, Agent, AgentError, OutputEntry, SessionActivity, User, ViewTab, WsMessage } from '../types';
+import type { Tab, Task, Session, Agent, AgentError, OutputEntry, SessionActivity, User, ViewTab, UiViewMode, WsMessage } from '../types';
 import { apiFetch } from '../utils/api';
 
 interface AppState {
@@ -15,8 +15,6 @@ interface AppState {
   activeAgentId: number | null;
   activeView: ViewTab;
   currentSort: 'priority' | 'updated' | 'created';
-  boardSessions: { id: number; name: string; agent?: string; status: string }[];
-  boardAgents: string[];
   highlightedTaskId: number | null;
 }
 
@@ -39,6 +37,13 @@ interface AppContextValue extends AppState {
   fetchErrors: () => Promise<void>;
   logout: () => Promise<void>;
   pendingOps: React.MutableRefObject<Set<string>>;
+  /**
+   * Switch the user's top-level UI view mode. Persists to the backend first;
+   * only updates local `user` state (which App.tsx gates layout on) if the
+   * API call succeeds. Throws on failure so callers (the confirmation UI)
+   * can show an error instead of silently flipping the view.
+   */
+  setUiViewMode: (mode: UiViewMode) => Promise<void>;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -62,8 +67,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [activeAgentId, setActiveAgentId] = useState<number | null>(null);
   const [currentSort, setCurrentSort] = useState<'priority' | 'updated' | 'created'>('priority');
   const [activeView, setActiveView] = useState<ViewTab>('boards');
-  const [boardSessions, setBoardSessions] = useState<{ id: number; name: string; agent?: string; status: string }[]>([]);
-  const [boardAgents, setBoardAgents] = useState<string[]>([]);
   const [highlightedTaskId, setHighlightedTaskId] = useState<number | null>(null);
 
   const pendingOps = useRef<Set<string>>(new Set());
@@ -110,8 +113,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!res.ok) return;
       const data = await res.json();
       setTasks(data.tasks || []);
-      setBoardSessions(data.sessions || []);
-      setBoardAgents(data.agents || []);
     } catch (e) {
       console.error('Failed to fetch tab tasks:', e);
     }
@@ -155,6 +156,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
       await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' });
     } catch { /* ignore */ }
     window.location.href = '/login.html';
+  }, []);
+
+  const setUiViewMode = useCallback(async (mode: UiViewMode) => {
+    const res = await apiFetch('/api/auth/me/view-mode', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ uiViewMode: mode }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || `Failed to switch view mode (HTTP ${res.status})`);
+    }
+    const data = await res.json();
+    setUser(data.user);
   }, []);
 
   // --- WebSocket ---
@@ -340,14 +355,31 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const connectWebSocket = useCallback(() => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+
+    // Guard against React 18 StrictMode's dev-only double-invoke of this
+    // effect: mount -> cleanup -> mount happens synchronously, but
+    // WebSocket.close() is asynchronous, so the first socket can still be
+    // OPEN (and still registered in the server's per-user client set) when
+    // the second socket connects. Without this guard, every broadcast is
+    // briefly delivered twice to the same tab (visible as duplicated lines
+    // in the session output log). Tagging each socket and checking it's
+    // still the "current" one before acting on open/message/close ensures a
+    // superseded socket is inert — it gets forced closed and never invokes
+    // handleWsMessage — even during that overlap window.
+    const isCurrent = () => wsRef.current === ws;
     wsRef.current = ws;
 
     ws.addEventListener('open', () => {
+      if (!isCurrent()) {
+        ws.close();
+        return;
+      }
       setConnected(true);
       wsHasConnectedOnce.current = true;
     });
 
     ws.addEventListener('close', (event) => {
+      if (!isCurrent()) return;
       setConnected(false);
       wsRef.current = null;
       if (event.code === 4001) {
@@ -367,6 +399,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
 
     ws.addEventListener('message', (event) => {
+      if (!isCurrent()) return;
       try {
         const message = JSON.parse(event.data) as WsMessage;
         handleWsMessage(message);
@@ -385,7 +418,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     fetchErrors();
 
     return () => {
-      if (wsRef.current) wsRef.current.close();
+      // Detach immediately so a stale socket (still closing async) never
+      // gets treated as current — see the isCurrent() guard in
+      // connectWebSocket for why this matters under StrictMode.
+      const staleWs = wsRef.current;
+      wsRef.current = null;
+      if (staleWs) staleWs.close();
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
     };
   }, [connectWebSocket, fetchTabs, fetchSessions, fetchAgents, fetchErrors]);
@@ -447,8 +485,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     activeAgentId,
     activeView,
     currentSort,
-    boardSessions,
-    boardAgents,
     highlightedTaskId,
     setCurrentTabId,
     setActiveSessionId,
@@ -468,6 +504,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     fetchErrors,
     logout,
     pendingOps,
+    setUiViewMode,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

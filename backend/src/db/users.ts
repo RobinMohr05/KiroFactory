@@ -9,8 +9,8 @@
  */
 
 import { readQuery, writeQuery } from "./connection.js";
-import type { User, CreateUserInput, GitProvider } from "../types.js";
-import { isGitProvider } from "../types.js";
+import type { User, CreateUserInput, GitProvider, UiViewMode } from "../types.js";
+import { isGitProvider, isUiViewMode } from "../types.js";
 import bcrypt from "bcrypt";
 import { encrypt, decrypt } from "../crypto.js";
 import { getNextId } from "./id-counter.js";
@@ -34,10 +34,13 @@ interface NodeResult {
  */
 function mapNodeToUser(props: Record<string, unknown>): User {
   const provider = props.defaultGitProvider as string | null | undefined;
+  const viewMode = props.uiViewMode as string | undefined;
   return {
     id: props.id as number,
     email: props.email as string,
     defaultGitProvider: isGitProvider(provider) ? provider : null,
+    // Default to "easy" for rows that predate this column (existing users).
+    uiViewMode: isUiViewMode(viewMode) ? viewMode : "easy",
     // createdAt/updatedAt come back as neo4j-driver DateTime values, not a JS
     // Date — .toString() on those produces an ISO 8601 string directly.
     createdAt: (props.createdAt as { toString(): string }).toString(),
@@ -64,6 +67,7 @@ export async function createUser(input: CreateUserInput): Promise<User> {
          email: $email,
          passwordHash: $passwordHash,
          kiroApiKeyEncrypted: $encrypted,
+         uiViewMode: "easy",
          createdAt: datetime(),
          updatedAt: datetime()
        })
@@ -193,6 +197,26 @@ export async function updateUserDefaultGitProvider(
        SET u.defaultGitProvider = $provider, u.updatedAt = datetime()
        RETURN u`,
       { id: userId, provider }
+    );
+    if (result.records.length === 0) return null;
+    const node = result.records[0].get("u") as NodeResult;
+    return mapNodeToUser(node.properties);
+  });
+}
+
+/**
+ * Set the user's top-level UI view mode ("easy" or "advanced").
+ */
+export async function updateUserViewMode(
+  userId: number,
+  viewMode: UiViewMode
+): Promise<User | null> {
+  return writeQuery(async (tx: ManagedTransaction) => {
+    const result = await tx.run(
+      `MATCH (u:User {id: $id})
+       SET u.uiViewMode = $viewMode, u.updatedAt = datetime()
+       RETURN u`,
+      { id: userId, viewMode }
     );
     if (result.records.length === 0) return null;
     const node = result.records[0].get("u") as NodeResult;

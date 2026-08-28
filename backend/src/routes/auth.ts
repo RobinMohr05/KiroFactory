@@ -1,11 +1,11 @@
 import { Router, type Request, type Response } from "express";
 import jwt from "jsonwebtoken";
-import { createUser, verifyPassword, verifyPasswordById, getUserById, getUserByEmail, updateUserPassword, updateUserKiroApiKey, updateUserDefaultGitProvider, deleteUser } from "../db/users.js";
+import { createUser, verifyPassword, verifyPasswordById, getUserById, getUserByEmail, updateUserPassword, updateUserKiroApiKey, updateUserDefaultGitProvider, updateUserViewMode, deleteUser } from "../db/users.js";
 import { isRegistrationEnabled } from "../db/settings.js";
 import { createSession } from "../session-manager.js";
 import { getUserId } from "../middleware/auth.js";
 import type { CreateUserInput, AuthenticatedRequest, GitProvider } from "../types.js";
-import { GIT_PROVIDERS, isGitProvider } from "../types.js";
+import { GIT_PROVIDERS, isGitProvider, UI_VIEW_MODES, isUiViewMode } from "../types.js";
 import { log, toErrorFields } from "../logger.js";
 
 const router = Router();
@@ -356,6 +356,38 @@ router.put("/me/default-git-provider", async (req: Request, res: Response) => {
       msg: "Failed to update default git provider",
     });
     res.status(500).json({ error: "Failed to update default git provider" });
+  }
+});
+
+// PUT /api/auth/me/view-mode — switch the user's top-level UI layout (easy/advanced)
+router.put("/me/view-mode", async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const { uiViewMode } = req.body as { uiViewMode?: string };
+
+    if (!isUiViewMode(uiViewMode)) {
+      res.status(400).json({
+        error: `uiViewMode must be one of: ${UI_VIEW_MODES.join(", ")}`,
+      });
+      return;
+    }
+
+    const user = await updateUserViewMode(userId, uiViewMode);
+    if (!user) {
+      res.status(404).json({ error: "User not found" });
+      return;
+    }
+
+    res.json({ message: "View mode updated", user });
+  } catch (err) {
+    log.error("route-error", {
+      component: "auth",
+      method: "PUT",
+      path: "/api/auth/me/view-mode",
+      ...toErrorFields(err),
+      msg: "Failed to update view mode",
+    });
+    res.status(500).json({ error: "Failed to update view mode" });
   }
 });
 

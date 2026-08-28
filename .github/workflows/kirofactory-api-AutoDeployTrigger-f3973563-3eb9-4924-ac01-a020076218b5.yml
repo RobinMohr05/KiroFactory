@@ -82,5 +82,5 @@ jobs:
             --registry kiroFactory \
             --image kirofactory-worker:${{ github.sha }} \
             --image kirofactory-worker:latest \
-            --file worker/Dockerfile \
+            --file worker/.devcontainer/Dockerfile \
             worker/

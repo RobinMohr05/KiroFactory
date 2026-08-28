@@ -122,6 +122,79 @@ function buildAwsDocsServer(): ProxyServerEntry {
 }
 
 // ---------------------------------------------------------------------------
+// Local (non-sidecar) server entries
+// ---------------------------------------------------------------------------
+
+/**
+ * Shape expected by `KiroRunner.create()`'s `mcpServers` option
+ * (`backend/src/agent/kiro-runner.ts`'s `McpServerEntry`). Duplicated here
+ * (rather than imported) to avoid a dependency from this module onto
+ * kiro-runner.ts — the two shapes are structurally identical by design.
+ */
+export interface LocalMcpServerEntry {
+  name: string;
+  command: string;
+  args: string[];
+  env: Array<{ name: string; value: string }>;
+}
+
+function toLocalEntry(name: string, entry: ProxyServerEntry): LocalMcpServerEntry {
+  return {
+    name,
+    command: entry.command,
+    args: entry.args,
+    env: Object.entries(entry.env ?? {}).map(([envName, value]) => ({ name: envName, value })),
+  };
+}
+
+/**
+ * Resolve tab-level MCP toggles + credentials into a flat list of stdio MCP
+ * server entries suitable for direct injection into `KiroRunner.create()`.
+ *
+ * This is the local-session counterpart to `buildProxyServersConfig()`: it
+ * reuses the exact same per-server builders (so toggle/credential behavior
+ * stays identical between hosted and local sessions), but skips the
+ * proxy-sidecar/servers.json/Base64-env packaging entirely — a local
+ * session's `KiroRunner` already spawns `kiro-cli` as a direct child
+ * process on the same host, so it can spawn each MCP server the same way
+ * (as its own stdio subprocess) without an intermediary container.
+ *
+ * Session-level overrides (`sessionMcpServers`) are intentionally NOT
+ * merged here — callers already have a separate path for those (passed
+ * directly to `KiroRunner.create()`'s `mcpServers` from `meta.mcpServers`).
+ * Keeping this function toggle-only mirrors `buildProxyServersConfig`'s
+ * inputs 1:1 for the parts that differ between hosted/local, and avoids
+ * this function silently duplicating entries the caller already has.
+ */
+export function buildLocalMcpServerEntries(
+  mcpConfig: TabMcpConfig,
+  credentials: SessionCredentials
+): LocalMcpServerEntry[] {
+  const entries: LocalMcpServerEntry[] = [];
+
+  if (mcpConfig.atlassian) {
+    const entry = buildAtlassianServer(credentials);
+    if (entry) entries.push(toLocalEntry("atlassian", entry));
+  }
+
+  if (mcpConfig.azureDevops) {
+    const entry = buildAzureDevopsServer(credentials);
+    if (entry) entries.push(toLocalEntry("azure-devops", entry));
+  }
+
+  if (mcpConfig.awsApi) {
+    const entry = buildAwsApiServer(credentials);
+    if (entry) entries.push(toLocalEntry("aws-api", entry));
+  }
+
+  if (mcpConfig.awsDocs) {
+    entries.push(toLocalEntry("aws-docs", buildAwsDocsServer()));
+  }
+
+  return entries;
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 

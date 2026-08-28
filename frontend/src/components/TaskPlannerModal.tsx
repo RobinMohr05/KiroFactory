@@ -50,8 +50,42 @@ export function TaskPlannerModal({ onClose }: TaskPlannerModalProps) {
   useEffect(() => {
     let cancelled = false;
     let createdSessionId: number | null = null;
+    let adopted = false;
+
+    // Shared cleanup so it can run both from the synchronous unmount path AND
+    // from the async /start resolution path (see comment below on why both
+    // call sites are needed under StrictMode's mount->cleanup->remount cycle).
+    const cleanupOrphan = () => {
+      if (createdSessionId !== null && (!adopted || sessionIdRef.current === createdSessionId)) {
+        const idToDelete = createdSessionId;
+        createdSessionId = null; // guard against a second call double-deleting
+        if (!cleanedUpSessionRef.current.has(idToDelete)) {
+          cleanedUpSessionRef.current.add(idToDelete);
+          apiFetch(`/api/task-planner/${idToDelete}`, { method: 'DELETE' }).catch(() => { /* ignore cleanup errors */ });
+        }
+      }
+      // Retract this run's own "Starting..." message if this run never got
+      // adopted (e.g. StrictMode's synchronous mount->cleanup->remount in dev
+      // cancels the first run before its /start call resolves) — otherwise a
+      // real unmount-with-adopted-session (closing the modal normally) would
+      // incorrectly erase the legitimate "Starting..." line too.
+      if (startingMessageAdded && !adopted) {
+        startingMessageAdded = false;
+        setMessages(prev => {
+          const idx = prev.findIndex(m => m === startingMessageRef);
+          if (idx === -1) return prev;
+          return [...prev.slice(0, idx), ...prev.slice(idx + 1)];
+        });
+      }
+    };
+
+    let startingMessageAdded = false;
+    let startingMessageRef: PlannerMessage | null = null;
+
     (async () => {
-      addMessage('system', 'Starting AI Task Planner...');
+      startingMessageRef = { role: 'system', text: 'Starting AI Task Planner...' };
+      startingMessageAdded = true;
+      setMessages(prev => [...prev, startingMessageRef as PlannerMessage]);
       try {
         const res = await apiFetch('/api/task-planner/start', {
           method: 'POST',
@@ -64,14 +98,19 @@ export function TaskPlannerModal({ onClose }: TaskPlannerModalProps) {
         }
         const data = await res.json();
         createdSessionId = data.sessionId;
+        // IMPORTANT: under React StrictMode (dev), the effect's cleanup runs
+        // synchronously immediately after mount — well before this `await`
+        // resolves. At that point `createdSessionId` was still null, so the
+        // synchronous cleanup below has nothing to delete yet. Without this
+        // check, the backend session/kiro-cli process created by THIS
+        // now-cancelled effect run would leak forever (two live sessions
+        // instead of one). So: if we're already cancelled by the time the
+        // response comes back, clean up right here instead of adopting it.
         if (cancelled) {
-          // Effect was already cleaned up — this session is orphaned, delete it
-          if (createdSessionId != null && !cleanedUpSessionRef.current.has(createdSessionId)) {
-            cleanedUpSessionRef.current.add(createdSessionId);
-            apiFetch(`/api/task-planner/${createdSessionId}`, { method: 'DELETE' }).catch(() => {});
-          }
+          cleanupOrphan();
           return;
         }
+        adopted = true;
         setSessionId(data.sessionId);
         setReady(true);
         setStatus('ready');
@@ -84,11 +123,13 @@ export function TaskPlannerModal({ onClose }: TaskPlannerModalProps) {
     })();
     return () => {
       cancelled = true;
-      // If we already have a session from this effect instance, clean it up
-      if (createdSessionId != null && !cleanedUpSessionRef.current.has(createdSessionId)) {
-        cleanedUpSessionRef.current.add(createdSessionId);
-        apiFetch(`/api/task-planner/${createdSessionId}`, { method: 'DELETE' }).catch(() => {});
-      }
+      // If this instance's session was never adopted into component state (effect
+      // re-run/unmount raced the /start request), or the component is unmounting
+      // with a real sessionId still held, stop the orphaned backend session/kiro-cli
+      // process instead of just abandoning it. handleClose() clears sessionId back to
+      // null after its own DELETE, so this won't fire a duplicate delete for a session
+      // already cleaned up via the Cancel button.
+      cleanupOrphan();
     };
   }, [currentTabId]);
 
@@ -257,6 +298,7 @@ export function TaskPlannerModal({ onClose }: TaskPlannerModalProps) {
       try {
         await apiFetch(`/api/task-planner/${sessionId}`, { method: 'DELETE' });
       } catch { /* ignore cleanup errors */ }
+      setSessionId(null);
     }
     onClose();
   };
@@ -294,8 +336,8 @@ export function TaskPlannerModal({ onClose }: TaskPlannerModalProps) {
   const statusDotClass = status === 'ready' ? 'status-dot connected' : status === 'thinking' ? 'status-dot thinking' : 'status-dot';
 
   return (
-    <div className="modal-backdrop task-planner-modal" onClick={(e) => { if (e.target === e.currentTarget) handleClose(); }}>
-      <div className="modal modal-wide task-planner-content" role="dialog" aria-labelledby="taskPlannerTitle">
+    <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) handleClose(); }}>
+      <div className="modal modal-wide task-planner-modal" role="dialog" aria-labelledby="taskPlannerTitle">
         <div className="task-planner-header">
           <h2 id="taskPlannerTitle">AI Task Planner</h2>
           <div className="task-planner-status">
