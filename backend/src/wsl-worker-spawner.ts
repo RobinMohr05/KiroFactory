@@ -50,8 +50,13 @@ export interface WslWorkerConfig {
   workerImage: string;
   /** Local MCP proxy sidecar image reference */
   proxyImage: string;
-  /** URL the worker uses to connect back to the orchestrator WebSocket */
-  orchestratorUrl: string;
+  /**
+   * Fixed TCP port the worker container listens on internally (WORKER_LISTEN_MODE).
+   * Published to a random host port per container via `docker run -p 0:<listenPort>`;
+   * the backend then dials `ws://localhost:<publishedPort>` to reach it. See the
+   * module doc comment above for why the connection direction is reversed for WSL.
+   */
+  workerListenPort: number;
   /** Shared secret for worker ↔ orchestrator authentication */
   workerSecret: string;
   /** Git user name for commits inside the worker */
@@ -72,7 +77,7 @@ export function loadWslConfig(): WslWorkerConfig | null {
   const distroName = process.env.WSL_DISTRO_NAME || "kirofactory-docker";
   const workerImage = process.env.WSL_WORKER_IMAGE || "kirofactory-worker:local";
   const proxyImage = process.env.WSL_PROXY_IMAGE || "";
-  const orchestratorUrl = process.env.WSL_ORCHESTRATOR_URL || "ws://host.docker.internal:3500/internal/worker";
+  const workerListenPort = Number(process.env.WSL_WORKER_LISTEN_PORT || "9091");
   const workerSecret = process.env.ACA_WORKER_SECRET || process.env.WSL_WORKER_SECRET;
   const gitUserName = process.env.GIT_USER_NAME || "KiroFactory Agent (local)";
   const gitUserEmail = process.env.GIT_USER_EMAIL || "agent@kirofactory.local";
@@ -89,7 +94,7 @@ export function loadWslConfig(): WslWorkerConfig | null {
     distroName,
     workerImage,
     proxyImage,
-    orchestratorUrl,
+    workerListenPort,
     workerSecret,
     gitUserName,
     gitUserEmail,
@@ -159,6 +164,8 @@ export interface WslWorkerExecution {
   executionName: string;
   /** Container status, mirroring AcaJobExecution's shape */
   status: string;
+  /** Host-side port (inside the WSL distro) the backend should dial to reach the worker. */
+  publishedPort: number;
 }
 
 /** Options for git workspace setup in the worker container — same shape as ACA's WorkerGitOptions. */
@@ -222,7 +229,7 @@ export async function startWorkerJob(
 
     const envArgs: string[] = [
       "-e", `SESSION_ID=${sessionId}`,
-      "-e", `ORCHESTRATOR_URL=${config.orchestratorUrl}`,
+      "-e", `WORKER_LISTEN_MODE=${config.workerListenPort}`,
       "-e", `WORKER_SECRET=${config.workerSecret}`,
       "-e", `KIRO_API_KEY=${kiroApiKey}`,
       "-e", `AGENT_NAME=${agentName}`,
@@ -292,15 +299,40 @@ export async function startWorkerJob(
       "docker", "run", "-d", "--rm",
       "--name", name,
       "--network", network,
-      "--add-host", "host.docker.internal:host-gateway",
+      // Publish the worker's listen port to a random host port inside the
+      // distro. The backend (Windows host) dials into it via WSL2's
+      // automatic localhost port-forwarding — see the module doc comment
+      // for why this direction, rather than the worker dialing out, is used.
+      "-p", `0.0.0.0:0:${config.workerListenPort}`,
       ...envArgs,
       config.workerImage,
     ]);
 
-    return { executionName: name, status: "Running" };
+    const publishedPort = await getPublishedPort(config, name);
+
+    return { executionName: name, status: "Running", publishedPort };
   } catch (err) {
     throw new Error(explainWslError("job start", config, err));
   }
+}
+
+/**
+ * Read back the host-side port Docker assigned to the worker's published
+ * listen port (`docker run -p 0.0.0.0:0:<listenPort>` picks a random free
+ * port on the distro's own network stack — we need to know which one).
+ */
+async function getPublishedPort(config: WslWorkerConfig, containerName: string): Promise<number> {
+  const { stdout } = await runInDistro(config.distroName, [
+    "docker", "port", containerName, String(config.workerListenPort),
+  ]);
+  // Output looks like "0.0.0.0:54321\n" (and possibly a second "[::]:54321" line for IPv6).
+  const match = stdout.match(/:(\d+)/);
+  if (!match) {
+    throw new Error(
+      `Could not determine published port for container ${containerName} (docker port output: ${stdout.trim() || "<empty>"})`
+    );
+  }
+  return Number(match[1]);
 }
 
 /**

@@ -72,6 +72,7 @@ import {
   sendWorkerPrompt,
   sendWorkerStop,
   isWorkerConnected,
+  connectToLocalWorker,
   type WorkerEventHandler,
 } from "./worker-ws-handler.js";
 import type {
@@ -210,8 +211,8 @@ function makeAcaSpawner(config: AcaWorkerConfig): ContainerWorkerSpawner {
 function makeWslSpawner(config: WslWorkerConfig): ContainerWorkerSpawner {
   return {
     kind: "wsl",
-    start: (sessionId, agentName, userId, timeoutSeconds, mcpSidecar, gitOptions, agentKind, agentConfigBase64) =>
-      startWslWorkerJob(
+    start: async (sessionId, agentName, userId, timeoutSeconds, mcpSidecar, gitOptions, agentKind, agentConfigBase64) => {
+      const execution = await startWslWorkerJob(
         config,
         sessionId,
         agentName,
@@ -221,7 +222,24 @@ function makeWslSpawner(config: WslWorkerConfig): ContainerWorkerSpawner {
         gitOptions as Parameters<typeof startWslWorkerJob>[6],
         agentKind,
         agentConfigBase64
-      ),
+      );
+
+      // Reversed connection direction (see wsl-worker-spawner.ts's module doc
+      // comment): the worker container listens, and the backend dials into
+      // it here — rather than the worker dialing the orchestrator's
+      // /internal/worker endpoint like the ACA path does. If this fails, the
+      // container is still running but unreachable — stop it rather than
+      // leaving an orphaned container behind for a session that never
+      // actually started from the caller's point of view.
+      try {
+        await connectToLocalWorker(`ws://localhost:${execution.publishedPort}`, sessionId);
+      } catch (err) {
+        await stopWslWorkerJob(config, execution.executionName).catch(() => {});
+        throw err;
+      }
+
+      return execution;
+    },
     stop: (executionName) => stopWslWorkerJob(config, executionName),
     status: (executionName) => getWslWorkerJobStatus(config, executionName),
     hasProxyImage: () => !!config.proxyImage,
@@ -982,7 +1000,13 @@ export async function startSession(id: number): Promise<boolean> {
   // branching between the two.
   const launcher = session.meta.forceLocal ? runSession(session) : runSessionAca(session);
   launcher.catch((err) => {
-    const msg = err instanceof Error ? err.message : String(err);
+    // Never surface a blank "Fatal:" line — a thrown Error with an empty
+    // .message (seen from some socket-level failures, e.g. certain ws
+    // "error" events) used to produce exactly that, with the only trace of
+    // the real cause left in the stack passed to logSessionEvent below.
+    // Falling back through name → toString() → a generic placeholder means
+    // there's always *something* actionable in the UI-visible line too.
+    const msg = toErrorFields(err).error;
     appendOutput(session, { timestamp: now(), stream: "stderr", text: `Fatal: ${msg}` });
     setStatus(session, "error");
     setActivity(session, { type: "idle" });

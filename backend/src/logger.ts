@@ -106,9 +106,15 @@ export const log = {
  */
 export function toErrorFields(err: unknown): { error: string; stack?: string } {
   if (err instanceof Error) {
-    return { error: err.message, stack: err.stack };
+    // Some thrown/emitted errors (certain ws "error" events, some native
+    // socket errors) carry an empty .message with the real information only
+    // in .name / .code / the stack. Never let this collapse to "" — that
+    // produced literally blank "Fatal:" lines in the UI with no trace of
+    // the real cause anywhere but a stack trace nobody was looking at.
+    const message = err.message || err.name || err.stack?.split("\n")[0] || "Unknown error (no message)";
+    return { error: message, stack: err.stack };
   }
-  return { error: String(err) };
+  return { error: String(err) || "Unknown error (non-Error thrown value)" };
 }
 
 // ─── Convenience wrappers ────────────────────────────────────────────────────

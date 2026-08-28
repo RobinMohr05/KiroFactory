@@ -490,13 +490,25 @@ It creates the distro if missing (`wsl --install -d Ubuntu-24.04 --name kirofact
 starting a local session — a missing or unhealthy distro surfaces as an actionable error message
 (pointing at this script) rather than a confusing container-start failure.
 
-**Orchestrator → container connection:** `ORCHESTRATOR_URL` defaults to
-`ws://host.docker.internal:3500/internal/worker`; the worker container is started with `--add-host
-host.docker.internal:host-gateway` so that resolves correctly from inside WSL's Docker network.
-Session env vars (`SESSION_ID`, `REPO_URL`, `DEV_BRANCH`, `AGENT_CONFIG_JSON_B64`, etc. — the same
-contract `worker.js` already expects from ACA) are passed to `docker run` unchanged; `worker.js`
-needed **no code changes** to support this — it only ever knew "connect back over WebSocket," not
-which host started it.
+**Orchestrator ↔ container connection — reversed direction from ACA:** the worker container
+*listens* (`WORKER_LISTEN_MODE=<port>`, default `9091`) instead of dialing out to the
+orchestrator. The backend publishes that port to a random host port inside the distro
+(`docker run -p 0.0.0.0:0:<port>`) and dials `ws://localhost:<publishedPort>` itself, right after
+the container starts (`wsl-worker-spawner.ts`'s `startWorkerJob()` + `session-manager.ts`'s
+`connectToLocalWorker()`).
+
+This is reversed on purpose: the WSL2 VM's outbound connections to the Windows host (the
+direction ACA's `host.docker.internal` approach relied on) are blocked by Windows Firewall by
+default, and allowing them needs local admin rights that can't be assumed on every developer
+machine. The opposite direction — Windows dialing into the VM via a published port and
+`localhost` — works out of the box with no firewall rule, because WSL2 auto-forwards
+`localhost:<port>` from the Windows host into the distro.
+
+`worker.js` supports both directions via the same message-handling code — see its
+`WORKER_LISTEN_MODE` env var and `wireSocket()` helper — so this only changed ~100 lines around
+its connection setup, not the auth/message protocol shared with the ACA path. Session env vars
+(`SESSION_ID`, `REPO_URL`, `DEV_BRANCH`, `AGENT_CONFIG_JSON_B64`, etc.) are otherwise unchanged
+from the ACA contract.
 
 ### Configuration (environment variables)
 
@@ -505,8 +517,8 @@ which host started it.
 | `WSL_DISTRO_NAME` | Dedicated distro name. Defaults to `kirofactory-docker`. |
 | `WSL_WORKER_IMAGE` | Local worker image reference. Defaults to `kirofactory-worker:local` — build it with `docker build -f worker/.devcontainer/Dockerfile -t kirofactory-worker:local worker/` inside the distro, or via `devcontainer build`. |
 | `WSL_PROXY_IMAGE` | Local MCP proxy sidecar image reference. Optional — omit to run without the proxy sidecar. |
-| `WSL_ORCHESTRATOR_URL` | Defaults to `ws://host.docker.internal:3500/internal/worker`. |
-| `ACA_WORKER_SECRET` (or `WSL_WORKER_SECRET`) | Shared secret for worker ↔ orchestrator auth. **Required** — local mode is disabled (`loadWslConfig()` returns `null`) without one. Reusing `ACA_WORKER_SECRET` lets a single `.env` value cover both modes. |
+| `WSL_WORKER_LISTEN_PORT` | Port the worker container listens on internally, before Docker publishes it to a random host port. Defaults to `9091`. |
+| `ACA_WORKER_SECRET` (or `WSL_WORKER_SECRET`) | Shared secret for worker ↔ orchestrator auth. **Required** — local mode is disabled (`loadWslConfig()` returns `null`) without one. Reusing `ACA_WORKER_SECRET` lets a single `.env` value cover both modes; `worker-ws-handler.ts` accepts either. |
 | `GIT_USER_NAME` / `GIT_USER_EMAIL` | Git identity for commits inside the local worker container. Default to a `(local)`-suffixed identity if unset. |
 | `AZURE_DEVOPS_EXT_PAT` | Org-wide git-clone fallback PAT — same variable ACA mode uses. |
 
@@ -518,5 +530,6 @@ which host started it.
 | `'wsl.exe' was not found on PATH` | WSL2 not installed on this machine | Install WSL2 (`wsl --install`), then run `setup-wsl.ps1`. |
 | `WSL distro "kirofactory-docker" does not exist yet` | Distro not provisioned | Run `pwsh worker/.devcontainer/setup-wsl.ps1`. |
 | `Docker daemon is not running inside WSL distro "kirofactory-docker"` | dockerd not started in the distro | Run `pwsh worker/.devcontainer/setup-wsl.ps1` (restarts it), or manually: `wsl -d kirofactory-docker -- sudo service docker start`. |
-| Local session container never connects | Wrong `WSL_ORCHESTRATOR_URL`, or the orchestrator isn't listening on the interface WSL's `host.docker.internal` resolves to | Check `wsl -d kirofactory-docker -- docker logs kirofactory-worker-<sessionId>` for the worker's own connection error. |
+| `Timed out connecting to local worker at ws://localhost:<port>` | Container crashed/exited before the backend could dial in, or `docker port` returned nothing (container never actually published the port) | Container is likely gone already (`--rm`) — reproduce by running the same image manually without `--rm` (see `worker/.devcontainer/README.md`) to capture its logs before cleanup. |
+| Local session container never connects | Firewall rule accidentally added for the old VM→Windows direction, or something else is bound to the same host port inside the distro | Check `wsl -d kirofactory-docker -- docker logs kirofactory-worker-<sessionId>` for the worker's own connection error. |
 | Need to inspect a local session's container directly | — | `wsl -d kirofactory-docker -- docker logs kirofactory-worker-<sessionId>` / `docker exec -it kirofactory-worker-<sessionId> bash`. |
