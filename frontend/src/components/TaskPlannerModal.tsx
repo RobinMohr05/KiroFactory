@@ -39,6 +39,7 @@ export function TaskPlannerModal({ onClose }: TaskPlannerModalProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const partialMessageRef = useRef<string>('');
   const sessionIdRef = useRef<number | null>(null);
+  const cleanedUpSessionRef = useRef<Set<number>>(new Set());
 
   // Keep ref in sync for WS handler
   useEffect(() => {
@@ -48,6 +49,7 @@ export function TaskPlannerModal({ onClose }: TaskPlannerModalProps) {
   // Start the planner session
   useEffect(() => {
     let cancelled = false;
+    let createdSessionId: number | null = null;
     (async () => {
       addMessage('system', 'Starting AI Task Planner...');
       try {
@@ -60,8 +62,16 @@ export function TaskPlannerModal({ onClose }: TaskPlannerModalProps) {
           const err = await res.json().catch(() => ({}));
           throw new Error(err.error || `HTTP ${res.status}`);
         }
-        if (cancelled) return;
         const data = await res.json();
+        createdSessionId = data.sessionId;
+        if (cancelled) {
+          // Effect was already cleaned up — this session is orphaned, delete it
+          if (createdSessionId != null && !cleanedUpSessionRef.current.has(createdSessionId)) {
+            cleanedUpSessionRef.current.add(createdSessionId);
+            apiFetch(`/api/task-planner/${createdSessionId}`, { method: 'DELETE' }).catch(() => {});
+          }
+          return;
+        }
         setSessionId(data.sessionId);
         setReady(true);
         setStatus('ready');
@@ -72,7 +82,14 @@ export function TaskPlannerModal({ onClose }: TaskPlannerModalProps) {
         setStatus('error');
       }
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      // If we already have a session from this effect instance, clean it up
+      if (createdSessionId != null && !cleanedUpSessionRef.current.has(createdSessionId)) {
+        cleanedUpSessionRef.current.add(createdSessionId);
+        apiFetch(`/api/task-planner/${createdSessionId}`, { method: 'DELETE' }).catch(() => {});
+      }
+    };
   }, [currentTabId]);
 
   // Listen for WebSocket output and activity
@@ -235,7 +252,8 @@ export function TaskPlannerModal({ onClose }: TaskPlannerModalProps) {
   };
 
   const handleClose = async () => {
-    if (sessionId) {
+    if (sessionId && !cleanedUpSessionRef.current.has(sessionId)) {
+      cleanedUpSessionRef.current.add(sessionId);
       try {
         await apiFetch(`/api/task-planner/${sessionId}`, { method: 'DELETE' });
       } catch { /* ignore cleanup errors */ }
