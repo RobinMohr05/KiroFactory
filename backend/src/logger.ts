@@ -137,12 +137,19 @@ export function logWorkerEvent(
     | "worker-crashed"
     | "worker-connected"
     | "worker-prompt-done"
-    | "worker-prompt-failed",
+    | "worker-prompt-failed"
+    | "worker-container-logs-captured"
+    | "worker-container-logs-unavailable"
+    | "worker-container-logs-capture-failed",
   sessionId: number,
   data?: Record<string, unknown>
 ): void {
   const level: LogLevel =
-    event === "worker-crashed" || event === "worker-prompt-failed" ? "error" : "info";
+    event === "worker-crashed" ||
+    event === "worker-prompt-failed" ||
+    event === "worker-container-logs-capture-failed"
+      ? "error"
+      : "info";
   structuredLog(level, event, { component: "worker", sessionId, ...data });
 }
 

@@ -335,6 +335,58 @@ async function getPublishedPort(config: WslWorkerConfig, containerName: string):
   return Number(match[1]);
 }
 
+/** Raw log capture for one container: null body means the fetch itself failed (e.g. already removed). */
+export interface CapturedContainerLogs {
+  containerName: string;
+  logs: string | null;
+  error?: string;
+}
+
+/**
+ * Best-effort `docker logs` snapshot for the worker container and its MCP proxy sidecar
+ * (if any), keyed by session ID rather than executionName so this can be called even when
+ * the caller only knows the session, not which spawner started it.
+ *
+ * Exists to catch container-level stderr (segfaults, OOM, an entrypoint dying before
+ * worker.js's own NDJSON logging kicks in) that never reaches the orchestrator over the
+ * worker↔backend WebSocket — see the worker.js module doc comment on `--rm`: both the worker
+ * and sidecar containers self-remove on exit, deleting their logs forever. There is roughly a
+ * 1-second window between worker.js sending its "worker-shutdown" WebSocket message and its own
+ * `process.exit()` (see gracefulShutdown()'s setTimeout) — callers should invoke this as early
+ * as possible upon receiving that message or detecting a disconnect, not after any other
+ * teardown, to have the best chance of winning the race against container removal.
+ *
+ * Never throws: a missing/already-removed container is a normal outcome (fast/clean exits,
+ * or this being called a second time after stopWorkerJob already tore things down), not an
+ * error worth surfacing as one.
+ */
+export async function captureContainerLogs(
+  config: WslWorkerConfig,
+  sessionId: number
+): Promise<CapturedContainerLogs[]> {
+  const targets = [containerName(sessionId), proxyContainerName(sessionId)];
+
+  return Promise.all(
+    targets.map(async (name): Promise<CapturedContainerLogs> => {
+      try {
+        const { stdout, stderr } = await runInDistro(config.distroName, ["docker", "logs", name]);
+        // docker logs interleaves stdout/stderr streams from the container; concatenate both
+        // since we don't know in advance which one carried the crash signal.
+        return { containerName: name, logs: `${stdout}${stderr}` };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        // "No such container" means it was already removed (--rm beat us to it, or this is a
+        // second call after teardown) — not a real failure, just an empty result.
+        return {
+          containerName: name,
+          logs: null,
+          error: /No such container/i.test(msg) ? "container already removed" : msg,
+        };
+      }
+    })
+  );
+}
+
 /**
  * Stop a running local worker container (and its MCP proxy sidecar + network, if any).
  *

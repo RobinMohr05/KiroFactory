@@ -64,6 +64,7 @@ import {
   startWorkerJob as startWslWorkerJob,
   stopWorkerJob as stopWslWorkerJob,
   getWorkerJobStatus as getWslWorkerJobStatus,
+  captureContainerLogs as captureWslContainerLogs,
   isWslModeEnabled,
   type WslWorkerConfig,
 } from "./wsl-worker-spawner.js";
@@ -3578,6 +3579,59 @@ async function runLoopModeAca(
 // ACA Worker Event Handler Registration
 // ---------------------------------------------------------------------------
 
+/** Cap on how much of each container's captured logs gets appended to the session's own output. */
+const CAPTURED_CONTAINER_LOG_CHAR_LIMIT = 4000;
+
+/**
+ * Best-effort `docker logs` capture for a session's worker container and MCP proxy sidecar,
+ * fired on unexpected exits (crashes, or a clean exit before any turn completed — see the two
+ * call sites in initWorkerEventHandler below).
+ *
+ * Local WSL/Docker mode only: both containers run with `--rm`, self-deleting on exit, so their
+ * logs are gone within roughly a second of the disconnect being detected unless fetched
+ * immediately (see wsl-worker-spawner.ts's captureContainerLogs() doc comment for the exact
+ * timing). ACA mode is not covered here — ACA job execution logs are retained by Azure and
+ * queryable after the fact through Log Analytics, so there's no equivalent loss-of-evidence
+ * problem to race against there.
+ *
+ * Never throws and never blocks the caller — this is fire-and-forget diagnostic capture, not
+ * part of the session lifecycle itself.
+ */
+function captureContainerLogsOnFailure(session: ManagedSession, sessionId: number): void {
+  if (session.containerSpawner?.kind !== "wsl" || !wslConfig) return;
+
+  captureWslContainerLogs(wslConfig, sessionId)
+    .then((results) => {
+      for (const { containerName, logs, error } of results) {
+        if (logs === null) {
+          logWorkerEvent("worker-container-logs-unavailable", sessionId, { containerName, error });
+          continue;
+        }
+        const truncated = logs.length > CAPTURED_CONTAINER_LOG_CHAR_LIMIT;
+        const snippet = truncated ? logs.slice(-CAPTURED_CONTAINER_LOG_CHAR_LIMIT) : logs;
+        logWorkerEvent("worker-container-logs-captured", sessionId, {
+          containerName,
+          fullLength: logs.length,
+          truncated,
+        });
+        appendOutput(session, {
+          timestamp: now(),
+          stream: "system",
+          text:
+            `── Captured container logs: ${containerName}${truncated ? ` (last ${CAPTURED_CONTAINER_LOG_CHAR_LIMIT} chars)` : ""} ──\n` +
+            snippet,
+        });
+      }
+    })
+    .catch((err) => {
+      // captureWslContainerLogs() itself is documented to never reject, but guard anyway —
+      // this must never throw into the caller's event-handling path.
+      logWorkerEvent("worker-container-logs-capture-failed", sessionId, {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+}
+
 /**
  * Register callbacks so the worker-ws-handler routes incoming worker messages
  * to the correct session in session-manager.
@@ -3679,6 +3733,14 @@ function initWorkerEventHandler(): void {
       });
 
       appendOutput(session, { timestamp: now(), stream: "system", text: reason });
+
+      // Best-effort container-level log capture for unexpected exits — see
+      // captureContainerLogsOnFailure()'s doc comment for why this races
+      // container --rm removal and must fire as early as possible.
+      if (crashed) {
+        captureContainerLogsOnFailure(session, sessionId);
+      }
+
       // Reject any pending prompt awaiter
       if (session.acaPromptRejecter) {
         session.acaPromptRejecter(new Error(reason));
@@ -3700,6 +3762,15 @@ function initWorkerEventHandler(): void {
         stream: "system",
         text: `Worker shutdown (exit code: ${exitCode})`,
       });
+
+      // exitCode 0 with zero completed turns is the "died mid-handshake, exited
+      // cleanly" pattern (see worker-container-mid-handshake-exit.md) that
+      // otherwise looks identical to a normal completed session — capture logs
+      // for it too, not just nonzero exits.
+      if (exitCode !== 0 || session.turnCountThisRun === 0) {
+        captureContainerLogsOnFailure(session, sessionId);
+      }
+
       if (exitCode === 0) {
         setStatus(session, "completed");
         setActivity(session, { type: "completed" });
