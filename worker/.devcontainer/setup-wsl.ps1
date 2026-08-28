@@ -45,6 +45,20 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# wsl.exe writes its stdout as UTF-16LE regardless of the console's active
+# code page (a documented wsl.exe/winget.exe quirk). Windows PowerShell's
+# default decode of external-process output does not always match this
+# (observed here: legacy single-byte codepage decode), which corrupts every
+# line captured from `wsl.exe -l -v` / `wsl.exe -d ... -- ...` with
+# interleaved null bytes — breaking string comparisons like Test-DistroExists
+# even though the printed text looks correct to the eye. Setting
+# [Console]::OutputEncoding (the *read-side* decode PowerShell uses for
+# captured external-process output — not $OutputEncoding, which only affects
+# what PowerShell writes *to* external processes) to UTF-16LE makes it decode
+# wsl.exe's actual byte stream correctly, regardless of the host's console/
+# codepage defaults.
+[Console]::OutputEncoding = [System.Text.Encoding]::Unicode
+
 function Write-Step {
     param([string]$Message)
     Write-Host "[setup-wsl] $Message"
