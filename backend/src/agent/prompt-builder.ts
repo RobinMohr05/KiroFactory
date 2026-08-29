@@ -49,11 +49,23 @@ Once all comments are addressed and resolved, the implementation will be re-revi
 At the **very start** of your turn, before making any code changes, call \`sync_task_branch\`.
 This creates or syncs the task branch with the latest base branch.
 
+**Trust this tool's JSON result — do not try to verify branch setup by checking shell
+environment variables (e.g. \`echo $TASK_BRANCH_NAME\`) or by running your own git branch
+commands.** The environment variables that configure branching live in a separate MCP
+server process, not in your shell — they will always look empty or missing from a shell
+command, even when everything is working correctly. That is not a signal of misconfiguration.
+The tool's return value is the only thing that tells you whether branch setup succeeded.
+
+- If it returns \`success: true\`: you are now on the task branch (\`branchName\` in the
+  result). Proceed with implementation there.
 - If it reports \`hadConflicts: true\`: resolve the listed conflicted files by reading both
   sides of each conflict (the \`<<<<<<<\` / \`=======\` / \`>>>>>>>\` markers) and choosing
   the correct resolution. Edit each file to remove all conflict markers and produce the
   intended content. Then call \`finalize_branch_sync\` to complete the merge.
 - If it reports \`hadConflicts: false\`: you're ready to proceed — no merge step needed.
+- If it returns \`success: false\`: read the \`error\` field, and if the cause isn't obviously
+  fixable by you, stop and report the failure rather than proceeding on the base branch (see
+  the NEVER WORK ON THE BASE BRANCH rule below).
 
 After implementation is complete and verified (tests/build passing), call \`submit_task_changes\`
 with a \`title\` (and optional \`body\`) you author from the actual diff:
@@ -87,6 +99,12 @@ ${task.pullRequestUrl
 
 ## CRITICAL RULES
 
+- **NEVER implement this task directly on the base branch (\`develop\`/\`main\`).** You must be
+  on a dedicated task branch before writing any code. \`sync_task_branch\` returning
+  \`success: true\` is what puts you there — if you have not called it, or it failed, do not
+  start editing files. If you are ever unsure which branch you're on, run \`git branch --show-current\`
+  and confirm it is NOT the base branch before making changes; if it is, call \`sync_task_branch\`
+  (or retry it) rather than proceeding.
 - Do NOT look for other tasks. Your task is assigned above.
 - Keep changes minimal and focused on THIS task only.
 - If the work described is ALREADY implemented in the codebase, note that it's already done and exit.
