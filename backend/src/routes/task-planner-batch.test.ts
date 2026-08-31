@@ -276,6 +276,20 @@ describe("POST /api/task-planner/:sessionId/create-task — batch mode", () => {
     expect(createTask).not.toHaveBeenCalled();
   });
 
+  it("rejects dependsOnTaskId with zero (IDs start at 1)", async () => {
+    const res = await supertest(app)
+      .post("/api/task-planner/1/create-task")
+      .send({
+        tasks: [
+          { title: "Task A", priority: 2, type: "feature", dependsOnTaskId: [0] },
+        ],
+      })
+      .expect(400);
+
+    expect(res.body.error).toMatch(/dependsOnTaskId.*positive integer/i);
+    expect(createTask).not.toHaveBeenCalled();
+  });
+
   it("still works with legacy single-task format (title/description top-level)", async () => {
     const res = await supertest(app)
       .post("/api/task-planner/1/create-task")

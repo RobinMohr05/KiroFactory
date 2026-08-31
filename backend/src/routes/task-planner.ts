@@ -617,7 +617,7 @@ router.post("/:sessionId/create-task", async (req: Request, res: Response) => {
           return;
         }
         for (const dep of taskIdDeps) {
-          if (!Number.isInteger(dep) || dep < 0) {
+          if (!Number.isInteger(dep) || dep <= 0) {
             res.status(400).json({ error: `Task at index ${i} has invalid dependsOnTaskId ${dep} — must be a positive integer` });
             return;
           }

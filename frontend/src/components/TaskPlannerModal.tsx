@@ -523,6 +523,7 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
           type: f.task.type,
           files: f.task.files,
           // Drop dependsOnBatchIndex — indices are stale after the array changed
+          dependsOnTaskId: f.task.dependsOnTaskId,
           groupId: f.task.groupId,
         }));
         setParsedTasks(failedTasks);
