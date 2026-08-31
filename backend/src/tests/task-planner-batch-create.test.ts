@@ -78,6 +78,12 @@ function createBatchCreateApp() {
       return;
     }
 
+    // Reject empty batch
+    if (batchItems.length === 0) {
+      res.status(400).json({ error: "At least one task is required" });
+      return;
+    }
+
     // Validate all items up front — reject the whole request if any item is invalid
     for (let i = 0; i < batchItems.length; i++) {
       const item = batchItems[i];
@@ -494,6 +500,21 @@ describe("Task Planner batch create-task route", () => {
 
     expect(res.status).toBe(400);
     expect(res.body.error).toContain("invalid dependsOnBatchIndex");
+  });
+
+  // ---- Empty batch rejection ----
+
+  it("rejects an empty batch with 400 and does not destroy the session", async () => {
+    const res = await request(app)
+      .post("/api/task-planner/1/create-task")
+      .send({ tasks: [] })
+      .set("Content-Type", "application/json");
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("At least one task is required");
+    expect(mockCreateTask).not.toHaveBeenCalled();
+    expect(mockStopSession).not.toHaveBeenCalled();
+    expect(mockDeleteSession).not.toHaveBeenCalled();
   });
 
   // ---- broadcasts for each successful task ----

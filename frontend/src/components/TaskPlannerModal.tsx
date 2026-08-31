@@ -512,6 +512,18 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
 
       // Handle partial failure
       if (failed && failed.length > 0) {
+        // Update parsedTasks to only contain the failed tasks, so a retry
+        // doesn't re-send the already-created ones (which would create duplicates).
+        const failedTasks: typeof parsedTasks = failed.map((f: any) => ({
+          title: f.task.title,
+          description: f.task.description,
+          priority: f.task.priority,
+          type: f.task.type,
+          files: f.task.files,
+          // Drop dependsOnBatchIndex — indices are stale after the array changed
+          groupId: f.task.groupId,
+        }));
+        setParsedTasks(failedTasks);
         for (const f of failed) {
           addMessage('system', `❌ "${f.task.title}" failed to create: ${f.error}`);
         }

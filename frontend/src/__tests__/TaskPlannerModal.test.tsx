@@ -880,6 +880,90 @@ describe('TaskPlannerModal - multi-task batch support', () => {
     expect(setTasks).toHaveBeenCalled();
   });
 
+  it('updates parsedTasks to only failed tasks after partial failure, preventing duplicates on retry', async () => {
+    const batchBlock = '```json:task\n[\n  { "title": "Task A", "priority": 2, "type": "feature" },\n  { "title": "Task B", "priority": 3, "type": "bug" },\n  { "title": "Task C", "priority": 1, "type": "improvement" }\n]\n```';
+
+    const onClose = vi.fn();
+    const setTasks = vi.fn();
+    mockUseApp({ currentTabId: 1, setTasks });
+
+    let createCallCount = 0;
+    apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (url === '/api/task-planner/start' && opts?.method === 'POST') {
+        return { ok: true, json: async () => ({ sessionId: 30 }) };
+      }
+      if (typeof url === 'string' && url.includes('/create-task') && opts?.method === 'POST') {
+        createCallCount++;
+        if (createCallCount === 1) {
+          // First call: partial failure — A and C succeed, B fails
+          return {
+            ok: true,
+            json: async () => ({
+              created: [
+                { id: 100, title: 'Task A', priority: 2, type: 'feature', state: 'todo' },
+                { id: 102, title: 'Task C', priority: 1, type: 'improvement', state: 'todo' },
+              ],
+              failed: [
+                { task: { title: 'Task B', priority: 3, type: 'bug' }, error: 'DB connection lost' },
+              ],
+            }),
+          };
+        }
+        // Second call (retry): all succeed
+        return {
+          ok: true,
+          json: async () => ({
+            created: [
+              { id: 103, title: 'Task B', priority: 3, type: 'bug', state: 'todo' },
+            ],
+            failed: [],
+          }),
+        };
+      }
+      if (opts?.method === 'DELETE') {
+        return { ok: true, json: async () => ({}) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+
+    const { getByText } = render(<TaskPlannerModal onClose={onClose} onSwitchToManual={vi.fn()} />);
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    await act(async () => {
+      dispatchAssistantMessage(30, batchBlock);
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    // First click — partial failure
+    await act(async () => {
+      getByText('Create Tasks').click();
+    });
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    // Modal stays open, button should now show singular "Create Task" since only 1 failed task remains
+    expect(onClose).not.toHaveBeenCalled();
+    const retryBtn = getByText('Create Task') as HTMLButtonElement;
+    expect(retryBtn.disabled).toBe(false);
+
+    // Second click — retry with only the failed task
+    await act(async () => {
+      retryBtn.click();
+    });
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    // The retry call should only send 1 task (Task B), not all 3
+    const createCalls = apiFetchMock.mock.calls.filter(
+      (call: any[]) => typeof call[0] === 'string' && call[0].includes('/create-task') && call[1]?.method === 'POST'
+    );
+    expect(createCalls).toHaveLength(2);
+    const retryBody = JSON.parse(createCalls[1][1].body as string);
+    expect(retryBody.tasks).toHaveLength(1);
+    expect(retryBody.tasks[0].title).toBe('Task B');
+
+    // Now modal should close on full success of the retry
+    expect(onClose).toHaveBeenCalled();
+  });
+
   it('parses tasks with dependsOnBatchIndex and groupId fields', async () => {
     const batchWithDeps = '```json:task\n[\n  { "title": "Base task", "priority": 2, "type": "feature" },\n  { "title": "Dep task", "priority": 2, "type": "feature", "dependsOnBatchIndex": [0], "groupId": "grp1" }\n]\n```';
 

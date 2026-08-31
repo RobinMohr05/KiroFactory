@@ -555,6 +555,12 @@ router.post("/:sessionId/create-task", async (req: Request, res: Response) => {
       return;
     }
 
+    // Reject empty batch
+    if (batchItems.length === 0) {
+      res.status(400).json({ error: "At least one task is required" });
+      return;
+    }
+
     // Validate all items up front — reject the whole request on validation failure
     for (let i = 0; i < batchItems.length; i++) {
       const item = batchItems[i];
