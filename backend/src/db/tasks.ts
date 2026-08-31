@@ -240,6 +240,20 @@ export async function isTaskOwnedByUser(taskId: number, userId: number): Promise
   });
 }
 
+/**
+ * Public wrapper around replaceDependencies that opens its own writeQuery
+ * transaction. Used by the task-planner board MCP tool (add_task_dependency)
+ * to set dependencies without going through the full updateTask() path.
+ */
+export async function setTaskDependencies(
+  taskId: number,
+  dependsOn: number[]
+): Promise<void> {
+  await writeQuery(async (tx: ManagedTransaction) => {
+    await replaceDependencies(tx, taskId, dependsOn);
+  });
+}
+
 export async function getAllTasks(
   filters?: { state?: string; priority?: number; tabId?: number; userId?: number }
 ): Promise<Task[]> {

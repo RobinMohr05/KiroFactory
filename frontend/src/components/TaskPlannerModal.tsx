@@ -20,6 +20,8 @@ interface ParsedTask {
   priority: number;
   type: string;
   files?: string[];
+  dependsOnBatchIndex?: number[];
+  dependsOnTaskId?: number[];
 }
 
 interface Attachment {
@@ -39,7 +41,7 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [ready, setReady] = useState(false);
   const [status, setStatus] = useState<'connecting' | 'ready' | 'thinking' | 'error'>('connecting');
-  const [parsedTask, setParsedTask] = useState<ParsedTask | null>(null);
+  const [parsedTasks, setParsedTasks] = useState<ParsedTask[]>([]);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const attachmentsRef = useRef<Attachment[]>([]);
   const messagesRef = useRef<HTMLDivElement>(null);
@@ -261,7 +263,7 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
    * by the repair pass) after parsing, since no key in this schema is ever
    * legitimately whitespace-padded.
    */
-  const parseTaskJsonLeniently = (raw: string): ParsedTask | null => {
+  const parseTaskJsonLeniently = (raw: string): ParsedTask[] | null => {
     const normalizeKeys = (obj: unknown): unknown => {
       if (Array.isArray(obj)) return obj.map(normalizeKeys);
       if (obj && typeof obj === 'object') {
@@ -274,8 +276,14 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
       return obj;
     };
 
+    const toArray = (parsed: unknown): ParsedTask[] | null => {
+      if (Array.isArray(parsed)) return parsed as ParsedTask[];
+      if (parsed && typeof parsed === 'object') return [parsed as ParsedTask];
+      return null;
+    };
+
     try {
-      return normalizeKeys(JSON.parse(raw)) as ParsedTask;
+      return toArray(normalizeKeys(JSON.parse(raw)));
     } catch {
       // Fall through to recovery below.
     }
@@ -287,8 +295,6 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
       for (let i = 0; i < rejoined.length; i++) {
         const ch = rejoined[i];
         if (ch === '\\' && inString) {
-          // Escape sequence — copy the backslash and whatever follows verbatim,
-          // don't reinterpret it.
           repaired += ch;
           if (i + 1 < rejoined.length) {
             repaired += rejoined[i + 1];
@@ -307,7 +313,7 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
         }
         repaired += ch;
       }
-      return normalizeKeys(JSON.parse(repaired)) as ParsedTask;
+      return toArray(normalizeKeys(JSON.parse(repaired)));
     } catch {
       return null;
     }
@@ -320,10 +326,17 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
 
     const raw = jsonMatch[1];
     const parsed = parseTaskJsonLeniently(raw);
-    if (parsed) {
-      if (parsed.title && parsed.priority && parsed.type) {
-        setParsedTask(parsed);
-        addMessage('system', '✅ Task ready to create! Click "Create Task" to add it to your board.');
+    if (parsed && parsed.length > 0) {
+      // Validate every task in the array has the required fields
+      const allValid = parsed.every((t) => t.title && t.priority && t.type);
+      if (allValid) {
+        setParsedTasks(parsed);
+        const count = parsed.length;
+        if (count === 1) {
+          addMessage('system', '✅ Task ready to create! Click "Create Task" to add it to your board.');
+        } else {
+          addMessage('system', `✅ ${count} tasks ready to create! Click "Create Task" to add them to your board.`);
+        }
       } else {
         addMessage('system', '⚠️ The AI produced a task block missing required fields (title/priority/type) — ask it to resend the task.');
       }
@@ -456,14 +469,18 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
   };
 
   const handleCreateTask = async () => {
-    if (!parsedTask || !sessionId) return;
+    if (parsedTasks.length === 0 || !sessionId) return;
     try {
       const body = {
-        title: parsedTask.title,
-        description: parsedTask.description || '',
-        priority: Number(parsedTask.priority),
-        type: parsedTask.type,
-        files: parsedTask.files || [],
+        tasks: parsedTasks.map((task) => ({
+          title: task.title,
+          description: task.description || '',
+          priority: Number(task.priority),
+          type: task.type,
+          files: task.files || [],
+          dependsOnBatchIndex: task.dependsOnBatchIndex,
+          dependsOnTaskId: task.dependsOnTaskId,
+        })),
         tabIds: currentTabId ? [Number(currentTabId)] : [],
       };
       const res = await apiFetch(`/api/task-planner/${sessionId}/create-task`, {
@@ -475,12 +492,20 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error || `HTTP ${res.status}`);
       }
-      const task = await res.json();
+      const createdTasks = await res.json();
+      // createdTasks is an array when using batch format
+      const tasksArray = Array.isArray(createdTasks) ? createdTasks : [createdTasks];
       setTasks(prev => {
-        if (prev.find(t => t.id === task.id)) {
-          return prev.map(t => t.id === task.id ? task : t);
+        let updated = [...prev];
+        for (const task of tasksArray) {
+          const existing = updated.findIndex(t => t.id === task.id);
+          if (existing >= 0) {
+            updated[existing] = task;
+          } else {
+            updated.push(task);
+          }
         }
-        return [...prev, task];
+        return updated;
       });
       // Close — session cleanup handled by backend
       onClose();
@@ -606,7 +631,7 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
         <div className="task-planner-actions">
           <button className="btn btn-secondary btn-sm" onClick={handleClose}>Cancel</button>
           <button className="btn btn-secondary btn-sm" onClick={handleSwitchToManual}>Create manually instead</button>
-          <button className="btn btn-primary btn-sm" disabled={!parsedTask} onClick={handleCreateTask}>Create Task</button>
+          <button className="btn btn-primary btn-sm" disabled={parsedTasks.length === 0} onClick={handleCreateTask}>Create Task</button>
         </div>
       </div>
     </div>

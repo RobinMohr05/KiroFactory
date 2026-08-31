@@ -20,6 +20,7 @@ import { getDecryptedCredential } from "../db/credentials.js";
 import { resolveGitProvider } from "../types.js";
 import { getUserById } from "../db/users.js";
 import { buildPlannerRepoMcpServer } from "./task-planner-mcp.js";
+import { buildPlannerBoardMcpServer } from "./task-planner-board-mcp.js";
 import { PlannerSessionPool, type PooledRunner } from "../planner-session-pool.js";
 import { KiroRunner } from "../agent/kiro-runner.js";
 import { resolve } from "node:path";
@@ -208,14 +209,29 @@ If the user's request is already unambiguous and narrow (e.g. they paste an exac
 When the user confirms the task, output EXACTLY this format (and nothing else after it):
 
 \`\`\`json:task
-{
-  "title": "...",
-  "description": "...",
-  "priority": 1-4,
-  "type": "feature|improvement|bug",
-  "files": ["file1.ts", "file2.ts"]
-}
-\`\`\``;
+[
+  {
+    "title": "...",
+    "description": "...",
+    "priority": 1-4,
+    "type": "feature|improvement|bug",
+    "files": ["file1.ts", "file2.ts"],
+    "dependsOnBatchIndex": [],
+    "dependsOnTaskId": []
+  }
+]
+\`\`\`
+
+The output is ALWAYS a JSON array, even for a single task (wrap it in [ ]).
+
+### Dependency fields (optional)
+
+- \`dependsOnBatchIndex\`: array of 0-based indexes into THIS SAME array. Use when a later task in the batch depends on an earlier one. A task can only reference entries that come BEFORE it in the array (lower indexes). Example: the second task (index 1) depending on the first (index 0) → \`"dependsOnBatchIndex": [0]\`.
+- \`dependsOnTaskId\`: array of real, already-existing task IDs discovered via the list_tasks tool. Use when a new task should depend on something already on the board.
+
+### Using list_tasks for existing dependencies
+
+When the user wants a new task to depend on something already on the board, use the list_tasks MCP tool to discover the existing task IDs. Then reference those IDs in \`dependsOnTaskId\`. Do NOT guess task IDs — always look them up with list_tasks first.`;
 
 // POST /api/task-planner/prewarm — Fire-and-forget: ensure a warm pool slot exists for the tab
 router.post("/prewarm", (req: Request, res: Response) => {
@@ -323,6 +339,23 @@ router.post("/start", async (req: Request, res: Response) => {
             );
           }
         }
+
+        // Build a board MCP server for listing tasks and managing dependencies
+        const port = Number(process.env.PORT) || 3500;
+        const baseUrl = `http://localhost:${port}`;
+        const boardMcpServer = buildPlannerBoardMcpServer({ userId, tabId: tab.id, baseUrl });
+        if (rawMcpServers) {
+          rawMcpServers.push(boardMcpServer);
+        } else {
+          rawMcpServers = [boardMcpServer];
+        }
+        contextLines.push(
+          `\n**You have a task-board MCP tool available.** ` +
+          `Use the \`list_tasks\` tool to discover existing tasks on this project's board ` +
+          `when the user wants a new task to depend on an existing one. ` +
+          `Use the \`add_task_dependency\` tool to link tasks together. ` +
+          `Always look up real task IDs via list_tasks — never guess them.`
+        );
 
         contextLines.push(
           `\nUse this context to ask more relevant clarifying questions and suggest accurate file paths. ` +
@@ -495,7 +528,7 @@ router.post("/:sessionId/message", async (req: Request, res: Response) => {
   }
 });
 
-// POST /api/task-planner/:sessionId/create-task — Create the task from the conversation
+// POST /api/task-planner/:sessionId/create-task — Create task(s) from the conversation
 router.post("/:sessionId/create-task", async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
@@ -511,31 +544,50 @@ router.post("/:sessionId/create-task", async (req: Request, res: Response) => {
       return;
     }
 
-    // Accept task data from the frontend (parsed from the AI output)
-    const { title, description, priority, type, files, tabIds } = req.body as {
+    // Determine whether this is a batch request (tasks array) or legacy single-task
+    const isBatch = Array.isArray(req.body.tasks);
+    const taskSpecs: Array<{
       title: string;
-      description: string;
+      description?: string;
       priority: number;
       type: string;
       files?: string[];
       tabIds?: number[];
-    };
+      dependsOnBatchIndex?: number[];
+      dependsOnTaskId?: number[];
+    }> = isBatch
+      ? req.body.tasks
+      : [req.body as {
+          title: string;
+          description?: string;
+          priority: number;
+          type: string;
+          files?: string[];
+          tabIds?: number[];
+        }];
 
-    if (!title || !priority || !type) {
-      res.status(400).json({ error: "title, priority, and type are required" });
-      return;
+    // Validate each task spec
+    for (let i = 0; i < taskSpecs.length; i++) {
+      const spec = taskSpecs[i];
+      if (!spec.title || !spec.priority || !spec.type) {
+        res.status(400).json({ error: `Task at index ${i}: title, priority, and type are required` });
+        return;
+      }
     }
 
-    // Verify tabIds belong to the user if provided
-    let finalTabIds = tabIds;
-    if (finalTabIds && finalTabIds.length > 0) {
+    // Resolve tabIds — same logic as before, applied to every task
+    let finalTabIds: number[] | undefined;
+    // Check if any spec has explicit tabIds
+    const firstExplicitTabIds = taskSpecs.find((s) => s.tabIds && s.tabIds.length > 0)?.tabIds;
+    if (firstExplicitTabIds && firstExplicitTabIds.length > 0) {
       const userTabs = await getAllTabs(userId);
       const userTabIds = new Set(userTabs.map((t) => t.id));
-      const unauthorized = finalTabIds.filter((id) => !userTabIds.has(id));
+      const unauthorized = firstExplicitTabIds.filter((id) => !userTabIds.has(id));
       if (unauthorized.length > 0) {
         res.status(403).json({ error: "Cannot assign task to tabs you do not own" });
         return;
       }
+      finalTabIds = firstExplicitTabIds;
     } else {
       // Prefer the tab that was used to start the planning session
       if (session.tabIds && session.tabIds.length > 0) {
@@ -549,18 +601,36 @@ router.post("/:sessionId/create-task", async (req: Request, res: Response) => {
       }
     }
 
-    const taskInput: CreateTaskInput = {
-      title,
-      description: description || "",
-      priority: priority as 1 | 2 | 3 | 4,
-      type: type as "feature" | "improvement" | "bug",
-      files: files || [],
-      origin: "user-assisted",
-      tabIds: finalTabIds,
-    };
+    // Create tasks in order, resolving dependsOnBatchIndex to real IDs
+    const createdIds: number[] = [];
+    const createdTasks: import("../types.js").Task[] = [];
 
-    const task = await createTask(taskInput);
-    broadcastToUser(userId, { type: "task-created", task });
+    for (let i = 0; i < taskSpecs.length; i++) {
+      const spec = taskSpecs[i];
+
+      // Resolve dependencies
+      const dependsOn: number[] = [
+        ...(spec.dependsOnBatchIndex ?? []).map((idx) => createdIds[idx]),
+        ...(spec.dependsOnTaskId ?? []),
+      ];
+
+      const taskInput: CreateTaskInput = {
+        title: spec.title,
+        description: spec.description || "",
+        priority: spec.priority as 1 | 2 | 3 | 4,
+        type: spec.type as "feature" | "improvement" | "bug",
+        files: spec.files || [],
+        origin: "user-assisted",
+        tabIds: spec.tabIds ?? finalTabIds,
+        dependsOn: dependsOn.length > 0 ? dependsOn : undefined,
+      };
+
+      const task = await createTask(taskInput);
+      createdIds.push(task.id);
+      createdTasks.push(task);
+      broadcastToUser(userId, { type: "task-created", task });
+    }
+
     notifyTaskAvailable(); // wake any idle loop sessions immediately
 
     // Clean up the planner session
@@ -571,7 +641,8 @@ router.post("/:sessionId/create-task", async (req: Request, res: Response) => {
       // Non-fatal — session cleanup failure doesn't affect the created task
     }
 
-    res.status(201).json(task);
+    // Return batch array or legacy single-task response
+    res.status(201).json(isBatch ? createdTasks : createdTasks[0]);
   } catch (err) {
     log.error("route-error", {
       component: "task-planner",

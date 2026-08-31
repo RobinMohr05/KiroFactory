@@ -681,3 +681,146 @@ describe('TaskPlannerModal - attachment cap message deduplication', () => {
     expect(capMessages.length).toBe(1);
   });
 });
+
+describe('TaskPlannerModal - array-based task parsing', () => {
+  let apiFetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiFetchMock = vi.mocked(api.apiFetch);
+    apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (url === '/api/task-planner/start' && opts?.method === 'POST') {
+        return { ok: true, json: async () => ({ sessionId: 9 }) };
+      }
+      if (opts?.method === 'DELETE') {
+        return { ok: true, json: async () => ({}) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    mockUseApp({ currentTabId: 1 });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  function dispatchAssistantMessage(sessionId: number, text: string) {
+    window.dispatchEvent(new CustomEvent('ws-session-output', {
+      detail: { sessionId, entry: { stream: 'stdout', text } },
+    }));
+    window.dispatchEvent(new CustomEvent('ws-session-activity', {
+      detail: { sessionId, activity: { type: 'idle' } },
+    }));
+  }
+
+  it('parses a single-element array from json:task block', async () => {
+    const arrayBlock = '```json:task\n[\n  {\n    "title": "Do something",\n    "description": "Desc",\n    "priority": 2,\n    "type": "feature",\n    "files": ["a.ts"]\n  }\n]\n```';
+
+    const { getByText } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    await act(async () => {
+      dispatchAssistantMessage(9, arrayBlock);
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    expect(getByText(/Task.*ready to create/)).toBeTruthy();
+    const createBtn = getByText('Create Task') as HTMLButtonElement;
+    expect(createBtn.disabled).toBe(false);
+  });
+
+  it('parses a multi-task array from json:task block', async () => {
+    const arrayBlock = '```json:task\n[\n  {\n    "title": "Task A",\n    "description": "First",\n    "priority": 2,\n    "type": "feature"\n  },\n  {\n    "title": "Task B",\n    "description": "Second depends on A",\n    "priority": 3,\n    "type": "bug",\n    "dependsOnBatchIndex": [0]\n  }\n]\n```';
+
+    const { getByText } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    await act(async () => {
+      dispatchAssistantMessage(9, arrayBlock);
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    // Should show "2 tasks ready" message
+    expect(getByText(/2 tasks ready to create/)).toBeTruthy();
+    const createBtn = getByText('Create Task') as HTMLButtonElement;
+    expect(createBtn.disabled).toBe(false);
+  });
+
+  it('sends tasks array to the batch create-task endpoint and creates all tasks', async () => {
+    const arrayBlock = '```json:task\n[\n  {\n    "title": "Task A",\n    "description": "First",\n    "priority": 2,\n    "type": "feature"\n  },\n  {\n    "title": "Task B",\n    "description": "Second",\n    "priority": 3,\n    "type": "bug",\n    "dependsOnBatchIndex": [0]\n  }\n]\n```';
+
+    const onClose = vi.fn();
+    const setTasks = vi.fn();
+    mockUseApp({ currentTabId: 1, setTasks });
+
+    // Mock the create-task endpoint to return created tasks
+    apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (url === '/api/task-planner/start' && opts?.method === 'POST') {
+        return { ok: true, json: async () => ({ sessionId: 9 }) };
+      }
+      if (typeof url === 'string' && url.includes('/create-task') && opts?.method === 'POST') {
+        return {
+          ok: true,
+          json: async () => ([
+            { id: 100, title: 'Task A', priority: 2, type: 'feature', state: 'todo' },
+            { id: 101, title: 'Task B', priority: 3, type: 'bug', state: 'todo', dependsOn: [100] },
+          ]),
+        };
+      }
+      if (opts?.method === 'DELETE') {
+        return { ok: true, json: async () => ({}) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+
+    const { getByText } = render(<TaskPlannerModal onClose={onClose} onSwitchToManual={vi.fn()} />);
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    await act(async () => {
+      dispatchAssistantMessage(9, arrayBlock);
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    // Click Create Task
+    const createBtn = getByText('Create Task') as HTMLButtonElement;
+    await act(async () => {
+      createBtn.click();
+    });
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    // The create-task call should have sent the tasks array with dependency info
+    const createCalls = apiFetchMock.mock.calls.filter(
+      ([url, opts]) => typeof url === 'string' && url.includes('/create-task') && opts?.method === 'POST'
+    );
+    expect(createCalls.length).toBe(1);
+
+    const bodyText = createCalls[0][1]?.body as string;
+    const body = JSON.parse(bodyText);
+    expect(body.tasks).toHaveLength(2);
+    expect(body.tasks[0].title).toBe('Task A');
+    expect(body.tasks[1].title).toBe('Task B');
+    expect(body.tasks[1].dependsOnBatchIndex).toEqual([0]);
+
+    // setTasks should have been called to add both tasks
+    expect(setTasks).toHaveBeenCalled();
+
+    // Modal should close
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it('still parses a single-object json:task block as a legacy single task', async () => {
+    const legacyBlock = '```json:task\n{\n  "title": "Legacy single task",\n  "description": "Desc",\n  "priority": 2,\n  "type": "feature",\n  "files": ["a.ts"]\n}\n```';
+
+    const { getByText } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    await act(async () => {
+      dispatchAssistantMessage(9, legacyBlock);
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    expect(getByText(/Task.*ready to create/)).toBeTruthy();
+    const createBtn = getByText('Create Task') as HTMLButtonElement;
+    expect(createBtn.disabled).toBe(false);
+  });
+});
