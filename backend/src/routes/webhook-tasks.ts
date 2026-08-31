@@ -1,4 +1,5 @@
 import { Router, type Request, type Response } from "express";
+import { timingSafeEqual } from "crypto";
 import { createTask } from "../db/tasks.js";
 import { notifyTaskAvailable } from "../agent/task-claimer.js";
 import type { CreateTaskInput } from "../types.js";
@@ -38,9 +39,14 @@ router.post("/", async (req: Request, res: Response) => {
       return;
     }
 
-    // 2. Validate the shared secret header
+    // 2. Validate the shared secret header (timing-safe to prevent timing attacks)
     const headerSecret = req.headers["x-webhook-secret"];
-    if (!headerSecret || headerSecret !== webhookSecret) {
+    if (
+      !headerSecret ||
+      typeof headerSecret !== "string" ||
+      headerSecret.length !== webhookSecret.length ||
+      !timingSafeEqual(Buffer.from(headerSecret), Buffer.from(webhookSecret))
+    ) {
       res.status(401).json({ error: "Invalid or missing webhook secret" });
       return;
     }

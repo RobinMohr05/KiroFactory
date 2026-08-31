@@ -74,6 +74,18 @@ describe("POST /api/webhooks/tasks", () => {
     expect(createTask).not.toHaveBeenCalled();
   });
 
+  it("returns 401 when X-Webhook-Secret has a different length than the configured secret", async () => {
+    const app = createApp();
+    const res = await request(app)
+      .post("/api/webhooks/tasks")
+      .set("X-Webhook-Secret", "short")
+      .send({ title: "Test task" });
+
+    expect(res.status).toBe(401);
+    expect(res.body.error).toBe("Invalid or missing webhook secret");
+    expect(createTask).not.toHaveBeenCalled();
+  });
+
   // ─── Auth: WEBHOOK_SECRET not configured ─────────────────────────────────
 
   it("returns 503 when WEBHOOK_SECRET env var is not set", async () => {
