@@ -3880,7 +3880,7 @@ initWorkerEventHandler();
 export async function stopAllSessionsForUser(userId: number): Promise<void> {
   const userSessions = getAllSessions(userId);
   const running = userSessions.filter((s) => s.status === "running");
-  await Promise.all(running.map((s) => stopSession(s.id)));
+  await Promise.allSettled(running.map((s) => stopSession(s.id)));
 }
 
 // ---------------------------------------------------------------------------
