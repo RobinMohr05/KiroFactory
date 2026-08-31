@@ -168,10 +168,9 @@ router.put("/:id", async (req: Request, res: Response) => {
       res.status(404).json({ error: "Tab not found" });
       return;
     }
-    const { name, repositoryUrl, mcpConfig, gitProvider, autoMergePrs } = req.body as {
+    const { name, repositoryUrl, gitProvider, autoMergePrs } = req.body as {
       name: string;
       repositoryUrl?: string | null;
-      mcpConfig?: { atlassian?: boolean; azureDevops?: boolean; awsApi?: boolean; awsDocs?: boolean } | null;
       gitProvider?: string | null;
       autoMergePrs?: boolean;
     };
@@ -192,17 +191,7 @@ router.put("/:id", async (req: Request, res: Response) => {
       res.status(400).json({ error: `gitProvider must be one of: ${GIT_PROVIDERS.join(", ")}, or null` });
       return;
     }
-    // Validate mcpConfig shape if provided
-    let validatedMcpConfig: import("../types.js").TabMcpConfig | null = null;
-    if (mcpConfig && typeof mcpConfig === "object") {
-      validatedMcpConfig = {
-        atlassian: mcpConfig.atlassian !== false,
-        azureDevops: mcpConfig.azureDevops !== false,
-        awsApi: mcpConfig.awsApi === true,
-        awsDocs: mcpConfig.awsDocs !== false,
-      };
-    }
-    const tab = await updateTab(id, name.trim(), repositoryUrl, validatedMcpConfig, validatedProvider, autoMergePrs);
+    const tab = await updateTab(id, name.trim(), repositoryUrl, validatedProvider, autoMergePrs);
     if (!tab) {
       res.status(404).json({ error: "Tab not found" });
       return;

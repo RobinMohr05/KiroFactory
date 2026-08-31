@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useApp } from '../context/AppContext';
-import { apiFetch, DEFAULT_MCP_CONFIG } from '../utils/api';
+import { apiFetch } from '../utils/api';
 import { SessionDetailTabs } from './SessionDetailTabs';
-import type { McpConfig, OutputEntry, SessionActivity } from '../types';
+import type { OutputEntry, SessionActivity } from '../types';
 
 /**
  * Simplified "Easy mode" replacement for the full Sessions view. Shows the
@@ -21,7 +21,6 @@ export function EasySessionsView() {
   const [showNewForm, setShowNewForm] = useState(false);
   const [prompt, setPrompt] = useState('');
   const [runs, setRuns] = useState(0);
-  const [mcpConfig, setMcpConfig] = useState<McpConfig>({ ...DEFAULT_MCP_CONFIG });
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
@@ -91,14 +90,9 @@ export function EasySessionsView() {
     setChatText('');
   };
 
-  const handleMcpToggle = (key: keyof McpConfig) => {
-    setMcpConfig(prev => ({ ...prev, [key]: !prev[key] }));
-  };
-
   const resetNewForm = useCallback(() => {
     setPrompt('');
     setRuns(0);
-    setMcpConfig({ ...DEFAULT_MCP_CONFIG });
     setCreateError(null);
   }, []);
 
@@ -121,7 +115,6 @@ export function EasySessionsView() {
         loop: true,
         runs,
         intervalSeconds: 10,
-        mcpConfigOverride: mcpConfig,
       };
       const res = await apiFetch('/api/sessions', {
         method: 'POST',
@@ -176,27 +169,6 @@ export function EasySessionsView() {
                 value={runs}
                 onChange={(e) => setRuns(Number(e.target.value))}
               />
-            </div>
-            <div className="form-group">
-              <label>MCP Tools</label>
-              <div className="easy-mcp-toggles">
-                <label className="checkbox-label">
-                  <input type="checkbox" checked={mcpConfig.atlassian} onChange={() => handleMcpToggle('atlassian')} />
-                  <span>Atlassian</span>
-                </label>
-                <label className="checkbox-label">
-                  <input type="checkbox" checked={mcpConfig.azureDevops} onChange={() => handleMcpToggle('azureDevops')} />
-                  <span>Azure DevOps</span>
-                </label>
-                <label className="checkbox-label">
-                  <input type="checkbox" checked={mcpConfig.awsApi} onChange={() => handleMcpToggle('awsApi')} />
-                  <span>AWS API</span>
-                </label>
-                <label className="checkbox-label">
-                  <input type="checkbox" checked={mcpConfig.awsDocs} onChange={() => handleMcpToggle('awsDocs')} />
-                  <span>AWS Docs</span>
-                </label>
-              </div>
             </div>
             {createError && <div className="form-message error">{createError}</div>}
             <div className="form-actions">

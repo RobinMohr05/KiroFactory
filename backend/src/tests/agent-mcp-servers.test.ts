@@ -78,7 +78,6 @@ vi.mock("../agent/agent-config-writer.js", () => ({
 
 vi.mock("../mcp-proxy-config.js", () => ({
   buildProxyServersConfig: vi.fn().mockReturnValue([]),
-  buildLocalMcpServerEntries: vi.fn().mockReturnValue([]),
 }));
 
 vi.mock("../aca-worker-spawner.js", () => ({

@@ -10,7 +10,6 @@
  * Node/relationship model (design.md):
  *   (:Tab {id, name, repositoryUrl, gitProvider, columns, sortOrder, createdAt})
  *   (:User)-[:OWNS]->(:Tab)                — 0 or 1 owner, not a stored property
- *   (:Tab)-[:HAS_MCP_CONFIG]->(:McpConfig) — always present
  *   (:Task)-[:IN_TAB]->(:Tab)              — read-only here, tasks.ts owns writes
  *   (:Agent)-[:IN_TAB]->(:Tab)             — shared with db/agents.ts's own
  *                                             tab-assignment helper; same
@@ -31,8 +30,8 @@
 
 import { readQuery, writeQuery } from "./connection.js";
 import type { ManagedTransaction } from "neo4j-driver";
-import type { Tab, CreateTabInput, Task, TabMcpConfig, GitProvider } from "../types.js";
-import { DEFAULT_MCP_CONFIG, isGitProvider } from "../types.js";
+import type { Tab, CreateTabInput, Task, GitProvider } from "../types.js";
+import { isGitProvider } from "../types.js";
 import { getNextId } from "./id-counter.js";
 import { getAllSessions } from "../session-manager.js";
 import { getAllErrors } from "../error-store.js";
@@ -48,27 +47,15 @@ interface NodeResult {
 const DEFAULT_COLUMNS = ["todo", "in-progress", "developed", "in-code-review", "reviewed", "in-qa", "done"];
 
 /**
- * Map a :Tab node's properties, plus its resolved ownerId and McpConfig
- * sub-node (both fetched in the same query via list comprehensions — see
- * module comment), to a Tab object.
+ * Map a :Tab node's properties, plus its resolved ownerId, to a Tab object.
  */
 function mapNodeToTab(
   tabProps: Record<string, unknown>,
-  ownerId: number | null,
-  mcpConfigNode: NodeResult | null
+  ownerId: number | null
 ): Tab {
   const columns = Array.isArray(tabProps.columns) && tabProps.columns.length > 0
     ? (tabProps.columns as string[])
     : DEFAULT_COLUMNS;
-
-  const mcpConfig: TabMcpConfig = mcpConfigNode
-    ? {
-        atlassian: !!mcpConfigNode.properties.atlassian,
-        azureDevops: !!mcpConfigNode.properties.azureDevops,
-        awsApi: !!mcpConfigNode.properties.awsApi,
-        awsDocs: !!mcpConfigNode.properties.awsDocs,
-      }
-    : { ...DEFAULT_MCP_CONFIG };
 
   const gitProvider = tabProps.gitProvider as string | null | undefined;
 
@@ -77,7 +64,6 @@ function mapNodeToTab(
     name: tabProps.name as string,
     repositoryUrl: (tabProps.repositoryUrl as string) || null,
     gitProvider: isGitProvider(gitProvider) ? gitProvider : null,
-    mcpConfig,
     autoMergePrs: !!(tabProps.autoMergePrs),
     columns,
     sortOrder: (tabProps.sortOrder as number) ?? 0,
@@ -130,21 +116,18 @@ export async function getAllTabs(userId?: number): Promise<Tab[]> {
     const query = userId
       ? `MATCH (u:User {id: $userId})-[:OWNS]->(t:Tab)
          RETURN t,
-                $userId AS ownerId,
-                [(t)-[:HAS_MCP_CONFIG]->(m:McpConfig) | m][0] AS mcpNode
+                $userId AS ownerId
          ORDER BY t.sortOrder ASC, t.name ASC`
       : `MATCH (t:Tab)
          RETURN t,
-                [(owner:User)-[:OWNS]->(t) | owner.id][0] AS ownerId,
-                [(t)-[:HAS_MCP_CONFIG]->(m:McpConfig) | m][0] AS mcpNode
+                [(owner:User)-[:OWNS]->(t) | owner.id][0] AS ownerId
          ORDER BY t.sortOrder ASC, t.name ASC`;
 
     const result = await tx.run(query, { userId });
     return result.records.map((record) => {
       const tabNode = record.get("t") as NodeResult;
       const ownerId = record.get("ownerId") as number | null;
-      const mcpNode = record.get("mcpNode") as NodeResult | null;
-      return mapNodeToTab(tabNode.properties, ownerId, mcpNode);
+      return mapNodeToTab(tabNode.properties, ownerId);
     });
   });
 }
@@ -169,16 +152,14 @@ export async function getTabById(id: number): Promise<Tab | null> {
     const result = await tx.run(
       `MATCH (t:Tab {id: $id})
        RETURN t,
-              [(owner:User)-[:OWNS]->(t) | owner.id][0] AS ownerId,
-              [(t)-[:HAS_MCP_CONFIG]->(m:McpConfig) | m][0] AS mcpNode`,
+              [(owner:User)-[:OWNS]->(t) | owner.id][0] AS ownerId`,
       { id }
     );
     if (result.records.length === 0) return null;
 
     const tabNode = result.records[0].get("t") as NodeResult;
     const ownerId = result.records[0].get("ownerId") as number | null;
-    const mcpNode = result.records[0].get("mcpNode") as NodeResult | null;
-    return mapNodeToTab(tabNode.properties, ownerId, mcpNode);
+    return mapNodeToTab(tabNode.properties, ownerId);
   });
 }
 
@@ -253,22 +234,6 @@ export async function createTab(input: CreateTabInput): Promise<Tab> {
   const id = await getNextId("Tab");
 
   return writeQuery(async (tx: ManagedTransaction) => {
-    // Chained CREATE makes the Tab and its always-present McpConfig
-    // sub-node (seeded from DEFAULT_MCP_CONFIG) in one write — this
-    // replaces the old implicit "NULL mcp_config column falls back to
-    // DEFAULT_MCP_CONFIG at read time" behavior with an explicit
-    // always-present node, which is behaviorally equivalent from the
-    // caller's perspective (a freshly created tab's mcpConfig is always the
-    // default either way).
-    //
-    // The owner edge uses OPTIONAL MATCH + FOREACH(CASE ...) rather than a
-    // plain MATCH after the CREATE: verified against the live instance that
-    // a plain (non-optional) MATCH which finds nothing still leaves the
-    // earlier CREATE committed but returns zero result rows — which would
-    // make this function throw on "no rows" for a bad/missing userId
-    // instead of just creating an ownerless tab. FOREACH-CASE only performs
-    // the MERGE when a matching owner was actually found, and always
-    // returns the created nodes regardless.
     const result = await tx.run(
       `CREATE (t:Tab {
          id: $id,
@@ -279,18 +244,13 @@ export async function createTab(input: CreateTabInput): Promise<Tab> {
          columns: $columns,
          sortOrder: 0,
          createdAt: datetime()
-       })-[:HAS_MCP_CONFIG]->(m:McpConfig {
-         atlassian: $atlassian,
-         azureDevops: $azureDevops,
-         awsApi: $awsApi,
-         awsDocs: $awsDocs
        })
-       WITH t, m
+       WITH t
        OPTIONAL MATCH (owner:User {id: $userId})
        FOREACH (_ IN CASE WHEN owner IS NOT NULL THEN [1] ELSE [] END |
          MERGE (owner)-[:OWNS]->(t)
        )
-       RETURN t, m`,
+       RETURN t`,
       {
         id,
         name: input.name,
@@ -298,17 +258,12 @@ export async function createTab(input: CreateTabInput): Promise<Tab> {
         gitProvider: input.gitProvider ?? null,
         autoMergePrs: false,
         columns: DEFAULT_COLUMNS,
-        atlassian: DEFAULT_MCP_CONFIG.atlassian,
-        azureDevops: DEFAULT_MCP_CONFIG.azureDevops,
-        awsApi: DEFAULT_MCP_CONFIG.awsApi,
-        awsDocs: DEFAULT_MCP_CONFIG.awsDocs,
         userId: input.userId ?? null,
       }
     );
 
     const tabNode = result.records[0].get("t") as NodeResult;
-    const mcpNode = result.records[0].get("m") as NodeResult;
-    return mapNodeToTab(tabNode.properties, input.userId ?? null, mcpNode);
+    return mapNodeToTab(tabNode.properties, input.userId ?? null);
   });
 }
 
@@ -316,26 +271,13 @@ export async function updateTab(
   id: number,
   name: string,
   repositoryUrl?: string | null,
-  mcpConfig?: TabMcpConfig | null,
   gitProvider?: GitProvider | null,
   autoMergePrs?: boolean
 ): Promise<Tab | null> {
-  const hasMcpConfig = mcpConfig !== undefined && mcpConfig !== null;
   const hasAutoMergePrs = autoMergePrs !== undefined;
 
   return writeQuery(async (tx: ManagedTransaction) => {
-    // The FOREACH(CASE ...) guard only runs the MERGE/SET when mcpConfig was
-    // actually provided — matching the original's `COALESCE(@mcpConfig,
-    // mcp_config)` "leave the existing value alone if not provided"
-    // behavior. Verified against the live instance that MERGE on this exact
-    // relationship+label pattern (no property filter on `m`) correctly
-    // finds-or-creates exactly one sub-node per tab across repeated calls —
-    // it never creates a duplicate. The Cypher driver requires every
-    // referenced parameter to be bound even on a branch that doesn't
-    // execute, so the mcpConfig fields are always passed (defaulted to
-    // false when not updating) even though FOREACH skips using them.
-    //
-    // autoMergePrs uses the same FOREACH(CASE ...) pattern: only update the
+    // autoMergePrs uses FOREACH(CASE ...) pattern: only update the
     // property when the caller explicitly provided a value.
     const result = await tx.run(
       `MATCH (t:Tab {id: $id})
@@ -346,17 +288,8 @@ export async function updateTab(
        FOREACH (_ IN CASE WHEN $hasAutoMergePrs THEN [1] ELSE [] END |
          SET t.autoMergePrs = $autoMergePrs
        )
-       WITH t
-       FOREACH (_ IN CASE WHEN $hasMcpConfig THEN [1] ELSE [] END |
-         MERGE (t)-[:HAS_MCP_CONFIG]->(m:McpConfig)
-         SET m.atlassian = $atlassian,
-             m.azureDevops = $azureDevops,
-             m.awsApi = $awsApi,
-             m.awsDocs = $awsDocs
-       )
        RETURN t,
-              [(owner:User)-[:OWNS]->(t) | owner.id][0] AS ownerId,
-              [(t)-[:HAS_MCP_CONFIG]->(m2:McpConfig) | m2][0] AS mcpNode`,
+              [(owner:User)-[:OWNS]->(t) | owner.id][0] AS ownerId`,
       {
         id,
         name,
@@ -364,11 +297,6 @@ export async function updateTab(
         gitProvider: gitProvider ?? null,
         hasAutoMergePrs,
         autoMergePrs: hasAutoMergePrs ? autoMergePrs : false,
-        hasMcpConfig,
-        atlassian: hasMcpConfig ? mcpConfig!.atlassian : false,
-        azureDevops: hasMcpConfig ? mcpConfig!.azureDevops : false,
-        awsApi: hasMcpConfig ? mcpConfig!.awsApi : false,
-        awsDocs: hasMcpConfig ? mcpConfig!.awsDocs : false,
       }
     );
 
@@ -376,23 +304,16 @@ export async function updateTab(
 
     const tabNode = result.records[0].get("t") as NodeResult;
     const ownerId = result.records[0].get("ownerId") as number | null;
-    const mcpNode = result.records[0].get("mcpNode") as NodeResult | null;
-    return mapNodeToTab(tabNode.properties, ownerId, mcpNode);
+    return mapNodeToTab(tabNode.properties, ownerId);
   });
 }
 
 export async function deleteTab(id: number): Promise<boolean> {
   return writeQuery(async (tx: ManagedTransaction) => {
-    // Also deletes the linked McpConfig sub-node so it doesn't become an
-    // orphaned node with no path to it. Verified against the live instance
-    // that DETACH DELETE with a variable bound to null (from the OPTIONAL
-    // MATCH finding no McpConfig) is a safe no-op for that variable, not an
-    // error — so this is correct whether or not the McpConfig node exists.
     const result = await tx.run(
       `MATCH (t:Tab {id: $id})
-       OPTIONAL MATCH (t)-[:HAS_MCP_CONFIG]->(m:McpConfig)
-       WITH t, m, t.id AS deletedId
-       DETACH DELETE t, m
+       WITH t, t.id AS deletedId
+       DETACH DELETE t
        RETURN deletedId`,
       { id }
     );

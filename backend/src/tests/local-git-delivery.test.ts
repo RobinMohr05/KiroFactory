@@ -114,7 +114,6 @@ vi.mock("../agent/agent-config-writer.js", () => ({
 
 vi.mock("../mcp-proxy-config.js", () => ({
   buildProxyServersConfig: vi.fn().mockReturnValue([]),
-  buildLocalMcpServerEntries: vi.fn().mockReturnValue([]),
 }));
 
 vi.mock("../aca-worker-spawner.js", () => ({
@@ -157,7 +156,6 @@ describe("local-mode git-delivery MCP wiring (runLoopMode)", () => {
       name: "Main",
       repositoryUrl: "https://github.com/acme/widgets",
       gitProvider: "github",
-      mcpConfig: { atlassian: false, azureDevops: false, awsApi: false, awsDocs: false },
     });
     mockGetDecryptedCredential.mockResolvedValue("fake-pat-123");
   });

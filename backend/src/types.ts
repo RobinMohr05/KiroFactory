@@ -151,21 +151,6 @@ export interface Task {
   blockedBy?: Array<{ id: number; title: string }>;
 }
 
-/** MCP server toggle configuration per tab/board */
-export interface TabMcpConfig {
-  atlassian: boolean;
-  azureDevops: boolean;
-  awsApi: boolean;
-  awsDocs: boolean;
-}
-
-export const DEFAULT_MCP_CONFIG: TabMcpConfig = {
-  atlassian: true,
-  azureDevops: true,
-  awsApi: false,
-  awsDocs: true,
-};
-
 export interface Tab {
   id: number;
   name: string;
@@ -175,7 +160,6 @@ export interface Tab {
    * the owner's profile default, then to URL detection.
    */
   gitProvider: GitProvider | null;
-  mcpConfig: TabMcpConfig;
   /**
    * Whether the QA agent should automatically merge approved PRs and delete
    * their source branches. Defaults to false.
@@ -376,8 +360,6 @@ export interface Session {
   timeoutSeconds: number;
   model?: string;
   mcpServers?: McpServerConfig[];
-  /** Per-session MCP server toggle overrides. Nullable = inherit from tab. Merges over tab defaults (override wins). */
-  mcpConfigOverride?: TabMcpConfig | null;
   /**
    * Names of the agent's mcpServers to exclude for this session only.
    * Entries whose `name` matches one of these are filtered out of the
@@ -443,8 +425,6 @@ export interface CreateSessionInput {
   runs?: number;
   intervalSeconds?: number;
   mcpServers?: McpServerConfig[];
-  /** Per-session MCP server toggle overrides. Nullable = inherit from tab. Merges over tab defaults (override wins). */
-  mcpConfigOverride?: TabMcpConfig | null;
   /** Names of the agent's mcpServers to exclude for this session. */
   excludedMcpServerNames?: string[];
   /**
@@ -493,7 +473,6 @@ export interface UpdateSessionInput {
   runs?: number;
   intervalSeconds?: number;
   mcpServers?: McpServerConfig[] | null;
-  mcpConfigOverride?: TabMcpConfig | null;
   excludedMcpServerNames?: string[];
   tabIds?: number[];
 }

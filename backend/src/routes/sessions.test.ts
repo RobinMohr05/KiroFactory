@@ -176,15 +176,6 @@ describe("updateSessionFields", () => {
     expect(session!.mcpServers).toEqual(mcpServers);
   });
 
-  it("should update mcpConfigOverride", () => {
-    const mcpConfigOverride = { atlassian: true, azureDevops: false, awsApi: true, awsDocs: false };
-    const result = updateSessionFields(sessionId, { mcpConfigOverride });
-    expect(result).toEqual({ success: true });
-
-    const session = getSession(sessionId);
-    expect(session!.mcpConfigOverride).toEqual(mcpConfigOverride);
-  });
-
   it("should NOT allow updating the 'agent' field", () => {
     const result = updateSessionFields(sessionId, { agent: "new-agent" } as any);
     expect(result).toEqual({ success: true });
