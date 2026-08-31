@@ -153,6 +153,7 @@ describe("PUT /api/auth/me/view-mode", () => {
       .send({ uiViewMode: "advanced" });
 
     expect(res.status).toBe(404);
+    expect(stopAllSessionsForUser).not.toHaveBeenCalled();
   });
 
   it("stops all running sessions for the user on a valid mode switch", async () => {
