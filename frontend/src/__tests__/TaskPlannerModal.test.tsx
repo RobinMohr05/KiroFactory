@@ -10,6 +10,16 @@ vi.mock('../context/AppContext', () => ({
 
 vi.mock('../utils/api', () => ({
   apiFetch: vi.fn(),
+  TYPE_CLASSES: {
+    improvement: 'badge-improvement',
+    bug: 'badge-bug',
+    feature: 'badge-feature',
+  },
+  ORIGIN_ICONS: {
+    user: '\u{1F464}',
+    ai: '\u{1F916}',
+    'user-assisted': '\u{1F91D}',
+  },
 }));
 
 import { TaskPlannerModal } from '../components/TaskPlannerModal';

@@ -2,7 +2,8 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useApp } from '../context/AppContext';
 import { apiFetch } from '../utils/api';
 import { renderPlannerMarkdown } from '../utils/renderPlannerMarkdown';
-import type { OutputEntry, SessionActivity } from '../types';
+import { TaskCard } from './TaskCard';
+import type { Task, OutputEntry, SessionActivity } from '../types';
 
 interface TaskPlannerModalProps {
   onClose: () => void;
@@ -191,11 +192,11 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
         // Flush accumulated message
         if (partialMessageRef.current.trim()) {
           const finalText = partialMessageRef.current.trim();
+          const displayText = tryParseTask(finalText);
           setMessages(prev => {
             const filtered = prev.filter(m => !m.text.startsWith('__PARTIAL__'));
-            return [...filtered, { role: 'assistant', text: finalText }];
+            return [...filtered, { role: 'assistant', text: displayText }];
           });
-          tryParseTask(finalText);
           partialMessageRef.current = '';
         }
         setStatus('ready');
@@ -322,10 +323,10 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
     }
   };
 
-  const tryParseTask = (text: string) => {
+  const tryParseTask = (text: string): string => {
     // Look for ```json:task block first, falling back to a plain ```json block.
     const jsonMatch = text.match(/```json:task\s*\n([\s\S]*?)\n```/) ?? text.match(/```json\s*\n([\s\S]*?)\n```/);
-    if (!jsonMatch) return;
+    if (!jsonMatch) return text;
 
     const raw = jsonMatch[1];
     const parsed = parseTaskJsonLeniently(raw);
@@ -336,15 +337,19 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
         setParsedTasks(parsed);
         const taskWord = parsed.length > 1 ? 'Tasks' : 'Task';
         addMessage('system', `✅ ${parsed.length > 1 ? `${parsed.length} tasks` : 'Task'} ready to create! Click "Create ${taskWord}" to add ${parsed.length > 1 ? 'them' : 'it'} to your board.`);
+        // Strip the matched fenced block from the display text
+        const stripped = text.replace(jsonMatch[0], '').replace(/\n{3,}/g, '\n\n').trim();
+        return stripped;
       } else {
         addMessage('system', '⚠️ The AI produced a task block missing required fields (title/priority/type) — ask it to resend the task.');
       }
-      return;
+      return text;
     }
 
     // Both the strict parse and the lenient recovery pass failed. Surface this
     // instead of leaving "Create Task" silently disabled with no explanation.
     addMessage('system', '⚠️ Could not parse the task block above (invalid JSON) — ask the AI to resend it as a single-line JSON value (no line-wrapped strings).');
+    return text;
   };
 
   /** Validate and add a single file as an attachment. */
@@ -654,6 +659,24 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
             onChange={handleFileInputChange}
           />
         </div>
+        {parsedTasks && parsedTasks.length > 0 && (
+          <div className="task-planner-preview">
+            {parsedTasks.map((pt, idx) => {
+              const previewTask: Task = {
+                id: 0,
+                title: pt.title,
+                description: pt.description,
+                type: pt.type as Task['type'],
+                priority: Number(pt.priority),
+                state: 'todo',
+                origin: 'ai',
+              };
+              return (
+                <TaskCard key={idx} task={previewTask} onClick={() => {}} disableInteraction={true} />
+              );
+            })}
+          </div>
+        )}
         <div className="task-planner-actions">
           <button className="btn btn-secondary btn-sm" onClick={handleClose}>Cancel</button>
           <button className="btn btn-secondary btn-sm" onClick={handleSwitchToManual}>Create manually instead</button>

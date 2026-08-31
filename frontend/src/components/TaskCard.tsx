@@ -6,9 +6,10 @@ interface TaskCardProps {
   task: Task;
   onClick: () => void;
   highlighted?: boolean;
+  disableInteraction?: boolean;
 }
 
-export function TaskCard({ task, onClick, highlighted }: TaskCardProps) {
+export function TaskCard({ task, onClick, highlighted, disableInteraction }: TaskCardProps) {
   const wasDragged = useRef(false);
   const cardRef = useRef<HTMLDivElement>(null);
 
@@ -49,14 +50,14 @@ export function TaskCard({ task, onClick, highlighted }: TaskCardProps) {
     <div
       ref={cardRef}
       className={`task-card${highlighted ? ' task-card-highlighted' : ''}`}
-      draggable
+      draggable={!disableInteraction}
       data-task-id={task.id}
       data-priority={priority}
       data-blocked={task.isBlocked ? 'true' : 'false'}
       role="article"
       aria-label={`Task: ${task.title}${task.isBlocked ? ' (blocked)' : ''}`}
-      onDragStart={handleDragStart}
-      onDragEnd={handleDragEnd}
+      onDragStart={disableInteraction ? undefined : handleDragStart}
+      onDragEnd={disableInteraction ? undefined : handleDragEnd}
       onClick={handleClick}
     >
       <div className="card-title">{task.title}</div>

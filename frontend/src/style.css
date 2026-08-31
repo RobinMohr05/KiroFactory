@@ -3513,6 +3513,78 @@ textarea:focus {
   overflow-x: auto;
 }
 
+/* Markdown content inside chat bubbles */
+.planner-message p {
+  margin: 0.4rem 0;
+}
+
+.planner-message p:last-child {
+  margin-bottom: 0;
+}
+
+.planner-message ul,
+.planner-message ol {
+  padding-left: 1.25rem;
+  margin: 0.5rem 0;
+}
+
+.planner-message li {
+  margin-bottom: 0.25rem;
+}
+
+.planner-message h3,
+.planner-message h4 {
+  font-family: 'Barlow', sans-serif;
+  font-weight: 600;
+  margin: 0.75rem 0 0.35rem;
+}
+
+.planner-message h3 {
+  font-size: 0.95rem;
+}
+
+.planner-message h4 {
+  font-size: 0.88rem;
+}
+
+.planner-message code:not(pre code) {
+  background: var(--bg-primary);
+  padding: 0.15em 0.35em;
+  border-radius: var(--radius-sm);
+  font-family: monospace;
+  font-size: 0.85em;
+  word-break: break-word;
+  overflow-wrap: break-word;
+}
+
+.planner-message pre {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 0.6rem;
+  font-family: monospace;
+  font-size: 0.78rem;
+  overflow-x: auto;
+  margin: 0.5rem 0;
+  white-space: pre;
+}
+
+.planner-message pre code {
+  background: none;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+}
+
+/* Task card preview area */
+.task-planner-preview {
+  padding: 0.5rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
 .task-planner-input-area {
   display: flex;
   flex-direction: column;
@@ -3664,6 +3736,15 @@ textarea:focus {
 [data-theme="dark"] .planner-message .task-json-block {
   background: var(--bg-primary);
   border-color: var(--border-color);
+}
+
+[data-theme="dark"] .planner-message pre {
+  background: var(--bg-primary);
+  border-color: var(--border-color);
+}
+
+[data-theme="dark"] .planner-message code:not(pre code) {
+  background: var(--bg-primary);
 }
 
 [data-theme="dark"] .task-planner-input-area {
