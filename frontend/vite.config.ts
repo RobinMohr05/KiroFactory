@@ -43,6 +43,18 @@ export default defineConfig({
         target: 'ws://localhost:3500',
         ws: true,
       },
+      // Static, non-Vite-processed pages that only exist in public/ and are
+      // served by the backend's Express static middleware (see index.ts).
+      // publicDir is disabled above, so Vite's dev server has no route for
+      // these on its own and falls back to the SPA's index.html instead —
+      // which mounts AppContext, whose auth guard immediately redirects
+      // back to /login.html, looping forever without ever showing the real
+      // login form. Proxying these specific paths to the backend fixes
+      // that, matching what already works when the app is loaded directly
+      // from the backend's own port (3500).
+      '/login.html': 'http://localhost:3500',
+      '/impressum.html': 'http://localhost:3500',
+      '/favicon.svg': 'http://localhost:3500',
     },
   },
   build: {
