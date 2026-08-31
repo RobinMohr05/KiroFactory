@@ -14,6 +14,7 @@ const PUBLIC_PATHS = [
   "/auth/register",
   "/auth/settings",
   "/health",
+  "/webhooks/tasks",
 ];
 
 /**
