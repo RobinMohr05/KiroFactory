@@ -18,6 +18,7 @@ vi.mock("../db/tasks.js", () => ({
   createTask: vi.fn(),
   isTaskOwnedByUser: vi.fn(),
   setTaskDependencies: vi.fn(),
+  addTaskDependencies: vi.fn(),
 }));
 
 vi.mock("../db/tabs.js", () => ({
@@ -111,17 +112,16 @@ describe("task-planner-board-mcp", () => {
 
     it("surfaces DependencyCycleError from the dependency write path", async () => {
       const { getAllTasks } = await import("../db/tasks.js");
-      const { setTaskDependencies } = await import("../db/tasks.js");
       vi.mocked(getAllTasks).mockResolvedValue([
         { id: 30, title: "A", type: "feature", priority: 2, state: "todo", dependsOn: [] } as any,
         { id: 31, title: "B", type: "feature", priority: 2, state: "todo", dependsOn: [30] } as any,
       ]);
 
-      // setTaskDependencies needs to be imported since it's the new export
+      // addTaskDependencies is the new atomic export
       const tasksModule = await import("../db/tasks.js");
-      // Mock setTaskDependencies to throw DependencyCycleError
+      // Mock addTaskDependencies to throw DependencyCycleError
       const { DependencyCycleError } = await import("../types.js");
-      vi.mocked((tasksModule as any).setTaskDependencies).mockRejectedValue(
+      vi.mocked((tasksModule as any).addTaskDependencies).mockRejectedValue(
         new DependencyCycleError(30, 31)
       );
 
@@ -132,7 +132,7 @@ describe("task-planner-board-mcp", () => {
       ).rejects.toThrow(/cycle/i);
     });
 
-    it("calls setTaskDependencies with merged existing + new dependencies", async () => {
+    it("calls addTaskDependencies with only the new dependency IDs (merge happens atomically inside)", async () => {
       const { getAllTasks } = await import("../db/tasks.js");
       vi.mocked(getAllTasks).mockResolvedValue([
         { id: 40, title: "A", type: "feature", priority: 2, state: "todo", dependsOn: [41] } as any,
@@ -141,16 +141,16 @@ describe("task-planner-board-mcp", () => {
       ]);
 
       const tasksModule = await import("../db/tasks.js");
-      vi.mocked((tasksModule as any).setTaskDependencies).mockResolvedValue(undefined);
+      vi.mocked((tasksModule as any).addTaskDependencies).mockResolvedValue(undefined);
 
       const { handleAddTaskDependency } = await import("./task-planner-board-mcp.js");
       await handleAddTaskDependency({ tabId: 2, userId: 1, taskId: 40, dependsOnTaskId: [42] });
 
-      // Should merge existing [41] with new [42]
-      expect((tasksModule as any).setTaskDependencies).toHaveBeenCalledWith(
-        40,
-        expect.arrayContaining([41, 42])
-      );
+      // Should call addTaskDependencies with only the new dep IDs — the
+      // atomic function reads existing deps and merges internally.
+      expect((tasksModule as any).addTaskDependencies).toHaveBeenCalledWith(40, [42]);
+      // setTaskDependencies should NOT be called — the non-atomic path is gone
+      expect((tasksModule as any).setTaskDependencies).not.toHaveBeenCalled();
     });
   });
 });

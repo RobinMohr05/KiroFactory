@@ -9,8 +9,8 @@
  *   - list_tasks: returns id, title, type, priority, state for every task
  *     in the current session's tab.
  *   - add_task_dependency: validates tab ownership, then writes dependencies
- *     via setTaskDependencies. Surfaces DependencyCycleError and missing-ID
- *     errors as tool-call errors.
+ *     via addTaskDependencies (atomic read+merge in a single transaction).
+ *     Surfaces DependencyCycleError and missing-ID errors as tool-call errors.
  *
  * Auth: userId and tabId are embedded in the URL at session-start time
  * (not supplied by the LLM). The route validates that the tab belongs to
@@ -18,7 +18,7 @@
  */
 
 import { Router, type Request, type Response } from "express";
-import { getAllTasks, setTaskDependencies } from "../db/tasks.js";
+import { getAllTasks, addTaskDependencies } from "../db/tasks.js";
 import { DependencyCycleError } from "../types.js";
 import { requireAuth, getUserId } from "../middleware/auth.js";
 import { log, toErrorFields } from "../logger.js";
@@ -92,12 +92,10 @@ export async function handleAddTaskDependency(opts: {
     }
   }
 
-  // Merge existing dependencies with the new ones
-  const existingTask = tabTasks.find((t) => t.id === opts.taskId);
-  const existingDeps = existingTask?.dependsOn ?? [];
-  const mergedDeps = Array.from(new Set([...existingDeps, ...opts.dependsOnTaskId]));
-
-  await setTaskDependencies(opts.taskId, mergedDeps);
+  // Atomically read existing deps + merge new ones inside a single write
+  // transaction — avoids the race condition where concurrent calls could
+  // silently overwrite each other's dependency additions.
+  await addTaskDependencies(opts.taskId, opts.dependsOnTaskId);
 }
 
 // ---------------------------------------------------------------------------
