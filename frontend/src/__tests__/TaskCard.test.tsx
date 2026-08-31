@@ -56,4 +56,24 @@ describe('TaskCard', () => {
     const card = container.querySelector('.task-card');
     expect(card).toHaveAttribute('draggable', 'true');
   });
+
+  describe('disableInteraction prop', () => {
+    it('defaults to draggable when disableInteraction is omitted', () => {
+      const { container } = render(<TaskCard task={baseTask} onClick={() => {}} />);
+      const card = container.querySelector('.task-card');
+      expect(card).toHaveAttribute('draggable', 'true');
+    });
+
+    it('defaults to draggable when disableInteraction is false', () => {
+      const { container } = render(<TaskCard task={baseTask} onClick={() => {}} disableInteraction={false} />);
+      const card = container.querySelector('.task-card');
+      expect(card).toHaveAttribute('draggable', 'true');
+    });
+
+    it('sets draggable=false when disableInteraction is true', () => {
+      const { container } = render(<TaskCard task={baseTask} onClick={() => {}} disableInteraction={true} />);
+      const card = container.querySelector('.task-card');
+      expect(card).toHaveAttribute('draggable', 'false');
+    });
+  });
 });

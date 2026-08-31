@@ -2,7 +2,8 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useApp } from '../context/AppContext';
 import { apiFetch } from '../utils/api';
 import { renderPlannerMarkdown } from '../utils/renderPlannerMarkdown';
-import type { OutputEntry, SessionActivity } from '../types';
+import { TaskCard } from './TaskCard';
+import type { OutputEntry, SessionActivity, Task } from '../types';
 
 interface TaskPlannerModalProps {
   onClose: () => void;
@@ -159,6 +160,17 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
 
   // Listen for WebSocket output and activity
   useEffect(() => {
+    /** Strip a successfully-parsed json:task fence from the message text. */
+    const stripParsedFence = (text: string): string => {
+      const fenceMatch = text.match(/```json:task\s*\n([\s\S]*?)\n```/) ?? text.match(/```json\s*\n([\s\S]*?)\n```/);
+      if (!fenceMatch) return text;
+      const parsed = parseTaskJsonLeniently(fenceMatch[1]);
+      if (parsed && parsed.title && parsed.priority && parsed.type) {
+        return text.replace(fenceMatch[0], '').replace(/\n{3,}/g, '\n\n').trim();
+      }
+      return text;
+    };
+
     const handleOutput = (e: Event) => {
       const detail = (e as CustomEvent).detail;
       if (detail.sessionId !== sessionIdRef.current) return;
@@ -168,13 +180,15 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
       if (entry.stream === 'stderr') return;
       if (entry.stream === 'stdout') {
         partialMessageRef.current += (partialMessageRef.current ? '\n' : '') + entry.text;
+        // Strip a completed json:task fence during streaming so raw JSON doesn't flash.
+        const displayText = stripParsedFence(partialMessageRef.current);
         // Update the last message if it's a partial assistant message
         setMessages(prev => {
           const last = prev[prev.length - 1];
           if (last && last.role === 'assistant' && last.text.startsWith('__PARTIAL__')) {
-            return [...prev.slice(0, -1), { role: 'assistant', text: '__PARTIAL__' + partialMessageRef.current }];
+            return [...prev.slice(0, -1), { role: 'assistant', text: '__PARTIAL__' + displayText }];
           }
-          return [...prev, { role: 'assistant', text: '__PARTIAL__' + partialMessageRef.current }];
+          return [...prev, { role: 'assistant', text: '__PARTIAL__' + displayText }];
         });
       }
     };
@@ -323,6 +337,18 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
     if (parsed) {
       if (parsed.title && parsed.priority && parsed.type) {
         setParsedTask(parsed);
+        // Strip the matched fenced block from the assistant message text so the
+        // raw JSON dump is no longer rendered alongside the prose.
+        const strippedText = text.replace(jsonMatch[0], '').replace(/\n{3,}/g, '\n\n').trim();
+        setMessages(prev => {
+          const lastAssistantIdx = prev.length - 1 - [...prev].reverse().findIndex(m => m.role === 'assistant');
+          if (lastAssistantIdx >= 0 && lastAssistantIdx < prev.length && prev[lastAssistantIdx].role === 'assistant') {
+            const updated = [...prev];
+            updated[lastAssistantIdx] = { ...updated[lastAssistantIdx], text: strippedText };
+            return updated;
+          }
+          return prev;
+        });
         addMessage('system', '✅ Task ready to create! Click "Create Task" to add it to your board.');
       } else {
         addMessage('system', '⚠️ The AI produced a task block missing required fields (title/priority/type) — ask it to resend the task.');
@@ -558,6 +584,23 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
             );
           })}
         </div>
+        {parsedTask && (
+          <div className="task-planner-card-preview">
+            <TaskCard
+              task={{
+                id: 0,
+                title: parsedTask.title,
+                description: parsedTask.description,
+                type: parsedTask.type as Task['type'],
+                priority: Number(parsedTask.priority),
+                state: 'todo',
+                origin: 'ai',
+              }}
+              onClick={() => {}}
+              disableInteraction={true}
+            />
+          </div>
+        )}
         <div className="task-planner-input-area">
           {attachments.length > 0 && (
             <div className="task-planner-attachments">
