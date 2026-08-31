@@ -418,7 +418,9 @@ export async function updateSessionStatus(
  * themselves are shared (not owned by the session) so only the IN_TAB
  * relationship is deleted, never the Tab node; the McpServerConfig/
  * RawMcpServerConfig sub-nodes ARE exclusively owned by the session, so
- * those are DETACH DELETEd outright before being recreated.
+ * those are DETACH DELETEd outright before being recreated. Any legacy
+ * McpConfig override node (from the now-removed TabMcpConfig feature) is
+ * also cleaned up during the tear-down phase.
  */
 export async function updateSessionMeta(session: Session): Promise<void> {
   await writeQuery(async (tx: ManagedTransaction) => {
@@ -442,6 +444,9 @@ export async function updateSessionMeta(session: Session): Promise<void> {
         WITH DISTINCT s
         OPTIONAL MATCH (s)-[:HAS_RAW_MCP_SERVER]->(oldRaw:RawMcpServerConfig)
         DETACH DELETE oldRaw
+        WITH DISTINCT s
+        OPTIONAL MATCH (s)-[:HAS_MCP_CONFIG_OVERRIDE]->(oldMcpOverride:McpConfig)
+        DETACH DELETE oldMcpOverride
         WITH DISTINCT s
         CALL (s) {
           UNWIND $tabIds AS tabId
@@ -494,11 +499,12 @@ export async function updateSessionMeta(session: Session): Promise<void> {
 
 /**
  * Delete a session from the database.
- * Also deletes every sub-node exclusively owned by the session (McpConfig
- * override, McpServerConfig/RawMcpServerConfig entries) so nothing is left
- * orphaned. Tab/User nodes are never touched — DETACH DELETE only removes
- * the relationships incident to the deleted nodes, not the nodes on the
- * other end.
+ * Also deletes every sub-node exclusively owned by the session
+ * (McpServerConfig/RawMcpServerConfig entries, and any legacy McpConfig
+ * override node left from the now-removed TabMcpConfig feature) so nothing
+ * is left orphaned. Tab/User nodes are never touched — DETACH DELETE only
+ * removes the relationships incident to the deleted nodes, not the nodes
+ * on the other end.
  */
 export async function deleteSessionFromDb(id: number): Promise<boolean> {
   return writeQuery(async (tx: ManagedTransaction) => {
@@ -507,7 +513,8 @@ export async function deleteSessionFromDb(id: number): Promise<boolean> {
         MATCH (s:Session {id: $id})
         OPTIONAL MATCH (s)-[:HAS_MCP_SERVER]->(mcp:McpServerConfig)
         OPTIONAL MATCH (s)-[:HAS_RAW_MCP_SERVER]->(raw:RawMcpServerConfig)
-        DETACH DELETE s, mcp, raw
+        OPTIONAL MATCH (s)-[:HAS_MCP_CONFIG_OVERRIDE]->(mcpOverride:McpConfig)
+        DETACH DELETE s, mcp, raw, mcpOverride
         RETURN count(DISTINCT s) AS deletedCount
       `,
       { id }

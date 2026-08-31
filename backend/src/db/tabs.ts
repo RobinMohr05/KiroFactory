@@ -312,8 +312,9 @@ export async function deleteTab(id: number): Promise<boolean> {
   return writeQuery(async (tx: ManagedTransaction) => {
     const result = await tx.run(
       `MATCH (t:Tab {id: $id})
-       WITH t, t.id AS deletedId
-       DETACH DELETE t
+       OPTIONAL MATCH (t)-[:HAS_MCP_CONFIG]->(mc:McpConfig)
+       WITH t, t.id AS deletedId, mc
+       DETACH DELETE t, mc
        RETURN deletedId`,
       { id }
     );
