@@ -1,6 +1,10 @@
 /**
  * Tests for multi-task batch creation in the Task Planner create-task route.
  *
+ * Mounts the actual task-planner router with vi.mock'd dependencies, so the
+ * tests exercise the real handler code (validation, topo-sort, dependency
+ * resolution, partial failure, session cleanup) rather than a hand-written copy.
+ *
  * Covers:
  * 1. Backward compat: single task object body still works
  * 2. Batch body { tasks: [...] } creates multiple tasks
@@ -12,253 +16,234 @@
  * 8. Partial failure: records AgentError via recordError()
  * 9. Partial failure: session NOT cleaned up (left open)
  * 10. Full success: session cleaned up
+ * 11. Input validation: non-array dependsOnBatchIndex rejected with 400
+ * 12. Performance: getAllTabs queried once per request, not per batch item
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import express from "express";
 import request from "supertest";
 
-// ---- Mocks ----
+// ---------------------------------------------------------------------------
+// Mocks — same dependency-mocking pattern as task-planner-image.test.ts.
+// These must come before any import that transitively reaches the mocked modules.
+// ---------------------------------------------------------------------------
 
-// Mock createTask so we can control success/failure per call
-const mockCreateTask = vi.fn();
+vi.mock("../db/sessions.js", () => ({
+  getAllSessionsFromDb: vi.fn().mockResolvedValue([]),
+  getRunningSessionsFromDb: vi.fn().mockResolvedValue([]),
+  insertSession: vi.fn().mockResolvedValue(1),
+  updateSessionStatus: vi.fn().mockResolvedValue(undefined),
+  updateSessionMeta: vi.fn().mockResolvedValue(undefined),
+  deleteSessionFromDb: vi.fn().mockResolvedValue(true),
+  isSessionOwnedByUser: vi.fn().mockResolvedValue(true),
+  reorderSessionsInDb: vi.fn().mockResolvedValue(undefined),
+  updateSessionPinInDb: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("../db/connection.js", () => ({
+  isDbAvailable: vi.fn().mockReturnValue(true),
+}));
+
+vi.mock("../db/users.js", () => ({
+  getUserKiroApiKey: vi.fn().mockResolvedValue("fake-key"),
+  getUserById: vi.fn().mockResolvedValue({ id: 1, email: "test@test.com", defaultGitProvider: null }),
+}));
+
+vi.mock("../db/credentials.js", () => ({
+  getAllDecryptedCredentials: vi.fn().mockResolvedValue({}),
+  getDecryptedCredential: vi.fn().mockResolvedValue(null),
+}));
+
 const mockGetAllTabs = vi.fn();
-const mockGetSession = vi.fn();
-const mockGetUserId = vi.fn();
-const mockBroadcastToUser = vi.fn();
-const mockNotifyTaskAvailable = vi.fn();
-const mockStopSession = vi.fn();
-const mockDeleteSession = vi.fn();
+vi.mock("../db/tabs.js", () => ({
+  getAgentTabs: vi.fn().mockResolvedValue([]),
+  getTabById: vi.fn().mockResolvedValue(null),
+  getAllTabs: (...args: unknown[]) => mockGetAllTabs(...args),
+}));
+
+vi.mock("../db/agents.js", () => ({
+  getAgentByName: vi.fn().mockResolvedValue(null),
+}));
+
+vi.mock("../db/turns.js", () => ({
+  createTurn: vi.fn().mockResolvedValue({ number: 1, sessionId: 1, startedAt: "2026-08-31T10:00:00.000Z" }),
+  completeTurn: vi.fn().mockResolvedValue(null),
+  createErrorEvent: vi.fn().mockResolvedValue(null),
+  getMaxTurnNumber: vi.fn().mockResolvedValue(0),
+}));
+
+vi.mock("../websocket-handler.js", () => ({
+  broadcastToUser: vi.fn(),
+}));
+
 const mockRecordError = vi.fn();
+vi.mock("../error-store.js", () => ({
+  recordError: (...args: unknown[]) => mockRecordError(...args),
+}));
+
+vi.mock("../agent/kiro-runner.js", () => ({
+  KiroRunner: { create: vi.fn() },
+}));
+
+vi.mock("../agent/task-claimer.js", () => ({
+  claimTask: vi.fn(),
+  resolveTask: vi.fn(),
+  resetTask: vi.fn(),
+  getAvailableTaskCount: vi.fn().mockResolvedValue(0),
+  waitForTaskAvailable: vi.fn(),
+  markTaskDone: vi.fn(),
+  notifyTaskAvailable: vi.fn(),
+  resetOrphanedTasks: vi.fn().mockResolvedValue(0),
+  findSiblingTasks: vi.fn().mockResolvedValue([]),
+  findSiblingTasksByGroupId: vi.fn().mockResolvedValue([]),
+  describeClaimFailure: vi.fn().mockReturnValue("claim failed"),
+}));
+
+vi.mock("../agent/prompt-builder.js", () => ({
+  buildDevPrompt: vi.fn().mockReturnValue("prompt"),
+  buildReviewPrompt: vi.fn().mockReturnValue("prompt"),
+}));
+
+vi.mock("../agent/agent-config-writer.js", () => ({
+  materializeAgentConfigIfMissing: vi.fn().mockReturnValue(false),
+  encodeAgentConfigBase64: vi.fn().mockReturnValue(""),
+}));
+
+vi.mock("../agent/repo-url-parser.js", () => ({
+  buildPersistentBranchName: vi.fn().mockReturnValue("persistent-branch"),
+  buildTaskBranchName: vi.fn().mockReturnValue("task-branch"),
+}));
+
+vi.mock("../mcp-proxy-config.js", () => ({
+  buildProxyServersConfig: vi.fn().mockReturnValue(null),
+}));
+
+vi.mock("../aca-worker-spawner.js", () => ({
+  loadAcaConfig: vi.fn().mockReturnValue(null),
+  startWorkerJob: vi.fn(),
+  stopWorkerJob: vi.fn(),
+  getWorkerJobStatus: vi.fn(),
+  isAcaModeEnabled: vi.fn().mockReturnValue(false),
+}));
+
+vi.mock("../wsl-worker-spawner.js", () => ({
+  loadWslConfig: vi.fn().mockReturnValue(null),
+  startWorkerJob: vi.fn(),
+  stopWorkerJob: vi.fn(),
+  getWorkerJobStatus: vi.fn(),
+  isWslModeEnabled: vi.fn().mockReturnValue(false),
+  captureContainerLogs: vi.fn(),
+}));
+
+vi.mock("../worker-ws-handler.js", () => ({
+  setWorkerEventHandler: vi.fn(),
+  sendWorkerPrompt: vi.fn(),
+  sendWorkerStop: vi.fn(),
+  isWorkerConnected: vi.fn().mockReturnValue(false),
+  connectToLocalWorker: vi.fn(),
+}));
+
+const mockCreateTask = vi.fn();
+vi.mock("../db/tasks.js", () => ({
+  createTask: (...args: unknown[]) => mockCreateTask(...args),
+  getTaskAutoMergePrs: vi.fn().mockResolvedValue(false),
+  areAllGroupTasksDone: vi.fn().mockResolvedValue(false),
+}));
+
+// Mock auth middleware so requests pass through without a JWT
+vi.mock("../middleware/auth.js", () => ({
+  requireAuth: (_req: unknown, _res: unknown, next: () => void) => next(),
+  getUserId: () => 1,
+}));
+
+// ---------------------------------------------------------------------------
+// Import the actual router AFTER mocks are set up
+// ---------------------------------------------------------------------------
+
+import { createSession, getSession, stopSession, deleteSession } from "../session-manager.js";
+import { broadcastToUser } from "../websocket-handler.js";
+import { notifyTaskAvailable } from "../agent/task-claimer.js";
+import taskPlannerRouter from "../routes/task-planner.js";
+
+// Typed access to mocked functions
+const mockBroadcastToUser = vi.mocked(broadcastToUser);
+const mockNotifyTaskAvailable = vi.mocked(notifyTaskAvailable);
 
 /**
- * Build a test Express app that mirrors the batch create-task route logic.
- * This tests the route handler's own logic (validation, topo-sort, dependency
- * resolution, partial failure handling) in isolation from the real DB/session layer.
+ * Build a test Express app that mounts the real task-planner router.
  */
-function createBatchCreateApp() {
+function buildTestApp() {
   const app = express();
   app.use(express.json());
-
-  app.post("/api/task-planner/:sessionId/create-task", async (req, res) => {
-    const userId = mockGetUserId();
-    const sessionId = Number(req.params.sessionId);
-    if (isNaN(sessionId)) {
-      res.status(400).json({ error: "Invalid session ID" });
-      return;
-    }
-
-    const session = mockGetSession(sessionId);
-    if (!session || session.userId !== userId) {
-      res.status(404).json({ error: "Task planner session not found" });
-      return;
-    }
-
-    // Determine if this is a batch body or a single-object body
-    const body = req.body;
-    let batchItems: Array<{
-      title: string;
-      description?: string;
-      priority: number;
-      type: string;
-      files?: string[];
-      tabIds?: number[];
-      dependsOnBatchIndex?: number[];
-      groupId?: string;
-    }>;
-
-    if (body.tasks && Array.isArray(body.tasks)) {
-      // Batch body
-      batchItems = body.tasks;
-    } else if (body.title) {
-      // Single-object backward compat — wrap as one-element batch
-      batchItems = [body];
-    } else {
-      res.status(400).json({ error: "Request body must be a task object or { tasks: [...] }" });
-      return;
-    }
-
-    // Reject empty batch
-    if (batchItems.length === 0) {
-      res.status(400).json({ error: "At least one task is required" });
-      return;
-    }
-
-    // Validate all items up front — reject the whole request if any item is invalid
-    for (let i = 0; i < batchItems.length; i++) {
-      const item = batchItems[i];
-      if (!item.title || !item.priority || !item.type) {
-        res.status(400).json({ error: `Task at index ${i} is missing required fields (title, priority, type)` });
-        return;
-      }
-    }
-
-    // Resolve tabIds
-    const resolveTabIds = async (item: typeof batchItems[0]): Promise<number[]> => {
-      if (item.tabIds && item.tabIds.length > 0) {
-        const userTabs = await mockGetAllTabs(userId);
-        const userTabIds = new Set(userTabs.map((t: { id: number }) => t.id));
-        const unauthorized = item.tabIds.filter((id: number) => !userTabIds.has(id));
-        if (unauthorized.length > 0) {
-          throw new Error("Cannot assign task to tabs you do not own");
-        }
-        return item.tabIds;
-      }
-      if (session.tabIds && session.tabIds.length > 0) {
-        return session.tabIds;
-      }
-      const userTabs = await mockGetAllTabs(userId);
-      if (userTabs.length > 0) return [userTabs[0].id];
-      return [];
-    };
-
-    // Topological sort based on dependsOnBatchIndex
-    // Build adjacency and detect cycles
-    const n = batchItems.length;
-    const inDegree = new Array(n).fill(0);
-    const adjList: number[][] = Array.from({ length: n }, () => []);
-
-    for (let i = 0; i < n; i++) {
-      const deps = batchItems[i].dependsOnBatchIndex;
-      if (deps) {
-        for (const dep of deps) {
-          if (dep < 0 || dep >= n || dep === i) {
-            res.status(400).json({ error: `Task at index ${i} has invalid dependsOnBatchIndex ${dep}` });
-            return;
-          }
-          adjList[dep].push(i);
-          inDegree[i]++;
-        }
-      }
-    }
-
-    // Kahn's algorithm
-    const order: number[] = [];
-    const queue: number[] = [];
-    for (let i = 0; i < n; i++) {
-      if (inDegree[i] === 0) queue.push(i);
-    }
-    while (queue.length > 0) {
-      const node = queue.shift()!;
-      order.push(node);
-      for (const neighbor of adjList[node]) {
-        inDegree[neighbor]--;
-        if (inDegree[neighbor] === 0) queue.push(neighbor);
-      }
-    }
-
-    if (order.length !== n) {
-      res.status(400).json({ error: "Cycle detected in dependsOnBatchIndex references" });
-      return;
-    }
-
-    // Create tasks in topological order
-    const createdTasks: any[] = [];
-    const failedTasks: Array<{ task: any; error: string }> = [];
-    const batchIdMap: Map<number, number> = new Map(); // batchIndex -> real task ID
-
-    for (const idx of order) {
-      const item = batchItems[idx];
-      try {
-        const tabIds = await resolveTabIds(item);
-
-        // Resolve dependsOnBatchIndex to real IDs
-        const dependsOn: number[] = [];
-        if (item.dependsOnBatchIndex) {
-          for (const depIdx of item.dependsOnBatchIndex) {
-            const realId = batchIdMap.get(depIdx);
-            if (realId === undefined) {
-              // Dependency failed to create — skip this task too
-              throw new Error(`Dependency at batch index ${depIdx} was not created successfully`);
-            }
-            dependsOn.push(realId);
-          }
-        }
-
-        const taskInput = {
-          title: item.title,
-          description: item.description || "",
-          priority: item.priority,
-          type: item.type,
-          files: item.files || [],
-          origin: "user-assisted" as const,
-          tabIds,
-          dependsOn: dependsOn.length > 0 ? dependsOn : undefined,
-          groupId: item.groupId ?? null,
-        };
-
-        const task = await mockCreateTask(taskInput);
-        createdTasks.push(task);
-        batchIdMap.set(idx, task.id);
-
-        mockBroadcastToUser(userId, { type: "task-created", task });
-        mockNotifyTaskAvailable();
-      } catch (err: any) {
-        failedTasks.push({ task: item, error: err.message });
-        mockRecordError({
-          sessionId,
-          sessionName: session.name || "Task Planner",
-          agent: "task-planner",
-          message: err.message,
-          context: `Failed to create batch item at index ${idx}`,
-          taskTitle: item.title,
-          userId,
-          tabIds: session.tabIds,
-        });
-      }
-    }
-
-    // Only clean up session on full success
-    if (failedTasks.length === 0) {
-      try {
-        await mockStopSession(sessionId);
-        mockDeleteSession(sessionId);
-      } catch {
-        // Non-fatal
-      }
-    }
-
-    res.status(201).json({ created: createdTasks, failed: failedTasks });
-  });
-
+  app.use("/api/task-planner", taskPlannerRouter);
   return app;
 }
 
 describe("Task Planner batch create-task route", () => {
   let app: express.Express;
   let taskIdCounter: number;
+  let mockStopSession: ReturnType<typeof vi.spyOn>;
+  let mockDeleteSession: ReturnType<typeof vi.spyOn>;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
     taskIdCounter = 100;
-    mockGetUserId.mockReturnValue(1);
-    mockGetSession.mockReturnValue({
-      id: 1,
-      userId: 1,
-      name: "Task Planner",
-      tabIds: [2],
-    });
+
     mockGetAllTabs.mockResolvedValue([{ id: 2, name: "VCH" }]);
-    mockCreateTask.mockImplementation(async (input: any) => {
+    mockCreateTask.mockImplementation(async (input: Record<string, unknown>) => {
       const id = taskIdCounter++;
       return { id, ...input, state: "todo", createdAt: new Date().toISOString() };
     });
-    app = createBatchCreateApp();
+
+    // Create a planner session in the in-memory session store so the route
+    // can find it via getSession(). The session must have userId matching
+    // our mocked getUserId (1).
+    const session = await createSession({
+      name: "Task Planner",
+      prompt: "system prompt",
+      interactive: true,
+      loop: false,
+      runs: 0,
+      intervalSeconds: 0,
+      userId: 1,
+    });
+    // Verify session was created
+    const s = getSession(session.id);
+    if (!s) throw new Error("Session not created — test setup bug");
+
+    // Spy on stopSession / deleteSession after session creation so we can
+    // assert they're called during the request (not during setup).
+    mockStopSession = vi.spyOn(await import("../session-manager.js"), "stopSession");
+    mockDeleteSession = vi.spyOn(await import("../session-manager.js"), "deleteSession");
+
+    // Clear mock call counts that accumulated during session creation
+    // (e.g. broadcastToUser is called by createSession).
+    mockBroadcastToUser.mockClear();
+    mockNotifyTaskAvailable.mockClear();
+    mockRecordError.mockClear();
+
+    app = buildTestApp();
   });
+
+  // Helper: POST to the batch create endpoint using session ID 1
+  function postCreateTask(body: Record<string, unknown>) {
+    return request(app)
+      .post("/api/task-planner/1/create-task")
+      .send(body)
+      .set("Content-Type", "application/json");
+  }
 
   // ---- Backward compatibility ----
 
   it("creates a single task from a plain object body (backward compat)", async () => {
-    const res = await request(app)
-      .post("/api/task-planner/1/create-task")
-      .send({
-        title: "Fix login bug",
-        description: "The login page crashes on empty email",
-        priority: 2,
-        type: "bug",
-        files: ["src/auth.ts"],
-      })
-      .set("Content-Type", "application/json");
+    const res = await postCreateTask({
+      title: "Fix login bug",
+      description: "The login page crashes on empty email",
+      priority: 2,
+      type: "bug",
+      files: ["src/auth.ts"],
+    });
 
     expect(res.status).toBe(201);
     expect(res.body.created).toHaveLength(1);
@@ -270,16 +255,13 @@ describe("Task Planner batch create-task route", () => {
   // ---- Batch creation ----
 
   it("creates multiple independent tasks from a batch body", async () => {
-    const res = await request(app)
-      .post("/api/task-planner/1/create-task")
-      .send({
-        tasks: [
-          { title: "Task A", priority: 2, type: "feature" },
-          { title: "Task B", priority: 3, type: "improvement" },
-          { title: "Task C", priority: 1, type: "bug" },
-        ],
-      })
-      .set("Content-Type", "application/json");
+    const res = await postCreateTask({
+      tasks: [
+        { title: "Task A", priority: 2, type: "feature" },
+        { title: "Task B", priority: 3, type: "improvement" },
+        { title: "Task C", priority: 1, type: "bug" },
+      ],
+    });
 
     expect(res.status).toBe(201);
     expect(res.body.created).toHaveLength(3);
@@ -290,15 +272,12 @@ describe("Task Planner batch create-task route", () => {
   // ---- Validation ----
 
   it("rejects entire batch if any item is missing required fields", async () => {
-    const res = await request(app)
-      .post("/api/task-planner/1/create-task")
-      .send({
-        tasks: [
-          { title: "Valid task", priority: 2, type: "feature" },
-          { title: "Missing priority", type: "bug" }, // missing priority
-        ],
-      })
-      .set("Content-Type", "application/json");
+    const res = await postCreateTask({
+      tasks: [
+        { title: "Valid task", priority: 2, type: "feature" },
+        { title: "Missing priority", type: "bug" }, // missing priority
+      ],
+    });
 
     expect(res.status).toBe(400);
     expect(res.body.error).toContain("index 1");
@@ -309,15 +288,12 @@ describe("Task Planner batch create-task route", () => {
   // ---- Dependency resolution ----
 
   it("resolves dependsOnBatchIndex to real task IDs", async () => {
-    const res = await request(app)
-      .post("/api/task-planner/1/create-task")
-      .send({
-        tasks: [
-          { title: "Base task", priority: 2, type: "feature" },
-          { title: "Dependent task", priority: 2, type: "feature", dependsOnBatchIndex: [0] },
-        ],
-      })
-      .set("Content-Type", "application/json");
+    const res = await postCreateTask({
+      tasks: [
+        { title: "Base task", priority: 2, type: "feature" },
+        { title: "Dependent task", priority: 2, type: "feature", dependsOnBatchIndex: [0] },
+      ],
+    });
 
     expect(res.status).toBe(201);
     expect(res.body.created).toHaveLength(2);
@@ -330,15 +306,12 @@ describe("Task Planner batch create-task route", () => {
   // ---- Cycle detection ----
 
   it("rejects batch with cyclic dependsOnBatchIndex", async () => {
-    const res = await request(app)
-      .post("/api/task-planner/1/create-task")
-      .send({
-        tasks: [
-          { title: "Task A", priority: 2, type: "feature", dependsOnBatchIndex: [1] },
-          { title: "Task B", priority: 2, type: "feature", dependsOnBatchIndex: [0] },
-        ],
-      })
-      .set("Content-Type", "application/json");
+    const res = await postCreateTask({
+      tasks: [
+        { title: "Task A", priority: 2, type: "feature", dependsOnBatchIndex: [1] },
+        { title: "Task B", priority: 2, type: "feature", dependsOnBatchIndex: [0] },
+      ],
+    });
 
     expect(res.status).toBe(400);
     expect(res.body.error).toContain("Cycle detected");
@@ -347,16 +320,13 @@ describe("Task Planner batch create-task route", () => {
   // ---- groupId pass-through ----
 
   it("passes groupId through to createTask for items sharing the same groupId", async () => {
-    const res = await request(app)
-      .post("/api/task-planner/1/create-task")
-      .send({
-        tasks: [
-          { title: "Task A", priority: 2, type: "feature", groupId: "batch-x" },
-          { title: "Task B", priority: 3, type: "improvement" },
-          { title: "Task C", priority: 2, type: "feature", groupId: "batch-x" },
-        ],
-      })
-      .set("Content-Type", "application/json");
+    const res = await postCreateTask({
+      tasks: [
+        { title: "Task A", priority: 2, type: "feature", groupId: "batch-x" },
+        { title: "Task B", priority: 3, type: "improvement" },
+        { title: "Task C", priority: 2, type: "feature", groupId: "batch-x" },
+      ],
+    });
 
     expect(res.status).toBe(201);
     const calls = mockCreateTask.mock.calls;
@@ -370,7 +340,7 @@ describe("Task Planner batch create-task route", () => {
 
   it("returns partial success when one task in the batch fails", async () => {
     let callCount = 0;
-    mockCreateTask.mockImplementation(async (input: any) => {
+    mockCreateTask.mockImplementation(async (input: Record<string, unknown>) => {
       callCount++;
       if (callCount === 2) {
         throw new Error("DB connection lost");
@@ -378,16 +348,13 @@ describe("Task Planner batch create-task route", () => {
       return { id: taskIdCounter++, ...input, state: "todo", createdAt: new Date().toISOString() };
     });
 
-    const res = await request(app)
-      .post("/api/task-planner/1/create-task")
-      .send({
-        tasks: [
-          { title: "Task A", priority: 2, type: "feature" },
-          { title: "Task B", priority: 3, type: "bug" },
-          { title: "Task C", priority: 1, type: "improvement" },
-        ],
-      })
-      .set("Content-Type", "application/json");
+    const res = await postCreateTask({
+      tasks: [
+        { title: "Task A", priority: 2, type: "feature" },
+        { title: "Task B", priority: 3, type: "bug" },
+        { title: "Task C", priority: 1, type: "improvement" },
+      ],
+    });
 
     expect(res.status).toBe(201);
     expect(res.body.created).toHaveLength(2);
@@ -397,22 +364,19 @@ describe("Task Planner batch create-task route", () => {
   });
 
   it("records AgentError via recordError() on partial failure", async () => {
-    mockCreateTask.mockImplementationOnce(async (input: any) => {
+    mockCreateTask.mockImplementationOnce(async (input: Record<string, unknown>) => {
       return { id: 100, ...input, state: "todo" };
     });
     mockCreateTask.mockImplementationOnce(async () => {
       throw new Error("Constraint violation");
     });
 
-    await request(app)
-      .post("/api/task-planner/1/create-task")
-      .send({
-        tasks: [
-          { title: "Task OK", priority: 2, type: "feature" },
-          { title: "Task Fail", priority: 3, type: "bug" },
-        ],
-      })
-      .set("Content-Type", "application/json");
+    await postCreateTask({
+      tasks: [
+        { title: "Task OK", priority: 2, type: "feature" },
+        { title: "Task Fail", priority: 3, type: "bug" },
+      ],
+    });
 
     expect(mockRecordError).toHaveBeenCalledTimes(1);
     expect(mockRecordError.mock.calls[0][0]).toMatchObject({
@@ -424,36 +388,30 @@ describe("Task Planner batch create-task route", () => {
   });
 
   it("does NOT clean up the session on partial failure", async () => {
-    mockCreateTask.mockImplementationOnce(async (input: any) => {
+    mockCreateTask.mockImplementationOnce(async (input: Record<string, unknown>) => {
       return { id: 100, ...input, state: "todo" };
     });
     mockCreateTask.mockImplementationOnce(async () => {
       throw new Error("DB error");
     });
 
-    await request(app)
-      .post("/api/task-planner/1/create-task")
-      .send({
-        tasks: [
-          { title: "Task OK", priority: 2, type: "feature" },
-          { title: "Task Fail", priority: 3, type: "bug" },
-        ],
-      })
-      .set("Content-Type", "application/json");
+    await postCreateTask({
+      tasks: [
+        { title: "Task OK", priority: 2, type: "feature" },
+        { title: "Task Fail", priority: 3, type: "bug" },
+      ],
+    });
 
     expect(mockStopSession).not.toHaveBeenCalled();
     expect(mockDeleteSession).not.toHaveBeenCalled();
   });
 
   it("cleans up the session on full success", async () => {
-    await request(app)
-      .post("/api/task-planner/1/create-task")
-      .send({
-        tasks: [
-          { title: "Task A", priority: 2, type: "feature" },
-        ],
-      })
-      .set("Content-Type", "application/json");
+    await postCreateTask({
+      tasks: [
+        { title: "Task A", priority: 2, type: "feature" },
+      ],
+    });
 
     expect(mockStopSession).toHaveBeenCalledWith(1);
     expect(mockDeleteSession).toHaveBeenCalledWith(1);
@@ -462,8 +420,6 @@ describe("Task Planner batch create-task route", () => {
   // ---- Session not found ----
 
   it("returns 404 when session is not found", async () => {
-    mockGetSession.mockReturnValue(null);
-
     const res = await request(app)
       .post("/api/task-planner/999/create-task")
       .send({ title: "Test", priority: 2, type: "feature" })
@@ -475,40 +431,42 @@ describe("Task Planner batch create-task route", () => {
   // ---- Invalid dependsOnBatchIndex ----
 
   it("rejects self-referential dependsOnBatchIndex", async () => {
-    const res = await request(app)
-      .post("/api/task-planner/1/create-task")
-      .send({
-        tasks: [
-          { title: "Task A", priority: 2, type: "feature", dependsOnBatchIndex: [0] },
-        ],
-      })
-      .set("Content-Type", "application/json");
+    const res = await postCreateTask({
+      tasks: [
+        { title: "Task A", priority: 2, type: "feature", dependsOnBatchIndex: [0] },
+      ],
+    });
 
     expect(res.status).toBe(400);
     expect(res.body.error).toContain("invalid dependsOnBatchIndex");
   });
 
   it("rejects out-of-range dependsOnBatchIndex", async () => {
-    const res = await request(app)
-      .post("/api/task-planner/1/create-task")
-      .send({
-        tasks: [
-          { title: "Task A", priority: 2, type: "feature", dependsOnBatchIndex: [5] },
-        ],
-      })
-      .set("Content-Type", "application/json");
+    const res = await postCreateTask({
+      tasks: [
+        { title: "Task A", priority: 2, type: "feature", dependsOnBatchIndex: [5] },
+      ],
+    });
 
     expect(res.status).toBe(400);
     expect(res.body.error).toContain("invalid dependsOnBatchIndex");
   });
 
+  it("rejects non-array dependsOnBatchIndex with 400", async () => {
+    const res = await postCreateTask({
+      tasks: [
+        { title: "Task A", priority: 2, type: "feature", dependsOnBatchIndex: 42 },
+      ],
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("must be an array");
+  });
+
   // ---- Empty batch rejection ----
 
   it("rejects an empty batch with 400 and does not destroy the session", async () => {
-    const res = await request(app)
-      .post("/api/task-planner/1/create-task")
-      .send({ tasks: [] })
-      .set("Content-Type", "application/json");
+    const res = await postCreateTask({ tasks: [] });
 
     expect(res.status).toBe(400);
     expect(res.body.error).toContain("At least one task is required");
@@ -520,17 +478,36 @@ describe("Task Planner batch create-task route", () => {
   // ---- broadcasts for each successful task ----
 
   it("broadcasts task-created and notifyTaskAvailable for each successful task", async () => {
-    await request(app)
-      .post("/api/task-planner/1/create-task")
-      .send({
-        tasks: [
-          { title: "Task A", priority: 2, type: "feature" },
-          { title: "Task B", priority: 3, type: "improvement" },
-        ],
-      })
-      .set("Content-Type", "application/json");
+    await postCreateTask({
+      tasks: [
+        { title: "Task A", priority: 2, type: "feature" },
+        { title: "Task B", priority: 3, type: "improvement" },
+      ],
+    });
 
-    expect(mockBroadcastToUser).toHaveBeenCalledTimes(2);
+    // broadcastToUser may be called extra times by session cleanup (e.g.
+    // stopSession sets status which broadcasts a session-updated event).
+    // Check specifically for the task-created broadcasts.
+    const taskCreatedCalls = mockBroadcastToUser.mock.calls.filter(
+      (call) => call[1]?.type === "task-created",
+    );
+    expect(taskCreatedCalls).toHaveLength(2);
     expect(mockNotifyTaskAvailable).toHaveBeenCalledTimes(2);
+  });
+
+  // ---- Performance: getAllTabs called once, not per batch item ----
+
+  it("calls getAllTabs only once per request, not per batch item", async () => {
+    const res = await postCreateTask({
+      tasks: [
+        { title: "Task A", priority: 2, type: "feature" },
+        { title: "Task B", priority: 3, type: "improvement" },
+        { title: "Task C", priority: 1, type: "bug" },
+      ],
+    });
+
+    expect(res.status).toBe(201);
+    // getAllTabs should be called exactly once (before the loop), not 3 times
+    expect(mockGetAllTabs).toHaveBeenCalledTimes(1);
   });
 });

@@ -581,6 +581,10 @@ router.post("/:sessionId/create-task", async (req: Request, res: Response) => {
     for (let i = 0; i < n; i++) {
       const deps = batchItems[i].dependsOnBatchIndex;
       if (deps) {
+        if (!Array.isArray(deps)) {
+          res.status(400).json({ error: `Task at index ${i} has invalid dependsOnBatchIndex (must be an array)` });
+          return;
+        }
         for (const dep of deps) {
           if (dep < 0 || dep >= n || dep === i) {
             res.status(400).json({ error: `Task at index ${i} has invalid dependsOnBatchIndex ${dep}` });
@@ -612,13 +616,14 @@ router.post("/:sessionId/create-task", async (req: Request, res: Response) => {
     }
 
     // ---------------------------------------------------------------------------
-    // Resolve tabIds helper
+    // Resolve tabIds helper — fetch user's tabs once, not per batch item
     // ---------------------------------------------------------------------------
 
-    const resolveTabIds = async (item: TaskBatchItem): Promise<number[]> => {
+    const userTabs = await getAllTabs(userId);
+    const userTabIds = new Set(userTabs.map((t) => t.id));
+
+    const resolveTabIds = (item: TaskBatchItem): number[] => {
       if (item.tabIds && item.tabIds.length > 0) {
-        const userTabs = await getAllTabs(userId);
-        const userTabIds = new Set(userTabs.map((t) => t.id));
         const unauthorized = item.tabIds.filter((id) => !userTabIds.has(id));
         if (unauthorized.length > 0) {
           throw new Error("Cannot assign task to tabs you do not own");
@@ -628,7 +633,6 @@ router.post("/:sessionId/create-task", async (req: Request, res: Response) => {
       if (session.tabIds && session.tabIds.length > 0) {
         return session.tabIds;
       }
-      const userTabs = await getAllTabs(userId);
       if (userTabs.length > 0) return [userTabs[0].id];
       return [];
     };
@@ -644,7 +648,7 @@ router.post("/:sessionId/create-task", async (req: Request, res: Response) => {
     for (const idx of order) {
       const item = batchItems[idx];
       try {
-        const finalTabIds = await resolveTabIds(item);
+        const finalTabIds = resolveTabIds(item);
 
         // Resolve dependsOnBatchIndex to real IDs
         const dependsOn: number[] = [];
