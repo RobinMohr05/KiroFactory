@@ -1067,6 +1067,69 @@ describe('TaskPlannerModal - multi-task batch support', () => {
     expect((getByText('Create Tasks') as HTMLButtonElement).disabled).toBe(false);
   });
 
+  it('sanitizes leading escaped newline in string values (e.g. type) before sending to create-task', async () => {
+    // Regression: the planner LLM occasionally wraps a line so that a literal
+    // newline lands right after a value's opening quote — e.g. "type": "\nbug".
+    // The repair pass re-escapes the raw newline into \\n so JSON.parse succeeds,
+    // but the resulting value is "\nbug" instead of "bug". normalizeKeys only
+    // cleaned keys, not values, so the corrupted value was sent to the backend.
+    const wrappedValueBlock = '```json:task\n{\n  "title": "Fix broken parser",\n  "description": "Some description",\n  "priority": 2,\n  "type": "\nbug",\n  "files": ["\nfrontend/src/foo.ts"]\n}\n```';
+
+    const setTasks = vi.fn();
+    const onClose = vi.fn();
+    mockUseApp({ currentTabId: 1, setTasks });
+
+    apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (url === '/api/task-planner/start' && opts?.method === 'POST') {
+        return { ok: true, json: async () => ({ sessionId: 30 }) };
+      }
+      if (typeof url === 'string' && url.includes('/create-task') && opts?.method === 'POST') {
+        return {
+          ok: true,
+          json: async () => ({
+            created: [
+              { id: 300, title: 'Fix broken parser', priority: 2, type: 'bug', state: 'todo' },
+            ],
+            failed: [],
+          }),
+        };
+      }
+      if (opts?.method === 'DELETE') {
+        return { ok: true, json: async () => ({}) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+
+    const { getByText } = render(<TaskPlannerModal onClose={onClose} onSwitchToManual={vi.fn()} />);
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    await act(async () => {
+      dispatchAssistantMessage(30, wrappedValueBlock);
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    // Task should be parsed successfully (the corrupted "\nbug" is truthy, so it passes validation)
+    expect(getByText('Create Task')).toBeTruthy();
+
+    await act(async () => {
+      getByText('Create Task').click();
+    });
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    // Verify the POST body sent to /create-task has clean values
+    const createCall = apiFetchMock.mock.calls.find(
+      (call: any[]) => typeof call[0] === 'string' && call[0].includes('/create-task') && call[1]?.method === 'POST'
+    );
+    expect(createCall).toBeTruthy();
+    const sentBody = JSON.parse(createCall![1].body as string);
+    // The type value must be "bug", not "\nbug"
+    expect(sentBody.tasks[0].type).toBe('bug');
+    // The title should also be clean (no leading/trailing whitespace artifacts)
+    expect(sentBody.tasks[0].title).toBe('Fix broken parser');
+    // Files entries should also be sanitized
+    expect(sentBody.tasks[0].files[0]).toBe('frontend/src/foo.ts');
+  });
+
   it('sends the batch with dependsOnBatchIndex and groupId to the backend', async () => {
     const batchWithDeps = '```json:task\n[\n  { "title": "Base", "priority": 2, "type": "feature", "groupId": "g1" },\n  { "title": "Dep", "priority": 2, "type": "feature", "dependsOnBatchIndex": [0], "groupId": "g1" }\n]\n```';
 
