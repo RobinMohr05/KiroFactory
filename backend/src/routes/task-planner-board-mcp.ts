@@ -22,6 +22,7 @@ import { getAllTasks, setTaskDependencies } from "../db/tasks.js";
 import { DependencyCycleError } from "../types.js";
 import { requireAuth, getUserId } from "../middleware/auth.js";
 import { log, toErrorFields } from "../logger.js";
+import { signToken } from "./auth.js";
 
 import type { HttpMcpServerEntry } from "./task-planner-mcp.js";
 
@@ -42,11 +43,14 @@ export function buildPlannerBoardMcpServer(opts: {
     userId: String(opts.userId),
     tabId: String(opts.tabId),
   });
+  const token = signToken(opts.userId);
   return {
     type: "http",
     name: "task-board",
     url: `${opts.baseUrl}/api/task-planner-board-mcp/mcp?${params.toString()}`,
-    headers: [],
+    headers: [
+      { name: "Authorization", value: `Bearer ${token}` },
+    ],
   };
 }
 
