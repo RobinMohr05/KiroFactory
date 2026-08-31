@@ -112,6 +112,26 @@ describe("PUT /api/auth/me/view-mode", () => {
     expect(updateUserViewMode).not.toHaveBeenCalled();
   });
 
+  it("switches to looper and returns the updated user", async () => {
+    vi.mocked(updateUserViewMode).mockResolvedValue({
+      id: 1,
+      email: "test@test.com",
+      defaultGitProvider: null,
+      uiViewMode: "looper",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    const app = createApp();
+    const res = await request(app)
+      .put("/api/auth/me/view-mode")
+      .send({ uiViewMode: "looper" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.user.uiViewMode).toBe("looper");
+    expect(updateUserViewMode).toHaveBeenCalledWith(1, "looper");
+  });
+
   it("rejects a missing uiViewMode", async () => {
     const app = createApp();
     const res = await request(app)

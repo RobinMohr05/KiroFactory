@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState, useCallback, type ReactNode } from 'react';
-import type { Tab, Task, Session, Agent, AgentError, OutputEntry, SessionActivity, User, ViewTab, UiViewMode, WsMessage } from '../types';
+import type { Tab, Task, Session, Agent, AgentError, OutputEntry, SessionActivity, User, ViewTab, UiViewMode, WsMessage, Flock } from '../types';
 import { apiFetch } from '../utils/api';
 
 interface AppState {
@@ -10,6 +10,7 @@ interface AppState {
   sessions: Session[];
   agents: Agent[];
   errors: AgentError[];
+  flocks: Flock[];
   connected: boolean;
   activeSessionId: number | null;
   activeAgentId: number | null;
@@ -30,11 +31,13 @@ interface AppContextValue extends AppState {
   setSessions: React.Dispatch<React.SetStateAction<Session[]>>;
   setAgents: React.Dispatch<React.SetStateAction<Agent[]>>;
   setErrors: React.Dispatch<React.SetStateAction<AgentError[]>>;
+  setFlocks: React.Dispatch<React.SetStateAction<Flock[]>>;
   fetchTabs: () => Promise<void>;
   fetchTabTasks: (tabId: number) => Promise<void>;
   fetchSessions: () => Promise<void>;
   fetchAgents: () => Promise<void>;
   fetchErrors: () => Promise<void>;
+  fetchFlocks: () => Promise<void>;
   logout: () => Promise<void>;
   pendingOps: React.MutableRefObject<Set<string>>;
   /**
@@ -62,6 +65,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [errors, setErrors] = useState<AgentError[]>([]);
+  const [flocks, setFlocks] = useState<Flock[]>([]);
   const [connected, setConnected] = useState(false);
   const [activeSessionId, setActiveSessionId] = useState<number | null>(null);
   const [activeAgentId, setActiveAgentId] = useState<number | null>(null);
@@ -150,6 +154,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setErrors(data);
     } catch (e) {
       console.error('Failed to fetch errors:', e);
+    }
+  }, []);
+
+  const fetchFlocks = useCallback(async () => {
+    try {
+      const res = await apiFetch('/api/flocks');
+      if (!res.ok) return;
+      const data: Flock[] = await res.json();
+      setFlocks(data);
+    } catch (e) {
+      console.error('Failed to fetch flocks:', e);
     }
   }, []);
 
@@ -349,6 +364,29 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setErrors([]);
         break;
       }
+      case 'flock-created': {
+        setFlocks(prev => {
+          if (prev.find(f => f.id === message.flock.id)) return prev;
+          return [...prev, message.flock];
+        });
+        break;
+      }
+      case 'flock-updated': {
+        setFlocks(prev => {
+          const idx = prev.findIndex(f => f.id === message.flock.id);
+          if (idx !== -1) {
+            const next = [...prev];
+            next[idx] = { ...next[idx], ...message.flock };
+            return next;
+          }
+          return [...prev, message.flock];
+        });
+        break;
+      }
+      case 'flock-deleted': {
+        setFlocks(prev => prev.filter(f => f.id !== message.flockId));
+        break;
+      }
       case 'wsl-diagnostic-line': {
         // No app-wide state to update — the "WSL/Docker Logs" sub-tab listens
         // for this directly via the custom event, matching the ws-session-*
@@ -425,6 +463,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     fetchSessions();
     fetchAgents();
     fetchErrors();
+    fetchFlocks();
 
     return () => {
       // Detach immediately so a stale socket (still closing async) never
@@ -435,7 +474,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (staleWs) staleWs.close();
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
     };
-  }, [connectWebSocket, fetchTabs, fetchSessions, fetchAgents, fetchErrors]);
+  }, [connectWebSocket, fetchTabs, fetchSessions, fetchAgents, fetchErrors, fetchFlocks]);
 
   // Polling fallback: refetch tasks every 3s while WebSocket is disconnected
   useEffect(() => {
@@ -489,6 +528,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     sessions,
     agents,
     errors,
+    flocks,
     connected,
     activeSessionId,
     activeAgentId,
@@ -506,11 +546,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setSessions,
     setAgents,
     setErrors,
+    setFlocks,
     fetchTabs,
     fetchTabTasks,
     fetchSessions,
     fetchAgents,
     fetchErrors,
+    fetchFlocks,
     logout,
     pendingOps,
     setUiViewMode,

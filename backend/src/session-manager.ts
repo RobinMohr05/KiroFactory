@@ -1391,7 +1391,7 @@ async function runSession(managed: ManagedSession): Promise<void> {
  * Stage states for a given agent, used to parameterize the task lifecycle.
  * Defaults match the original developer-agent pipeline: todo → in-progress → developed.
  */
-interface AgentStageStates {
+export interface AgentStageStates {
   claimState: string;
   workingState: string;
   resolveState: string;
@@ -1414,7 +1414,7 @@ const DEFAULT_STAGE_STATES: AgentStageStates = {
  * Falls back to the default developer pipeline if the agent is not found
  * or has no stage states configured.
  */
-async function getAgentStageStates(agentName: string): Promise<AgentStageStates> {
+export async function getAgentStageStates(agentName: string): Promise<AgentStageStates> {
   if (!agentName) return DEFAULT_STAGE_STATES;
   try {
     const agent = await getAgentByName(agentName);

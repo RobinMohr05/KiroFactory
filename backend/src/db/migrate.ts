@@ -33,6 +33,7 @@ const SCHEMA_STATEMENTS: string[] = [
   "CREATE CONSTRAINT task_id_key IF NOT EXISTS FOR (t:Task) REQUIRE t.id IS NODE KEY",
   "CREATE CONSTRAINT agent_id_key IF NOT EXISTS FOR (a:Agent) REQUIRE a.id IS NODE KEY",
   "CREATE CONSTRAINT session_id_key IF NOT EXISTS FOR (s:Session) REQUIRE s.id IS NODE KEY",
+  "CREATE CONSTRAINT flock_id_key IF NOT EXISTS FOR (f:Flock) REQUIRE f.id IS NODE KEY",
   "CREATE CONSTRAINT turn_id_key IF NOT EXISTS FOR (t:Turn) REQUIRE t.id IS NODE KEY",
 
   // ── Infrastructure node keys (Counter, Settings — not domain entities) ──

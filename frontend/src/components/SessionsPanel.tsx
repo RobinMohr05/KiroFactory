@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { SessionModal } from './SessionModal';
 import { SessionDetailTabs } from './SessionDetailTabs';
+import { FlockPanel } from './FlockPanel';
 import { apiFetch } from '../utils/api';
 import { formatCreditsWithEur } from '../utils/format';
 import { useConfirmAction } from '../hooks/useConfirmAction';
@@ -10,7 +11,7 @@ import { useMobileBreakpoint } from '../hooks/useMobileBreakpoint';
 import type { Session, OutputEntry, SessionActivity } from '../types';
 
 export function SessionsPanel() {
-  const { sessions, setSessions, currentTabId, activeSessionId, setActiveSessionId, tabs, pendingOps, errors, setHighlightedTaskId } = useApp();
+  const { sessions, setSessions, currentTabId, activeSessionId, setActiveSessionId, tabs, pendingOps, errors, setHighlightedTaskId, user } = useApp();
   const navigate = useNavigate();
   const { id: routeId } = useParams<{ id?: string }>();
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -375,6 +376,7 @@ export function SessionsPanel() {
               <li className="session-empty-hint">No sessions for this tab. Create one with + New Session.</li>
             )}
           </ul>
+          {user?.uiViewMode === 'looper' && <FlockPanel />}
         </aside>
         <div className={`session-detail-panel${detailHidden ? ' mobile-hidden' : ''}`} id="sessionDetailPanel">
           {!activeSession ? (

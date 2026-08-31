@@ -87,4 +87,42 @@ describe('ViewModeSlider', () => {
     expect(screen.queryByRole('button', { name: /confirm/i })).not.toBeInTheDocument();
     expect(onConfirm).not.toHaveBeenCalled();
   });
+
+  describe('with 3 stops (Easy/Advanced/Looper)', () => {
+    const threeSteps = [
+      { value: 'easy' as const, label: 'Easy' },
+      { value: 'advanced' as const, label: 'Advanced' },
+      { value: 'looper' as const, label: 'Looper' },
+    ];
+
+    it('renders all 3 step labels', () => {
+      render(<ViewModeSlider steps={threeSteps} value="easy" onConfirm={vi.fn()} />);
+      expect(screen.getByText('Easy')).toBeInTheDocument();
+      expect(screen.getByText('Advanced')).toBeInTheDocument();
+      expect(screen.getByText('Looper')).toBeInTheDocument();
+    });
+
+    it('clicking Looper from Easy shows the correct confirmation text', () => {
+      render(<ViewModeSlider steps={threeSteps} value="easy" onConfirm={vi.fn()} />);
+      fireEvent.click(screen.getByLabelText('Looper'));
+      expect(screen.getByText(/switch from easy to looper/i)).toBeInTheDocument();
+    });
+
+    it('confirms switching to Looper', async () => {
+      const onConfirm = vi.fn().mockResolvedValue(undefined);
+      render(<ViewModeSlider steps={threeSteps} value="easy" onConfirm={onConfirm} />);
+
+      fireEvent.click(screen.getByLabelText('Looper'));
+      fireEvent.click(screen.getByRole('button', { name: /confirm/i }));
+
+      await waitFor(() => {
+        expect(onConfirm).toHaveBeenCalledWith('looper');
+      });
+    });
+
+    it('marks Looper as active when committed', () => {
+      render(<ViewModeSlider steps={threeSteps} value="looper" onConfirm={vi.fn()} />);
+      expect(screen.getByText('Looper')).toHaveClass('is-active');
+    });
+  });
 });
