@@ -10,7 +10,6 @@
  */
 
 import type { McpServerConfig } from "./types.js";
-import type { CredentialKey } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -37,27 +36,8 @@ export interface SessionCredentials {
 
 /** Options for building the proxy config */
 export interface McpProxyBuildOptions {
-  /** Decrypted credentials for the session's owning user */
-  credentials: SessionCredentials;
   /** Optional extra MCP servers defined at session level */
   sessionMcpServers?: McpServerConfig[];
-}
-
-// ---------------------------------------------------------------------------
-// Local (non-sidecar) server entries
-// ---------------------------------------------------------------------------
-
-/**
- * Shape expected by `KiroRunner.create()`'s `mcpServers` option
- * (`backend/src/agent/kiro-runner.ts`'s `McpServerEntry`). Duplicated here
- * (rather than imported) to avoid a dependency from this module onto
- * kiro-runner.ts — the two shapes are structurally identical by design.
- */
-export interface LocalMcpServerEntry {
-  name: string;
-  command: string;
-  args: string[];
-  env: Array<{ name: string; value: string }>;
 }
 
 // ---------------------------------------------------------------------------

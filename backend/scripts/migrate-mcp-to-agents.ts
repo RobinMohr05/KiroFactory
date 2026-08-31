@@ -27,7 +27,7 @@ import { parseArgs } from "node:util";
 import dotenv from "dotenv";
 dotenv.config();
 
-import { tryConnect, closePool } from "../src/db/connection.js";
+import { tryConnect, closePool, readQuery } from "../src/db/connection.js";
 import { getAllSessionsFromDb, updateSessionMeta } from "../src/db/sessions.js";
 import { getAllDecryptedCredentials } from "../src/db/credentials.js";
 import type { McpServerConfig, Session } from "../src/types.js";
@@ -166,26 +166,64 @@ const DRY_RUN = flags["dry-run"] === true;
 // ─── Migration logic ─────────────────────────────────────────────────────────
 
 /**
- * Resolve the effective TabMcpConfig for a session.
+ * Resolve the effective TabMcpConfig for a session by reading from the DB.
  *
- * NOTE: Since the Tab.mcpConfig and Session.mcpConfigOverride fields have been
- * removed from the runtime types, this function reads them from raw Neo4j
- * node properties via a direct query. The getTabById function no longer returns
- * mcpConfig, but the :McpConfig node and :HAS_MCP_CONFIG_OVERRIDE relationship
- * still exist in the database until this migration runs.
+ * Since the Tab.mcpConfig and Session.mcpConfigOverride fields have been
+ * removed from the runtime types, this function reads the :McpConfig nodes
+ * directly via raw Cypher. The :HAS_MCP_CONFIG and :HAS_MCP_CONFIG_OVERRIDE
+ * relationships still exist in Neo4j at migration time.
+ *
+ * Logic mirrors what session-manager.ts used to do:
+ *   1. Start with DEFAULT_MCP_CONFIG
+ *   2. If the session's first tab has a :McpConfig node, use that as the base
+ *   3. If the session has a :HAS_MCP_CONFIG_OVERRIDE → :McpConfig, merge on top
  */
-async function resolveEffectiveMcpConfig(session: Session): Promise<TabMcpConfig> {
-  // The Session and Tab types no longer have mcpConfig/mcpConfigOverride fields,
-  // but we still need them for migration. Since this script is run before the
-  // DB nodes are cleaned up, the data is still in Neo4j — we just can't access
-  // it through the typed getTabById/getSessionFromDb functions anymore.
-  // However, getAllSessionsFromDb still reads ALL session properties from the
-  // node, and the raw record includes everything. For simplicity and since this
-  // is a one-time migration, we'll use DEFAULT_MCP_CONFIG as the base config
-  // since that's what the system was using anyway (the migration already ran
-  // before tabs/sessions were cleaned up, so this produces the same result as
-  // reading from the DB).
-  return { ...DEFAULT_MCP_CONFIG };
+export async function resolveEffectiveMcpConfig(session: Session): Promise<TabMcpConfig> {
+  let config: TabMcpConfig = { ...DEFAULT_MCP_CONFIG };
+
+  // 1. Read tab's :McpConfig (from the session's first tab, if any)
+  const firstTabId = session.tabIds?.[0];
+  if (firstTabId != null) {
+    const tabConfig = await readQuery(async (tx) => {
+      const result = await tx.run(
+        `MATCH (t:Tab {id: $tabId})-[:HAS_MCP_CONFIG]->(m:McpConfig)
+         RETURN m {.*} AS mcpConfig`,
+        { tabId: firstTabId }
+      );
+      if (result.records.length === 0) return null;
+      return result.records[0].get("mcpConfig") as TabMcpConfig | null;
+    });
+    if (tabConfig) {
+      config = {
+        atlassian: !!tabConfig.atlassian,
+        azureDevops: !!tabConfig.azureDevops,
+        awsApi: !!tabConfig.awsApi,
+        awsDocs: !!tabConfig.awsDocs,
+      };
+    }
+  }
+
+  // 2. Read session's :McpConfigOverride and merge on top
+  const sessionOverride = await readQuery(async (tx) => {
+    const result = await tx.run(
+      `MATCH (s:Session {id: $sessionId})-[:HAS_MCP_CONFIG_OVERRIDE]->(m:McpConfig)
+       RETURN m {.*} AS mcpConfig`,
+      { sessionId: session.id }
+    );
+    if (result.records.length === 0) return null;
+    return result.records[0].get("mcpConfig") as TabMcpConfig | null;
+  });
+  if (sessionOverride) {
+    config = {
+      ...config,
+      atlassian: !!sessionOverride.atlassian,
+      azureDevops: !!sessionOverride.azureDevops,
+      awsApi: !!sessionOverride.awsApi,
+      awsDocs: !!sessionOverride.awsDocs,
+    };
+  }
+
+  return config;
 }
 
 async function main(): Promise<void> {
@@ -271,7 +309,11 @@ async function main(): Promise<void> {
   await closePool();
 }
 
-main().catch((err) => {
-  console.error("Migration failed:", err);
-  process.exit(1);
-});
+// Only run main() when executed directly (not when imported for testing)
+const isDirectExecution = process.argv[1]?.endsWith("migrate-mcp-to-agents.ts");
+if (isDirectExecution) {
+  main().catch((err) => {
+    console.error("Migration failed:", err);
+    process.exit(1);
+  });
+}

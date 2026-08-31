@@ -2559,7 +2559,6 @@ async function runSessionAca(managed: ManagedSession): Promise<void> {
 
         // 3. Generate servers.json config for the proxy sidecar
         const serversConfig = buildProxyServersConfig({
-          credentials,
           sessionMcpServers: [
             ...acaAgentMcpServers,
             ...(meta.mcpServers ?? []),
