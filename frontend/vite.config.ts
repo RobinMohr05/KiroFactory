@@ -55,6 +55,7 @@ export default defineConfig({
       '/login.html': 'http://localhost:3500',
       '/impressum.html': 'http://localhost:3500',
       '/favicon.svg': 'http://localhost:3500',
+      '/style.css': 'http://localhost:3500',
     },
   },
   build: {
