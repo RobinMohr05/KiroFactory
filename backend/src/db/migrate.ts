@@ -14,7 +14,9 @@
  * the full rationale and the constraint list this implements.
  */
 
-import { isDbAvailable, tryConnect, runSchemaStatement } from "./connection.js";
+import { isDbAvailable, tryConnect, runSchemaStatement, writeQuery } from "./connection.js";
+import { insertSession } from "./sessions.js";
+import type { Session } from "../types.js";
 
 /**
  * Every constraint/index this app depends on existing. Statements are plain
@@ -97,6 +99,64 @@ export async function runMigration(): Promise<boolean> {
       await runSchemaStatement(statement);
     }
     console.log("[migrate] Schema bootstrap complete.");
+
+    // ── Chat session backfill ──────────────────────────────────────────────
+    // Ensures every user has at least one permanent "Chat" session.
+    // Referenced by backend/src/routes/auth.ts's registration handler, which
+    // creates this session for new users but notes "the migration backfill
+    // will catch it on the next server restart" if that initial insert fails.
+    // Idempotent: the WHERE NOT EXISTS guard skips users who already have one.
+    // Wrapped in its own try/catch so a backfill failure never prevents the
+    // schema bootstrap's success from being reported.
+    try {
+      const userIds: number[] = await writeQuery(async (tx) => {
+        const result = await tx.run(
+          `MATCH (u:User) WHERE NOT EXISTS { (u)-[:OWNS]->(:Session {isPermanent: true}) } RETURN u.id AS id`
+        );
+        return result.records.map((r) => r.get("id") as number);
+      });
+
+      if (userIds.length > 0) {
+        console.log(`[migrate] Backfilling Chat session for ${userIds.length} user(s)...`);
+        for (const userId of userIds) {
+          try {
+            // Mirrors createSession()'s agentless-session defaults from
+            // session-manager.ts (agent: "", status: "stopped", interactive: true,
+            // loop: false, etc.) — see that function's doc comment. Uses
+            // insertSession() directly (pure DB write) rather than createSession()
+            // to avoid in-memory session-map and WebSocket-broadcast side effects
+            // that are inappropriate at boot-time migration.
+            const session: Session = {
+              id: 0, // placeholder — insertSession allocates the real id via getNextId
+              name: "Chat",
+              agent: "",
+              status: "stopped",
+              prompt: "",
+              interactive: true,
+              loop: false,
+              runs: 0,
+              intervalSeconds: 10,
+              cwd: "",
+              timeoutSeconds: 0,
+              userId,
+              createdAt: new Date().toISOString(),
+              output: [],
+              pinned: true,
+              isPermanent: true,
+              sortOrder: 0,
+              forceLocal: false,
+            };
+            await insertSession(session);
+          } catch (err: any) {
+            console.warn(`[migrate] ⚠ Failed to backfill Chat session for user ${userId}: ${err.message || err}`);
+          }
+        }
+        console.log("[migrate] Chat session backfill complete.");
+      }
+    } catch (err: any) {
+      console.warn(`[migrate] ⚠ Chat session backfill failed: ${err.message || err}`);
+    }
+
     return true;
   } catch (err: any) {
     console.warn(`[migrate] ⚠ Migration failed: ${err.message || err}`);
