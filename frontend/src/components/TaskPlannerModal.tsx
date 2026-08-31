@@ -263,7 +263,12 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
    * with the surrounding text on each resend. Fix: normalize every key by
    * stripping leading/trailing whitespace (including escaped \n/\r/\t left
    * by the repair pass) after parsing, since no key in this schema is ever
-   * legitimately whitespace-padded.
+   * legitimately whitespace-padded. The same normalization is also applied
+   * to string values, since a wrap can land right after a value's opening
+   * quote (e.g. `"type": "\nbug"` → value is "\nbug" instead of "bug") and
+   * no field in this schema is ever legitimately whitespace-padded at its
+   * edges (internal whitespace in multi-line descriptions is preserved —
+   * only leading/trailing edges are trimmed).
    */
   const parseTaskJsonLeniently = (raw: string): ParsedTask[] | null => {
     const normalizeKeys = (obj: unknown): unknown => {
@@ -274,6 +279,9 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
           out[k.replace(/^(?:\s|\\[nrt])+|(?:\s|\\[nrt])+$/g, '')] = normalizeKeys(v);
         }
         return out;
+      }
+      if (typeof obj === 'string') {
+        return obj.replace(/^(?:\s|\\[nrt])+|(?:\s|\\[nrt])+$/g, '');
       }
       return obj;
     };
