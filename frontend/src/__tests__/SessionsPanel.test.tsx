@@ -11,6 +11,10 @@ vi.mock('../utils/api', () => ({
   apiFetch: vi.fn().mockResolvedValue({ ok: true, json: async () => [] }),
 }));
 
+vi.mock('../components/FlockPanel', () => ({
+  FlockPanel: () => <div data-testid="flock-panel">FlockPanel</div>,
+}));
+
 const mockNavigate = vi.fn();
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom');
@@ -299,5 +303,152 @@ describe('SessionsPanel - Session detail header enhancements', () => {
     render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
 
     expect(screen.queryByTestId('session-current-task-link')).not.toBeInTheDocument();
+  });
+});
+
+describe('SessionsPanel - Looper mode', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('does not render #newSessionBtn in looper mode', () => {
+    mockUseApp({
+      user: { uiViewMode: 'looper' } as any,
+      sessions: [{
+        id: 1,
+        name: 'Chat',
+        agent: '',
+        status: 'stopped',
+        pinned: true,
+        isPermanent: true,
+        tabIds: [1],
+      }],
+      activeSessionId: 1,
+    });
+
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
+
+    expect(screen.queryByText('+ New Session')).not.toBeInTheDocument();
+  });
+
+  it('does not render #sessionList (unpinned sessions) in looper mode', () => {
+    mockUseApp({
+      user: { uiViewMode: 'looper' } as any,
+      sessions: [
+        {
+          id: 1,
+          name: 'Chat',
+          agent: '',
+          status: 'stopped',
+          pinned: true,
+          isPermanent: true,
+          tabIds: [1],
+        },
+        {
+          id: 2,
+          name: 'Unpinned Session',
+          agent: 'developer-agent',
+          status: 'stopped',
+          pinned: false,
+          isPermanent: false,
+          tabIds: [1],
+        },
+      ],
+      activeSessionId: 1,
+    });
+
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
+
+    // The unpinned session list should not be rendered at all
+    expect(document.getElementById('sessionList')).not.toBeInTheDocument();
+    // The unpinned session should not appear anywhere
+    expect(screen.queryByText('Unpinned Session')).not.toBeInTheDocument();
+  });
+
+  it('only shows isPermanent sessions in the pinned list in looper mode', () => {
+    mockUseApp({
+      user: { uiViewMode: 'looper' } as any,
+      sessions: [
+        {
+          id: 1,
+          name: 'Chat',
+          agent: '',
+          status: 'stopped',
+          pinned: true,
+          isPermanent: true,
+          tabIds: [1],
+        },
+        {
+          id: 2,
+          name: 'Pinned Agent',
+          agent: 'developer-agent',
+          status: 'stopped',
+          pinned: true,
+          isPermanent: false,
+          tabIds: [1],
+        },
+      ],
+      activeSessionId: 1,
+    });
+
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
+
+    // The permanent+pinned session should be visible
+    expect(screen.getAllByText('Chat').length).toBeGreaterThanOrEqual(1);
+    // The pinned-but-not-permanent session should NOT be visible in looper mode
+    expect(screen.queryByText('Pinned Agent')).not.toBeInTheDocument();
+  });
+});
+
+describe('SessionsPanel - Advanced mode regression', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('renders #newSessionBtn, full pinned list, and full unpinned list in advanced mode', () => {
+    mockUseApp({
+      user: { uiViewMode: 'advanced' } as any,
+      sessions: [
+        {
+          id: 1,
+          name: 'Permanent Chat',
+          agent: '',
+          status: 'stopped',
+          pinned: true,
+          isPermanent: true,
+          tabIds: [1],
+        },
+        {
+          id: 2,
+          name: 'Pinned Agent',
+          agent: 'developer-agent',
+          status: 'stopped',
+          pinned: true,
+          isPermanent: false,
+          tabIds: [1],
+        },
+        {
+          id: 3,
+          name: 'Unpinned Session',
+          agent: 'developer-agent',
+          status: 'stopped',
+          pinned: false,
+          isPermanent: false,
+          tabIds: [1],
+        },
+      ],
+      activeSessionId: 1,
+    });
+
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
+
+    // Button should be present
+    expect(screen.getByText('+ New Session')).toBeInTheDocument();
+    // All sessions should be visible (pinned + unpinned)
+    expect(screen.getAllByText('Permanent Chat').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText('Pinned Agent').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText('Unpinned Session').length).toBeGreaterThanOrEqual(1);
+    // Unpinned session list should be rendered
+    expect(document.getElementById('sessionList')).toBeInTheDocument();
   });
 });

@@ -332,7 +332,9 @@ export function SessionsPanel() {
       <div className="sessions-layout">
         <aside className={`session-list-panel${listHidden ? ' mobile-hidden' : ''}`} ref={listPanelRef}>
           <div className="toolbar" role="toolbar" aria-label="Session actions">
-            <button id="newSessionBtn" className="btn btn-primary" onClick={() => setShowCreateModal(true)}>+ New Session</button>
+            {user?.uiViewMode !== 'looper' && (
+              <button id="newSessionBtn" className="btn btn-primary" onClick={() => setShowCreateModal(true)}>+ New Session</button>
+            )}
           </div>
           <ul
             className="session-list-pinned"
@@ -342,7 +344,7 @@ export function SessionsPanel() {
             onDrop={handlePinnedContainerDrop}
             style={{ minHeight: '24px' }}
           >
-            {sortedSessions.filter(s => s.pinned).map(session => (
+            {sortedSessions.filter(s => s.pinned && (user?.uiViewMode !== 'looper' || s.isPermanent)).map(session => (
               <SessionListItem
                 key={session.id}
                 session={session}
@@ -357,6 +359,7 @@ export function SessionsPanel() {
               />
             ))}
           </ul>
+          {user?.uiViewMode !== 'looper' && (
           <ul className="session-list" id="sessionList" aria-label="Agent sessions">
             {sortedSessions.filter(s => !s.pinned).map(session => (
               <SessionListItem
@@ -376,6 +379,7 @@ export function SessionsPanel() {
               <li className="session-empty-hint">No sessions for this tab. Create one with + New Session.</li>
             )}
           </ul>
+          )}
           {user?.uiViewMode === 'looper' && <FlockPanel />}
         </aside>
         <div className={`session-detail-panel${detailHidden ? ' mobile-hidden' : ''}`} id="sessionDetailPanel">
