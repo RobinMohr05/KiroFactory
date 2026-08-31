@@ -24,6 +24,7 @@ import { PlannerSessionPool, type PooledRunner } from "../planner-session-pool.j
 import { KiroRunner } from "../agent/kiro-runner.js";
 import { resolve } from "node:path";
 import type { CreateTaskInput } from "../types.js";
+import { recordError } from "../error-store.js";
 
 /**
  * Extended PooledRunner that exposes the underlying KiroRunner instance.
@@ -188,16 +189,20 @@ If you've completed 3+ rounds without convergence (frontier keeps growing, scope
 
 If the user wants multiple tasks, grill the set together — ask questions that establish boundaries between tasks in the same round to avoid overlapping scope. Draft all of them at once for review.
 
+When producing a batch of multiple tasks, decide per batch:
+- **dependsOnBatchIndex** — if a task in the batch cannot start until another task in the same batch is done (e.g. task 2 modifies code that task 0 must create first), add \`"dependsOnBatchIndex": [0]\` (array of 0-based indices into the same output array) to the dependent task. Only use this for genuine sequential dependencies, not for loosely related work.
+- **groupId** — if several tasks in the batch should be worked on the same branch/PR (parallelizable-but-related changes to the same area), give them the same string value for \`"groupId"\`. Omit for tasks that don't need grouping.
+
 ## Writing the final description
 
-When the frontier is empty, draft the task. Write the description FOR the autonomous developer agent:
+When the frontier is empty, draft the task(s). Write the description FOR the autonomous developer agent:
 - Second-person imperative ("Implement...", "Add...", "Fix...")
 - Include relevant file paths, function names, architectural context
 - Explicit acceptance criteria the agent can self-verify (what should pass, what behavior should exist)
 - Name what is NOT in scope so the agent doesn't wander
 - Keep titles under 80 characters, action-oriented
 
-Show the draft to the user. On confirmation, output the final task.
+Show the draft to the user. On confirmation, output the final task(s).
 
 ## Escape hatch
 
@@ -205,17 +210,26 @@ If the user's request is already unambiguous and narrow (e.g. they paste an exac
 
 ## Output Format
 
-When the user confirms the task, output EXACTLY this format (and nothing else after it):
+When the user confirms the task(s), output EXACTLY this format (and nothing else after it).
+ALWAYS output a JSON **array** — even for a single task, wrap it in \`[...]\`:
 
 \`\`\`json:task
-{
-  "title": "...",
-  "description": "...",
-  "priority": 1-4,
-  "type": "feature|improvement|bug",
-  "files": ["file1.ts", "file2.ts"]
-}
-\`\`\``;
+[
+  {
+    "title": "...",
+    "description": "...",
+    "priority": 1-4,
+    "type": "feature|improvement|bug",
+    "files": ["file1.ts", "file2.ts"],
+    "dependsOnBatchIndex": [0],
+    "groupId": "optional-shared-id"
+  }
+]
+\`\`\`
+
+- \`dependsOnBatchIndex\` (optional): 0-based indices into this same array for tasks that must be completed before this one.
+- \`groupId\` (optional): shared string for tasks that should be worked on the same branch/PR.
+- Omit both fields when not needed.`;
 
 // POST /api/task-planner/prewarm — Fire-and-forget: ensure a warm pool slot exists for the tab
 router.post("/prewarm", (req: Request, res: Response) => {
@@ -495,7 +509,7 @@ router.post("/:sessionId/message", async (req: Request, res: Response) => {
   }
 });
 
-// POST /api/task-planner/:sessionId/create-task — Create the task from the conversation
+// POST /api/task-planner/:sessionId/create-task — Create task(s) from the conversation
 router.post("/:sessionId/create-task", async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
@@ -511,67 +525,189 @@ router.post("/:sessionId/create-task", async (req: Request, res: Response) => {
       return;
     }
 
-    // Accept task data from the frontend (parsed from the AI output)
-    const { title, description, priority, type, files, tabIds } = req.body as {
+    // ---------------------------------------------------------------------------
+    // Determine batch items — accept either:
+    //   1. { tasks: TaskBatchItem[] }   — new batch body
+    //   2. { title, ... }               — existing single-object body (backward compat)
+    // ---------------------------------------------------------------------------
+
+    interface TaskBatchItem {
       title: string;
-      description: string;
+      description?: string;
       priority: number;
       type: string;
       files?: string[];
       tabIds?: number[];
-    };
+      dependsOnBatchIndex?: number[];
+      groupId?: string;
+    }
 
-    if (!title || !priority || !type) {
-      res.status(400).json({ error: "title, priority, and type are required" });
+    const body = req.body;
+    let batchItems: TaskBatchItem[];
+
+    if (body.tasks && Array.isArray(body.tasks)) {
+      batchItems = body.tasks;
+    } else if (body.title) {
+      // Single-object backward compat — wrap as one-element batch
+      batchItems = [body as TaskBatchItem];
+    } else {
+      res.status(400).json({ error: "Request body must be a task object or { tasks: [...] }" });
       return;
     }
 
-    // Verify tabIds belong to the user if provided
-    let finalTabIds = tabIds;
-    if (finalTabIds && finalTabIds.length > 0) {
-      const userTabs = await getAllTabs(userId);
-      const userTabIds = new Set(userTabs.map((t) => t.id));
-      const unauthorized = finalTabIds.filter((id) => !userTabIds.has(id));
-      if (unauthorized.length > 0) {
-        res.status(403).json({ error: "Cannot assign task to tabs you do not own" });
+    // Reject empty batch
+    if (batchItems.length === 0) {
+      res.status(400).json({ error: "At least one task is required" });
+      return;
+    }
+
+    // Validate all items up front — reject the whole request on validation failure
+    for (let i = 0; i < batchItems.length; i++) {
+      const item = batchItems[i];
+      if (!item.title || !item.priority || !item.type) {
+        res.status(400).json({ error: `Task at index ${i} is missing required fields (title, priority, type)` });
         return;
       }
-    } else {
-      // Prefer the tab that was used to start the planning session
-      if (session.tabIds && session.tabIds.length > 0) {
-        finalTabIds = session.tabIds;
-      } else {
-        // Fallback to user's first tab
-        const userTabs = await getAllTabs(userId);
-        if (userTabs.length > 0) {
-          finalTabIds = [userTabs[0].id];
+    }
+
+    // ---------------------------------------------------------------------------
+    // Topological sort based on dependsOnBatchIndex (Kahn's algorithm)
+    // ---------------------------------------------------------------------------
+
+    const n = batchItems.length;
+    const inDegree = new Array(n).fill(0);
+    const adjList: number[][] = Array.from({ length: n }, () => []);
+
+    for (let i = 0; i < n; i++) {
+      const deps = batchItems[i].dependsOnBatchIndex;
+      if (deps) {
+        if (!Array.isArray(deps)) {
+          res.status(400).json({ error: `Task at index ${i} has invalid dependsOnBatchIndex (must be an array)` });
+          return;
+        }
+        for (const dep of deps) {
+          if (dep < 0 || dep >= n || dep === i) {
+            res.status(400).json({ error: `Task at index ${i} has invalid dependsOnBatchIndex ${dep}` });
+            return;
+          }
+          adjList[dep].push(i);
+          inDegree[i]++;
         }
       }
     }
 
-    const taskInput: CreateTaskInput = {
-      title,
-      description: description || "",
-      priority: priority as 1 | 2 | 3 | 4,
-      type: type as "feature" | "improvement" | "bug",
-      files: files || [],
-      origin: "user-assisted",
-      tabIds: finalTabIds,
-    };
-
-    const task = await createTask(taskInput);
-    broadcastToUser(userId, { type: "task-created", task });
-    notifyTaskAvailable(); // wake any idle loop sessions immediately
-
-    // Clean up the planner session
-    try {
-      await stopSession(sessionId);
-      deleteSession(sessionId);
-    } catch {
-      // Non-fatal — session cleanup failure doesn't affect the created task
+    const order: number[] = [];
+    const queue: number[] = [];
+    for (let i = 0; i < n; i++) {
+      if (inDegree[i] === 0) queue.push(i);
+    }
+    while (queue.length > 0) {
+      const node = queue.shift()!;
+      order.push(node);
+      for (const neighbor of adjList[node]) {
+        inDegree[neighbor]--;
+        if (inDegree[neighbor] === 0) queue.push(neighbor);
+      }
     }
 
-    res.status(201).json(task);
+    if (order.length !== n) {
+      res.status(400).json({ error: "Cycle detected in dependsOnBatchIndex references" });
+      return;
+    }
+
+    // ---------------------------------------------------------------------------
+    // Resolve tabIds helper — fetch user's tabs once, not per batch item
+    // ---------------------------------------------------------------------------
+
+    const userTabs = await getAllTabs(userId);
+    const userTabIds = new Set(userTabs.map((t) => t.id));
+
+    const resolveTabIds = (item: TaskBatchItem): number[] => {
+      if (item.tabIds && item.tabIds.length > 0) {
+        const unauthorized = item.tabIds.filter((id) => !userTabIds.has(id));
+        if (unauthorized.length > 0) {
+          throw new Error("Cannot assign task to tabs you do not own");
+        }
+        return item.tabIds;
+      }
+      if (session.tabIds && session.tabIds.length > 0) {
+        return session.tabIds;
+      }
+      if (userTabs.length > 0) return [userTabs[0].id];
+      return [];
+    };
+
+    // ---------------------------------------------------------------------------
+    // Create tasks in topological order
+    // ---------------------------------------------------------------------------
+
+    const createdTasks: Array<import("../types.js").Task> = [];
+    const failedTasks: Array<{ task: TaskBatchItem; error: string }> = [];
+    const batchIdMap: Map<number, number> = new Map(); // batchIndex -> real task ID
+
+    for (const idx of order) {
+      const item = batchItems[idx];
+      try {
+        const finalTabIds = resolveTabIds(item);
+
+        // Resolve dependsOnBatchIndex to real IDs
+        const dependsOn: number[] = [];
+        if (item.dependsOnBatchIndex) {
+          for (const depIdx of item.dependsOnBatchIndex) {
+            const realId = batchIdMap.get(depIdx);
+            if (realId === undefined) {
+              throw new Error(`Dependency at batch index ${depIdx} was not created successfully`);
+            }
+            dependsOn.push(realId);
+          }
+        }
+
+        const taskInput: CreateTaskInput = {
+          title: item.title,
+          description: item.description || "",
+          priority: item.priority as 1 | 2 | 3 | 4,
+          type: item.type as "feature" | "improvement" | "bug",
+          files: item.files || [],
+          origin: "user-assisted",
+          tabIds: finalTabIds,
+          dependsOn: dependsOn.length > 0 ? dependsOn : undefined,
+          groupId: item.groupId ?? null,
+        };
+
+        const task = await createTask(taskInput);
+        createdTasks.push(task);
+        batchIdMap.set(idx, task.id);
+
+        broadcastToUser(userId, { type: "task-created", task });
+        notifyTaskAvailable();
+      } catch (err: unknown) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        failedTasks.push({ task: item, error: errMsg });
+        recordError({
+          sessionId,
+          sessionName: session.name || "Task Planner",
+          agent: "task-planner",
+          message: errMsg,
+          context: `Failed to create batch item at index ${idx}`,
+          taskTitle: item.title,
+          userId,
+          tabIds: session.tabIds,
+        });
+      }
+    }
+
+    // Only clean up the planner session on full success — partial failure
+    // leaves the session open so the user can see failures in the modal.
+    if (failedTasks.length === 0) {
+      try {
+        await stopSession(sessionId);
+        deleteSession(sessionId);
+      } catch {
+        // Non-fatal — session cleanup failure doesn't affect the created tasks
+      }
+    }
+
+    res.status(201).json({ created: createdTasks, failed: failedTasks });
   } catch (err) {
     log.error("route-error", {
       component: "task-planner",
