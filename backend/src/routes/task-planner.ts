@@ -20,6 +20,7 @@ import { getDecryptedCredential } from "../db/credentials.js";
 import { resolveGitProvider } from "../types.js";
 import { getUserById } from "../db/users.js";
 import { buildPlannerRepoMcpServer } from "./task-planner-mcp.js";
+import { buildPlannerBoardMcpServer } from "./task-planner-board-mcp.js";
 import { PlannerSessionPool, type PooledRunner } from "../planner-session-pool.js";
 import { KiroRunner } from "../agent/kiro-runner.js";
 import { resolve } from "node:path";
@@ -345,6 +346,17 @@ router.post("/start", async (req: Request, res: Response) => {
           `When proposing the task, ground your suggestions in this specific project.`
         );
         systemPrompt += contextLines.join("\n");
+
+        // Build a board MCP server entry so the LLM can discover existing
+        // tasks (list_tasks) and write dependency links (add_task_dependency).
+        const baseUrl = `${req.protocol}://${req.get("host")}`;
+        const boardMcp = buildPlannerBoardMcpServer({
+          userId,
+          tabId: tab.id,
+          baseUrl,
+        });
+        if (!rawMcpServers) rawMcpServers = [];
+        rawMcpServers.push(boardMcp);
       }
     }
 
@@ -595,6 +607,20 @@ router.post("/:sessionId/create-task", async (req: Request, res: Response) => {
           }
           adjList[dep].push(i);
           inDegree[i]++;
+        }
+      }
+
+      const taskIdDeps = batchItems[i].dependsOnTaskId;
+      if (taskIdDeps) {
+        if (!Array.isArray(taskIdDeps)) {
+          res.status(400).json({ error: `Task at index ${i} has invalid dependsOnTaskId (must be an array)` });
+          return;
+        }
+        for (const dep of taskIdDeps) {
+          if (!Number.isInteger(dep) || dep < 0) {
+            res.status(400).json({ error: `Task at index ${i} has invalid dependsOnTaskId ${dep} — must be a positive integer` });
+            return;
+          }
         }
       }
     }

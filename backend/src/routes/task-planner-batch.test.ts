@@ -40,6 +40,15 @@ vi.mock("../agent/task-claimer.js", () => ({
   notifyTaskAvailable: vi.fn(),
 }));
 
+vi.mock("./task-planner-board-mcp.js", () => ({
+  buildPlannerBoardMcpServer: vi.fn().mockReturnValue({
+    type: "http",
+    name: "task-board",
+    url: "http://localhost:3500/api/task-planner-board-mcp/mcp?userId=1&tabId=1",
+    headers: [{ name: "Authorization", value: "Bearer mock-token" }],
+  }),
+}));
+
 vi.mock("../session-manager.js", () => ({
   createSession: vi.fn().mockResolvedValue({ id: 1, name: "Task Planner", tabIds: [1], userId: 1 }),
   startSession: vi.fn().mockResolvedValue(undefined),
@@ -80,6 +89,40 @@ vi.mock("../logger.js", () => ({
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
   toErrorFields: vi.fn().mockReturnValue({}),
 }));
+
+describe("POST /api/task-planner/start — board MCP server integration", () => {
+  let app: express.Express;
+  let createSessionMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+
+    const sessionModule = await import("../session-manager.js");
+    createSessionMock = vi.mocked(sessionModule.createSession);
+
+    // Import the router dynamically after mocks are set up
+    const { default: taskPlannerRouter } = await import("./task-planner.js");
+    app = express();
+    app.use(express.json());
+    app.use("/api/task-planner", taskPlannerRouter);
+  });
+
+  it("includes a task-board MCP server in rawMcpServers when tabId is provided", async () => {
+    await supertest(app)
+      .post("/api/task-planner/start")
+      .send({ tabId: 1 })
+      .expect(201);
+
+    expect(createSessionMock).toHaveBeenCalledTimes(1);
+    const sessionOpts = createSessionMock.mock.calls[0][0];
+    const mcpServers: Array<{ name: string; type?: string }> = sessionOpts.rawMcpServers ?? [];
+
+    // Should contain a "task-board" entry
+    const boardEntry = mcpServers.find((s: { name: string }) => s.name === "task-board");
+    expect(boardEntry).toBeDefined();
+    expect(boardEntry!.type).toBe("http");
+  });
+});
 
 describe("POST /api/task-planner/:sessionId/create-task — batch mode", () => {
   let app: express.Express;
@@ -189,6 +232,48 @@ describe("POST /api/task-planner/:sessionId/create-task — batch mode", () => {
 
     const secondCall = createTask.mock.calls[1][0];
     expect(secondCall.dependsOn).toEqual(expect.arrayContaining([100, 50]));
+  });
+
+  it("rejects dependsOnTaskId that is not an array", async () => {
+    const res = await supertest(app)
+      .post("/api/task-planner/1/create-task")
+      .send({
+        tasks: [
+          { title: "Task A", priority: 2, type: "feature", dependsOnTaskId: 42 },
+        ],
+      })
+      .expect(400);
+
+    expect(res.body.error).toMatch(/dependsOnTaskId.*array/i);
+    expect(createTask).not.toHaveBeenCalled();
+  });
+
+  it("rejects dependsOnTaskId with non-integer elements", async () => {
+    const res = await supertest(app)
+      .post("/api/task-planner/1/create-task")
+      .send({
+        tasks: [
+          { title: "Task A", priority: 2, type: "feature", dependsOnTaskId: ["abc"] },
+        ],
+      })
+      .expect(400);
+
+    expect(res.body.error).toMatch(/dependsOnTaskId.*integer/i);
+    expect(createTask).not.toHaveBeenCalled();
+  });
+
+  it("rejects dependsOnTaskId with negative integers", async () => {
+    const res = await supertest(app)
+      .post("/api/task-planner/1/create-task")
+      .send({
+        tasks: [
+          { title: "Task A", priority: 2, type: "feature", dependsOnTaskId: [-1] },
+        ],
+      })
+      .expect(400);
+
+    expect(res.body.error).toMatch(/dependsOnTaskId/i);
+    expect(createTask).not.toHaveBeenCalled();
   });
 
   it("still works with legacy single-task format (title/description top-level)", async () => {
