@@ -14,6 +14,7 @@
  * the full rationale and the constraint list this implements.
  */
 
+import { resolve } from "node:path";
 import { isDbAvailable, tryConnect, runSchemaStatement, writeQuery } from "./connection.js";
 import { insertSession } from "./sessions.js";
 import type { Session } from "../types.js";
@@ -136,7 +137,7 @@ export async function runMigration(): Promise<boolean> {
               loop: false,
               runs: 0,
               intervalSeconds: 10,
-              cwd: "",
+              cwd: resolve(import.meta.dirname, "../.."), // mirrors DEFAULT_CWD from session-manager.ts
               timeoutSeconds: 0,
               userId,
               createdAt: new Date().toISOString(),

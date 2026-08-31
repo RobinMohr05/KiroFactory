@@ -66,6 +66,11 @@ describe("runMigration - Chat session backfill", () => {
     expect(firstCall.interactive).toBe(true);
     expect(firstCall.loop).toBe(false);
 
+    // cwd must match DEFAULT_CWD from session-manager.ts: resolve(dirname, "../..")
+    // i.e. the project root, not an empty string
+    expect(firstCall.cwd).toMatch(/[/\\]/); // non-empty path
+    expect(firstCall.cwd).not.toBe("");
+
     // Verify user 2
     const secondCall = mockInsertSession.mock.calls[1][0];
     expect(secondCall.userId).toBe(2);
