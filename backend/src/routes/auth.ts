@@ -18,7 +18,7 @@ const COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days in ms
 /**
  * Signs a JWT with the user's ID.
  */
-function signToken(userId: number): string {
+export function signToken(userId: number): string {
   return jwt.sign({ userId }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
 }
 

@@ -964,6 +964,83 @@ describe('TaskPlannerModal - multi-task batch support', () => {
     expect(onClose).toHaveBeenCalled();
   });
 
+  it('preserves dependsOnTaskId on retry after partial failure', async () => {
+    // Task B has dependsOnTaskId: [99] (a real existing task), and fails on first attempt.
+    // On retry, the dependsOnTaskId should still be present in the request body.
+    const batchBlock = '```json:task\n[\n  { "title": "Task A", "priority": 2, "type": "feature" },\n  { "title": "Task B", "priority": 3, "type": "bug", "dependsOnTaskId": [99] }\n]\n```';
+
+    const onClose = vi.fn();
+    const setTasks = vi.fn();
+    mockUseApp({ currentTabId: 1, setTasks });
+
+    let createCallCount = 0;
+    apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (url === '/api/task-planner/start' && opts?.method === 'POST') {
+        return { ok: true, json: async () => ({ sessionId: 30 }) };
+      }
+      if (typeof url === 'string' && url.includes('/create-task') && opts?.method === 'POST') {
+        createCallCount++;
+        if (createCallCount === 1) {
+          return {
+            ok: true,
+            json: async () => ({
+              created: [
+                { id: 100, title: 'Task A', priority: 2, type: 'feature', state: 'todo' },
+              ],
+              failed: [
+                { task: { title: 'Task B', priority: 3, type: 'bug', dependsOnTaskId: [99] }, error: 'DB error' },
+              ],
+            }),
+          };
+        }
+        return {
+          ok: true,
+          json: async () => ({
+            created: [
+              { id: 101, title: 'Task B', priority: 3, type: 'bug', state: 'todo' },
+            ],
+            failed: [],
+          }),
+        };
+      }
+      if (opts?.method === 'DELETE') {
+        return { ok: true, json: async () => ({}) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+
+    const { getByText } = render(<TaskPlannerModal onClose={onClose} onSwitchToManual={vi.fn()} />);
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    await act(async () => {
+      dispatchAssistantMessage(30, batchBlock);
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    // First click — partial failure
+    await act(async () => {
+      getByText('Create Tasks').click();
+    });
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    // Retry
+    const retryBtn = getByText('Create Task') as HTMLButtonElement;
+    await act(async () => {
+      retryBtn.click();
+    });
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    // The retry request body should include dependsOnTaskId for Task B
+    const createCalls = apiFetchMock.mock.calls.filter(
+      (call: any[]) => typeof call[0] === 'string' && call[0].includes('/create-task') && call[1]?.method === 'POST'
+    );
+    expect(createCalls).toHaveLength(2);
+    const retryBody = JSON.parse(createCalls[1][1].body as string);
+    expect(retryBody.tasks).toHaveLength(1);
+    expect(retryBody.tasks[0].title).toBe('Task B');
+    expect(retryBody.tasks[0].dependsOnTaskId).toEqual([99]);
+  });
+
   it('parses tasks with dependsOnBatchIndex and groupId fields', async () => {
     const batchWithDeps = '```json:task\n[\n  { "title": "Base task", "priority": 2, "type": "feature" },\n  { "title": "Dep task", "priority": 2, "type": "feature", "dependsOnBatchIndex": [0], "groupId": "grp1" }\n]\n```';
 

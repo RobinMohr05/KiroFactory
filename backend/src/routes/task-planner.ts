@@ -20,6 +20,7 @@ import { getDecryptedCredential } from "../db/credentials.js";
 import { resolveGitProvider } from "../types.js";
 import { getUserById } from "../db/users.js";
 import { buildPlannerRepoMcpServer } from "./task-planner-mcp.js";
+import { buildPlannerBoardMcpServer } from "./task-planner-board-mcp.js";
 import { PlannerSessionPool, type PooledRunner } from "../planner-session-pool.js";
 import { KiroRunner } from "../agent/kiro-runner.js";
 import { resolve } from "node:path";
@@ -222,14 +223,16 @@ ALWAYS output a JSON **array** — even for a single task, wrap it in \`[...]\`:
     "type": "feature|improvement|bug",
     "files": ["file1.ts", "file2.ts"],
     "dependsOnBatchIndex": [0],
+    "dependsOnTaskId": [42],
     "groupId": "optional-shared-id"
   }
 ]
 \`\`\`
 
 - \`dependsOnBatchIndex\` (optional): 0-based indices into this same array for tasks that must be completed before this one.
+- \`dependsOnTaskId\` (optional): array of real, already-existing task IDs discovered via the \`list_tasks\` tool. Use when a new task should depend on something already on the board. Do NOT guess task IDs — always look them up with \`list_tasks\` first.
 - \`groupId\` (optional): shared string for tasks that should be worked on the same branch/PR.
-- Omit both fields when not needed.`;
+- Omit all three fields when not needed.`;
 
 // POST /api/task-planner/prewarm — Fire-and-forget: ensure a warm pool slot exists for the tab
 router.post("/prewarm", (req: Request, res: Response) => {
@@ -343,6 +346,17 @@ router.post("/start", async (req: Request, res: Response) => {
           `When proposing the task, ground your suggestions in this specific project.`
         );
         systemPrompt += contextLines.join("\n");
+
+        // Build a board MCP server entry so the LLM can discover existing
+        // tasks (list_tasks) and write dependency links (add_task_dependency).
+        const baseUrl = `${req.protocol}://${req.get("host")}`;
+        const boardMcp = buildPlannerBoardMcpServer({
+          userId,
+          tabId: tab.id,
+          baseUrl,
+        });
+        if (!rawMcpServers) rawMcpServers = [];
+        rawMcpServers.push(boardMcp);
       }
     }
 
@@ -539,6 +553,7 @@ router.post("/:sessionId/create-task", async (req: Request, res: Response) => {
       files?: string[];
       tabIds?: number[];
       dependsOnBatchIndex?: number[];
+      dependsOnTaskId?: number[];
       groupId?: string;
     }
 
@@ -586,12 +601,26 @@ router.post("/:sessionId/create-task", async (req: Request, res: Response) => {
           return;
         }
         for (const dep of deps) {
-          if (dep < 0 || dep >= n || dep === i) {
-            res.status(400).json({ error: `Task at index ${i} has invalid dependsOnBatchIndex ${dep}` });
+          if (!Number.isInteger(dep) || dep < 0 || dep >= n || dep === i) {
+            res.status(400).json({ error: `Task at index ${i} has invalid dependsOnBatchIndex ${dep} — must be an integer referencing another entry in the batch (not itself)` });
             return;
           }
           adjList[dep].push(i);
           inDegree[i]++;
+        }
+      }
+
+      const taskIdDeps = batchItems[i].dependsOnTaskId;
+      if (taskIdDeps) {
+        if (!Array.isArray(taskIdDeps)) {
+          res.status(400).json({ error: `Task at index ${i} has invalid dependsOnTaskId (must be an array)` });
+          return;
+        }
+        for (const dep of taskIdDeps) {
+          if (!Number.isInteger(dep) || dep <= 0) {
+            res.status(400).json({ error: `Task at index ${i} has invalid dependsOnTaskId ${dep} — must be a positive integer` });
+            return;
+          }
         }
       }
     }
@@ -659,6 +688,12 @@ router.post("/:sessionId/create-task", async (req: Request, res: Response) => {
               throw new Error(`Dependency at batch index ${depIdx} was not created successfully`);
             }
             dependsOn.push(realId);
+          }
+        }
+        // Include dependsOnTaskId (existing task IDs discovered via list_tasks)
+        if (item.dependsOnTaskId) {
+          for (const taskId of item.dependsOnTaskId) {
+            dependsOn.push(taskId);
           }
         }
 

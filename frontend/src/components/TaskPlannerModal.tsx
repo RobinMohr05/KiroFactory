@@ -21,6 +21,7 @@ interface ParsedTask {
   type: string;
   files?: string[];
   dependsOnBatchIndex?: number[];
+  dependsOnTaskId?: number[];
   groupId?: string;
 }
 
@@ -476,6 +477,7 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
           files: t.files || [],
           tabIds: currentTabId ? [Number(currentTabId)] : [],
           dependsOnBatchIndex: t.dependsOnBatchIndex,
+          dependsOnTaskId: t.dependsOnTaskId,
           groupId: t.groupId,
         })),
       };
@@ -521,6 +523,7 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
           type: f.task.type,
           files: f.task.files,
           // Drop dependsOnBatchIndex — indices are stale after the array changed
+          dependsOnTaskId: f.task.dependsOnTaskId,
           groupId: f.task.groupId,
         }));
         setParsedTasks(failedTasks);
