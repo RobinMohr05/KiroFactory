@@ -990,8 +990,12 @@ textarea:focus {
   font-family: 'Barlow', sans-serif;
   font-size: 1.1rem;
   font-weight: 600;
-  margin-bottom: 0;
+  margin-bottom: 1.25rem;
   color: var(--text-primary);
+}
+
+.modal-header-row h2 {
+  margin-bottom: 0;
 }
 
 .task-id-copy {
@@ -1008,7 +1012,7 @@ textarea:focus {
 }
 
 .task-id-copy:hover {
-  background: var(--bg-hover);
+  background: var(--bg-hover, rgba(0, 0, 0, 0.06));
 }
 
 .task-id-copy.copied {
