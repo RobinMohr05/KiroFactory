@@ -1,7 +1,7 @@
 import type { ManagedTransaction } from "neo4j-driver";
 import { readQuery, writeQuery } from "./connection.js";
 import { getNextId } from "./id-counter.js";
-import type { Agent, AgentKind, CreateAgentInput, UpdateAgentInput } from "../types.js";
+import type { Agent, AgentKind, CreateAgentInput, UpdateAgentInput, McpServerConfig } from "../types.js";
 
 /**
  * Neo4j-backed data access for the `:Agent` node label. See design.md's
@@ -39,6 +39,7 @@ function mapToAgent(
   agentProps: Record<string, unknown>,
   tabIds: number[],
   toolsSettingsJson: string | null | undefined,
+  mcpServersJson: string | null | undefined,
   userId: number | null
 ): Agent {
   let toolsSettings: Record<string, unknown> = {};
@@ -47,6 +48,18 @@ function mapToAgent(
       toolsSettings = JSON.parse(toolsSettingsJson);
     } catch {
       // Corrupted/unparseable — fall back to {} rather than throw.
+    }
+  }
+
+  let mcpServers: McpServerConfig[] | undefined;
+  if (mcpServersJson) {
+    try {
+      const parsed = JSON.parse(mcpServersJson);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        mcpServers = parsed;
+      }
+    } catch {
+      // Corrupted/unparseable — fall back to undefined (no servers).
     }
   }
 
@@ -69,6 +82,7 @@ function mapToAgent(
       agentProps.requiresTask !== undefined && agentProps.requiresTask !== null
         ? !!agentProps.requiresTask
         : true,
+    mcpServers,
     createdAt: (agentProps.createdAt as { toString(): string }).toString(),
     updatedAt: (agentProps.updatedAt as { toString(): string }).toString(),
   };
@@ -90,8 +104,9 @@ export async function getAllAgents(userId?: number): Promise<Agent[]> {
        OPTIONAL MATCH (a)-[:IN_TAB]->(t:Tab)
        WITH a, collect(t.id) AS tabIds
        OPTIONAL MATCH (a)-[:HAS_TOOLS_SETTINGS]->(ts:ToolsSettings)
+       OPTIONAL MATCH (a)-[:HAS_MCP_SERVERS]->(ms:AgentMcpServers)
        OPTIONAL MATCH (owner:User)-[:OWNS]->(a)
-       RETURN a{.*} AS agent, tabIds, ts.json AS toolsSettingsJson, owner.id AS userId
+       RETURN a{.*} AS agent, tabIds, ts.json AS toolsSettingsJson, ms.json AS mcpServersJson, owner.id AS userId
        ORDER BY a.name ASC`,
       { userId: userId ?? null }
     );
@@ -100,6 +115,7 @@ export async function getAllAgents(userId?: number): Promise<Agent[]> {
         record.get("agent"),
         record.get("tabIds"),
         record.get("toolsSettingsJson"),
+        record.get("mcpServersJson"),
         record.get("userId")
       )
     );
@@ -116,8 +132,9 @@ export async function getAgentByName(name: string): Promise<Agent | null> {
        OPTIONAL MATCH (a)-[:IN_TAB]->(t:Tab)
        WITH a, collect(t.id) AS tabIds
        OPTIONAL MATCH (a)-[:HAS_TOOLS_SETTINGS]->(ts:ToolsSettings)
+       OPTIONAL MATCH (a)-[:HAS_MCP_SERVERS]->(ms:AgentMcpServers)
        OPTIONAL MATCH (owner:User)-[:OWNS]->(a)
-       RETURN a{.*} AS agent, tabIds, ts.json AS toolsSettingsJson, owner.id AS userId`,
+       RETURN a{.*} AS agent, tabIds, ts.json AS toolsSettingsJson, ms.json AS mcpServersJson, owner.id AS userId`,
       { name }
     );
     if (result.records.length === 0) return null;
@@ -126,6 +143,7 @@ export async function getAgentByName(name: string): Promise<Agent | null> {
       record.get("agent"),
       record.get("tabIds"),
       record.get("toolsSettingsJson"),
+      record.get("mcpServersJson"),
       record.get("userId")
     );
   });
@@ -141,8 +159,9 @@ export async function getAgentById(id: number): Promise<Agent | null> {
        OPTIONAL MATCH (a)-[:IN_TAB]->(t:Tab)
        WITH a, collect(t.id) AS tabIds
        OPTIONAL MATCH (a)-[:HAS_TOOLS_SETTINGS]->(ts:ToolsSettings)
+       OPTIONAL MATCH (a)-[:HAS_MCP_SERVERS]->(ms:AgentMcpServers)
        OPTIONAL MATCH (owner:User)-[:OWNS]->(a)
-       RETURN a{.*} AS agent, tabIds, ts.json AS toolsSettingsJson, owner.id AS userId`,
+       RETURN a{.*} AS agent, tabIds, ts.json AS toolsSettingsJson, ms.json AS mcpServersJson, owner.id AS userId`,
       { id }
     );
     if (result.records.length === 0) return null;
@@ -151,6 +170,7 @@ export async function getAgentById(id: number): Promise<Agent | null> {
       record.get("agent"),
       record.get("tabIds"),
       record.get("toolsSettingsJson"),
+      record.get("mcpServersJson"),
       record.get("userId")
     );
   });
@@ -172,10 +192,11 @@ export async function createAgent(input: CreateAgentInput): Promise<Agent> {
          createdAt: datetime(), updatedAt: datetime()
        })
        CREATE (a)-[:HAS_TOOLS_SETTINGS]->(ts:ToolsSettings {json: $toolsSettingsJson})
-       WITH a, ts
+       CREATE (a)-[:HAS_MCP_SERVERS]->(ms:AgentMcpServers {json: $mcpServersJson})
+       WITH a, ts, ms
        OPTIONAL MATCH (owner:User {id: $userId})
        FOREACH (_ IN CASE WHEN owner IS NOT NULL THEN [1] ELSE [] END | MERGE (owner)-[:OWNS]->(a))
-       RETURN a{.*} AS agent, ts.json AS toolsSettingsJson, owner.id AS userId`,
+       RETURN a{.*} AS agent, ts.json AS toolsSettingsJson, ms.json AS mcpServersJson, owner.id AS userId`,
       {
         id,
         name: input.name,
@@ -190,12 +211,13 @@ export async function createAgent(input: CreateAgentInput): Promise<Agent> {
         resolveState: input.resolveState || "developed",
         requiresTask: input.requiresTask !== false,
         toolsSettingsJson: JSON.stringify(input.toolsSettings ?? {}),
+        mcpServersJson: JSON.stringify(input.mcpServers ?? []),
         userId: input.userId ?? null,
       }
     );
 
     const record = result.records[0];
-    return mapToAgent(record.get("agent"), [], record.get("toolsSettingsJson"), record.get("userId"));
+    return mapToAgent(record.get("agent"), [], record.get("toolsSettingsJson"), record.get("mcpServersJson"), record.get("userId"));
   });
 
   // Assign to tabs if provided
@@ -225,6 +247,7 @@ export async function updateAgent(
   // original's JSON.stringify(input.toolsSettings ?? existing.toolsSettings)
   // semantics) — only touched at all when the caller explicitly provided it.
   const toolsSettingsProvided = input.toolsSettings !== undefined;
+  const mcpServersProvided = input.mcpServers !== undefined;
 
   const agent = await writeQuery(async (tx: ManagedTransaction) => {
     const result = await tx.run(
@@ -247,9 +270,15 @@ export async function updateAgent(
          SET ts.json = $toolsSettingsJson
        )
        WITH a
+       FOREACH (_ IN CASE WHEN $mcpServersProvided THEN [1] ELSE [] END |
+         MERGE (a)-[:HAS_MCP_SERVERS]->(ms:AgentMcpServers)
+         SET ms.json = $mcpServersJson
+       )
+       WITH a
        OPTIONAL MATCH (a)-[:HAS_TOOLS_SETTINGS]->(ts:ToolsSettings)
+       OPTIONAL MATCH (a)-[:HAS_MCP_SERVERS]->(ms:AgentMcpServers)
        OPTIONAL MATCH (owner:User)-[:OWNS]->(a)
-       RETURN a{.*} AS agent, ts.json AS toolsSettingsJson, owner.id AS userId`,
+       RETURN a{.*} AS agent, ts.json AS toolsSettingsJson, ms.json AS mcpServersJson, owner.id AS userId`,
       {
         id: agentId,
         name: newName,
@@ -264,19 +293,15 @@ export async function updateAgent(
         resolveState: input.resolveState ?? existing.resolveState,
         requiresTask: input.requiresTask ?? existing.requiresTask,
         toolsSettingsProvided,
-        // SET ts.json = ... (a plain scalar assignment) is already a full
-        // replace, not a merge — this JSON string overwrites the previous
-        // one outright, matching the original's JSON.stringify(input ??
-        // existing) full-replace semantics with no extra "clear first" step
-        // needed (unlike the old spread-merge approach, which is why this
-        // no longer needs the SET ts = {} reset that used to precede it).
         toolsSettingsJson: JSON.stringify(input.toolsSettings ?? {}),
+        mcpServersProvided,
+        mcpServersJson: JSON.stringify(input.mcpServers ?? []),
       }
     );
 
     if (result.records.length === 0) return null;
     const record = result.records[0];
-    return mapToAgent(record.get("agent"), [], record.get("toolsSettingsJson"), record.get("userId"));
+    return mapToAgent(record.get("agent"), [], record.get("toolsSettingsJson"), record.get("mcpServersJson"), record.get("userId"));
   });
 
   if (!agent) return null;
@@ -302,7 +327,8 @@ export async function deleteAgent(id: number): Promise<boolean> {
     const result = await tx.run(
       `MATCH (a:Agent {id: $id})
        OPTIONAL MATCH (a)-[:HAS_TOOLS_SETTINGS]->(ts:ToolsSettings)
-       DETACH DELETE a, ts
+       OPTIONAL MATCH (a)-[:HAS_MCP_SERVERS]->(ms:AgentMcpServers)
+       DETACH DELETE a, ts, ms
        RETURN count(a) AS deletedCount`,
       { id }
     );
@@ -328,8 +354,9 @@ export async function getAgentsForTab(tabId: number): Promise<Agent[]> {
        OPTIONAL MATCH (a)-[:IN_TAB]->(t2:Tab)
        WITH a, collect(t2.id) AS tabIds
        OPTIONAL MATCH (a)-[:HAS_TOOLS_SETTINGS]->(ts:ToolsSettings)
+       OPTIONAL MATCH (a)-[:HAS_MCP_SERVERS]->(ms:AgentMcpServers)
        OPTIONAL MATCH (owner:User)-[:OWNS]->(a)
-       RETURN a{.*} AS agent, tabIds, ts.json AS toolsSettingsJson, owner.id AS userId
+       RETURN a{.*} AS agent, tabIds, ts.json AS toolsSettingsJson, ms.json AS mcpServersJson, owner.id AS userId
        ORDER BY agent.name ASC`,
       { tabId }
     );
@@ -338,6 +365,7 @@ export async function getAgentsForTab(tabId: number): Promise<Agent[]> {
         record.get("agent"),
         record.get("tabIds"),
         record.get("toolsSettingsJson"),
+        record.get("mcpServersJson"),
         record.get("userId")
       )
     );

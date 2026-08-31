@@ -243,6 +243,13 @@ export interface Agent {
    * Defaults to true (standard task-claiming behavior).
    */
   requiresTask: boolean;
+  /**
+   * Reusable MCP server definitions owned by this agent. When a session uses
+   * this agent, these servers are prepended to the effective MCP server list
+   * (before tab-toggle servers and session-only additions). Individual servers
+   * can be excluded per-session via `Session.excludedMcpServerNames`.
+   */
+  mcpServers?: McpServerConfig[];
   createdAt: string;
   updatedAt: string;
 }
@@ -261,6 +268,7 @@ export interface CreateAgentInput {
   workingState?: string;
   resolveState?: string;
   requiresTask?: boolean;
+  mcpServers?: McpServerConfig[];
   tabIds?: number[];
 }
 
@@ -277,6 +285,7 @@ export interface UpdateAgentInput {
   workingState?: string;
   resolveState?: string;
   requiresTask?: boolean;
+  mcpServers?: McpServerConfig[];
   tabIds?: number[];
 }
 
@@ -370,6 +379,12 @@ export interface Session {
   /** Per-session MCP server toggle overrides. Nullable = inherit from tab. Merges over tab defaults (override wins). */
   mcpConfigOverride?: TabMcpConfig | null;
   /**
+   * Names of the agent's mcpServers to exclude for this session only.
+   * Entries whose `name` matches one of these are filtered out of the
+   * effective MCP server list before prepending agent servers.
+   */
+  excludedMcpServerNames?: string[];
+  /**
    * Raw MCP server entries (HTTP or other non-stdio shapes) passed directly
    * to the ACP session/new mcpServers payload. Used by the task planner to
    * attach an HTTP MCP server for GitHub repo access.
@@ -430,6 +445,8 @@ export interface CreateSessionInput {
   mcpServers?: McpServerConfig[];
   /** Per-session MCP server toggle overrides. Nullable = inherit from tab. Merges over tab defaults (override wins). */
   mcpConfigOverride?: TabMcpConfig | null;
+  /** Names of the agent's mcpServers to exclude for this session. */
+  excludedMcpServerNames?: string[];
   /**
    * Raw MCP server entries (HTTP or other non-stdio shapes) passed directly
    * to the ACP session/new mcpServers payload. Internal-only — not accepted
@@ -477,6 +494,7 @@ export interface UpdateSessionInput {
   intervalSeconds?: number;
   mcpServers?: McpServerConfig[] | null;
   mcpConfigOverride?: TabMcpConfig | null;
+  excludedMcpServerNames?: string[];
   tabIds?: number[];
 }
 
