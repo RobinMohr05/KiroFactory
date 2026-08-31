@@ -185,6 +185,10 @@ function mapRecordToSession(record: Neo4jRecord): Session {
     mcpServers,
     mcpConfigOverride: mcpConfigOverrideRaw ?? undefined,
     rawMcpServers,
+    excludedMcpServerNames:
+      (props.excludedMcpServerNames as string[] | undefined)?.length
+        ? (props.excludedMcpServerNames as string[])
+        : undefined,
     tabIds: tabIdsRaw.length > 0 ? tabIdsRaw : undefined,
     userId: (ownerId ?? 0) as number,
     createdAt: (props.createdAt as { toString(): string }).toString(),
@@ -302,6 +306,7 @@ export async function insertSession(session: Session): Promise<number> {
           activityType: $activityType, activityDetail: $activityDetail, currentTaskId: $currentTaskId,
           currentTaskTitle: $currentTaskTitle,
           pinned: $pinned, isPermanent: $isPermanent, sortOrder: $sortOrder, forceLocal: $forceLocal,
+          excludedMcpServerNames: $excludedMcpServerNames,
           createdAt: datetime($createdAt), startedAt: datetime($startedAt)
         })
         CREATE (owner)-[:OWNS]->(s)
@@ -354,6 +359,7 @@ export async function insertSession(session: Session): Promise<number> {
         isPermanent: session.isPermanent ? true : false,
         sortOrder: session.sortOrder ?? 0,
         forceLocal: session.forceLocal ? true : false,
+        excludedMcpServerNames: session.excludedMcpServerNames?.length ? session.excludedMcpServerNames : [],
         createdAt: session.createdAt,
         startedAt: session.startedAt ?? null,
         userId: session.userId,
@@ -440,6 +446,7 @@ export async function updateSessionMeta(session: Session): Promise<void> {
             s.activityType = $activityType, s.activityDetail = $activityDetail, s.currentTaskId = $currentTaskId,
             s.currentTaskTitle = $currentTaskTitle,
             s.pinned = $pinned, s.sortOrder = $sortOrder, s.forceLocal = $forceLocal,
+            s.excludedMcpServerNames = $excludedMcpServerNames,
             s.startedAt = datetime($startedAt)
         WITH s
         OPTIONAL MATCH (s)-[oldTabRel:IN_TAB]->(:Tab)
@@ -500,6 +507,7 @@ export async function updateSessionMeta(session: Session): Promise<void> {
         pinned: session.pinned ? true : false,
         sortOrder: session.sortOrder ?? 0,
         forceLocal: session.forceLocal ? true : false,
+        excludedMcpServerNames: session.excludedMcpServerNames?.length ? session.excludedMcpServerNames : [],
         startedAt: session.startedAt ?? null,
         tabIds: session.tabIds ?? [],
         mcpConfigOverride: session.mcpConfigOverride ?? null,

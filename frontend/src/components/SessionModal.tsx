@@ -34,6 +34,12 @@ export function SessionModal({ session, onClose }: SessionModalProps) {
   );
   const [mcpSectionExpanded, setMcpSectionExpanded] = useState(false);
 
+  // Agent MCP servers exclusions
+  const [excludedNames, setExcludedNames] = useState<string[]>(
+    session?.excludedMcpServerNames ?? []
+  );
+  const [agentMcpSectionExpanded, setAgentMcpSectionExpanded] = useState(false);
+
   // Custom MCP servers
   const [customMcpServers, setCustomMcpServers] = useState<McpServerConfig[]>(
     session?.mcpServers || []
@@ -112,6 +118,7 @@ export function SessionModal({ session, onClose }: SessionModalProps) {
           tabIds: boardIds.length > 0 ? boardIds : [],
           mcpConfigOverride: mcpConfig,
           mcpServers: mcpServers.length > 0 ? mcpServers : null,
+          excludedMcpServerNames: excludedNames,
         };
         if (agent) body.agent = agent;
 
@@ -143,6 +150,7 @@ export function SessionModal({ session, onClose }: SessionModalProps) {
           tabIds: boardIds.length > 0 ? boardIds : undefined,
           mcpConfigOverride: mcpConfig,
           mcpServers: mcpServers.length > 0 ? mcpServers : undefined,
+          excludedMcpServerNames: excludedNames.length > 0 ? excludedNames : undefined,
         };
         if (agent) body.agent = agent;
 
@@ -180,7 +188,7 @@ export function SessionModal({ session, onClose }: SessionModalProps) {
           </div>
           <div className="form-group">
             <label htmlFor="sessionAgent">Agent <small>(optional)</small></label>
-            <select id="sessionAgent" value={agent} onChange={(e) => setAgent(e.target.value)}>
+            <select id="sessionAgent" value={agent} onChange={(e) => { setAgent(e.target.value); setExcludedNames([]); }}>
               <option value="">None (interactive)</option>
               {agents.map(a => (
                 <option key={a.id} value={a.name}>{a.name}</option>
@@ -242,6 +250,48 @@ export function SessionModal({ session, onClose }: SessionModalProps) {
             </select>
             <small className="form-hint">Hold Ctrl/Cmd to select multiple. In loop mode, claims tasks from these tabs.</small>
           </div>
+
+          {/* Agent MCP Servers section */}
+          {(() => {
+            const selectedAgent = agents.find(a => a.name === agent);
+            const agentServers = selectedAgent?.mcpServers ?? [];
+            if (agentServers.length === 0) return null;
+            return (
+              <div className="form-group">
+                <button
+                  type="button"
+                  className="collapsible-toggle"
+                  aria-expanded={agentMcpSectionExpanded}
+                  onClick={() => setAgentMcpSectionExpanded(!agentMcpSectionExpanded)}
+                >
+                  <span className="toggle-icon">{agentMcpSectionExpanded ? '▼' : '▶'}</span> Agent MCP Servers
+                </button>
+                {agentMcpSectionExpanded && (
+                  <div className="collapsible-content">
+                    {agentServers.map(server => {
+                      const isExcluded = excludedNames.includes(server.name);
+                      return (
+                        <label key={server.name} className="checkbox-label">
+                          <input
+                            type="checkbox"
+                            checked={!isExcluded}
+                            onChange={() => {
+                              if (isExcluded) {
+                                setExcludedNames(prev => prev.filter(n => n !== server.name));
+                              } else {
+                                setExcludedNames(prev => [...prev, server.name]);
+                              }
+                            }}
+                          />
+                          <span>{server.name}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {/* MCP Servers section */}
           <div className="form-group">

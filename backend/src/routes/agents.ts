@@ -79,6 +79,24 @@ router.post("/", async (req: Request, res: Response) => {
       return;
     }
 
+    // Validate mcpServers if provided
+    if (input.mcpServers !== undefined) {
+      if (!Array.isArray(input.mcpServers)) {
+        res.status(400).json({ error: "mcpServers must be an array" });
+        return;
+      }
+      for (const server of input.mcpServers) {
+        if (!server.name || typeof server.name !== "string" || !server.name.trim()) {
+          res.status(400).json({ error: "Each MCP server must have a non-empty name" });
+          return;
+        }
+        if (!server.command || typeof server.command !== "string" || !server.command.trim()) {
+          res.status(400).json({ error: "Each MCP server must have a non-empty command" });
+          return;
+        }
+      }
+    }
+
     const agent = await createAgent({ ...input, name: input.name.trim(), userId });
     broadcastToUser(userId, { type: "agent-created", agent });
     res.status(201).json(agent);
@@ -109,6 +127,24 @@ router.put("/:id", async (req: Request, res: Response) => {
     if (input.kind !== undefined && !isAgentKind(input.kind)) {
       res.status(400).json({ error: "Invalid agent kind. Must be 'editor' or 'inspector'." });
       return;
+    }
+
+    // Validate mcpServers if provided
+    if (input.mcpServers !== undefined) {
+      if (!Array.isArray(input.mcpServers)) {
+        res.status(400).json({ error: "mcpServers must be an array" });
+        return;
+      }
+      for (const server of input.mcpServers) {
+        if (!server.name || typeof server.name !== "string" || !server.name.trim()) {
+          res.status(400).json({ error: "Each MCP server must have a non-empty name" });
+          return;
+        }
+        if (!server.command || typeof server.command !== "string" || !server.command.trim()) {
+          res.status(400).json({ error: "Each MCP server must have a non-empty command" });
+          return;
+        }
+      }
     }
 
     // Verify ownership before allowing update

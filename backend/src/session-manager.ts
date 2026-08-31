@@ -703,6 +703,7 @@ export async function createSession(input: CreateSessionInput): Promise<Session>
     model: input.model,
     mcpServers: input.mcpServers,
     mcpConfigOverride: input.mcpConfigOverride ?? undefined,
+    excludedMcpServerNames: input.excludedMcpServerNames?.length ? input.excludedMcpServerNames : undefined,
     rawMcpServers: input.rawMcpServers,
     tabIds: input.tabIds,
     userId: input.userId ?? 0,
@@ -974,6 +975,7 @@ export function updateSessionFields(
   if (updates.intervalSeconds !== undefined) session.meta.intervalSeconds = updates.intervalSeconds;
   if (updates.mcpServers !== undefined) session.meta.mcpServers = updates.mcpServers?.length ? updates.mcpServers : undefined;
   if (updates.mcpConfigOverride !== undefined) session.meta.mcpConfigOverride = updates.mcpConfigOverride;
+  if (updates.excludedMcpServerNames !== undefined) session.meta.excludedMcpServerNames = updates.excludedMcpServerNames?.length ? updates.excludedMcpServerNames : undefined;
   if (updates.tabIds !== undefined) session.meta.tabIds = updates.tabIds?.length ? updates.tabIds : undefined;
 
   broadcastToUser(session.meta.userId, { type: "session-updated", session: sanitizeSessionForClient(session.meta) });
@@ -1311,11 +1313,37 @@ async function runSession(managed: ManagedSession): Promise<void> {
         // Non-fatal — continue with only session-level mcpServers (if any).
       }
 
+      // Resolve agent-owned MCP servers (minus per-session exclusions)
+      let agentMcpServers: McpServerConfig[] = [];
+      if (meta.agent) {
+        try {
+          const agentRecord = await getAgentByName(meta.agent);
+          if (agentRecord?.mcpServers?.length) {
+            agentMcpServers = resolveAgentMcpServers(agentRecord.mcpServers, meta.excludedMcpServerNames);
+            if (agentMcpServers.length > 0) {
+              appendOutput(managed, {
+                timestamp: now(),
+                stream: "system",
+                text: `MCP servers from agent "${meta.agent}": ${agentMcpServers.map((s) => s.name).join(", ")}`,
+              });
+            }
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          appendOutput(managed, {
+            timestamp: now(),
+            stream: "stderr",
+            text: `Warning: Could not resolve agent MCP servers: ${msg}. Continuing without agent MCP servers.`,
+          });
+        }
+      }
+
       managed.runner = await KiroRunner.create({
         agent: meta.agent || undefined,
         cwd: meta.cwd,
         model: meta.model ?? null,
         mcpServers: [
+          ...agentMcpServers,
           ...tabMcpServers,
           ...(meta.mcpServers?.map((s) => ({
             name: s.name,
@@ -1408,6 +1436,26 @@ const DEFAULT_STAGE_STATES: AgentStageStates = {
   kind: "editor",
   requiresTask: true,
 };
+
+/**
+/**
+ * Resolve the effective agent-owned MCP servers after applying per-session
+ * exclusions. Pure function — extracted from the startup paths so it can be
+ * unit-tested independently.
+ *
+ * Returns the filtered list (agent servers minus excluded names), which
+ * callers prepend to the existing tab-toggle + session-only server lists.
+ */
+export function resolveAgentMcpServers(
+  agentMcpServers: McpServerConfig[] | undefined,
+  excludedNames: string[] | undefined
+): McpServerConfig[] {
+  const servers = agentMcpServers ?? [];
+  if (servers.length === 0) return [];
+  if (!excludedNames || excludedNames.length === 0) return servers;
+  const excluded = new Set(excludedNames);
+  return servers.filter((s) => !excluded.has(s.name));
+}
 
 /**
  * Look up the agent's configured stage states (and kind) from the DB.
@@ -2572,11 +2620,27 @@ async function runSessionAca(managed: ManagedSession): Promise<void> {
           awsSecretAccessKey: rawCreds.awsSecretAccessKey,
         };
 
-        // 3. Generate servers.json config for the proxy sidecar
+        // 3. Resolve agent-owned MCP servers (minus per-session exclusions)
+        let acaAgentMcpServers: McpServerConfig[] = [];
+        if (meta.agent) {
+          try {
+            const agentRecord = await getAgentByName(meta.agent);
+            if (agentRecord?.mcpServers?.length) {
+              acaAgentMcpServers = resolveAgentMcpServers(agentRecord.mcpServers, meta.excludedMcpServerNames);
+            }
+          } catch {
+            // Non-fatal — continue without agent MCP servers
+          }
+        }
+
+        // 4. Generate servers.json config for the proxy sidecar
         const serversConfig = buildProxyServersConfig({
           mcpConfig: effectiveMcpConfig,
           credentials,
-          sessionMcpServers: meta.mcpServers,
+          sessionMcpServers: [
+            ...acaAgentMcpServers,
+            ...(meta.mcpServers ?? []),
+          ],
         });
 
         if (serversConfig) {
