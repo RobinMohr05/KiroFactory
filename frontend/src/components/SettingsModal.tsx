@@ -276,6 +276,16 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
             ]}
             value={user?.uiViewMode || 'easy'}
             onConfirm={setUiViewMode}
+            confirmLabel={(from, to) => {
+              const steps = [
+                { value: 'easy', label: 'Easy' },
+                { value: 'advanced', label: 'Advanced' },
+                { value: 'looper', label: 'Looper' },
+              ];
+              const fromLabel = steps.find(s => s.value === from)?.label ?? from;
+              const toLabel = steps.find(s => s.value === to)?.label ?? to;
+              return `Switch from ${fromLabel} to ${toLabel}? This will stop all your running sessions.`;
+            }}
           />
         </div>
 

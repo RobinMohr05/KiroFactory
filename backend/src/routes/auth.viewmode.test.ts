@@ -31,6 +31,7 @@ vi.mock("../db/settings.js", () => ({
 
 vi.mock("../session-manager.js", () => ({
   createSession: vi.fn(),
+  stopAllSessionsForUser: vi.fn().mockResolvedValue(undefined),
 }));
 
 // Bypass JWT verification — inject a fixed userId directly, same technique
@@ -47,6 +48,7 @@ vi.mock("../logger.js", () => ({
 }));
 
 import { updateUserViewMode } from "../db/users.js";
+import { stopAllSessionsForUser } from "../session-manager.js";
 import authRouter from "./auth.js";
 
 function createApp() {
@@ -151,5 +153,53 @@ describe("PUT /api/auth/me/view-mode", () => {
       .send({ uiViewMode: "advanced" });
 
     expect(res.status).toBe(404);
+  });
+
+  it("stops all running sessions for the user on a valid mode switch", async () => {
+    vi.mocked(updateUserViewMode).mockResolvedValue({
+      id: 1,
+      email: "test@test.com",
+      defaultGitProvider: null,
+      uiViewMode: "advanced",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    const app = createApp();
+    const res = await request(app)
+      .put("/api/auth/me/view-mode")
+      .send({ uiViewMode: "advanced" });
+
+    expect(res.status).toBe(200);
+    expect(stopAllSessionsForUser).toHaveBeenCalledWith(1);
+  });
+
+  it("does not stop sessions when the mode is invalid (400)", async () => {
+    const app = createApp();
+    const res = await request(app)
+      .put("/api/auth/me/view-mode")
+      .send({ uiViewMode: "expert" });
+
+    expect(res.status).toBe(400);
+    expect(stopAllSessionsForUser).not.toHaveBeenCalled();
+  });
+
+  it("stops sessions even when switching to the same mode", async () => {
+    vi.mocked(updateUserViewMode).mockResolvedValue({
+      id: 1,
+      email: "test@test.com",
+      defaultGitProvider: null,
+      uiViewMode: "easy",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    const app = createApp();
+    const res = await request(app)
+      .put("/api/auth/me/view-mode")
+      .send({ uiViewMode: "easy" });
+
+    expect(res.status).toBe(200);
+    expect(stopAllSessionsForUser).toHaveBeenCalledWith(1);
   });
 });
