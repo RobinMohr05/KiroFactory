@@ -20,6 +20,8 @@ interface ParsedTask {
   priority: number;
   type: string;
   files?: string[];
+  dependsOnBatchIndex?: number[];
+  groupId?: string;
 }
 
 interface Attachment {
@@ -39,7 +41,7 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [ready, setReady] = useState(false);
   const [status, setStatus] = useState<'connecting' | 'ready' | 'thinking' | 'error'>('connecting');
-  const [parsedTask, setParsedTask] = useState<ParsedTask | null>(null);
+  const [parsedTasks, setParsedTasks] = useState<ParsedTask[] | null>(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const attachmentsRef = useRef<Attachment[]>([]);
   const messagesRef = useRef<HTMLDivElement>(null);
@@ -261,7 +263,7 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
    * by the repair pass) after parsing, since no key in this schema is ever
    * legitimately whitespace-padded.
    */
-  const parseTaskJsonLeniently = (raw: string): ParsedTask | null => {
+  const parseTaskJsonLeniently = (raw: string): ParsedTask[] | null => {
     const normalizeKeys = (obj: unknown): unknown => {
       if (Array.isArray(obj)) return obj.map(normalizeKeys);
       if (obj && typeof obj === 'object') {
@@ -274,8 +276,16 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
       return obj;
     };
 
+    /** Normalize parsed JSON to a ParsedTask array. Tolerates a single object (not wrapped in array). */
+    const toArray = (parsed: unknown): ParsedTask[] | null => {
+      const normalized = normalizeKeys(parsed);
+      if (Array.isArray(normalized)) return normalized as ParsedTask[];
+      if (normalized && typeof normalized === 'object') return [normalized as ParsedTask];
+      return null;
+    };
+
     try {
-      return normalizeKeys(JSON.parse(raw)) as ParsedTask;
+      return toArray(JSON.parse(raw));
     } catch {
       // Fall through to recovery below.
     }
@@ -287,8 +297,6 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
       for (let i = 0; i < rejoined.length; i++) {
         const ch = rejoined[i];
         if (ch === '\\' && inString) {
-          // Escape sequence — copy the backslash and whatever follows verbatim,
-          // don't reinterpret it.
           repaired += ch;
           if (i + 1 < rejoined.length) {
             repaired += rejoined[i + 1];
@@ -307,7 +315,7 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
         }
         repaired += ch;
       }
-      return normalizeKeys(JSON.parse(repaired)) as ParsedTask;
+      return toArray(JSON.parse(repaired));
     } catch {
       return null;
     }
@@ -320,10 +328,13 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
 
     const raw = jsonMatch[1];
     const parsed = parseTaskJsonLeniently(raw);
-    if (parsed) {
-      if (parsed.title && parsed.priority && parsed.type) {
-        setParsedTask(parsed);
-        addMessage('system', '✅ Task ready to create! Click "Create Task" to add it to your board.');
+    if (parsed && parsed.length > 0) {
+      // Validate every element has required fields
+      const allValid = parsed.every(t => t.title && t.priority && t.type);
+      if (allValid) {
+        setParsedTasks(parsed);
+        const taskWord = parsed.length > 1 ? 'Tasks' : 'Task';
+        addMessage('system', `✅ ${parsed.length > 1 ? `${parsed.length} tasks` : 'Task'} ready to create! Click "Create ${taskWord}" to add ${parsed.length > 1 ? 'them' : 'it'} to your board.`);
       } else {
         addMessage('system', '⚠️ The AI produced a task block missing required fields (title/priority/type) — ask it to resend the task.');
       }
@@ -331,9 +342,7 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
     }
 
     // Both the strict parse and the lenient recovery pass failed. Surface this
-    // instead of leaving "Create Task" silently disabled with no explanation —
-    // previously a malformed ```json:task block left parsedTask stuck at null
-    // with zero user-visible feedback about why the button wouldn't enable.
+    // instead of leaving "Create Task" silently disabled with no explanation.
     addMessage('system', '⚠️ Could not parse the task block above (invalid JSON) — ask the AI to resend it as a single-line JSON value (no line-wrapped strings).');
   };
 
@@ -456,15 +465,19 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
   };
 
   const handleCreateTask = async () => {
-    if (!parsedTask || !sessionId) return;
+    if (!parsedTasks || parsedTasks.length === 0 || !sessionId) return;
     try {
       const body = {
-        title: parsedTask.title,
-        description: parsedTask.description || '',
-        priority: Number(parsedTask.priority),
-        type: parsedTask.type,
-        files: parsedTask.files || [],
-        tabIds: currentTabId ? [Number(currentTabId)] : [],
+        tasks: parsedTasks.map(t => ({
+          title: t.title,
+          description: t.description || '',
+          priority: Number(t.priority),
+          type: t.type,
+          files: t.files || [],
+          tabIds: currentTabId ? [Number(currentTabId)] : [],
+          dependsOnBatchIndex: t.dependsOnBatchIndex,
+          groupId: t.groupId,
+        })),
       };
       const res = await apiFetch(`/api/task-planner/${sessionId}/create-task`, {
         method: 'POST',
@@ -475,15 +488,38 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error || `HTTP ${res.status}`);
       }
-      const task = await res.json();
-      setTasks(prev => {
-        if (prev.find(t => t.id === task.id)) {
-          return prev.map(t => t.id === task.id ? task : t);
+      const result = await res.json();
+      const { created, failed } = result as {
+        created: Array<{ id: number; [key: string]: unknown }>;
+        failed: Array<{ task: { title: string; [key: string]: unknown }; error: string }>;
+      };
+
+      // Add all successfully created tasks to state
+      if (created && created.length > 0) {
+        setTasks(prev => {
+          let updated = [...prev];
+          for (const task of created) {
+            const existing = updated.findIndex(t => t.id === task.id);
+            if (existing >= 0) {
+              updated[existing] = task as any;
+            } else {
+              updated.push(task as any);
+            }
+          }
+          return updated;
+        });
+      }
+
+      // Handle partial failure
+      if (failed && failed.length > 0) {
+        for (const f of failed) {
+          addMessage('system', `❌ "${f.task.title}" failed to create: ${f.error}`);
         }
-        return [...prev, task];
-      });
-      // Close — session cleanup handled by backend
-      onClose();
+        // Don't close — let user see failures
+      } else {
+        // Full success — close modal
+        onClose();
+      }
     } catch (e: any) {
       addMessage('system', '❌ Failed to create task: ' + e.message);
     }
@@ -606,7 +642,7 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
         <div className="task-planner-actions">
           <button className="btn btn-secondary btn-sm" onClick={handleClose}>Cancel</button>
           <button className="btn btn-secondary btn-sm" onClick={handleSwitchToManual}>Create manually instead</button>
-          <button className="btn btn-primary btn-sm" disabled={!parsedTask} onClick={handleCreateTask}>Create Task</button>
+          <button className="btn btn-primary btn-sm" disabled={!parsedTasks} onClick={handleCreateTask}>{parsedTasks && parsedTasks.length > 1 ? 'Create Tasks' : 'Create Task'}</button>
         </div>
       </div>
     </div>
