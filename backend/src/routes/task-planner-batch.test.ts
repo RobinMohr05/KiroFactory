@@ -52,6 +52,10 @@ vi.mock("../session-manager.js", () => ({
   injectPendingRunner: vi.fn().mockReturnValue(false),
 }));
 
+vi.mock("../error-store.js", () => ({
+  recordError: vi.fn(),
+}));
+
 vi.mock("../planner-session-pool.js", () => {
   class MockPool {
     warm = vi.fn().mockResolvedValue(undefined);
@@ -128,9 +132,10 @@ describe("POST /api/task-planner/:sessionId/create-task — batch mode", () => {
       .expect(201);
 
     expect(createTask).toHaveBeenCalledTimes(2);
-    expect(res.body).toHaveLength(2);
-    expect(res.body[0].title).toBe("Task A");
-    expect(res.body[1].title).toBe("Task B");
+    expect(res.body.created).toHaveLength(2);
+    expect(res.body.failed).toHaveLength(0);
+    expect(res.body.created[0].title).toBe("Task A");
+    expect(res.body.created[1].title).toBe("Task B");
   });
 
   it("resolves dependsOnBatchIndex to real task IDs", async () => {
@@ -198,7 +203,9 @@ describe("POST /api/task-planner/:sessionId/create-task — batch mode", () => {
       .expect(201);
 
     expect(createTask).toHaveBeenCalledTimes(1);
-    // Legacy single-task returns a single object (not array)
-    expect(res.body.title).toBe("Single Task");
+    // Legacy single-task now also returns { created, failed } format
+    expect(res.body.created).toHaveLength(1);
+    expect(res.body.created[0].title).toBe("Single Task");
+    expect(res.body.failed).toHaveLength(0);
   });
 });

@@ -51,6 +51,16 @@ describe("task-planner-board-mcp", () => {
       expect(entry.url).toContain("userId=1");
       expect(entry.url).toContain("tabId=2");
     });
+
+    it("includes a JWT Authorization header for the user", async () => {
+      const { buildPlannerBoardMcpServer } = await import("./task-planner-board-mcp.js");
+
+      const entry = buildPlannerBoardMcpServer({ userId: 1, tabId: 2, baseUrl: "http://localhost:3500" });
+
+      expect(entry.headers).toHaveLength(1);
+      expect(entry.headers[0].name).toBe("Authorization");
+      expect(entry.headers[0].value).toMatch(/^Bearer .+/);
+    });
   });
 
   describe("handleListTasks", () => {
