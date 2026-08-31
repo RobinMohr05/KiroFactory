@@ -113,4 +113,18 @@ describe('SettingsModal — Interface Mode', () => {
     expect(description?.textContent).toContain('Advanced');
     expect(description?.textContent).toContain('Looper');
   });
+
+  it('confirmation prompt warns that switching will stop all running sessions', () => {
+    vi.mocked(AppContext.useApp).mockReturnValue({
+      user: { id: 1, email: 'a@b.com', createdAt: '2024-01-01', uiViewMode: 'easy' },
+      setUiViewMode: vi.fn(),
+    } as any);
+
+    render(<SettingsModal onClose={vi.fn()} />);
+
+    fireEvent.click(screen.getByLabelText('Advanced'));
+
+    const confirmText = screen.getByText(/stop all your running sessions/i);
+    expect(confirmText).toBeInTheDocument();
+  });
 });
