@@ -66,10 +66,16 @@ describe("runMigration - Chat session backfill", () => {
     expect(firstCall.interactive).toBe(true);
     expect(firstCall.loop).toBe(false);
 
-    // cwd must match DEFAULT_CWD from session-manager.ts: resolve(dirname, "../..")
-    // i.e. the project root, not an empty string
+    // cwd must resolve to the project root (same as DEFAULT_CWD in
+    // session-manager.ts), NOT to backend/ — migrate.ts is one directory
+    // deeper (backend/src/db/) so it needs an extra "../" level.
     expect(firstCall.cwd).toMatch(/[/\\]/); // non-empty path
     expect(firstCall.cwd).not.toBe("");
+    // Must not end with /backend or \backend — that means only 2 levels
+    // were traversed instead of 3 from backend/src/db/
+    expect(firstCall.cwd).not.toMatch(/[/\\]backend$/);
+    // Should end at the workspace root (parent of backend/)
+    expect(firstCall.cwd).toMatch(/[/\\][^/\\]+$/); // has a final directory component
 
     // Verify user 2
     const secondCall = mockInsertSession.mock.calls[1][0];

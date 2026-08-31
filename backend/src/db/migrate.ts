@@ -137,7 +137,7 @@ export async function runMigration(): Promise<boolean> {
               loop: false,
               runs: 0,
               intervalSeconds: 10,
-              cwd: resolve(import.meta.dirname, "../.."), // mirrors DEFAULT_CWD from session-manager.ts
+              cwd: resolve(import.meta.dirname, "../../.."), // mirrors DEFAULT_CWD from session-manager.ts (3 levels: db → src → backend → root)
               timeoutSeconds: 0,
               userId,
               createdAt: new Date().toISOString(),
