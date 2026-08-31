@@ -1,8 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { apiFetch } from '../utils/api';
-import { DEFAULT_MCP_CONFIG } from '../utils/api';
-import type { Agent, Session, McpConfig, McpServerConfig } from '../types';
+import type { Agent, Session, McpServerConfig } from '../types';
 
 interface SessionModalProps {
   session?: Session | null; // null/undefined = creating new, Session = editing
@@ -28,12 +27,6 @@ export function SessionModal({ session, onClose }: SessionModalProps) {
   );
   const [agents, setAgentsList] = useState<Agent[]>([]);
 
-  // MCP config override
-  const [mcpConfig, setMcpConfig] = useState<McpConfig>(
-    session?.mcpConfigOverride || { ...DEFAULT_MCP_CONFIG }
-  );
-  const [mcpSectionExpanded, setMcpSectionExpanded] = useState(false);
-
   // Agent MCP servers exclusions
   const [excludedNames, setExcludedNames] = useState<string[]>(
     session?.excludedMcpServerNames ?? []
@@ -54,10 +47,6 @@ export function SessionModal({ session, onClose }: SessionModalProps) {
       } catch { /* ignore */ }
     })();
   }, []);
-
-  const handleMcpToggle = (key: keyof McpConfig) => {
-    setMcpConfig(prev => ({ ...prev, [key]: !prev[key] }));
-  };
 
   const addCustomMcpServer = () => {
     setCustomMcpServers(prev => [...prev, { name: '', command: '', args: [], env: [] }]);
@@ -116,7 +105,6 @@ export function SessionModal({ session, onClose }: SessionModalProps) {
           runs: isAgentless ? 0 : runs,
           intervalSeconds,
           tabIds: boardIds.length > 0 ? boardIds : [],
-          mcpConfigOverride: mcpConfig,
           mcpServers: mcpServers.length > 0 ? mcpServers : null,
           excludedMcpServerNames: excludedNames,
         };
@@ -148,7 +136,6 @@ export function SessionModal({ session, onClose }: SessionModalProps) {
           runs: isAgentless ? 0 : runs,
           intervalSeconds,
           tabIds: boardIds.length > 0 ? boardIds : undefined,
-          mcpConfigOverride: mcpConfig,
           mcpServers: mcpServers.length > 0 ? mcpServers : undefined,
           excludedMcpServerNames: excludedNames.length > 0 ? excludedNames : undefined,
         };
@@ -292,40 +279,6 @@ export function SessionModal({ session, onClose }: SessionModalProps) {
               </div>
             );
           })()}
-
-          {/* MCP Servers section */}
-          <div className="form-group">
-            <button
-              type="button"
-              className="collapsible-toggle"
-              aria-expanded={mcpSectionExpanded}
-              onClick={() => setMcpSectionExpanded(!mcpSectionExpanded)}
-            >
-              <span className="toggle-icon">{mcpSectionExpanded ? '▼' : '▶'}</span> MCP Servers
-            </button>
-            {mcpSectionExpanded && (
-              <div className="collapsible-content">
-                <div className="mcp-toggles">
-                  <label className="checkbox-label">
-                    <input type="checkbox" checked={mcpConfig.atlassian} onChange={() => handleMcpToggle('atlassian')} />
-                    <span>Atlassian</span>
-                  </label>
-                  <label className="checkbox-label">
-                    <input type="checkbox" checked={mcpConfig.azureDevops} onChange={() => handleMcpToggle('azureDevops')} />
-                    <span>Azure DevOps</span>
-                  </label>
-                  <label className="checkbox-label">
-                    <input type="checkbox" checked={mcpConfig.awsApi} onChange={() => handleMcpToggle('awsApi')} />
-                    <span>AWS API</span>
-                  </label>
-                  <label className="checkbox-label">
-                    <input type="checkbox" checked={mcpConfig.awsDocs} onChange={() => handleMcpToggle('awsDocs')} />
-                    <span>AWS Docs</span>
-                  </label>
-                </div>
-              </div>
-            )}
-          </div>
 
           {/* Custom MCP Servers section */}
           <div className="form-group">

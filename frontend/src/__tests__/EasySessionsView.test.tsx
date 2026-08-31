@@ -9,7 +9,6 @@ vi.mock('../context/AppContext', () => ({
 
 vi.mock('../utils/api', () => ({
   apiFetch: vi.fn(),
-  DEFAULT_MCP_CONFIG: { atlassian: true, azureDevops: true, awsApi: false, awsDocs: true },
 }));
 
 import { EasySessionsView } from '../components/EasySessionsView';
@@ -70,7 +69,7 @@ describe('EasySessionsView', () => {
     expect(screen.getByText('My loop session')).toBeInTheDocument();
   });
 
-  it('shows only prompt + runs + MCP toggles in the New Session form (no name/agent/model/cwd fields)', () => {
+  it('shows only prompt + runs in the New Session form (no name/agent/model/cwd/MCP toggle fields)', () => {
     mockUseApp({ activeSessionId: 1 });
     render(<EasySessionsView />);
 
@@ -78,10 +77,12 @@ describe('EasySessionsView', () => {
 
     expect(screen.getByLabelText(/what should it do/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/runs/i)).toBeInTheDocument();
-    expect(screen.getByText('Atlassian')).toBeInTheDocument();
-    expect(screen.getByText('Azure DevOps')).toBeInTheDocument();
-    expect(screen.getByText('AWS API')).toBeInTheDocument();
-    expect(screen.getByText('AWS Docs')).toBeInTheDocument();
+
+    // MCP toggle fields removed — no longer part of the Easy view
+    expect(screen.queryByText('Atlassian')).not.toBeInTheDocument();
+    expect(screen.queryByText('Azure DevOps')).not.toBeInTheDocument();
+    expect(screen.queryByText('AWS API')).not.toBeInTheDocument();
+    expect(screen.queryByText('AWS Docs')).not.toBeInTheDocument();
 
     // Fields that exist in the full SessionModal but must NOT appear here
     expect(screen.queryByLabelText(/session name/i)).not.toBeInTheDocument();
@@ -101,7 +102,7 @@ describe('EasySessionsView', () => {
     expect(apiFetchMock).not.toHaveBeenCalledWith('/api/sessions', expect.anything());
   });
 
-  it('creates a session with prompt/runs/mcp config and defaults for everything else, then auto-starts it', async () => {
+  it('creates a session with prompt/runs and defaults for everything else, then auto-starts it', async () => {
     const setSessions = vi.fn();
     const setActiveSessionId = vi.fn();
     apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
@@ -132,7 +133,8 @@ describe('EasySessionsView', () => {
     const body = JSON.parse((createCall![1] as RequestInit).body as string);
     expect(body.prompt).toBe('Refactor the widget');
     expect(body.runs).toBe(0);
-    expect(body.mcpConfigOverride).toEqual({ atlassian: true, azureDevops: true, awsApi: false, awsDocs: true });
+    // mcpConfigOverride is no longer sent — tab-level MCP toggles have been removed
+    expect(body.mcpConfigOverride).toBeUndefined();
     // No agent/tabIds/cwd/model fields sent — Easy mode leaves them unset
     expect(body.agent).toBeUndefined();
     expect(body.tabIds).toBeUndefined();

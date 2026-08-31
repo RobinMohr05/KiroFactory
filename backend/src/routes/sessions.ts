@@ -395,7 +395,6 @@ router.patch("/:id", (req: Request, res: Response) => {
     if (rest.runs !== undefined) updates.runs = rest.runs;
     if (rest.intervalSeconds !== undefined) updates.intervalSeconds = rest.intervalSeconds;
     if (rest.mcpServers !== undefined) updates.mcpServers = rest.mcpServers;
-    if (rest.mcpConfigOverride !== undefined) updates.mcpConfigOverride = rest.mcpConfigOverride;
     if (rest.excludedMcpServerNames !== undefined) updates.excludedMcpServerNames = rest.excludedMcpServerNames;
     if (rest.tabIds !== undefined) updates.tabIds = rest.tabIds;
 

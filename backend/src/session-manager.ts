@@ -19,7 +19,7 @@ import type { ClaimedTask } from "./agent/task-claimer.js";
 import { buildDevPrompt, buildReviewPrompt } from "./agent/prompt-builder.js";
 import { hasLocalGitChanges } from "./agent/local-git-check.js";
 import { buildPersistentBranchName, buildTaskBranchName } from "./agent/repo-url-parser.js";
-import { TabMcpConfig, DEFAULT_MCP_CONFIG, resolveGitProvider, type GitProvider } from "./types.js";
+import { resolveGitProvider, type GitProvider } from "./types.js";
 import {
   getAllSessionsFromDb,
   getRunningSessionsFromDb,
@@ -48,7 +48,7 @@ import {
   type LocalGitDeliveryContext,
   type DeliveryResult,
 } from "./agent/local-git-delivery.js";
-import { buildProxyServersConfig, buildLocalMcpServerEntries, type SessionCredentials } from "./mcp-proxy-config.js";
+import { buildProxyServersConfig, type SessionCredentials } from "./mcp-proxy-config.js";
 import {
   loadAcaConfig,
   startWorkerJob as startAcaWorkerJob,
@@ -702,7 +702,6 @@ export async function createSession(input: CreateSessionInput): Promise<Session>
     timeoutSeconds: input.timeoutSeconds ?? DEFAULT_TIMEOUT,
     model: input.model,
     mcpServers: input.mcpServers,
-    mcpConfigOverride: input.mcpConfigOverride ?? undefined,
     excludedMcpServerNames: input.excludedMcpServerNames?.length ? input.excludedMcpServerNames : undefined,
     rawMcpServers: input.rawMcpServers,
     tabIds: input.tabIds,
@@ -974,7 +973,6 @@ export function updateSessionFields(
   if (updates.runs !== undefined) session.meta.runs = updates.runs;
   if (updates.intervalSeconds !== undefined) session.meta.intervalSeconds = updates.intervalSeconds;
   if (updates.mcpServers !== undefined) session.meta.mcpServers = updates.mcpServers?.length ? updates.mcpServers : undefined;
-  if (updates.mcpConfigOverride !== undefined) session.meta.mcpConfigOverride = updates.mcpConfigOverride;
   if (updates.excludedMcpServerNames !== undefined) session.meta.excludedMcpServerNames = updates.excludedMcpServerNames?.length ? updates.excludedMcpServerNames : undefined;
   if (updates.tabIds !== undefined) session.meta.tabIds = updates.tabIds?.length ? updates.tabIds : undefined;
 
@@ -1259,60 +1257,6 @@ async function runSession(managed: ManagedSession): Promise<void> {
     }
 
     if (!managed.runner) {
-      // Resolve tab-level MCP toggles (Atlassian/Azure DevOps/AWS API/AWS
-      // Docs) into direct stdio MCP servers for this local session. This is
-      // the local counterpart to the ACA path's `buildProxyServersConfig()`
-      // (~line 2114 below) — same toggle/credential resolution, but no
-      // proxy sidecar: KiroRunner already spawns kiro-cli as a direct child
-      // process on this host, so each MCP server can be spawned the same
-      // way. Session-level overrides (`meta.mcpServers`) are appended after
-      // and are not de-duplicated against tab servers by name — an explicit
-      // session-level entry with the same name as a tab-toggle server will
-      // simply appear twice in the payload; kiro-cli's own session/new
-      // handling determines precedence in that case.
-      let tabMcpServers: Array<{ name: string; command: string; args: string[]; env: Array<{ name: string; value: string }> }> = [];
-      try {
-        let effectiveMcpConfig: TabMcpConfig = { ...DEFAULT_MCP_CONFIG };
-        if (meta.tabIds && meta.tabIds.length > 0) {
-          for (const tabId of meta.tabIds) {
-            const tab = await getTabById(tabId);
-            if (tab) {
-              effectiveMcpConfig = { ...tab.mcpConfig };
-              break;
-            }
-          }
-        }
-        if (meta.mcpConfigOverride) {
-          effectiveMcpConfig = { ...effectiveMcpConfig, ...meta.mcpConfigOverride };
-        }
-
-        const rawCreds = meta.userId ? await getAllDecryptedCredentials(meta.userId) : {};
-        const credentials: SessionCredentials = {
-          azureDevOpsPat: rawCreds.azureDevOpsPat,
-          atlassianApiToken: rawCreds.atlassianApiToken,
-          atlassianUsername: rawCreds.atlassianUsername,
-          awsAccessKeyId: rawCreds.awsAccessKeyId,
-          awsSecretAccessKey: rawCreds.awsSecretAccessKey,
-        };
-
-        tabMcpServers = buildLocalMcpServerEntries(effectiveMcpConfig, credentials);
-        if (tabMcpServers.length > 0) {
-          appendOutput(managed, {
-            timestamp: now(),
-            stream: "system",
-            text: `MCP servers from tab config: ${tabMcpServers.map((s) => s.name).join(", ")}`,
-          });
-        }
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        appendOutput(managed, {
-          timestamp: now(),
-          stream: "stderr",
-          text: `Warning: Could not resolve tab MCP config: ${msg}. Continuing without tab-configured MCP servers.`,
-        });
-        // Non-fatal — continue with only session-level mcpServers (if any).
-      }
-
       // Resolve agent-owned MCP servers (minus per-session exclusions)
       let agentMcpServers: McpServerConfig[] = [];
       if (meta.agent) {
@@ -1344,7 +1288,6 @@ async function runSession(managed: ManagedSession): Promise<void> {
         model: meta.model ?? null,
         mcpServers: [
           ...agentMcpServers,
-          ...tabMcpServers,
           ...(meta.mcpServers?.map((s) => ({
             name: s.name,
             command: s.command,
@@ -2591,26 +2534,7 @@ async function runSessionAca(managed: ManagedSession): Promise<void> {
 
     if (spawner.hasProxyImage()) {
       try {
-        // 1. Resolve effective MCP config: tab-level toggles merged with session overrides
-        let effectiveMcpConfig: TabMcpConfig = { ...DEFAULT_MCP_CONFIG };
-
-        if (meta.tabIds && meta.tabIds.length > 0) {
-          // Use the first tab's MCP config as the base
-          for (const tabId of meta.tabIds) {
-            const tab = await getTabById(tabId);
-            if (tab) {
-              effectiveMcpConfig = { ...tab.mcpConfig };
-              break;
-            }
-          }
-        }
-
-        // Apply session-level overrides (if set, they win over tab defaults)
-        if (meta.mcpConfigOverride) {
-          effectiveMcpConfig = { ...effectiveMcpConfig, ...meta.mcpConfigOverride };
-        }
-
-        // 2. Decrypt user credentials (only held in memory during config build)
+        // 1. Decrypt user credentials (only held in memory during config build)
         const rawCreds = await getAllDecryptedCredentials(meta.userId);
         const credentials: SessionCredentials = {
           azureDevOpsPat: rawCreds.azureDevOpsPat,
@@ -2620,7 +2544,7 @@ async function runSessionAca(managed: ManagedSession): Promise<void> {
           awsSecretAccessKey: rawCreds.awsSecretAccessKey,
         };
 
-        // 3. Resolve agent-owned MCP servers (minus per-session exclusions)
+        // 2. Resolve agent-owned MCP servers (minus per-session exclusions)
         let acaAgentMcpServers: McpServerConfig[] = [];
         if (meta.agent) {
           try {
@@ -2633,10 +2557,8 @@ async function runSessionAca(managed: ManagedSession): Promise<void> {
           }
         }
 
-        // 4. Generate servers.json config for the proxy sidecar
+        // 3. Generate servers.json config for the proxy sidecar
         const serversConfig = buildProxyServersConfig({
-          mcpConfig: effectiveMcpConfig,
-          credentials,
           sessionMcpServers: [
             ...acaAgentMcpServers,
             ...(meta.mcpServers ?? []),

@@ -46,7 +46,6 @@ describe("autoMergePrs on Tab", () => {
         name: "Test",
         repositoryUrl: null,
         gitProvider: null,
-        mcpConfig: { atlassian: true, azureDevops: true, awsApi: false, awsDocs: true },
         columns: ["todo", "done"],
         sortOrder: 0,
         userId: 1,
@@ -184,7 +183,7 @@ describe("autoMergePrs on Tab", () => {
       });
 
       const { updateTab } = await import("../db/tabs.js");
-      const result = await updateTab(1, "Updated Tab", null, null, null, true);
+      const result = await updateTab(1, "Updated Tab", null, null, true);
 
       expect(result).not.toBeNull();
       expect(result!.autoMergePrs).toBe(true);
@@ -209,9 +208,7 @@ describe("autoMergePrs on Tab", () => {
           autoMergePrs: false,
         },
       };
-      const fakeMcpNode = {
-        properties: { atlassian: true, azureDevops: true, awsApi: false, awsDocs: true },
-      };
+      const fakeMcpNode = null; // removed — no longer part of the query
 
       mockWriteQuery.mockImplementation(async (fn: Function) => {
         const fakeTx = {
@@ -224,7 +221,6 @@ describe("autoMergePrs on Tab", () => {
                   get: (key: string) => {
                     if (key === "t") return fakeTabNode;
                     if (key === "ownerId") return 1;
-                    if (key === "mcpNode") return fakeMcpNode;
                     return null;
                   },
                 },
@@ -237,7 +233,7 @@ describe("autoMergePrs on Tab", () => {
 
       const { updateTab } = await import("../db/tabs.js");
       // Call without autoMergePrs (undefined — should not change the value)
-      const result = await updateTab(1, "Unchanged Tab", null, null, null, undefined);
+      const result = await updateTab(1, "Unchanged Tab", null, null, undefined);
 
       expect(result).not.toBeNull();
       // The query should use COALESCE-like conditional to keep existing value

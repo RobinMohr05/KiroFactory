@@ -34,7 +34,7 @@ import type { ManagedTransaction } from "neo4j-driver";
 import { readQuery, writeQuery } from "./connection.js";
 import { getNextId } from "./id-counter.js";
 import type { Task, CreateTaskInput, UpdateTaskInput } from "../types.js";
-import { DEFAULT_MCP_CONFIG, DependencyCycleError, isGitProvider } from "../types.js";
+import { DependencyCycleError, isGitProvider } from "../types.js";
 
 /**
  * Precomputed claim-ordering rank from `origin` — mirrors the SQL `CASE
@@ -96,10 +96,7 @@ const DEPENDENCY_PROJECTION = `
 /**
  * Attach tab memberships to a list of tasks (batch lookup), mutating each
  * task's `tabs` field in place — mirrors the original mssql-based
- * attachTabs' shape exactly, including its simplifications: mcpConfig is
- * always the default (never the tab's real config) and columns is always
- * `[]`, matching the original's behavior of never fetching those two fields
- * for this particular join. `userId` is resolved via the tab's OWNS
+ * attachTabs' shape exactly. `userId` is resolved via the tab's OWNS
  * relationship (no longer a stored property on :Tab).
  */
 async function attachTabs(tx: ManagedTransaction, tasks: Task[]): Promise<void> {
@@ -126,7 +123,6 @@ async function attachTabs(tx: ManagedTransaction, tasks: Task[]): Promise<void> 
       name: tabProps.name as string,
       repositoryUrl: (tabProps.repositoryUrl as string) || null,
       gitProvider: isGitProvider(gitProvider) ? gitProvider : null,
-      mcpConfig: { ...DEFAULT_MCP_CONFIG },
       autoMergePrs: !!(tabProps.autoMergePrs),
       columns: [],
       sortOrder: (tabProps.sortOrder as number) ?? 0,
