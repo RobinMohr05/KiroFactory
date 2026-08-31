@@ -151,21 +151,6 @@ export interface Task {
   blockedBy?: Array<{ id: number; title: string }>;
 }
 
-/** MCP server toggle configuration per tab/board */
-export interface TabMcpConfig {
-  atlassian: boolean;
-  azureDevops: boolean;
-  awsApi: boolean;
-  awsDocs: boolean;
-}
-
-export const DEFAULT_MCP_CONFIG: TabMcpConfig = {
-  atlassian: true,
-  azureDevops: true,
-  awsApi: false,
-  awsDocs: true,
-};
-
 export interface Tab {
   id: number;
   name: string;
@@ -175,7 +160,6 @@ export interface Tab {
    * the owner's profile default, then to URL detection.
    */
   gitProvider: GitProvider | null;
-  mcpConfig: TabMcpConfig;
   /**
    * Whether the QA agent should automatically merge approved PRs and delete
    * their source branches. Defaults to false.
@@ -243,6 +227,13 @@ export interface Agent {
    * Defaults to true (standard task-claiming behavior).
    */
   requiresTask: boolean;
+  /**
+   * Reusable MCP server definitions owned by this agent. When a session uses
+   * this agent, these servers are prepended to the effective MCP server list
+   * (before tab-toggle servers and session-only additions). Individual servers
+   * can be excluded per-session via `Session.excludedMcpServerNames`.
+   */
+  mcpServers?: McpServerConfig[];
   createdAt: string;
   updatedAt: string;
 }
@@ -261,6 +252,7 @@ export interface CreateAgentInput {
   workingState?: string;
   resolveState?: string;
   requiresTask?: boolean;
+  mcpServers?: McpServerConfig[];
   tabIds?: number[];
 }
 
@@ -277,6 +269,7 @@ export interface UpdateAgentInput {
   workingState?: string;
   resolveState?: string;
   requiresTask?: boolean;
+  mcpServers?: McpServerConfig[];
   tabIds?: number[];
 }
 
@@ -367,8 +360,12 @@ export interface Session {
   timeoutSeconds: number;
   model?: string;
   mcpServers?: McpServerConfig[];
-  /** Per-session MCP server toggle overrides. Nullable = inherit from tab. Merges over tab defaults (override wins). */
-  mcpConfigOverride?: TabMcpConfig | null;
+  /**
+   * Names of the agent's mcpServers to exclude for this session only.
+   * Entries whose `name` matches one of these are filtered out of the
+   * effective MCP server list before prepending agent servers.
+   */
+  excludedMcpServerNames?: string[];
   /**
    * Raw MCP server entries (HTTP or other non-stdio shapes) passed directly
    * to the ACP session/new mcpServers payload. Used by the task planner to
@@ -428,8 +425,8 @@ export interface CreateSessionInput {
   runs?: number;
   intervalSeconds?: number;
   mcpServers?: McpServerConfig[];
-  /** Per-session MCP server toggle overrides. Nullable = inherit from tab. Merges over tab defaults (override wins). */
-  mcpConfigOverride?: TabMcpConfig | null;
+  /** Names of the agent's mcpServers to exclude for this session. */
+  excludedMcpServerNames?: string[];
   /**
    * Raw MCP server entries (HTTP or other non-stdio shapes) passed directly
    * to the ACP session/new mcpServers payload. Internal-only — not accepted
@@ -476,7 +473,7 @@ export interface UpdateSessionInput {
   runs?: number;
   intervalSeconds?: number;
   mcpServers?: McpServerConfig[] | null;
-  mcpConfigOverride?: TabMcpConfig | null;
+  excludedMcpServerNames?: string[];
   tabIds?: number[];
 }
 

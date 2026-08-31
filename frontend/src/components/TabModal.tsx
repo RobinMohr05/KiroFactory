@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { apiFetch, DEFAULT_MCP_CONFIG } from '../utils/api';
-import type { Tab, McpConfig } from '../types';
+import { apiFetch } from '../utils/api';
+import type { Tab } from '../types';
 
 interface TabModalProps {
   tab?: Tab | null; // null = creating new, Tab = editing
@@ -13,16 +13,9 @@ export function TabModal({ tab, onClose, onSave }: TabModalProps) {
   const [name, setName] = useState(tab?.name || '');
   const [repositoryUrl, setRepositoryUrl] = useState(tab?.repositoryUrl || '');
   const [gitProvider, setGitProvider] = useState(tab?.gitProvider || '');
-  const [mcpConfig, setMcpConfig] = useState<McpConfig>(
-    tab?.mcpConfig || { ...DEFAULT_MCP_CONFIG }
-  );
   const [autoMergePrs, setAutoMergePrs] = useState(tab?.autoMergePrs === true);
   const [showAutoMergeConfirm, setShowAutoMergeConfirm] = useState(false);
   const [error, setError] = useState('');
-
-  const handleMcpToggle = (key: keyof McpConfig) => {
-    setMcpConfig(prev => ({ ...prev, [key]: !prev[key] }));
-  };
 
   const handleAutoMergeToggle = () => {
     if (!autoMergePrs) {
@@ -54,7 +47,6 @@ export function TabModal({ tab, onClose, onSave }: TabModalProps) {
           name: name.trim(),
           repositoryUrl: repositoryUrl.trim() || null,
           gitProvider: gitProvider || null,
-          mcpConfig,
           autoMergePrs,
         };
         const res = await apiFetch(`/api/tabs/${tab!.id}`, {
@@ -113,27 +105,6 @@ export function TabModal({ tab, onClose, onSave }: TabModalProps) {
                 <option value="github">GitHub</option>
                 <option value="azure-devops">Azure DevOps</option>
               </select>
-            </div>
-            <div className="form-group">
-              <label>MCP Servers</label>
-              <div className="mcp-toggles">
-                <label className="checkbox-label">
-                  <input type="checkbox" checked={mcpConfig.atlassian} onChange={() => handleMcpToggle('atlassian')} />
-                  <span>Atlassian</span>
-                </label>
-                <label className="checkbox-label">
-                  <input type="checkbox" checked={mcpConfig.azureDevops} onChange={() => handleMcpToggle('azureDevops')} />
-                  <span>Azure DevOps</span>
-                </label>
-                <label className="checkbox-label">
-                  <input type="checkbox" checked={mcpConfig.awsApi} onChange={() => handleMcpToggle('awsApi')} />
-                  <span>AWS API</span>
-                </label>
-                <label className="checkbox-label">
-                  <input type="checkbox" checked={mcpConfig.awsDocs} onChange={() => handleMcpToggle('awsDocs')} />
-                  <span>AWS Docs</span>
-                </label>
-              </div>
             </div>
             {isEditing && (
               <div className="form-group">

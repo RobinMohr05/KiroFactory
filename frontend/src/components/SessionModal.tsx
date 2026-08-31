@@ -1,8 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { apiFetch } from '../utils/api';
-import { DEFAULT_MCP_CONFIG } from '../utils/api';
-import type { Agent, Session, McpConfig, McpServerConfig } from '../types';
+import type { Agent, Session, McpServerConfig } from '../types';
 
 interface SessionModalProps {
   session?: Session | null; // null/undefined = creating new, Session = editing
@@ -28,11 +27,11 @@ export function SessionModal({ session, onClose }: SessionModalProps) {
   );
   const [agents, setAgentsList] = useState<Agent[]>([]);
 
-  // MCP config override
-  const [mcpConfig, setMcpConfig] = useState<McpConfig>(
-    session?.mcpConfigOverride || { ...DEFAULT_MCP_CONFIG }
+  // Agent MCP servers exclusions
+  const [excludedNames, setExcludedNames] = useState<string[]>(
+    session?.excludedMcpServerNames ?? []
   );
-  const [mcpSectionExpanded, setMcpSectionExpanded] = useState(false);
+  const [agentMcpSectionExpanded, setAgentMcpSectionExpanded] = useState(false);
 
   // Custom MCP servers
   const [customMcpServers, setCustomMcpServers] = useState<McpServerConfig[]>(
@@ -48,10 +47,6 @@ export function SessionModal({ session, onClose }: SessionModalProps) {
       } catch { /* ignore */ }
     })();
   }, []);
-
-  const handleMcpToggle = (key: keyof McpConfig) => {
-    setMcpConfig(prev => ({ ...prev, [key]: !prev[key] }));
-  };
 
   const addCustomMcpServer = () => {
     setCustomMcpServers(prev => [...prev, { name: '', command: '', args: [], env: [] }]);
@@ -110,8 +105,8 @@ export function SessionModal({ session, onClose }: SessionModalProps) {
           runs: isAgentless ? 0 : runs,
           intervalSeconds,
           tabIds: boardIds.length > 0 ? boardIds : [],
-          mcpConfigOverride: mcpConfig,
           mcpServers: mcpServers.length > 0 ? mcpServers : null,
+          excludedMcpServerNames: excludedNames,
         };
         if (agent) body.agent = agent;
 
@@ -141,8 +136,8 @@ export function SessionModal({ session, onClose }: SessionModalProps) {
           runs: isAgentless ? 0 : runs,
           intervalSeconds,
           tabIds: boardIds.length > 0 ? boardIds : undefined,
-          mcpConfigOverride: mcpConfig,
           mcpServers: mcpServers.length > 0 ? mcpServers : undefined,
+          excludedMcpServerNames: excludedNames.length > 0 ? excludedNames : undefined,
         };
         if (agent) body.agent = agent;
 
@@ -180,7 +175,7 @@ export function SessionModal({ session, onClose }: SessionModalProps) {
           </div>
           <div className="form-group">
             <label htmlFor="sessionAgent">Agent <small>(optional)</small></label>
-            <select id="sessionAgent" value={agent} onChange={(e) => setAgent(e.target.value)}>
+            <select id="sessionAgent" value={agent} onChange={(e) => { setAgent(e.target.value); setExcludedNames([]); }}>
               <option value="">None (interactive)</option>
               {agents.map(a => (
                 <option key={a.id} value={a.name}>{a.name}</option>
@@ -243,39 +238,47 @@ export function SessionModal({ session, onClose }: SessionModalProps) {
             <small className="form-hint">Hold Ctrl/Cmd to select multiple. In loop mode, claims tasks from these tabs.</small>
           </div>
 
-          {/* MCP Servers section */}
-          <div className="form-group">
-            <button
-              type="button"
-              className="collapsible-toggle"
-              aria-expanded={mcpSectionExpanded}
-              onClick={() => setMcpSectionExpanded(!mcpSectionExpanded)}
-            >
-              <span className="toggle-icon">{mcpSectionExpanded ? '▼' : '▶'}</span> MCP Servers
-            </button>
-            {mcpSectionExpanded && (
-              <div className="collapsible-content">
-                <div className="mcp-toggles">
-                  <label className="checkbox-label">
-                    <input type="checkbox" checked={mcpConfig.atlassian} onChange={() => handleMcpToggle('atlassian')} />
-                    <span>Atlassian</span>
-                  </label>
-                  <label className="checkbox-label">
-                    <input type="checkbox" checked={mcpConfig.azureDevops} onChange={() => handleMcpToggle('azureDevops')} />
-                    <span>Azure DevOps</span>
-                  </label>
-                  <label className="checkbox-label">
-                    <input type="checkbox" checked={mcpConfig.awsApi} onChange={() => handleMcpToggle('awsApi')} />
-                    <span>AWS API</span>
-                  </label>
-                  <label className="checkbox-label">
-                    <input type="checkbox" checked={mcpConfig.awsDocs} onChange={() => handleMcpToggle('awsDocs')} />
-                    <span>AWS Docs</span>
-                  </label>
-                </div>
+          {/* Agent MCP Servers section */}
+          {(() => {
+            const selectedAgent = agents.find(a => a.name === agent);
+            const agentServers = selectedAgent?.mcpServers ?? [];
+            if (agentServers.length === 0) return null;
+            return (
+              <div className="form-group">
+                <button
+                  type="button"
+                  className="collapsible-toggle"
+                  aria-expanded={agentMcpSectionExpanded}
+                  onClick={() => setAgentMcpSectionExpanded(!agentMcpSectionExpanded)}
+                >
+                  <span className="toggle-icon">{agentMcpSectionExpanded ? '▼' : '▶'}</span> Agent MCP Servers
+                </button>
+                {agentMcpSectionExpanded && (
+                  <div className="collapsible-content">
+                    {agentServers.map(server => {
+                      const isExcluded = excludedNames.includes(server.name);
+                      return (
+                        <label key={server.name} className="checkbox-label">
+                          <input
+                            type="checkbox"
+                            checked={!isExcluded}
+                            onChange={() => {
+                              if (isExcluded) {
+                                setExcludedNames(prev => prev.filter(n => n !== server.name));
+                              } else {
+                                setExcludedNames(prev => [...prev, server.name]);
+                              }
+                            }}
+                          />
+                          <span>{server.name}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
-            )}
-          </div>
+            );
+          })()}
 
           {/* Custom MCP Servers section */}
           <div className="form-group">

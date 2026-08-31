@@ -19,7 +19,6 @@
  *     forceLocal, createdAt, startedAt.
  *   (:User)-[:OWNS]->(:Session)
  *   (:Session)-[:IN_TAB]->(:Tab)                                   0+
- *   (:Session)-[:HAS_MCP_CONFIG_OVERRIDE]->(:McpConfig)            0 or 1
  *   (:Session)-[:HAS_MCP_SERVER {position}]->(:McpServerConfig)    0+, ordered
  *   (:Session)-[:HAS_RAW_MCP_SERVER {position}]->(:RawMcpServerConfig)  0+, ordered
  *
@@ -72,7 +71,7 @@
 import type { ManagedTransaction, Record as Neo4jRecord } from "neo4j-driver";
 import { readQuery, writeQuery } from "./connection.js";
 import { getNextId } from "./id-counter.js";
-import type { Session, McpServerConfig, Activity, TabMcpConfig } from "../types.js";
+import type { Session, McpServerConfig, Activity } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Shared Cypher fragments
@@ -81,7 +80,7 @@ import type { Session, McpServerConfig, Activity, TabMcpConfig } from "../types.
 /**
  * Resolves every sub-relationship for an already-bound `s` (Session) and
  * returns one row per session: `props` (flat scalar properties), `ownerId`,
- * `tabIds`, `mcpConfigOverride`, `mcpServersRaw`, `rawMcpServersJson`.
+ * `tabIds`, `mcpServersRaw`, `rawMcpServersJson`.
  *
  * Callers must bind `s` first (and apply any ORDER BY before this fragment —
  * row order survives through these CALL subqueries, confirmed empirically).
@@ -91,10 +90,6 @@ const RESOLVE_SESSION_RELATIONSHIPS = `
   CALL (s) {
     OPTIONAL MATCH (s)-[:IN_TAB]->(tab:Tab)
     RETURN collect(tab.id) AS tabIds
-  }
-  CALL (s) {
-    OPTIONAL MATCH (s)-[:HAS_MCP_CONFIG_OVERRIDE]->(cfg:McpConfig)
-    RETURN cfg {.*} AS mcpConfigOverride
   }
   CALL (s) {
     OPTIONAL MATCH (s)-[hms:HAS_MCP_SERVER]->(mcp:McpServerConfig)
@@ -108,7 +103,7 @@ const RESOLVE_SESSION_RELATIONSHIPS = `
     WITH collect(CASE WHEN raw IS NOT NULL THEN raw.json END) AS rawList
     RETURN [x IN rawList WHERE x IS NOT NULL] AS rawMcpServersJson
   }
-  RETURN s {.*} AS props, owner.id AS ownerId, tabIds, mcpConfigOverride, mcpServersRaw, rawMcpServersJson
+  RETURN s {.*} AS props, owner.id AS ownerId, tabIds, mcpServersRaw, rawMcpServersJson
 `;
 
 // ---------------------------------------------------------------------------
@@ -143,7 +138,6 @@ function mapRecordToSession(record: Neo4jRecord): Session {
   const props = record.get("props") as Record<string, unknown>;
   const ownerId = record.get("ownerId") as number | null;
   const tabIdsRaw = (record.get("tabIds") as number[]) ?? [];
-  const mcpConfigOverrideRaw = record.get("mcpConfigOverride") as TabMcpConfig | null;
   const mcpServersRaw = (record.get("mcpServersRaw") as McpServerRawRow[]) ?? [];
   const rawMcpServersJson = (record.get("rawMcpServersJson") as string[]) ?? [];
 
@@ -183,8 +177,11 @@ function mapRecordToSession(record: Neo4jRecord): Session {
     timeoutSeconds: props.timeoutSeconds as number,
     model: (props.model as string) || undefined,
     mcpServers,
-    mcpConfigOverride: mcpConfigOverrideRaw ?? undefined,
     rawMcpServers,
+    excludedMcpServerNames:
+      (props.excludedMcpServerNames as string[] | undefined)?.length
+        ? (props.excludedMcpServerNames as string[])
+        : undefined,
     tabIds: tabIdsRaw.length > 0 ? tabIdsRaw : undefined,
     userId: (ownerId ?? 0) as number,
     createdAt: (props.createdAt as { toString(): string }).toString(),
@@ -302,16 +299,10 @@ export async function insertSession(session: Session): Promise<number> {
           activityType: $activityType, activityDetail: $activityDetail, currentTaskId: $currentTaskId,
           currentTaskTitle: $currentTaskTitle,
           pinned: $pinned, isPermanent: $isPermanent, sortOrder: $sortOrder, forceLocal: $forceLocal,
+          excludedMcpServerNames: $excludedMcpServerNames,
           createdAt: datetime($createdAt), startedAt: datetime($startedAt)
         })
         CREATE (owner)-[:OWNS]->(s)
-        WITH s
-        FOREACH (ignoreMe IN CASE WHEN $mcpConfigOverride IS NOT NULL THEN [1] ELSE [] END |
-          CREATE (s)-[:HAS_MCP_CONFIG_OVERRIDE]->(:McpConfig {
-            atlassian: $mcpConfigOverride.atlassian, azureDevops: $mcpConfigOverride.azureDevops,
-            awsApi: $mcpConfigOverride.awsApi, awsDocs: $mcpConfigOverride.awsDocs
-          })
-        )
         WITH s
         CALL (s) {
           UNWIND $tabIds AS tabId
@@ -354,11 +345,11 @@ export async function insertSession(session: Session): Promise<number> {
         isPermanent: session.isPermanent ? true : false,
         sortOrder: session.sortOrder ?? 0,
         forceLocal: session.forceLocal ? true : false,
+        excludedMcpServerNames: session.excludedMcpServerNames?.length ? session.excludedMcpServerNames : [],
         createdAt: session.createdAt,
         startedAt: session.startedAt ?? null,
         userId: session.userId,
         tabIds: session.tabIds ?? [],
-        mcpConfigOverride: session.mcpConfigOverride ?? null,
         mcpServers: buildMcpServerParams(session.mcpServers),
         rawMcpServers: buildRawMcpServerParams(session.rawMcpServers),
       }
@@ -422,12 +413,14 @@ export async function updateSessionStatus(
  * This is a full replace-everything update, matching the original SQL
  * UPDATE's "set every column to the new session object's current value"
  * semantics: every scalar property is rewritten, and every relationship set
- * (IN_TAB, HAS_MCP_CONFIG_OVERRIDE, HAS_MCP_SERVER, HAS_RAW_MCP_SERVER) is
+ * (IN_TAB, HAS_MCP_SERVER, HAS_RAW_MCP_SERVER) is
  * torn down and recreated from the incoming session object. Tab nodes
  * themselves are shared (not owned by the session) so only the IN_TAB
- * relationship is deleted, never the Tab node; the McpConfig/McpServerConfig/
+ * relationship is deleted, never the Tab node; the McpServerConfig/
  * RawMcpServerConfig sub-nodes ARE exclusively owned by the session, so
- * those are DETACH DELETEd outright before being recreated.
+ * those are DETACH DELETEd outright before being recreated. Any legacy
+ * McpConfig override node (from the now-removed TabMcpConfig feature) is
+ * also cleaned up during the tear-down phase.
  */
 export async function updateSessionMeta(session: Session): Promise<void> {
   await writeQuery(async (tx: ManagedTransaction) => {
@@ -440,13 +433,11 @@ export async function updateSessionMeta(session: Session): Promise<void> {
             s.activityType = $activityType, s.activityDetail = $activityDetail, s.currentTaskId = $currentTaskId,
             s.currentTaskTitle = $currentTaskTitle,
             s.pinned = $pinned, s.sortOrder = $sortOrder, s.forceLocal = $forceLocal,
+            s.excludedMcpServerNames = $excludedMcpServerNames,
             s.startedAt = datetime($startedAt)
         WITH s
         OPTIONAL MATCH (s)-[oldTabRel:IN_TAB]->(:Tab)
         DELETE oldTabRel
-        WITH DISTINCT s
-        OPTIONAL MATCH (s)-[:HAS_MCP_CONFIG_OVERRIDE]->(oldCfg:McpConfig)
-        DETACH DELETE oldCfg
         WITH DISTINCT s
         OPTIONAL MATCH (s)-[:HAS_MCP_SERVER]->(oldMcp:McpServerConfig)
         DETACH DELETE oldMcp
@@ -454,13 +445,9 @@ export async function updateSessionMeta(session: Session): Promise<void> {
         OPTIONAL MATCH (s)-[:HAS_RAW_MCP_SERVER]->(oldRaw:RawMcpServerConfig)
         DETACH DELETE oldRaw
         WITH DISTINCT s
-        FOREACH (ignoreMe IN CASE WHEN $mcpConfigOverride IS NOT NULL THEN [1] ELSE [] END |
-          CREATE (s)-[:HAS_MCP_CONFIG_OVERRIDE]->(:McpConfig {
-            atlassian: $mcpConfigOverride.atlassian, azureDevops: $mcpConfigOverride.azureDevops,
-            awsApi: $mcpConfigOverride.awsApi, awsDocs: $mcpConfigOverride.awsDocs
-          })
-        )
-        WITH s
+        OPTIONAL MATCH (s)-[:HAS_MCP_CONFIG_OVERRIDE]->(oldMcpOverride:McpConfig)
+        DETACH DELETE oldMcpOverride
+        WITH DISTINCT s
         CALL (s) {
           UNWIND $tabIds AS tabId
           MATCH (tab:Tab {id: tabId})
@@ -500,9 +487,9 @@ export async function updateSessionMeta(session: Session): Promise<void> {
         pinned: session.pinned ? true : false,
         sortOrder: session.sortOrder ?? 0,
         forceLocal: session.forceLocal ? true : false,
+        excludedMcpServerNames: session.excludedMcpServerNames?.length ? session.excludedMcpServerNames : [],
         startedAt: session.startedAt ?? null,
         tabIds: session.tabIds ?? [],
-        mcpConfigOverride: session.mcpConfigOverride ?? null,
         mcpServers: buildMcpServerParams(session.mcpServers),
         rawMcpServers: buildRawMcpServerParams(session.rawMcpServers),
       }
@@ -512,21 +499,22 @@ export async function updateSessionMeta(session: Session): Promise<void> {
 
 /**
  * Delete a session from the database.
- * Also deletes every sub-node exclusively owned by the session (McpConfig
- * override, McpServerConfig/RawMcpServerConfig entries) so nothing is left
- * orphaned. Tab/User nodes are never touched — DETACH DELETE only removes
- * the relationships incident to the deleted nodes, not the nodes on the
- * other end.
+ * Also deletes every sub-node exclusively owned by the session
+ * (McpServerConfig/RawMcpServerConfig entries, and any legacy McpConfig
+ * override node left from the now-removed TabMcpConfig feature) so nothing
+ * is left orphaned. Tab/User nodes are never touched — DETACH DELETE only
+ * removes the relationships incident to the deleted nodes, not the nodes
+ * on the other end.
  */
 export async function deleteSessionFromDb(id: number): Promise<boolean> {
   return writeQuery(async (tx: ManagedTransaction) => {
     const result = await tx.run(
       `
         MATCH (s:Session {id: $id})
-        OPTIONAL MATCH (s)-[:HAS_MCP_CONFIG_OVERRIDE]->(cfg:McpConfig)
         OPTIONAL MATCH (s)-[:HAS_MCP_SERVER]->(mcp:McpServerConfig)
         OPTIONAL MATCH (s)-[:HAS_RAW_MCP_SERVER]->(raw:RawMcpServerConfig)
-        DETACH DELETE s, cfg, mcp, raw
+        OPTIONAL MATCH (s)-[:HAS_MCP_CONFIG_OVERRIDE]->(mcpOverride:McpConfig)
+        DETACH DELETE s, mcp, raw, mcpOverride
         RETURN count(DISTINCT s) AS deletedCount
       `,
       { id }

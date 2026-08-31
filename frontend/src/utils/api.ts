@@ -67,10 +67,3 @@ export const TYPE_CLASSES: Record<string, string> = {
   bug: 'badge-bug',
   feature: 'badge-feature',
 };
-
-export const DEFAULT_MCP_CONFIG = {
-  atlassian: true,
-  azureDevops: true,
-  awsApi: false,
-  awsDocs: true,
-};

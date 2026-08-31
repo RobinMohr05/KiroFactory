@@ -3,16 +3,8 @@ export interface Tab {
   name: string;
   repositoryUrl?: string | null;
   gitProvider?: string | null;
-  mcpConfig?: McpConfig;
   autoMergePrs?: boolean;
   sortOrder?: number;
-}
-
-export interface McpConfig {
-  atlassian: boolean;
-  azureDevops: boolean;
-  awsApi: boolean;
-  awsDocs: boolean;
 }
 
 export interface Task {
@@ -59,7 +51,7 @@ export interface Session {
   currentTaskTitle?: string;
   /** Number of turns completed/started this run (derived from turn events, reset on session start) */
   turnCount?: number;
-  mcpConfigOverride?: McpConfig;
+  excludedMcpServerNames?: string[];
   mcpServers?: McpServerConfig[];
   timeoutSeconds?: number;
 }
@@ -152,6 +144,7 @@ export interface Agent {
   allowedTools?: string[];
   resources?: string[];
   toolsSettings?: Record<string, unknown>;
+  mcpServers?: McpServerConfig[];
   kind?: 'editor' | 'inspector';
   requiresTask?: boolean;
   claimState?: string | null;

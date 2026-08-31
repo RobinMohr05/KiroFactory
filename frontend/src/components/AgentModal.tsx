@@ -26,6 +26,11 @@ export function AgentModal({ agent, onClose }: AgentModalProps) {
       ? JSON.stringify(agent.toolsSettings, null, 2)
       : ''
   );
+  const [mcpServersJson, setMcpServersJson] = useState(
+    agent?.mcpServers?.length
+      ? JSON.stringify(agent.mcpServers, null, 2)
+      : ''
+  );
 
   const isEditing = !!agent;
 
@@ -43,6 +48,20 @@ export function AgentModal({ agent, onClose }: AgentModalProps) {
       }
     }
 
+    let mcpServers: unknown[] = [];
+    if (mcpServersJson.trim()) {
+      try {
+        mcpServers = JSON.parse(mcpServersJson.trim());
+        if (!Array.isArray(mcpServers)) {
+          alert('MCP Servers must be a JSON array');
+          return;
+        }
+      } catch {
+        alert('MCP Servers must be valid JSON');
+        return;
+      }
+    }
+
     const data = {
       name: name.trim(),
       description: description.trim(),
@@ -51,6 +70,7 @@ export function AgentModal({ agent, onClose }: AgentModalProps) {
       allowedTools: allowedTools ? allowedTools.split(',').map(s => s.trim()).filter(Boolean) : [],
       resources: resources ? resources.split('\n').map(s => s.trim()).filter(Boolean) : [],
       toolsSettings,
+      mcpServers,
       kind,
       requiresTask,
       claimState: claimState.trim() || null,
@@ -151,6 +171,10 @@ export function AgentModal({ agent, onClose }: AgentModalProps) {
           <div className="form-group">
             <label htmlFor="agentFormSettings">Tools Settings <small>(JSON)</small></label>
             <textarea id="agentFormSettings" rows={4} placeholder='{"shell": {"allowedCommands": ["npm run build"]}}' value={settings} onChange={(e) => setSettings(e.target.value)} />
+          </div>
+          <div className="form-group">
+            <label htmlFor="agentFormMcpServers">MCP Servers <small>(JSON)</small></label>
+            <textarea id="agentFormMcpServers" rows={4} placeholder={'[{"name": "my-server", "command": "npx", "args": ["-y", "my-mcp-pkg"], "env": [{"name": "API_KEY", "value": "..."}]}]'} value={mcpServersJson} onChange={(e) => setMcpServersJson(e.target.value)} />
           </div>
           <div className="form-actions">
             <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
