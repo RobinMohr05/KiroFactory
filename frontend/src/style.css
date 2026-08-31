@@ -89,6 +89,10 @@
   background: var(--bg-secondary);
 }
 
+[data-theme="dark"] .task-id-copy:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
 [data-theme="dark"] select,
 [data-theme="dark"] input,
 [data-theme="dark"] textarea {
