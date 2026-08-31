@@ -26,6 +26,29 @@ export function TaskModal({ task, onClose }: TaskModalProps) {
   const [pullRequestUrl, setPullRequestUrl] = useState(task?.pullRequestUrl || '');
   const [error, setError] = useState('');
 
+  // Copy task ID state
+  const [idCopied, setIdCopied] = useState(false);
+  const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Clean up copy timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (copyTimeoutRef.current) clearTimeout(copyTimeoutRef.current);
+    };
+  }, []);
+
+  const handleCopyId = async () => {
+    if (!task) return;
+    try {
+      await navigator.clipboard.writeText(String(task.id));
+      setIdCopied(true);
+      if (copyTimeoutRef.current) clearTimeout(copyTimeoutRef.current);
+      copyTimeoutRef.current = setTimeout(() => setIdCopied(false), 1200);
+    } catch {
+      // Clipboard write failed — leave idCopied false, no error UI needed
+    }
+  };
+
   // Dependency management state
   const [selectedDeps, setSelectedDeps] = useState<Set<number>>(new Set(task?.dependsOn || []));
   const [allTasks, setAllTasks] = useState<AllTask[]>([]);
@@ -178,7 +201,14 @@ export function TaskModal({ task, onClose }: TaskModalProps) {
   return (
     <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="modal modal-wide" role="dialog" aria-labelledby="modalTitle">
-        <h2 id="modalTitle">{isEditing ? 'Edit Task' : 'New Task'}</h2>
+        <div className="modal-header-row">
+          <h2 id="modalTitle">{isEditing ? 'Edit Task' : 'New Task'}</h2>
+          {isEditing && task && (
+            <button type="button" className={`task-id-copy${idCopied ? ' copied' : ''}`} onClick={handleCopyId} aria-label="Copy task ID" title="Click to copy task ID">
+              {idCopied ? 'Copied!' : `#${task.id}`}
+            </button>
+          )}
+        </div>
         <form onSubmit={handleSubmit}>
           <div className="form-group">
             <label htmlFor="taskTitle">Title</label>

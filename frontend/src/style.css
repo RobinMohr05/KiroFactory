@@ -89,6 +89,10 @@
   background: var(--bg-secondary);
 }
 
+[data-theme="dark"] .task-id-copy:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
 [data-theme="dark"] select,
 [data-theme="dark"] input,
 [data-theme="dark"] textarea {
@@ -978,12 +982,46 @@ textarea:focus {
   box-shadow: var(--shadow-lg);
 }
 
+.modal-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 1.25rem;
+}
+
 .modal h2 {
   font-family: 'Barlow', sans-serif;
   font-size: 1.1rem;
   font-weight: 600;
   margin-bottom: 1.25rem;
   color: var(--text-primary);
+}
+
+.modal-header-row h2 {
+  margin-bottom: 0;
+}
+
+.task-id-copy {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 0.2rem 0.55rem;
+  font-family: monospace;
+  font-size: 0.78rem;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.task-id-copy:hover {
+  background: var(--bg-hover, rgba(0, 0, 0, 0.06));
+}
+
+.task-id-copy.copied {
+  color: var(--status-connected);
+  border-color: var(--status-connected);
 }
 
 .form-group {
