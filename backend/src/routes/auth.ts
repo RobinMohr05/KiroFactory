@@ -2,7 +2,7 @@ import { Router, type Request, type Response } from "express";
 import jwt from "jsonwebtoken";
 import { createUser, verifyPassword, verifyPasswordById, getUserById, getUserByEmail, updateUserPassword, updateUserKiroApiKey, updateUserDefaultGitProvider, updateUserViewMode, deleteUser } from "../db/users.js";
 import { isRegistrationEnabled } from "../db/settings.js";
-import { createSession } from "../session-manager.js";
+import { createSession, stopAllSessionsForUser } from "../session-manager.js";
 import { getUserId } from "../middleware/auth.js";
 import type { CreateUserInput, AuthenticatedRequest, GitProvider } from "../types.js";
 import { GIT_PROVIDERS, isGitProvider, UI_VIEW_MODES, isUiViewMode } from "../types.js";
@@ -377,6 +377,11 @@ router.put("/me/view-mode", async (req: Request, res: Response) => {
       res.status(404).json({ error: "User not found" });
       return;
     }
+
+    // Stop all running sessions for this user — switching interface mode
+    // tears down the session list, so any in-flight agent work must be
+    // stopped to avoid orphaned processes.
+    await stopAllSessionsForUser(userId);
 
     res.json({ message: "View mode updated", user });
   } catch (err) {
