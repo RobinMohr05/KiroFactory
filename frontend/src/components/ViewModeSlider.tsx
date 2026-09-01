@@ -181,13 +181,15 @@ export function ViewModeSlider<T extends string>({ steps, value, onConfirm, conf
       </div>
       <div className="view-mode-slider-labels">
         {steps.map((step, i) => (
-          <span
+          <button
+            type="button"
             key={step.value}
             className={`view-mode-slider-label${i === displayIndex ? ' is-active' : ''}`}
             style={{ left: steps.length > 1 ? `${(i / (steps.length - 1)) * 100}%` : '0%' }}
+            onClick={(e) => { e.stopPropagation(); handleStepClick(i); }}
           >
             {step.label}
-          </span>
+          </button>
         ))}
       </div>
 

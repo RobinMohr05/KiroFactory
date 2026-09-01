@@ -3157,6 +3157,12 @@ textarea:focus {
   color: var(--text-muted);
   white-space: nowrap;
   transition: color 0.15s ease-out, font-weight 0.15s ease-out;
+  background: none;
+  border: none;
+  padding: 0;
+  font-family: inherit;
+  line-height: inherit;
+  cursor: pointer;
 }
 
 .view-mode-slider-label.is-active {
