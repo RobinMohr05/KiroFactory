@@ -37,6 +37,12 @@ export interface AgentError {
   /** Owner user ID — errors belong to the account that owns the session */
   userId: number;
   /**
+   * How this error was surfaced: "automatic" for errors detected by the
+   * orchestrator itself (the default), or "self-reported" for errors an agent
+   * proactively raised via the report_agent_error MCP tool.
+   */
+  source?: "automatic" | "self-reported";
+  /**
    * Stack trace, when the underlying failure was a real JS Error object (not
    * every failure path here throws — some are "the agent finished but did
    * nothing," which has no stack to show). Previously always dropped even
@@ -69,6 +75,11 @@ export interface RecordErrorInput {
   tabIds?: number[];
   /** Owner user ID — inherited from the session that produced the error */
   userId: number;
+  /**
+   * How this error was surfaced: "automatic" (default) for orchestrator-detected
+   * errors, or "self-reported" for errors an agent raised via report_agent_error.
+   */
+  source?: "automatic" | "self-reported";
   stack?: string;
   recentOutput?: { timestamp: string; stream: "stdout" | "stderr" | "system"; text: string }[];
   turnNumber?: number;
@@ -104,6 +115,7 @@ export function recordError(input: RecordErrorInput): AgentError {
     taskCreated: false,
     tabIds: input.tabIds,
     userId: input.userId,
+    source: input.source ?? "automatic",
     stack: input.stack,
     recentOutput: input.recentOutput,
     turnNumber: input.turnNumber,

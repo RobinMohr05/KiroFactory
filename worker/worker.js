@@ -1952,6 +1952,54 @@ function logSessionUpdate(update) {
         }
         verdictToolCallId = null;
       }
+
+      // Capture an agent-reported error from the report_agent_error tool's
+      // completed output. Detection is purely content-based (scan every
+      // completed tool_call_update for the {"agentError":...} shape) — the
+      // agent-error-mcp-server is the only tool that emits this shape, so
+      // false positives are not a real concern. Mirrors the verdict capture
+      // above, including the ACP items-envelope unwrapping.
+      const isAgentErrorUpdate =
+        update.status === "completed" && outputText && outputText.includes('"agentError"');
+      if (isAgentErrorUpdate && outputText) {
+        function tryParseAgentError(str) {
+          if (!str || typeof str !== "string") return null;
+          try {
+            const parsed = JSON.parse(str);
+            if (parsed && parsed.agentError && typeof parsed.agentError.message === "string") {
+              return parsed.agentError;
+            }
+            // Unwrap ACP items envelope: {items:[{Json:{content:[{type:"text",text:"..."}]}}]}
+            if (Array.isArray(parsed.items)) {
+              for (const item of parsed.items) {
+                const inner = item?.Json?.content;
+                if (Array.isArray(inner)) {
+                  for (const block of inner) {
+                    if (block?.type === "text" && typeof block.text === "string") {
+                      const inner2 = tryParseAgentError(block.text);
+                      if (inner2) return inner2;
+                    }
+                  }
+                }
+              }
+            }
+          } catch { /* not JSON */ }
+          return null;
+        }
+
+        let agentErr = tryParseAgentError(outputText);
+        if (!agentErr) {
+          // Last-resort regex: find {"agentError":{...}} anywhere in the string
+          const jsonMatch = outputText.match(/\{"agentError"\s*:\s*\{[^}]*\}\s*\}/);
+          if (jsonMatch) agentErr = tryParseAgentError(jsonMatch[0]);
+        }
+        if (agentErr) {
+          const message = agentErr.message;
+          const context = typeof agentErr.context === "string" ? agentErr.context : "";
+          logInfo("agent-error-reported", { message, context });
+          send("agent-error", { message, context });
+        }
+      }
       if (update.status === "failed") {
         // Only failures are forwarded to the live output stream — successful
         // tool calls (ls, cat, grep, etc.) would otherwise flood the session
@@ -2004,6 +2052,18 @@ function buildMcpServers() {
       // pr-review-mcp-server.js and the comment on REVIEW_MARKER_PATH above).
       // Harmless for editor-kind sessions, which never report that verdict.
       env: [{ name: "REVIEW_MARKER_PATH", value: REVIEW_MARKER_PATH }],
+    },
+    {
+      // Available to EVERY session (all agent kinds, ACA and WSL modes) so the
+      // agent can proactively self-report a problem it notices (e.g. an MCP
+      // server failing to initialize) via the report_agent_error tool. Makes
+      // no external calls and needs no env — its output envelope
+      // ({"agentError":...}) is captured by logSessionUpdate() and forwarded
+      // to the orchestrator over the existing WebSocket connection.
+      name: "agent-error",
+      command: "node",
+      args: ["/app/agent-error-mcp-server.js"],
+      env: [],
     },
   ];
 
