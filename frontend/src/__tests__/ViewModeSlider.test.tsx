@@ -75,6 +75,43 @@ describe('ViewModeSlider', () => {
     expect(screen.queryByRole('button', { name: /confirm/i })).not.toBeInTheDocument();
   });
 
+  it('clicking a label opens the same pending confirmation as clicking its dot', () => {
+    const onConfirm = vi.fn();
+    render(<ViewModeSlider steps={steps} value="easy" onConfirm={onConfirm} />);
+
+    const advancedLabel = screen.getByText('Advanced');
+    expect(advancedLabel.tagName).toBe('BUTTON');
+    fireEvent.click(advancedLabel);
+
+    expect(onConfirm).not.toHaveBeenCalled();
+    expect(screen.getByText(/switch from easy to advanced/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /confirm/i })).toBeInTheDocument();
+  });
+
+  it('clicking the already-committed label does nothing', () => {
+    const onConfirm = vi.fn();
+    render(<ViewModeSlider steps={steps} value="easy" onConfirm={onConfirm} />);
+
+    fireEvent.click(screen.getByText('Easy'));
+
+    expect(screen.queryByRole('button', { name: /confirm/i })).not.toBeInTheDocument();
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
+
+  it('clicking a label while a confirmation is already open does nothing new', () => {
+    const onConfirm = vi.fn();
+    render(<ViewModeSlider steps={steps} value="easy" onConfirm={onConfirm} />);
+
+    // Open the confirmation via the Advanced dot first.
+    fireEvent.click(screen.getByLabelText('Advanced'));
+    expect(screen.getByText(/switch from easy to advanced/i)).toBeInTheDocument();
+
+    // Clicking the Easy label while pending must be a no-op.
+    fireEvent.click(screen.getByText('Easy'));
+    expect(screen.getByText(/switch from easy to advanced/i)).toBeInTheDocument();
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
+
   it('Escape cancels a pending confirmation', () => {
     const onConfirm = vi.fn();
     render(<ViewModeSlider steps={steps} value="easy" onConfirm={onConfirm} />);
