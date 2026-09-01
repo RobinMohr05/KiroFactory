@@ -624,25 +624,40 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
             </span>
           </div>
         </div>
-        <div className="task-planner-messages" ref={messagesRef}>
-          {messages.map((msg, i) => {
-            const isPartial = msg.text.startsWith('__PARTIAL__');
-            const displayText = isPartial ? msg.text.slice('__PARTIAL__'.length) : msg.text;
-            if (msg.role === 'user') {
+        {/* Wrapper spans ONLY the messages area (flex: 1). The read-only
+            detail panel is absolutely positioned to fill this wrapper, so its
+            bottom edge always tracks the messages region and can never overlap
+            the input row / preview cards / action bar below — regardless of how
+            many preview cards stack up or whether attachments are present. */}
+        <div className="task-planner-messages-wrap">
+          <div className="task-planner-messages" ref={messagesRef}>
+            {messages.map((msg, i) => {
+              const isPartial = msg.text.startsWith('__PARTIAL__');
+              const displayText = isPartial ? msg.text.slice('__PARTIAL__'.length) : msg.text;
+              if (msg.role === 'user') {
+                return (
+                  <div key={i} className={`planner-message ${msg.role}`}>
+                    {displayText}
+                  </div>
+                );
+              }
               return (
-                <div key={i} className={`planner-message ${msg.role}`}>
-                  {displayText}
-                </div>
+                <div
+                  key={i}
+                  className={`planner-message ${msg.role}`}
+                  dangerouslySetInnerHTML={{ __html: renderPlannerMarkdown(displayText) }}
+                />
               );
-            }
-            return (
-              <div
-                key={i}
-                className={`planner-message ${msg.role}`}
-                dangerouslySetInnerHTML={{ __html: renderPlannerMarkdown(displayText) }}
-              />
-            );
-          })}
+            })}
+          </div>
+          {previewDetailIndex !== null && parsedTasks && (
+            <TaskPlannerPreviewDetail
+              tasks={parsedTasks}
+              index={previewDetailIndex}
+              onIndexChange={setPreviewDetailIndex}
+              onClose={() => setPreviewDetailIndex(null)}
+            />
+          )}
         </div>
         <div className="task-planner-input-area">
           {attachments.length > 0 && (
@@ -712,14 +727,6 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
           <button className="btn btn-secondary btn-sm" onClick={handleSwitchToManual}>Create manually instead</button>
           <button className="btn btn-primary btn-sm" disabled={!parsedTasks} onClick={handleCreateTask}>{parsedTasks && parsedTasks.length > 1 ? 'Create Tasks' : 'Create Task'}</button>
         </div>
-        {previewDetailIndex !== null && parsedTasks && (
-          <TaskPlannerPreviewDetail
-            tasks={parsedTasks}
-            index={previewDetailIndex}
-            onIndexChange={setPreviewDetailIndex}
-            onClose={() => setPreviewDetailIndex(null)}
-          />
-        )}
       </div>
     </div>
   );

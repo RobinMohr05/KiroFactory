@@ -356,4 +356,39 @@ describe('TaskPlannerPreviewDetail - integrated in TaskPlannerModal', () => {
     expect(container.querySelector('.task-planner-preview-detail')).toBeTruthy();
     expect(sendBtn.disabled).toBe(false);
   });
+
+  it('anchors the detail panel to the messages area only, not overlapping the input/preview/actions region', async () => {
+    // A multi-task batch stacks multiple preview cards (one per task), so the
+    // region below the messages area is taller than any fixed magic number.
+    // The panel must be positioned relative to a wrapper that spans ONLY the
+    // messages area, so its bottom edge tracks that area and can never cover
+    // the input row, preview cards, or action bar regardless of how many
+    // cards stack up. Structurally: the panel lives inside the messages
+    // wrapper, and the input-area / preview / actions blocks are siblings
+    // BELOW that wrapper — never descendants of it.
+    const { container } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    await act(async () => {
+      dispatchAssistantMessage(40, BATCH);
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    const firstCard = container.querySelector('.task-planner-preview .task-card') as HTMLElement;
+    await act(async () => { firstCard.click(); });
+
+    const wrap = container.querySelector('.task-planner-messages-wrap');
+    const panel = container.querySelector('.task-planner-preview-detail');
+    expect(wrap).toBeTruthy();
+    expect(panel).toBeTruthy();
+
+    // The panel is scoped to (a descendant of) the messages wrapper...
+    expect(wrap!.contains(panel)).toBe(true);
+
+    // ...and the input/preview/actions blocks are NOT inside that wrapper, so
+    // the panel (which fills the wrapper) can never overlap them.
+    expect(wrap!.querySelector('.task-planner-input-area')).toBeNull();
+    expect(wrap!.querySelector('.task-planner-preview')).toBeNull();
+    expect(wrap!.querySelector('.task-planner-actions')).toBeNull();
+  });
 });
