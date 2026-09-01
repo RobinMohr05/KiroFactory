@@ -40,17 +40,28 @@ export function usePlannerPresence(): void {
   const lastThrottleRef = useRef<number>(0);
   // null = not yet reported; otherwise the last active-state we sent.
   const activeStateRef = useRef<boolean | null>(null);
+  // The tabId of the most recent active heartbeat we sent, so we can detect
+  // when the current tab changes out from under a still-active session.
+  const warmedTabIdRef = useRef<number | null | undefined>(undefined);
+
+  // Stable sender kept in a ref so both the lifetime effect and the
+  // currentTabId-keyed effect below share one implementation.
+  const sendHeartbeatRef = useRef<(active: boolean) => void>(() => {});
+  sendHeartbeatRef.current = (active: boolean) => {
+    const tabId = tabIdRef.current;
+    if (active) warmedTabIdRef.current = tabId ?? null;
+    apiFetch('/api/task-planner/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tabId: tabId ?? undefined, active }),
+    }).catch(() => {
+      // Best-effort — presence signals never surface errors to the user.
+    });
+  };
 
   useEffect(() => {
     const sendHeartbeat = (active: boolean) => {
-      const tabId = tabIdRef.current;
-      apiFetch('/api/task-planner/heartbeat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tabId: tabId ?? undefined, active }),
-      }).catch(() => {
-        // Best-effort — presence signals never surface errors to the user.
-      });
+      sendHeartbeatRef.current(active);
     };
 
     /** Send a heartbeat only when the active-state actually changes. */
@@ -116,4 +127,21 @@ export function usePlannerPresence(): void {
     // and reads currentTabId via tabIdRef to avoid re-subscribing on tab change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Re-warm the newly-current tab whenever currentTabId changes while the user
+  // is active. This covers two cases the transition-only heartbeat misses:
+  //   1. Fresh page load: AppContext initializes currentTabId to null and only
+  //      resolves it asynchronously after GET /api/tabs. The mount heartbeat
+  //      fires with tabId undefined (warms tab 0); once the real tab id lands,
+  //      a continuously-active user produces no active/inactive transition, so
+  //      without this the real tab would never be warmed.
+  //   2. Switching boards: moving to another tab should warm that tab's pool.
+  useEffect(() => {
+    // Only re-warm while we're in the active state. If we've never reported, or
+    // we're currently inactive, there's nothing warm to move to the new tab.
+    if (activeStateRef.current !== true) return;
+    // No-op if the tab we last warmed already matches the current one.
+    if (warmedTabIdRef.current === (currentTabId ?? null)) return;
+    sendHeartbeatRef.current(true);
+  }, [currentTabId]);
 }

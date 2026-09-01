@@ -116,6 +116,37 @@ describe('usePlannerPresence', () => {
     expect(body.active).toBe(true);
   });
 
+  it('re-warms the real tab once currentTabId resolves from null', () => {
+    // Simulate AppContext's async tab load: currentTabId starts null, then
+    // becomes a real id after GET /api/tabs resolves.
+    vi.mocked(AppContext.useApp).mockReturnValue({ currentTabId: null } as any);
+
+    const { rerender } = renderHook(() => usePlannerPresence());
+
+    // Mount fired an active heartbeat, but with no tab yet (tabId undefined).
+    let calls = heartbeatCalls(apiFetchMock);
+    expect(calls.length).toBe(1);
+    expect(JSON.parse((calls[0][1] as RequestInit).body as string)).toEqual({
+      active: true,
+    });
+    apiFetchMock.mockClear();
+
+    // Tabs finish loading — currentTabId becomes a real id.
+    act(() => {
+      vi.mocked(AppContext.useApp).mockReturnValue({ currentTabId: 7 } as any);
+      rerender();
+    });
+
+    // An active heartbeat for the real tab must be sent even though the
+    // active/inactive state itself never transitioned.
+    calls = heartbeatCalls(apiFetchMock);
+    expect(calls.length).toBe(1);
+    expect(JSON.parse((calls[0][1] as RequestInit).body as string)).toEqual({
+      tabId: 7,
+      active: true,
+    });
+  });
+
   it('does not fire duplicate heartbeats while continuously active', () => {
     renderHook(() => usePlannerPresence());
     apiFetchMock.mockClear();
