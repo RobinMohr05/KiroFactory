@@ -3,6 +3,7 @@ import { useApp } from '../context/AppContext';
 import { apiFetch } from '../utils/api';
 import { renderPlannerMarkdown } from '../utils/renderPlannerMarkdown';
 import { TaskCard } from './TaskCard';
+import { TaskPlannerPreviewDetail } from './TaskPlannerPreviewDetail';
 import type { Task, OutputEntry, SessionActivity } from '../types';
 
 interface TaskPlannerModalProps {
@@ -15,7 +16,7 @@ interface PlannerMessage {
   text: string;
 }
 
-interface ParsedTask {
+export interface ParsedTask {
   title: string;
   description?: string;
   priority: number;
@@ -44,6 +45,7 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
   const [ready, setReady] = useState(false);
   const [status, setStatus] = useState<'connecting' | 'ready' | 'thinking' | 'error'>('connecting');
   const [parsedTasks, setParsedTasks] = useState<ParsedTask[] | null>(null);
+  const [previewDetailIndex, setPreviewDetailIndex] = useState<number | null>(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const attachmentsRef = useRef<Attachment[]>([]);
   const messagesRef = useRef<HTMLDivElement>(null);
@@ -62,6 +64,13 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
   useEffect(() => {
     attachmentsRef.current = attachments;
   }, [attachments]);
+
+  // Whenever the parsed batch is replaced (a fresh tryParseTask overwrite, or a
+  // partial handleCreateTask failure that trims the array), close/reset the
+  // detail panel so a stale index can't point past the new array's end.
+  useEffect(() => {
+    setPreviewDetailIndex(null);
+  }, [parsedTasks]);
 
   // Start the planner session
   useEffect(() => {
@@ -615,25 +624,40 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
             </span>
           </div>
         </div>
-        <div className="task-planner-messages" ref={messagesRef}>
-          {messages.map((msg, i) => {
-            const isPartial = msg.text.startsWith('__PARTIAL__');
-            const displayText = isPartial ? msg.text.slice('__PARTIAL__'.length) : msg.text;
-            if (msg.role === 'user') {
+        {/* Wrapper spans ONLY the messages area (flex: 1). The read-only
+            detail panel is absolutely positioned to fill this wrapper, so its
+            bottom edge always tracks the messages region and can never overlap
+            the input row / preview cards / action bar below — regardless of how
+            many preview cards stack up or whether attachments are present. */}
+        <div className="task-planner-messages-wrap">
+          <div className="task-planner-messages" ref={messagesRef}>
+            {messages.map((msg, i) => {
+              const isPartial = msg.text.startsWith('__PARTIAL__');
+              const displayText = isPartial ? msg.text.slice('__PARTIAL__'.length) : msg.text;
+              if (msg.role === 'user') {
+                return (
+                  <div key={i} className={`planner-message ${msg.role}`}>
+                    {displayText}
+                  </div>
+                );
+              }
               return (
-                <div key={i} className={`planner-message ${msg.role}`}>
-                  {displayText}
-                </div>
+                <div
+                  key={i}
+                  className={`planner-message ${msg.role}`}
+                  dangerouslySetInnerHTML={{ __html: renderPlannerMarkdown(displayText) }}
+                />
               );
-            }
-            return (
-              <div
-                key={i}
-                className={`planner-message ${msg.role}`}
-                dangerouslySetInnerHTML={{ __html: renderPlannerMarkdown(displayText) }}
-              />
-            );
-          })}
+            })}
+          </div>
+          {previewDetailIndex !== null && parsedTasks && (
+            <TaskPlannerPreviewDetail
+              tasks={parsedTasks}
+              index={previewDetailIndex}
+              onIndexChange={setPreviewDetailIndex}
+              onClose={() => setPreviewDetailIndex(null)}
+            />
+          )}
         </div>
         <div className="task-planner-input-area">
           {attachments.length > 0 && (
@@ -693,7 +717,7 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
                 origin: 'ai',
               };
               return (
-                <TaskCard key={idx} task={previewTask} onClick={() => {}} disableInteraction={true} />
+                <TaskCard key={idx} task={previewTask} onClick={() => setPreviewDetailIndex(idx)} disableInteraction={true} />
               );
             })}
           </div>
