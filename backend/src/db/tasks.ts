@@ -240,6 +240,43 @@ export async function isTaskOwnedByUser(taskId: number, userId: number): Promise
   });
 }
 
+/**
+ * Public wrapper around replaceDependencies that opens its own writeQuery
+ * transaction. Used by the task-planner board MCP tool (add_task_dependency)
+ * to set dependencies without going through the full updateTask() path.
+ */
+export async function setTaskDependencies(
+  taskId: number,
+  dependsOn: number[]
+): Promise<void> {
+  await writeQuery(async (tx: ManagedTransaction) => {
+    await replaceDependencies(tx, taskId, dependsOn);
+  });
+}
+
+/**
+ * Atomically adds new dependency edges without losing existing ones.
+ *
+ * Reads the current DEPENDS_ON edges and merges the new IDs in a single
+ * writeQuery transaction, then delegates to replaceDependencies for the
+ * actual write (including cycle detection). This avoids the race condition
+ * that would occur if the read and write were in separate transactions.
+ */
+export async function addTaskDependencies(
+  taskId: number,
+  newDepIds: number[]
+): Promise<void> {
+  await writeQuery(async (tx: ManagedTransaction) => {
+    const result = await tx.run(
+      `MATCH (t:Task {id: $taskId}) RETURN [(t)-[:DEPENDS_ON]->(dep:Task) | dep.id] AS existingDeps`,
+      { taskId }
+    );
+    const existing: number[] = result.records[0]?.get("existingDeps") ?? [];
+    const merged = Array.from(new Set([...existing, ...newDepIds]));
+    await replaceDependencies(tx, taskId, merged);
+  });
+}
+
 export async function getAllTasks(
   filters?: { state?: string; priority?: number; tabId?: number; userId?: number }
 ): Promise<Task[]> {

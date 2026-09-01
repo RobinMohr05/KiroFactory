@@ -89,6 +89,10 @@
   background: var(--bg-secondary);
 }
 
+[data-theme="dark"] .task-id-copy:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
 [data-theme="dark"] select,
 [data-theme="dark"] input,
 [data-theme="dark"] textarea {
@@ -978,12 +982,46 @@ textarea:focus {
   box-shadow: var(--shadow-lg);
 }
 
+.modal-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 1.25rem;
+}
+
 .modal h2 {
   font-family: 'Barlow', sans-serif;
   font-size: 1.1rem;
   font-weight: 600;
   margin-bottom: 1.25rem;
   color: var(--text-primary);
+}
+
+.modal-header-row h2 {
+  margin-bottom: 0;
+}
+
+.task-id-copy {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 0.2rem 0.55rem;
+  font-family: monospace;
+  font-size: 0.78rem;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.task-id-copy:hover {
+  background: var(--bg-hover, rgba(0, 0, 0, 0.06));
+}
+
+.task-id-copy.copied {
+  color: var(--status-connected);
+  border-color: var(--status-connected);
 }
 
 .form-group {
@@ -3497,45 +3535,53 @@ textarea:focus {
 .planner-message h3,
 .planner-message h4 {
   font-family: 'Barlow', sans-serif;
+  font-weight: 600;
   margin: 0.75rem 0 0.35rem;
 }
 
 .planner-message h3 {
   font-size: 0.95rem;
-  font-weight: 600;
 }
 
 .planner-message h4 {
   font-size: 0.88rem;
-  font-weight: 600;
 }
 
 .planner-message code:not(pre code) {
   background: var(--bg-primary);
-  padding: 0.1em 0.35em;
+  padding: 0.15em 0.35em;
   border-radius: var(--radius-sm);
-  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-family: monospace;
   font-size: 0.85em;
   word-break: break-word;
   overflow-wrap: break-word;
 }
 
 .planner-message pre {
-  margin-top: 0.5rem;
-  padding: 0.6rem;
   background: var(--bg-primary);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
-  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  padding: 0.6rem;
+  font-family: monospace;
   font-size: 0.78rem;
   overflow-x: auto;
+  margin: 0.5rem 0;
   white-space: pre;
 }
 
-/* Task card preview in planner */
-.task-planner-card-preview {
+.planner-message pre code {
+  background: none;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+}
+
+/* Task card preview area */
+.task-planner-preview {
   padding: 0.5rem 1.5rem;
-  border-top: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
   flex-shrink: 0;
 }
 

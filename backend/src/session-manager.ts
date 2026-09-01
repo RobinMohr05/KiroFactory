@@ -3869,6 +3869,21 @@ function initWorkerEventHandler(): void {
 initWorkerEventHandler();
 
 // ---------------------------------------------------------------------------
+// Stop all running sessions for a specific user
+// ---------------------------------------------------------------------------
+
+/**
+ * Stop every currently-running session belonging to the given user.
+ * Used when the user switches UI view mode — all their sessions must be
+ * torn down so the new mode starts from a clean slate.
+ */
+export async function stopAllSessionsForUser(userId: number): Promise<void> {
+  const userSessions = getAllSessions(userId);
+  const running = userSessions.filter((s) => s.status === "running");
+  await Promise.allSettled(running.map((s) => stopSession(s.id)));
+}
+
+// ---------------------------------------------------------------------------
 // Cleanup on process exit
 // ---------------------------------------------------------------------------
 
