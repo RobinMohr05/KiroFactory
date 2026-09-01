@@ -163,6 +163,17 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
 
   // Listen for WebSocket output and activity
   useEffect(() => {
+    /** Strip a successfully-parsed json:task fence from the message text. */
+    const stripParsedFence = (text: string): string => {
+      const fenceMatch = text.match(/```json:task\s*\n([\s\S]*?)\n```/) ?? text.match(/```json\s*\n([\s\S]*?)\n```/);
+      if (!fenceMatch) return text;
+      const parsed = parseTaskJsonLeniently(fenceMatch[1]);
+      if (parsed && parsed.length > 0 && parsed.every(t => t.title && t.priority && t.type)) {
+        return text.replace(fenceMatch[0], '').replace(/\n{3,}/g, '\n\n').trim();
+      }
+      return text;
+    };
+
     const handleOutput = (e: Event) => {
       const detail = (e as CustomEvent).detail;
       if (detail.sessionId !== sessionIdRef.current) return;
@@ -172,13 +183,15 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
       if (entry.stream === 'stderr') return;
       if (entry.stream === 'stdout') {
         partialMessageRef.current += (partialMessageRef.current ? '\n' : '') + entry.text;
+        // Strip a completed json:task fence during streaming so raw JSON doesn't flash.
+        const displayText = stripParsedFence(partialMessageRef.current);
         // Update the last message if it's a partial assistant message
         setMessages(prev => {
           const last = prev[prev.length - 1];
           if (last && last.role === 'assistant' && last.text.startsWith('__PARTIAL__')) {
-            return [...prev.slice(0, -1), { role: 'assistant', text: '__PARTIAL__' + partialMessageRef.current }];
+            return [...prev.slice(0, -1), { role: 'assistant', text: '__PARTIAL__' + displayText }];
           }
-          return [...prev, { role: 'assistant', text: '__PARTIAL__' + partialMessageRef.current }];
+          return [...prev, { role: 'assistant', text: '__PARTIAL__' + displayText }];
         });
       }
     };

@@ -692,6 +692,149 @@ describe('TaskPlannerModal - attachment cap message deduplication', () => {
   });
 });
 
+describe('TaskPlannerModal - fence stripping on successful parse', () => {
+  let apiFetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiFetchMock = vi.mocked(api.apiFetch);
+    apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (url === '/api/task-planner/start' && opts?.method === 'POST') {
+        return { ok: true, json: async () => ({ sessionId: 9 }) };
+      }
+      if (opts?.method === 'DELETE') {
+        return { ok: true, json: async () => ({}) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    mockUseApp({ currentTabId: 1 });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  function dispatchAssistantMessage(sessionId: number, text: string) {
+    window.dispatchEvent(new CustomEvent('ws-session-output', {
+      detail: { sessionId, entry: { stream: 'stdout', text } },
+    }));
+    window.dispatchEvent(new CustomEvent('ws-session-activity', {
+      detail: { sessionId, activity: { type: 'idle' } },
+    }));
+  }
+
+  it('strips the parsed json:task fence block from the rendered assistant message', async () => {
+    const messageWithFence = 'Here is the task I created:\n\n```json:task\n{"title": "Fix bug", "priority": 2, "type": "bug"}\n```\n\nLet me know if you want changes.';
+
+    const { container, getByText } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    await act(async () => {
+      dispatchAssistantMessage(9, messageWithFence);
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    // The task-ready system message should appear
+    expect(getByText('✅ Task ready to create! Click "Create Task" to add it to your board.')).toBeTruthy();
+
+    // The raw JSON block should NOT appear in any assistant message
+    const assistantMessages = container.querySelectorAll('.planner-message.assistant');
+    for (const msg of assistantMessages) {
+      expect(msg.textContent).not.toContain('"title": "Fix bug"');
+      expect(msg.textContent).not.toContain('json:task');
+    }
+
+    // But the surrounding prose SHOULD still appear
+    const allText = Array.from(assistantMessages).map(m => m.textContent).join(' ');
+    expect(allText).toContain('Here is the task I created');
+    expect(allText).toContain('Let me know if you want changes');
+  });
+
+  it('does NOT strip the fence block when JSON parsing fails', async () => {
+    const brokenJson = 'Here is the task:\n\n```json:task\n{"title": "Something,\n"priority": 2,\n```\n\nPlease review.';
+
+    const { container, getByText } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    await act(async () => {
+      dispatchAssistantMessage(9, brokenJson);
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    // The error message should appear
+    expect(getByText(/Could not parse the task block above/)).toBeTruthy();
+
+    // The raw fence content SHOULD still be visible since parsing failed
+    const assistantMessages = container.querySelectorAll('.planner-message.assistant');
+    const allText = Array.from(assistantMessages).map(m => m.textContent).join(' ');
+    expect(allText).toContain('title');
+  });
+});
+
+describe('TaskPlannerModal - TaskCard preview', () => {
+  let apiFetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiFetchMock = vi.mocked(api.apiFetch);
+    apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (url === '/api/task-planner/start' && opts?.method === 'POST') {
+        return { ok: true, json: async () => ({ sessionId: 9 }) };
+      }
+      if (opts?.method === 'DELETE') {
+        return { ok: true, json: async () => ({}) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    mockUseApp({ currentTabId: 1 });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  function dispatchAssistantMessage(sessionId: number, text: string) {
+    window.dispatchEvent(new CustomEvent('ws-session-output', {
+      detail: { sessionId, entry: { stream: 'stdout', text } },
+    }));
+    window.dispatchEvent(new CustomEvent('ws-session-activity', {
+      detail: { sessionId, activity: { type: 'idle' } },
+    }));
+  }
+
+  it('renders a TaskCard preview when a valid json:task block is parsed', async () => {
+    const messageWithTask = '```json:task\n{"title": "Add pagination", "priority": 3, "type": "feature", "description": "Paginate results"}\n```';
+
+    const { container, getByText } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    await act(async () => {
+      dispatchAssistantMessage(9, messageWithTask);
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    // Task ready message should appear
+    expect(getByText('✅ Task ready to create! Click "Create Task" to add it to your board.')).toBeTruthy();
+
+    // A TaskCard preview should be rendered with the parsed task data
+    expect(getByText('Add pagination')).toBeTruthy();
+    expect(getByText('Feature')).toBeTruthy();
+    expect(getByText('P3')).toBeTruthy();
+
+    // The preview card should not be draggable
+    const previewCard = container.querySelector('.task-planner-preview .task-card');
+    expect(previewCard).toBeTruthy();
+    expect(previewCard).toHaveAttribute('draggable', 'false');
+  });
+
+  it('does not render TaskCard preview when no task has been parsed', async () => {
+    const { container } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    expect(container.querySelector('.task-planner-preview')).toBeNull();
+  });
+});
+
 describe('TaskPlannerModal - multi-task batch support', () => {
   let apiFetchMock: ReturnType<typeof vi.fn>;
 
@@ -1184,3 +1327,4 @@ describe('TaskPlannerModal - multi-task batch support', () => {
     expect(sentBody.tasks[1].groupId).toBe('g1');
   });
 });
+
