@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useRef, useState, useCallback, type ReactNode } from 'react';
 import type { Tab, Task, Session, Agent, AgentError, OutputEntry, SessionActivity, User, ViewTab, UiViewMode, WsMessage, Flock } from '../types';
 import { apiFetch } from '../utils/api';
+import { usePlannerPresence } from '../hooks/usePlannerPresence';
 
 interface AppState {
   user: User | null;
@@ -507,6 +508,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }, 20 * 60 * 1000);
     return () => clearInterval(interval);
   }, [fetchTabs, currentTabId, fetchTabTasks, fetchSessions, fetchErrors]);
+
+  // Presence-driven prewarm/drain of the AI Task Planner pool. Called here in
+  // AppProvider (not a panel) so it runs globally regardless of which view/tab
+  // is visible. Passes currentTabId directly since this is the scope that owns
+  // that state — the hook must not call useApp() from inside the provider.
+  usePlannerPresence(currentTabId);
 
   // Fetch tasks when tab changes
   useEffect(() => {
