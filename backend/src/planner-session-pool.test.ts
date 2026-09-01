@@ -281,6 +281,57 @@ describe("PlannerSessionPool", () => {
       expect(r!.close).toHaveBeenCalled();
     });
   });
+
+  describe("drainTab (immediate on-demand drain)", () => {
+    it("destroys all idle slots for the given tab", async () => {
+      await pool.warm(1);
+      await pool.checkout(1); // occupy the first slot so warm creates a second idle one
+      await pool.warm(1);
+      const idleBefore = pool._getIdleSlots(1);
+      expect(idleBefore.length).toBe(1);
+      const idleRunner = idleBefore[0].runner;
+
+      await pool.drainTab(1);
+
+      expect(pool.idleCount(1)).toBe(0);
+      expect(idleRunner.close).toHaveBeenCalled();
+    });
+
+    it("does NOT destroy in-use (checked-out) slots", async () => {
+      await pool.warm(1);
+      const inUse = await pool.checkout(1);
+      expect(inUse).not.toBeNull();
+
+      await pool.drainTab(1);
+
+      // The checked-out slot survives the drain
+      expect(pool.totalCount()).toBe(1);
+      expect(inUse!.close).not.toHaveBeenCalled();
+    });
+
+    it("leaves other tabs' idle slots untouched", async () => {
+      await pool.warm(1);
+      await pool.warm(2);
+      expect(pool.idleCount(1)).toBe(1);
+      expect(pool.idleCount(2)).toBe(1);
+
+      await pool.drainTab(1);
+
+      expect(pool.idleCount(1)).toBe(0);
+      expect(pool.idleCount(2)).toBe(1);
+    });
+
+    it("is a no-op when the tab has no idle slots", async () => {
+      await pool.warm(1);
+      const inUse = await pool.checkout(1);
+      expect(pool.idleCount(1)).toBe(0);
+
+      await expect(pool.drainTab(1)).resolves.toBeUndefined();
+
+      expect(pool.totalCount()).toBe(1);
+      expect(inUse!.close).not.toHaveBeenCalled();
+    });
+  });
 });
 
 describe("isPoolEnabled", () => {
