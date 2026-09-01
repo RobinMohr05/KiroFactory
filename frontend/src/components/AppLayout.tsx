@@ -6,12 +6,17 @@ import { ViewTabs } from './ViewTabs';
 import { MobileTabSelector } from './MobileTabSelector';
 import { EasySessionsView } from './EasySessionsView';
 import { useRouteSync } from '../hooks/useRouteSync';
+import { usePlannerPresence } from '../hooks/usePlannerPresence';
 
 export function AppLayout() {
   const { user } = useApp();
 
   // Sync the current route to AppContext's activeView / activeSessionId / activeAgentId
   useRouteSync();
+
+  // Presence-driven prewarm/drain of the AI Task Planner pool. Mounted here so
+  // it runs globally for any authenticated view, not scoped to a single panel.
+  usePlannerPresence();
 
   // Auth guard: redirect to /login if not authenticated
   if (user === null) {

@@ -257,6 +257,23 @@ export class PlannerSessionPool {
   }
 
   /**
+   * Immediately drain all idle slots for a given tab, on demand.
+   *
+   * Unlike reapIdle(), which only removes slots that have exceeded
+   * idleTimeoutMs, this destroys every idle slot for the tab right now —
+   * used by the presence heartbeat when the user goes inactive so warm
+   * processes are torn down promptly rather than lingering until the reaper.
+   *
+   * In-use (checked-out) slots are NEVER destroyed: the idle filter here
+   * reflects general page activity (the heartbeat), not whether a specific
+   * session is actively in use by an open TaskPlannerModal.
+   */
+  async drainTab(tabId: number): Promise<void> {
+    const idleSlots = this._getIdleSlots(tabId);
+    await Promise.all(idleSlots.map((slot) => this.destroy(slot.runner.id)));
+  }
+
+  /**
    * Shut down the pool: close all runners and clear the pool.
    */
   async shutdown(): Promise<void> {

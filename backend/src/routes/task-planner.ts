@@ -261,7 +261,45 @@ router.post("/prewarm", (req: Request, res: Response) => {
   res.status(202).json({ ok: true });
 });
 
-// POST /api/task-planner/start — Start a new task planning conversation
+// POST /api/task-planner/heartbeat — Presence signal: warm the pool while the
+// user is active on the board, drain it promptly once they go idle.
+router.post("/heartbeat", (req: Request, res: Response) => {
+  const userId = getUserId(req);
+  const { tabId, active } = req.body as { tabId?: number; active: boolean };
+  const effectiveTabId = tabId ?? 0;
+
+  // Pool requires a server-level KIRO_API_KEY — skip if not configured.
+  if (!isPoolEnabled()) {
+    res.status(202).json({ ok: true });
+    return;
+  }
+
+  // Fire-and-forget in both directions: never block the caller, never surface
+  // pool errors to the caller.
+  if (active) {
+    plannerPool.warm(effectiveTabId).catch((err) => {
+      log.warn("heartbeat-warm-error", {
+        component: "task-planner",
+        tabId: effectiveTabId,
+        userId,
+        ...toErrorFields(err),
+        msg: `Background heartbeat warm failed for tab ${effectiveTabId}`,
+      });
+    });
+  } else {
+    plannerPool.drainTab(effectiveTabId).catch((err) => {
+      log.warn("heartbeat-drain-error", {
+        component: "task-planner",
+        tabId: effectiveTabId,
+        userId,
+        ...toErrorFields(err),
+        msg: `Background heartbeat drain failed for tab ${effectiveTabId}`,
+      });
+    });
+  }
+
+  res.status(202).json({ ok: true });
+});
 router.post("/start", async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
