@@ -1,12 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook } from '@testing-library/react';
 import { act } from 'react';
-import * as AppContext from '../context/AppContext';
 import * as api from '../utils/api';
-
-vi.mock('../context/AppContext', () => ({
-  useApp: vi.fn(),
-}));
 
 vi.mock('../utils/api', () => ({
   apiFetch: vi.fn(),
@@ -15,12 +10,6 @@ vi.mock('../utils/api', () => ({
 import { usePlannerPresence } from '../hooks/usePlannerPresence';
 
 const HEARTBEAT_URL = '/api/task-planner/heartbeat';
-
-/** Parse the JSON body of the Nth apiFetch call. */
-function bodyOfCall(mock: ReturnType<typeof vi.fn>, index: number): any {
-  const [, options] = mock.mock.calls[index];
-  return JSON.parse((options as RequestInit).body as string);
-}
 
 /** Return only the heartbeat POST calls. */
 function heartbeatCalls(mock: ReturnType<typeof vi.fn>) {
@@ -35,7 +24,6 @@ describe('usePlannerPresence', () => {
     vi.clearAllMocks();
     apiFetchMock = vi.mocked(api.apiFetch);
     apiFetchMock.mockResolvedValue({ ok: true, status: 202, json: () => Promise.resolve({ ok: true }) } as any);
-    vi.mocked(AppContext.useApp).mockReturnValue({ currentTabId: 1 } as any);
     // Ensure visible by default
     Object.defineProperty(document, 'visibilityState', {
       configurable: true,
@@ -48,7 +36,7 @@ describe('usePlannerPresence', () => {
   });
 
   it('sends an active heartbeat immediately on mount', () => {
-    renderHook(() => usePlannerPresence());
+    renderHook(() => usePlannerPresence(1));
 
     const calls = heartbeatCalls(apiFetchMock);
     expect(calls.length).toBeGreaterThanOrEqual(1);
@@ -58,7 +46,7 @@ describe('usePlannerPresence', () => {
   });
 
   it('sends an inactive heartbeat after 5+ minutes of no activity', () => {
-    renderHook(() => usePlannerPresence());
+    renderHook(() => usePlannerPresence(1));
     apiFetchMock.mockClear();
 
     act(() => {
@@ -73,7 +61,7 @@ describe('usePlannerPresence', () => {
   });
 
   it('sends inactive on visibilitychange to hidden before the 5-minute mark', () => {
-    renderHook(() => usePlannerPresence());
+    renderHook(() => usePlannerPresence(1));
     apiFetchMock.mockClear();
 
     act(() => {
@@ -93,7 +81,7 @@ describe('usePlannerPresence', () => {
   });
 
   it('sends active again after activity resumes following an inactive transition', () => {
-    renderHook(() => usePlannerPresence());
+    renderHook(() => usePlannerPresence(1));
     apiFetchMock.mockClear();
 
     // Go inactive first
@@ -119,9 +107,10 @@ describe('usePlannerPresence', () => {
   it('re-warms the real tab once currentTabId resolves from null', () => {
     // Simulate AppContext's async tab load: currentTabId starts null, then
     // becomes a real id after GET /api/tabs resolves.
-    vi.mocked(AppContext.useApp).mockReturnValue({ currentTabId: null } as any);
-
-    const { rerender } = renderHook(() => usePlannerPresence());
+    const { rerender } = renderHook(
+      ({ tabId }: { tabId: number | null }) => usePlannerPresence(tabId),
+      { initialProps: { tabId: null as number | null } },
+    );
 
     // Mount fired an active heartbeat, but with no tab yet (tabId undefined).
     let calls = heartbeatCalls(apiFetchMock);
@@ -133,8 +122,7 @@ describe('usePlannerPresence', () => {
 
     // Tabs finish loading — currentTabId becomes a real id.
     act(() => {
-      vi.mocked(AppContext.useApp).mockReturnValue({ currentTabId: 7 } as any);
-      rerender();
+      rerender({ tabId: 7 });
     });
 
     // An active heartbeat for the real tab must be sent even though the
@@ -148,7 +136,7 @@ describe('usePlannerPresence', () => {
   });
 
   it('does not fire duplicate heartbeats while continuously active', () => {
-    renderHook(() => usePlannerPresence());
+    renderHook(() => usePlannerPresence(1));
     apiFetchMock.mockClear();
 
     act(() => {

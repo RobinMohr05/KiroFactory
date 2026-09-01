@@ -1,5 +1,4 @@
 import { useEffect, useRef } from 'react';
-import { useApp } from '../context/AppContext';
 import { apiFetch } from '../utils/api';
 
 /** How long without activity before we consider the user inactive. */
@@ -27,10 +26,12 @@ const ACTIVITY_EVENTS: Array<keyof WindowEventMap> = [
  *
  * Heartbeats are only sent on active/inactive *transitions*, not every tick, so
  * a continuously-active user produces just the initial mount heartbeat.
+ *
+ * Takes `currentTabId` as a parameter (rather than reading it via useApp())
+ * so it can be called from inside AppProvider's own body, which is where the
+ * currentTabId state lives — a component cannot consume its own context.
  */
-export function usePlannerPresence(): void {
-  const { currentTabId } = useApp();
-
+export function usePlannerPresence(currentTabId: number | null): void {
   // Keep the latest tabId in a ref so the long-lived interval/listeners always
   // read the current value without re-subscribing on every tab change.
   const tabIdRef = useRef<number | null>(currentTabId);
