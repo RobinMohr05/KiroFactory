@@ -43,6 +43,12 @@ export interface WorkerSessionUpdateMessage extends WorkerMessage {
   update: unknown;
 }
 
+export interface WorkerAgentErrorMessage extends WorkerMessage {
+  action: "agent-error";
+  message: string;
+  context?: string;
+}
+
 export interface WorkerReadyMessage extends WorkerMessage {
   action: "worker-ready";
   acpSessionId: string;
@@ -86,6 +92,7 @@ export interface WorkerEventHandler {
   onWorkerReady: (sessionId: number, acpSessionId: string) => void;
   onWorkerOutput: (sessionId: number, entry: OutputEntry) => void;
   onWorkerSessionUpdate: (sessionId: number, update: unknown) => void;
+  onWorkerAgentError: (sessionId: number, message: string, context: string) => void;
   onWorkerPromptDone: (sessionId: number, result: unknown) => void;
   onWorkerExited: (sessionId: number, exitCode: number | null, signal: string | null) => void;
   onWorkerShutdown: (sessionId: number, exitCode: number) => void;
@@ -322,6 +329,12 @@ function attachWorkerConnectionHandlers(ws: WebSocket, hooks: WorkerConnectionHo
       case "session-update":
         eventHandler.onWorkerSessionUpdate(sessionId, (msg as WorkerSessionUpdateMessage).update);
         break;
+
+      case "agent-error": {
+        const m = msg as WorkerAgentErrorMessage;
+        eventHandler.onWorkerAgentError(sessionId, m.message, m.context ?? "");
+        break;
+      }
 
       case "prompt-done":
         eventHandler.onWorkerPromptDone(sessionId, (msg as WorkerPromptDoneMessage).result);

@@ -534,6 +534,11 @@ function recordSessionError(input: {
   taskId?: number;
   taskTitle?: string;
   userId: number;
+  /**
+   * How this error was surfaced — "automatic" (default) for
+   * orchestrator-detected errors, "self-reported" for report_agent_error.
+   */
+  source?: "automatic" | "self-reported";
   /** Raw error object, when available — its stack trace is attached if present. */
   err?: unknown;
   /** The live session, for automatic recentOutput/turn-stats enrichment. */
@@ -570,6 +575,7 @@ function recordSessionError(input: {
     taskId: input.taskId,
     taskTitle: input.taskTitle,
     userId: input.userId,
+    source: input.source,
     stack,
     recentOutput,
     turnNumber,
@@ -587,6 +593,34 @@ function recordSessionError(input: {
       taskTitle: input.taskTitle ?? null,
     }).catch(() => { /* best effort */ });
   }
+}
+
+/**
+ * Handle an agent's self-reported error, forwarded by the worker over the
+ * WebSocket as an "agent-error" action (originating from the report_agent_error
+ * MCP tool). Reuses the same session-context gathering as the automatic
+ * recordSessionError call sites (sessionName, agent, userId, current
+ * taskId/taskTitle), tagging the record with source "self-reported" so it can
+ * be distinguished from orchestrator-detected errors.
+ *
+ * A no-op for an unknown/unregistered session id.
+ */
+export function handleWorkerAgentError(sessionId: number, message: string, context: string): void {
+  const session = sessions.get(sessionId);
+  if (!session) return;
+
+  recordSessionError({
+    sessionId: session.meta.id,
+    sessionName: session.meta.name,
+    agent: session.meta.agent,
+    message,
+    context,
+    taskId: session.meta.currentTaskId,
+    taskTitle: session.meta.currentTaskTitle,
+    userId: session.meta.userId,
+    source: "self-reported",
+    managed: session,
+  });
 }
 
 function appendOutput(session: ManagedSession, entry: OutputEntry): void {
@@ -3729,6 +3763,10 @@ function initWorkerEventHandler(): void {
       if (update && typeof update === "object") {
         processUpdate(session, update as SessionUpdateChunk);
       }
+    },
+
+    onWorkerAgentError(sessionId: number, message: string, context: string) {
+      handleWorkerAgentError(sessionId, message, context);
     },
 
     onWorkerPromptDone(sessionId: number, result: unknown) {
