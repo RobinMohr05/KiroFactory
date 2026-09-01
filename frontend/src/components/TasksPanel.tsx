@@ -18,12 +18,45 @@ const COLUMNS: { state: TaskState; label: string }[] = [
   { state: 'done', label: 'Done' },
 ];
 
+// Only these two columns can be collapsed to reduce horizontal scrolling on
+// smaller-than-1440p displays. Kept as a global (not per-tab) preference.
+const COLLAPSIBLE_STATES: TaskState[] = ['todo', 'done'];
+const COLLAPSED_STORAGE_KEY = 'kanban-collapsed-columns';
+
+function readCollapsedColumns(): TaskState[] {
+  try {
+    const raw = localStorage.getItem(COLLAPSED_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((s): s is TaskState => COLLAPSIBLE_STATES.includes(s as TaskState));
+  } catch {
+    return [];
+  }
+}
+
 export function TasksPanel() {
   const { tasks, setTasks, currentSort, setCurrentSort, currentTabId, tabs, fetchTabTasks, pendingOps, highlightedTaskId, setHighlightedTaskId } = useApp();
   const [editingTask, setEditingTask] = useState<Task | null | undefined>(undefined);
   const [showPlanner, setShowPlanner] = useState(false);
+  const [collapsedColumns, setCollapsedColumns] = useState<TaskState[]>(() => readCollapsedColumns());
   const isMobile = useMobileBreakpoint();
   // undefined = no modal, null = create new, Task = editing
+
+  // Persist collapsed-column preference globally (not per-tab) across reloads.
+  useEffect(() => {
+    try {
+      localStorage.setItem(COLLAPSED_STORAGE_KEY, JSON.stringify(collapsedColumns));
+    } catch {
+      /* ignore write failures (e.g. storage disabled) */
+    }
+  }, [collapsedColumns]);
+
+  const toggleColumnCollapsed = useCallback((state: TaskState) => {
+    setCollapsedColumns(prev =>
+      prev.includes(state) ? prev.filter(s => s !== state) : [...prev, state]
+    );
+  }, []);
 
   // Auto-clear highlighted task after animation (2s)
   useEffect(() => {
@@ -112,27 +145,52 @@ export function TasksPanel() {
       {isMobile ? (
         <MobileTaskList tasks={tasks} onTaskClick={(task) => setEditingTask(task)} />
       ) : (
-        <div className="kanban">
+        <div
+          className="kanban"
+          style={{
+            gridTemplateColumns: COLUMNS.map(({ state }) =>
+              collapsedColumns.includes(state) ? 'min-content' : 'minmax(260px, 1fr)'
+            ).join(' '),
+          }}
+        >
           {COLUMNS.map(({ state, label }) => {
             const columnTasks = sortedTasks(state);
+            const collapsible = COLLAPSIBLE_STATES.includes(state);
+            const collapsed = collapsible && collapsedColumns.includes(state);
             return (
               <div
                 key={state}
-                className="column"
+                className={`column${collapsed ? ' column-collapsed' : ''}`}
                 data-state={state}
                 onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; e.currentTarget.classList.add('drag-over'); }}
                 onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) e.currentTarget.classList.remove('drag-over'); }}
                 onDrop={(e) => { e.currentTarget.classList.remove('drag-over'); handleDrop(e, state); }}
               >
                 <div className="column-header">
+                  {collapsible && (
+                    <button
+                      type="button"
+                      className="column-collapse-toggle"
+                      aria-expanded={!collapsed}
+                      aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${label} column`}
+                      title={`${collapsed ? 'Expand' : 'Collapse'} ${label} column`}
+                      onClick={() => toggleColumnCollapsed(state)}
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <path d={collapsed ? 'M9 6l6 6-6 6' : 'M15 6l-6 6 6 6'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                      </svg>
+                    </button>
+                  )}
                   <h2>{label}</h2>
                   <span className="column-count" id={`count-${state}`}>{columnTasks.length}</span>
                 </div>
-                <div className="column-cards" id={`cards-${state}`}>
-                  {columnTasks.map(task => (
-                    <TaskCard key={task.id} task={task} onClick={() => setEditingTask(task)} highlighted={highlightedTaskId === task.id} />
-                  ))}
-                </div>
+                {!collapsed && (
+                  <div className="column-cards" id={`cards-${state}`}>
+                    {columnTasks.map(task => (
+                      <TaskCard key={task.id} task={task} onClick={() => setEditingTask(task)} highlighted={highlightedTaskId === task.id} />
+                    ))}
+                  </div>
+                )}
               </div>
             );
           })}

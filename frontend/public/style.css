@@ -840,6 +840,49 @@ textarea:focus {
   gap: 0.6rem;
 }
 
+/* ===== Collapsible To Do / Done columns ===== */
+.column-collapse-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  width: 20px;
+  height: 20px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius);
+  color: var(--text-secondary);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 0.15s, background 0.15s;
+}
+
+.column-collapse-toggle:hover {
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+}
+
+/* Collapsed column: narrow vertical strip sized to its content. */
+.column.column-collapsed {
+  min-height: 0;
+}
+
+.column.column-collapsed .column-header {
+  flex-direction: column;
+  gap: 0.5rem;
+  align-items: center;
+  border-bottom: none;
+  height: 100%;
+  justify-content: flex-start;
+}
+
+.column.column-collapsed .column-header h2 {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  transform: rotate(180deg);
+  white-space: nowrap;
+}
+
 /* ===== Task Card ===== */
 .task-card {
   position: relative;
