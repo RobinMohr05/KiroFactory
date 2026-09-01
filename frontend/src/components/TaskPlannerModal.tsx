@@ -3,6 +3,7 @@ import { useApp } from '../context/AppContext';
 import { apiFetch } from '../utils/api';
 import { renderPlannerMarkdown } from '../utils/renderPlannerMarkdown';
 import { TaskCard } from './TaskCard';
+import { TaskPlannerPreviewDetail } from './TaskPlannerPreviewDetail';
 import type { Task, OutputEntry, SessionActivity } from '../types';
 
 interface TaskPlannerModalProps {
@@ -15,7 +16,7 @@ interface PlannerMessage {
   text: string;
 }
 
-interface ParsedTask {
+export interface ParsedTask {
   title: string;
   description?: string;
   priority: number;
@@ -44,6 +45,7 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
   const [ready, setReady] = useState(false);
   const [status, setStatus] = useState<'connecting' | 'ready' | 'thinking' | 'error'>('connecting');
   const [parsedTasks, setParsedTasks] = useState<ParsedTask[] | null>(null);
+  const [previewDetailIndex, setPreviewDetailIndex] = useState<number | null>(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const attachmentsRef = useRef<Attachment[]>([]);
   const messagesRef = useRef<HTMLDivElement>(null);
@@ -62,6 +64,13 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
   useEffect(() => {
     attachmentsRef.current = attachments;
   }, [attachments]);
+
+  // Whenever the parsed batch is replaced (a fresh tryParseTask overwrite, or a
+  // partial handleCreateTask failure that trims the array), close/reset the
+  // detail panel so a stale index can't point past the new array's end.
+  useEffect(() => {
+    setPreviewDetailIndex(null);
+  }, [parsedTasks]);
 
   // Start the planner session
   useEffect(() => {
@@ -693,7 +702,7 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
                 origin: 'ai',
               };
               return (
-                <TaskCard key={idx} task={previewTask} onClick={() => {}} disableInteraction={true} />
+                <TaskCard key={idx} task={previewTask} onClick={() => setPreviewDetailIndex(idx)} disableInteraction={true} />
               );
             })}
           </div>
@@ -703,6 +712,14 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
           <button className="btn btn-secondary btn-sm" onClick={handleSwitchToManual}>Create manually instead</button>
           <button className="btn btn-primary btn-sm" disabled={!parsedTasks} onClick={handleCreateTask}>{parsedTasks && parsedTasks.length > 1 ? 'Create Tasks' : 'Create Task'}</button>
         </div>
+        {previewDetailIndex !== null && parsedTasks && (
+          <TaskPlannerPreviewDetail
+            tasks={parsedTasks}
+            index={previewDetailIndex}
+            onIndexChange={setPreviewDetailIndex}
+            onClose={() => setPreviewDetailIndex(null)}
+          />
+        )}
       </div>
     </div>
   );

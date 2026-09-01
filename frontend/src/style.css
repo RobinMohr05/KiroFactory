@@ -3461,6 +3461,7 @@ textarea:focus {
   flex-direction: column;
   padding: 0;
   overflow: hidden;
+  position: relative;
 }
 
 .task-planner-header {
@@ -3632,6 +3633,150 @@ textarea:focus {
   flex-direction: column;
   gap: 0.5rem;
   flex-shrink: 0;
+}
+
+/* Read-only detail panel shown when a preview card is clicked.
+   NON-modal: absolutely positioned over the messages area only, so the input
+   row and action bar beneath it stay visible and clickable. No backdrop. */
+.task-planner-preview-detail {
+  position: absolute;
+  top: 3.25rem; /* below the header */
+  left: 1rem;
+  right: 1rem;
+  bottom: 9.5rem; /* above the input area + action bar */
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+
+.task-planner-preview-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
+}
+
+.task-planner-preview-detail-nav {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.preview-detail-arrow {
+  min-width: 1.75rem;
+  padding: 0.25rem 0.5rem;
+  line-height: 1;
+  font-size: 1rem;
+}
+
+.preview-detail-arrow:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.preview-detail-counter {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  min-width: 3rem;
+  text-align: center;
+}
+
+.preview-detail-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 0.2rem 0.4rem;
+  border-radius: var(--radius-sm);
+  transition: background 0.15s, color 0.15s;
+}
+
+.preview-detail-close:hover {
+  color: var(--ta-rapid-red);
+  background: rgba(210, 38, 48, 0.1);
+}
+
+.preview-detail-close:focus-visible {
+  outline: 2px solid var(--ta-mango);
+  outline-offset: 2px;
+}
+
+.task-planner-preview-detail-body {
+  padding: 0.75rem 1rem 1rem;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.preview-detail-title {
+  margin: 0;
+  font-family: 'Barlow', sans-serif;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.preview-detail-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.preview-detail-description {
+  margin: 0;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.preview-detail-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.preview-detail-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+}
+
+.preview-detail-value {
+  font-size: 0.82rem;
+  color: var(--text-primary);
+  font-family: monospace;
+}
+
+.preview-detail-files {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-size: 0.82rem;
+  color: var(--text-primary);
+  font-family: monospace;
+}
+
+.preview-detail-files li {
+  margin-bottom: 0.15rem;
+  word-break: break-all;
+}
+
+[data-theme="dark"] .task-planner-preview-detail {
+  background: var(--bg-tertiary);
 }
 
 .task-planner-input-area {
