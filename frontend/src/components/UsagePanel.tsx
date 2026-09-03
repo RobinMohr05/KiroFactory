@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback } from 'react';
+import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { apiFetch } from '../utils/api';
@@ -13,6 +13,7 @@ interface SessionBreakdown {
   sessionId: number;
   sessionName: string;
   agent?: string;
+  tabId?: number | null;
   tabName?: string | null;
   credits: number;
   costEur: number;
@@ -21,9 +22,16 @@ interface SessionBreakdown {
   lastTurn?: string;
 }
 
-interface UsageData {
+/** A single calendar month's aggregated usage, as returned by /api/usage/monthly. */
+interface MonthUsage {
+  year: number;
+  month: number; // 1-12
+  monthLabel: string; // e.g. "August 2026"
+  from: string;
+  to: string;
   totalCredits: number;
   totalCostEur: number;
+  totalTurns: number;
   dailyBreakdown: DailyBreakdown[];
   sessionBreakdown: SessionBreakdown[];
 }
@@ -31,59 +39,111 @@ interface UsageData {
 type SortKey = 'sessionName' | 'agent' | 'tabName' | 'credits' | 'costEur' | 'turns' | 'firstTurn';
 type SortDir = 'asc' | 'desc';
 
+const POLL_INTERVAL_MS = 300000; // 5 minutes
+
 export function UsagePanel() {
   const { tabs, setActiveView, setActiveSessionId } = useApp();
   const navigate = useNavigate();
-  const [usageData, setUsageData] = useState<UsageData | null>(null);
+  const [months, setMonths] = useState<MonthUsage[]>([]);
+  const [selectedMonthIndex, setSelectedMonthIndex] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedTabId, setSelectedTabId] = useState<number | null>(null);
   const [sortKey, setSortKey] = useState<SortKey>('credits');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
 
-  // Current month date range
-  const { from, to, monthLabel } = useMemo(() => {
-    const now = new Date();
-    const from = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
-    const to = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999).toISOString();
-    const monthLabel = now.toLocaleString('default', { month: 'long', year: 'numeric' });
-    return { from, to, monthLabel };
-  }, []);
+  // Keep the currently-selected index stable across polls without making the
+  // fetch callback depend on it (which would restart the polling interval).
+  const selectedIndexRef = useRef<number | null>(null);
+  selectedIndexRef.current = selectedMonthIndex;
 
-  const fetchUsage = useCallback(async () => {
-    setLoading(true);
+  const fetchMonthly = useCallback(async () => {
     setError(null);
     try {
-      const params = new URLSearchParams({ from, to });
-      if (selectedTabId !== null) params.set('tabId', String(selectedTabId));
-      const res = await apiFetch(`/api/usage?${params.toString()}`);
+      const res = await apiFetch('/api/usage/monthly');
       if (!res.ok) {
         setError('Failed to load usage data');
         return;
       }
-      const data: UsageData = await res.json();
-      setUsageData(data);
+      const data: { months: MonthUsage[] } = await res.json();
+      const list = Array.isArray(data.months) ? data.months : [];
+      setMonths(list);
+      // On the first successful load (no selection yet) default to the newest
+      // month (last element). On subsequent polls preserve the current
+      // selection, clamped in case the number of months changed.
+      setSelectedMonthIndex(prev => {
+        if (list.length === 0) return null;
+        if (prev === null) return list.length - 1;
+        return Math.min(prev, list.length - 1);
+      });
     } catch {
       setError('Failed to load usage data');
     } finally {
       setLoading(false);
     }
-  }, [from, to, selectedTabId]);
+  }, []);
 
+  // Fetch once on mount, then poll every 5 minutes. Navigation and tab
+  // filtering read from the cached payload and never trigger a network call.
   useEffect(() => {
-    fetchUsage();
-  }, [fetchUsage]);
-
-  // Listen for session-updated events to refetch usage when credits change
-  useEffect(() => {
-    const handler = () => { fetchUsage(); };
-    const interval = setInterval(handler, 30000); // Refresh every 30s
+    fetchMonthly();
+    const interval = setInterval(() => { fetchMonthly(); }, POLL_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, [fetchUsage]);
+  }, [fetchMonthly]);
+
+  const selectedMonth = useMemo(() => {
+    if (selectedMonthIndex === null) return null;
+    return months[selectedMonthIndex] ?? null;
+  }, [months, selectedMonthIndex]);
+
+  // Apply the tab filter locally against the cached month. When a specific tab
+  // is selected, re-sum totals and daily breakdown from the filtered sessions.
+  const filteredMonth = useMemo(() => {
+    if (!selectedMonth) return null;
+    if (selectedTabId === null) return selectedMonth;
+
+    const sessionBreakdown = selectedMonth.sessionBreakdown.filter(
+      s => s.tabId === selectedTabId
+    );
+
+    // The payload's dailyBreakdown is an all-tabs aggregate with no per-tab
+    // dimension, so when filtering by tab we rebuild the daily bars from the
+    // filtered sessions themselves — attributing each session's credits to the
+    // day of its first turn (YYYY-MM-DD).
+    const dailyMap = new Map<string, DailyBreakdown>();
+    let totalCredits = 0;
+    let totalCostEur = 0;
+    for (const s of sessionBreakdown) {
+      totalCredits += s.credits;
+      totalCostEur += s.costEur;
+      const day = s.firstTurn ? s.firstTurn.slice(0, 10) : null;
+      if (day) {
+        const existing = dailyMap.get(day);
+        if (existing) {
+          existing.credits += s.credits;
+          existing.costEur += s.costEur;
+        } else {
+          dailyMap.set(day, { date: day, credits: s.credits, costEur: s.costEur });
+        }
+      }
+    }
+
+    const dailyBreakdown = Array.from(dailyMap.values()).sort((a, b) =>
+      a.date.localeCompare(b.date)
+    );
+
+    return {
+      ...selectedMonth,
+      totalCredits,
+      totalCostEur,
+      dailyBreakdown,
+      sessionBreakdown,
+    };
+  }, [selectedMonth, selectedTabId]);
 
   const sortedSessions = useMemo(() => {
-    if (!usageData || !usageData.sessionBreakdown) return [];
-    const sorted = [...usageData.sessionBreakdown];
+    if (!filteredMonth || !filteredMonth.sessionBreakdown) return [];
+    const sorted = [...filteredMonth.sessionBreakdown];
     sorted.sort((a, b) => {
       let cmp = 0;
       switch (sortKey) {
@@ -112,7 +172,7 @@ export function UsagePanel() {
       return sortDir === 'asc' ? cmp : -cmp;
     });
     return sorted;
-  }, [usageData, sortKey, sortDir]);
+  }, [filteredMonth, sortKey, sortDir]);
 
   const handleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -128,36 +188,47 @@ export function UsagePanel() {
     navigate(`/sessions/${sessionId}`);
   };
 
-  const maxCreditsPerDay = useMemo(() => {
-    if (!usageData || !usageData.dailyBreakdown || usageData.dailyBreakdown.length === 0) return 1;
-    return Math.max(...usageData.dailyBreakdown.map(d => d.credits));
-  }, [usageData]);
+  const goToPrevMonth = () => {
+    setSelectedMonthIndex(i => (i === null ? null : Math.max(0, i - 1)));
+  };
 
-  // Generate all days of the month for the chart
+  const goToNextMonth = () => {
+    setSelectedMonthIndex(i =>
+      i === null ? null : Math.min(months.length - 1, i + 1)
+    );
+  };
+
+  const maxCreditsPerDay = useMemo(() => {
+    if (!filteredMonth || !filteredMonth.dailyBreakdown || filteredMonth.dailyBreakdown.length === 0) return 1;
+    return Math.max(...filteredMonth.dailyBreakdown.map(d => d.credits), 1);
+  }, [filteredMonth]);
+
+  // Generate all days of the selected month for the chart.
   const daysInMonth = useMemo(() => {
-    const now = new Date();
-    const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    if (!selectedMonth) return [];
+    // month is 1-12; day 0 of the next month is the last day of this month.
+    const lastDay = new Date(selectedMonth.year, selectedMonth.month, 0).getDate();
     return Array.from({ length: lastDay }, (_, i) => i + 1);
-  }, []);
+  }, [selectedMonth]);
 
   const dailyCreditsMap = useMemo(() => {
-    if (!usageData || !usageData.dailyBreakdown) return new Map<number, DailyBreakdown>();
+    if (!filteredMonth || !filteredMonth.dailyBreakdown) return new Map<number, DailyBreakdown>();
     const map = new Map<number, DailyBreakdown>();
-    for (const d of usageData.dailyBreakdown) {
+    for (const d of filteredMonth.dailyBreakdown) {
       // Parse day directly from YYYY-MM-DD string to avoid timezone issues
       // (new Date("2026-08-01").getDate() returns 31 in negative UTC offsets)
       const day = parseInt(d.date.split('-')[2], 10);
       map.set(day, d);
     }
     return map;
-  }, [usageData]);
+  }, [filteredMonth]);
 
   const sortIndicator = (key: SortKey) => {
     if (sortKey !== key) return '';
     return sortDir === 'asc' ? ' ↑' : ' ↓';
   };
 
-  if (loading && !usageData) {
+  if (loading && months.length === 0) {
     return (
       <section id="panel-usage" role="tabpanel" aria-labelledby="tab-usage">
         <div className="usage-layout">
@@ -167,7 +238,7 @@ export function UsagePanel() {
     );
   }
 
-  if (error && !usageData) {
+  if (error && months.length === 0) {
     return (
       <section id="panel-usage" role="tabpanel" aria-labelledby="tab-usage">
         <div className="usage-layout">
@@ -177,16 +248,40 @@ export function UsagePanel() {
     );
   }
 
+  const isOldest = selectedMonthIndex === null || selectedMonthIndex <= 0;
+  const isNewest = selectedMonthIndex === null || selectedMonthIndex >= months.length - 1;
+  const monthLabel = selectedMonth?.monthLabel ?? '';
+
   return (
     <section id="panel-usage" role="tabpanel" aria-labelledby="tab-usage">
       <div className="usage-layout">
         {/* Summary Header */}
         <div className="usage-header">
           <div className="usage-summary">
-            <h2 className="usage-heading">{monthLabel}</h2>
+            <div className="usage-month-nav">
+              <button
+                type="button"
+                className="usage-month-arrow"
+                onClick={goToPrevMonth}
+                disabled={isOldest}
+                aria-label="Previous month"
+              >
+                ‹
+              </button>
+              <h2 className="usage-heading">{monthLabel}</h2>
+              <button
+                type="button"
+                className="usage-month-arrow"
+                onClick={goToNextMonth}
+                disabled={isNewest}
+                aria-label="Next month"
+              >
+                ›
+              </button>
+            </div>
             <div className="usage-totals">
-              <span className="usage-total-credits">{(usageData?.totalCredits ?? 0).toFixed(2)} credits</span>
-              <span className="usage-total-cost">EUR {(usageData?.totalCostEur ?? 0).toFixed(2)}</span>
+              <span className="usage-total-credits">{(filteredMonth?.totalCredits ?? 0).toFixed(2)} credits</span>
+              <span className="usage-total-cost">EUR {(filteredMonth?.totalCostEur ?? 0).toFixed(2)}</span>
             </div>
           </div>
           <div className="usage-filters">
@@ -207,7 +302,7 @@ export function UsagePanel() {
         {/* Daily Bar Chart */}
         <div className="usage-chart-section">
           <h3 className="usage-section-title">Daily Breakdown</h3>
-          {(!usageData || !usageData.dailyBreakdown || usageData.dailyBreakdown.length === 0) ? (
+          {(!filteredMonth || !filteredMonth.dailyBreakdown || filteredMonth.dailyBreakdown.length === 0) ? (
             <div className="usage-empty-chart">No usage data for this period.</div>
           ) : (
             <div className="usage-chart" role="img" aria-label="Daily credit consumption chart">

@@ -4473,6 +4473,37 @@ textarea:focus {
   gap: 0.25rem;
 }
 
+.usage-month-nav {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.usage-month-arrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  padding: 0;
+  font-size: 1.2rem;
+  line-height: 1;
+  color: var(--text-primary);
+  background: var(--bg-secondary, transparent);
+  border: 1px solid var(--border-color, currentColor);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.usage-month-arrow:hover:not(:disabled) {
+  background: var(--bg-hover, rgba(127, 127, 127, 0.15));
+}
+
+.usage-month-arrow:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 .usage-heading {
   font-size: 1.3rem;
   font-weight: 600;
