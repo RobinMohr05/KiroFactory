@@ -37,6 +37,11 @@ export function ModelCombobox({ value, onChange, id, placeholder }: ModelCombobo
   const [highlightIndex, setHighlightIndex] = useState(-1);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // Stable ids so the input can point assistive tech at the listbox
+  // (aria-controls) and the currently highlighted option (aria-activedescendant).
+  const listId = `${id ?? 'model-combobox'}-listbox`;
+  const optionId = (idx: number) => `${listId}-option-${idx}`;
+
   const getFiltered = useCallback(() => {
     const q = query.trim().toLowerCase();
     if (!q) return KIRO_MODELS;
@@ -110,6 +115,12 @@ export function ModelCombobox({ value, onChange, id, placeholder }: ModelCombobo
         className="combobox-input"
         role="combobox"
         aria-expanded={listVisible}
+        aria-controls={listId}
+        aria-activedescendant={
+          listVisible && highlightIndex >= 0 && highlightIndex < filtered.length
+            ? optionId(highlightIndex)
+            : undefined
+        }
         autoComplete="off"
         placeholder={placeholder}
         value={query}
@@ -123,10 +134,11 @@ export function ModelCombobox({ value, onChange, id, placeholder }: ModelCombobo
         onKeyDown={handleKeyDown}
       />
       {listVisible && filtered.length > 0 && (
-        <ul className="combobox-list" role="listbox">
+        <ul className="combobox-list" role="listbox" id={listId}>
           {filtered.map((m, idx) => (
             <li
               key={m.id}
+              id={optionId(idx)}
               className={`combobox-option${idx === highlightIndex ? ' combobox-option-highlighted' : ''}`}
               role="option"
               aria-selected={idx === highlightIndex}

@@ -105,6 +105,43 @@ describe('ModelCombobox', () => {
     expect(highlighted).toHaveClass('combobox-option-highlighted');
   });
 
+  it('wires the input to the listbox via aria-controls and gives each option a stable id', () => {
+    const { container } = render(<ModelCombobox value="" id="model-field" onChange={vi.fn()} />);
+    const input = screen.getByRole('combobox');
+    fireEvent.focus(input);
+
+    const list = container.querySelector('ul[role="listbox"]');
+    expect(list).not.toBeNull();
+    const listId = list!.getAttribute('id');
+    expect(listId).toBeTruthy();
+    expect(input).toHaveAttribute('aria-controls', listId!);
+
+    // Every option carries its own id, prefixed so it's unique per combobox instance.
+    const options = container.querySelectorAll('li[role="option"]');
+    expect(options.length).toBeGreaterThan(0);
+    options.forEach(opt => {
+      expect(opt.getAttribute('id')).toBeTruthy();
+    });
+  });
+
+  it('exposes the keyboard-highlighted option via aria-activedescendant', () => {
+    render(<ModelCombobox value="" onChange={vi.fn()} />);
+    const input = screen.getByRole('combobox');
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'qwen' } });
+
+    // Nothing highlighted yet -> no active descendant.
+    expect(input).not.toHaveAttribute('aria-activedescendant');
+
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+
+    const highlighted = screen.getByText('Qwen3 Coder Next').closest('li');
+    expect(highlighted).not.toBeNull();
+    const optionId = highlighted!.getAttribute('id');
+    expect(optionId).toBeTruthy();
+    expect(input).toHaveAttribute('aria-activedescendant', optionId!);
+  });
+
   it('displays a stored value not in KIRO_MODELS as its raw id (not the auto label)', () => {
     render(<ModelCombobox value="legacy-unknown-model" onChange={vi.fn()} />);
     expect(screen.getByRole('combobox')).toHaveValue('legacy-unknown-model');
