@@ -49,6 +49,15 @@ export interface WorkerAgentErrorMessage extends WorkerMessage {
   context?: string;
 }
 
+export interface WorkerTaskCreateMessage extends WorkerMessage {
+  action: "task-create";
+  title: string;
+  description: string;
+  type: "improvement" | "bug" | "feature";
+  priority: 1 | 2 | 3 | 4;
+  files?: string[];
+}
+
 export interface WorkerReadyMessage extends WorkerMessage {
   action: "worker-ready";
   acpSessionId: string;
@@ -93,6 +102,7 @@ export interface WorkerEventHandler {
   onWorkerOutput: (sessionId: number, entry: OutputEntry) => void;
   onWorkerSessionUpdate: (sessionId: number, update: unknown) => void;
   onWorkerAgentError: (sessionId: number, message: string, context: string) => void;
+  onWorkerTaskCreate: (sessionId: number, spec: { title: string; description: string; type: "improvement" | "bug" | "feature"; priority: 1 | 2 | 3 | 4; files: string[] }) => void;
   onWorkerPromptDone: (sessionId: number, result: unknown) => void;
   onWorkerExited: (sessionId: number, exitCode: number | null, signal: string | null) => void;
   onWorkerShutdown: (sessionId: number, exitCode: number) => void;
@@ -333,6 +343,18 @@ function attachWorkerConnectionHandlers(ws: WebSocket, hooks: WorkerConnectionHo
       case "agent-error": {
         const m = msg as WorkerAgentErrorMessage;
         eventHandler.onWorkerAgentError(sessionId, m.message, m.context ?? "");
+        break;
+      }
+
+      case "task-create": {
+        const m = msg as WorkerTaskCreateMessage;
+        eventHandler.onWorkerTaskCreate(sessionId, {
+          title: m.title,
+          description: m.description,
+          type: m.type,
+          priority: m.priority,
+          files: m.files ?? [],
+        });
         break;
       }
 

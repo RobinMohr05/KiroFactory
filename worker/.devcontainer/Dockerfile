@@ -27,6 +27,7 @@ COPY spawn-env.js ./
 COPY shared-branch-utils.js ./
 COPY verdict-mcp-server.js ./
 COPY agent-error-mcp-server.js ./
+COPY task-create-mcp-server.js ./
 COPY pr-review-mcp-server.js ./
 COPY pr-complete-mcp-server.js ./
 COPY git-delivery-mcp-server.js ./

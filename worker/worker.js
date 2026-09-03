@@ -2023,6 +2023,60 @@ function logSessionUpdate(update) {
           send("agent-error", { message, context });
         }
       }
+
+      // Capture a task spec from the create_task tool's completed output.
+      // Detection is purely content-based (scan every completed
+      // tool_call_update for the {"taskCreated":...} shape) — the
+      // task-create-mcp-server is the only tool that emits this shape, so
+      // false positives are not a real concern. Mirrors the agent-error
+      // capture above, including the ACP items-envelope unwrapping.
+      const isTaskCreatedUpdate =
+        update.status === "completed" && outputText && outputText.includes('"taskCreated"');
+      if (isTaskCreatedUpdate && outputText) {
+        function tryParseTaskCreated(str) {
+          if (!str || typeof str !== "string") return null;
+          try {
+            const parsed = JSON.parse(str);
+            if (parsed && parsed.taskCreated && typeof parsed.taskCreated.title === "string") {
+              return parsed.taskCreated;
+            }
+            // Unwrap ACP items envelope: {items:[{Json:{content:[{type:"text",text:"..."}]}}]}
+            if (Array.isArray(parsed.items)) {
+              for (const item of parsed.items) {
+                const inner = item?.Json?.content;
+                if (Array.isArray(inner)) {
+                  for (const block of inner) {
+                    if (block?.type === "text" && typeof block.text === "string") {
+                      const inner2 = tryParseTaskCreated(block.text);
+                      if (inner2) return inner2;
+                    }
+                  }
+                }
+              }
+            }
+          } catch { /* not JSON */ }
+          return null;
+        }
+
+        let taskSpec = tryParseTaskCreated(outputText);
+        if (!taskSpec) {
+          // Last-resort regex: find {"taskCreated":{...}} anywhere in the string
+          const jsonMatch = outputText.match(/\{"taskCreated"\s*:\s*\{[\s\S]*?\}\s*\}/);
+          if (jsonMatch) taskSpec = tryParseTaskCreated(jsonMatch[0]);
+        }
+        if (taskSpec) {
+          const { title, description, type, priority, files } = taskSpec;
+          logInfo("task-create-reported", { title, type, priority });
+          send("task-create", {
+            title,
+            description: typeof description === "string" ? description : "",
+            type,
+            priority,
+            files: Array.isArray(files) ? files : [],
+          });
+        }
+      }
+
       if (update.status === "failed") {
         // Only failures are forwarded to the live output stream — successful
         // tool calls (ls, cat, grep, etc.) would otherwise flood the session
@@ -2180,6 +2234,23 @@ function buildMcpServers() {
       prBranch: process.env.PR_BRANCH || "(not yet set)",
       allGroupTasksDone: process.env.ALL_GROUP_TASKS_DONE || "true",
     });
+  }
+
+  // Include the task-create MCP server for inspector-kind sessions (e.g.
+  // code-reviewer-agent, qa-improvement-agent) only. Lets a review/QA pass
+  // turn findings into DB-backed tasks on the board. No external calls or
+  // credentials needed — see task-create-mcp-server.js's header comment for
+  // how its {"taskCreated":...} envelope is captured and turned into a real
+  // createTask() call by the orchestrator (session-manager.ts's
+  // handleWorkerTaskCreate()).
+  if (AGENT_KIND === "inspector") {
+    servers.push({
+      name: "task-create",
+      command: "node",
+      args: ["/app/task-create-mcp-server.js"],
+      env: [],
+    });
+    logInfo("Including task-create MCP server", { agentKind: AGENT_KIND });
   }
 
   // Include the git-delivery MCP server for editor-kind, task-based sessions
