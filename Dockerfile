@@ -25,6 +25,10 @@ COPY frontend/tsconfig.json frontend/tsconfig.app.json frontend/tsconfig.node.js
 COPY frontend/vite.config.ts ./frontend/
 COPY frontend/index.html ./frontend/
 COPY frontend/src ./frontend/src
+# public/ must exist before the build: vite.config.ts's syncPublicStylesheet
+# plugin copies src/style.css into public/style.css via copyFileSync, which
+# fails with ENOENT if the destination directory isn't already present.
+COPY frontend/public ./frontend/public
 RUN npm run build -w frontend
 
 # Stage 2: Production
