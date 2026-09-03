@@ -19,6 +19,8 @@ import type { CreateSessionInput, UpdateSessionInput } from "../types.js";
 import { log, toErrorFields } from "../logger.js";
 import { sanitizeSessionForClient } from "../session-sanitize.js";
 import { getTurnsBySession } from "../db/turns.js";
+import { isValidCronExpression, isValidTimezone } from "../cron-schedule.js";
+import { armSession, disarmSession, triggerRunNow } from "../scheduled-session-manager.js";
 
 const router = Router();
 
@@ -30,6 +32,28 @@ router.use(requireAuth);
 function paramId(req: Request): number | null {
   const id = Number(req.params.id);
   return Number.isInteger(id) ? id : null;
+}
+
+/**
+ * Validate scheduled-session cron fields. Returns an error message string
+ * (for a 400 response) if the config is invalid, or null if it's valid /
+ * absent. A cronExpression, when present, requires both a valid expression
+ * and a valid IANA timezone.
+ */
+function validateCronFields(
+  cronExpression: unknown,
+  cronTimezone: unknown
+): string | null {
+  if (cronExpression === undefined || cronExpression === null || cronExpression === "") {
+    return null; // Not a scheduled session (or clearing the schedule).
+  }
+  if (typeof cronExpression !== "string" || !isValidCronExpression(cronExpression)) {
+    return "Invalid cron expression";
+  }
+  if (typeof cronTimezone !== "string" || !isValidTimezone(cronTimezone)) {
+    return "Invalid IANA timezone";
+  }
+  return null;
 }
 
 // GET /api/sessions — list all sessions for the authenticated user (without full output)
@@ -59,6 +83,16 @@ router.post("/", async (req: Request, res: Response) => {
       res.status(400).json({ error: "name is required" });
       return;
     }
+
+    // Validate scheduled-session cron config, if provided. A cronExpression
+    // implies a one-shot scheduled session (Looper view) — both the expression
+    // and an IANA timezone must be valid.
+    const cronError = validateCronFields(input.cronExpression, input.cronTimezone);
+    if (cronError) {
+      res.status(400).json({ error: cronError });
+      return;
+    }
+
     // Force userId from auth context (ignore any userId in the body).
     // `pinned`, `isPermanent`, `forceLocal`, and `rawMcpServers` are internal-only
     // (set programmatically for planner sessions and permanent Chat sessions)
@@ -69,6 +103,12 @@ router.post("/", async (req: Request, res: Response) => {
     input.forceLocal = undefined;
     input.rawMcpServers = undefined;
     const session = await createSession(input);
+
+    // Arm the scheduler if this is a scheduled session.
+    if (session.cronExpression) {
+      armSession(session.id, session.cronExpression, session.cronTimezone, session.retries);
+    }
+
     res.status(201).json(sanitizeSessionForClient(session));
   } catch (err) {
     log.error("route-error", {
@@ -293,9 +333,37 @@ router.post("/:id/prompt", async (req: Request, res: Response) => {
   }
 });
 
-// PUT /api/sessions/:id/tabs — update session tab assignments (must belong to authenticated user)
-router.put("/:id/tabs", (req: Request, res: Response) => {
+// POST /api/sessions/:id/run-now — trigger one immediate one-shot run through
+// the same path as a scheduled tick (honoring the session's retry count).
+router.post("/:id/run-now", async (req: Request, res: Response) => {
   try {
+    const userId = getUserId(req);
+    const id = paramId(req);
+    if (id === null) {
+      res.status(400).json({ error: "Invalid session id" });
+      return;
+    }
+    const session = getSession(id);
+    if (!session || session.userId !== userId) {
+      res.status(404).json({ error: "Session not found" });
+      return;
+    }
+    const result = await triggerRunNow(id, session.retries ?? 0);
+    res.json({ success: true, result });
+  } catch (err) {
+    log.error("route-error", {
+      component: "sessions",
+      method: "POST",
+      path: "/api/sessions/:id/run-now",
+      ...toErrorFields(err),
+      msg: "Failed to run session now",
+    });
+    res.status(500).json({ error: "Failed to run session now" });
+  }
+});
+
+// PUT /api/sessions/:id/tabs — update session tab assignments (must belong to authenticated user)
+router.put("/:id/tabs", (req: Request, res: Response) => {  try {
     const userId = getUserId(req);
     const id = paramId(req);
     if (id === null) {
@@ -397,6 +465,22 @@ router.patch("/:id", (req: Request, res: Response) => {
     if (rest.mcpServers !== undefined) updates.mcpServers = rest.mcpServers;
     if (rest.excludedMcpServerNames !== undefined) updates.excludedMcpServerNames = rest.excludedMcpServerNames;
     if (rest.tabIds !== undefined) updates.tabIds = rest.tabIds;
+    if (rest.cronExpression !== undefined) updates.cronExpression = rest.cronExpression;
+    if (rest.cronTimezone !== undefined) updates.cronTimezone = rest.cronTimezone;
+    if (rest.retries !== undefined) updates.retries = rest.retries;
+
+    // Validate cron config when the expression is being set (not cleared).
+    if (updates.cronExpression) {
+      // Resolve the effective timezone: the incoming value if provided,
+      // otherwise the session's existing one.
+      const effectiveTz =
+        updates.cronTimezone !== undefined ? updates.cronTimezone : session.cronTimezone;
+      const cronError = validateCronFields(updates.cronExpression, effectiveTz);
+      if (cronError) {
+        res.status(400).json({ error: cronError });
+        return;
+      }
+    }
 
     const result = updateSessionFields(id, updates);
     if (!result) {
@@ -411,6 +495,17 @@ router.patch("/:id", (req: Request, res: Response) => {
       res.status(400).json({ error: result.reason });
       return;
     }
+
+    // (Re)arm or disarm the scheduler when cron fields changed.
+    if (updates.cronExpression !== undefined || updates.cronTimezone !== undefined || updates.retries !== undefined) {
+      const updated = getSession(id);
+      if (updated?.cronExpression) {
+        armSession(id, updated.cronExpression, updated.cronTimezone, updated.retries);
+      } else {
+        disarmSession(id);
+      }
+    }
+
     res.json({ success: true });
   } catch (err) {
     log.error("route-error", {

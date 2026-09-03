@@ -338,6 +338,20 @@ export interface ManagedSession {
    * Reset after use or when the next tool_call arrives.
    */
   lastGeneratedToolCallId: string | null;
+  /**
+   * When true, this run is a scheduled one-shot: the interactive start path
+   * sends the prompt exactly once and then stops the session instead of
+   * staying alive for follow-ups. Set by runOneShotTurn() before startSession()
+   * and cleared when the run settles.
+   */
+  oneShot: boolean;
+  /**
+   * Resolver/rejecter for the in-flight one-shot run (runOneShotTurn awaits
+   * this). Resolved when the single turn completes cleanly; rejected on turn
+   * failure or worker/runner error.
+   */
+  oneShotResolver: (() => void) | null;
+  oneShotRejecter: ((err: Error) => void) | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -438,13 +452,20 @@ export async function initSessions(): Promise<void> {
       turnToolCallCount: 0,
       turnActiveToolCalls: new Map(),
       lastGeneratedToolCallId: null,
+      oneShot: false,
+      oneShotResolver: null,
+      oneShotRejecter: null,
     });
 
     // Check if this session should auto-restart.
     // We detect this by checking if sessions.json had it as "running" before loadSessions reset it.
     // Since loadSessions() already set it to "stopped", we need a different signal.
     // We'll use a flag from loadSessions instead.
-    if ((meta as any).__wasRunning) {
+    //
+    // Scheduled (cron) sessions are one-shot, not persistent-running — they
+    // must never be auto-restarted here. Their schedule is (re)armed by the
+    // scheduled-session-manager's initScheduledSessions() instead.
+    if ((meta as any).__wasRunning && !meta.cronExpression) {
       toRestart.push(meta.id);
       delete (meta as any).__wasRunning;
     }
@@ -749,6 +770,9 @@ export async function createSession(input: CreateSessionInput): Promise<Session>
     isPermanent: input.isPermanent === true,
     sortOrder: 0, // placeholder — calculated below
     forceLocal: input.forceLocal === true,
+    cronExpression: input.cronExpression || undefined,
+    cronTimezone: input.cronTimezone || undefined,
+    retries: input.retries != null ? input.retries : undefined,
   };
 
   // Calculate sortOrder: place new session at end of appropriate group
@@ -798,6 +822,9 @@ export async function createSession(input: CreateSessionInput): Promise<Session>
     turnToolCallCount: 0,
     turnActiveToolCalls: new Map(),
     lastGeneratedToolCallId: null,
+    oneShot: false,
+    oneShotResolver: null,
+    oneShotRejecter: null,
   };
 
   sessions.set(meta.id, session);
@@ -818,6 +845,103 @@ export function getSession(id: number): Session | undefined {
 /** Get the per-run turn count for a session (survives WS reconnection). */
 export function getSessionTurnCount(id: number): number {
   return sessions.get(id)?.turnCountThisRun ?? 0;
+}
+
+// ---------------------------------------------------------------------------
+// Scheduled (cron) one-shot session support
+// ---------------------------------------------------------------------------
+
+/** Current status of a session, or undefined if it doesn't exist. */
+export function getSessionStatus(id: number): Session["status"] | undefined {
+  return sessions.get(id)?.meta.status;
+}
+
+/**
+ * All in-memory sessions that have a cronExpression configured — used by the
+ * scheduled-session-manager to arm timers on boot.
+ */
+export function getScheduledSessions(): Session[] {
+  return Array.from(sessions.values())
+    .filter((s) => !!s.meta.cronExpression)
+    .map((s) => s.meta);
+}
+
+/** Append a system output line to a session (used for the skip notice). */
+export function appendScheduledSystemLine(id: number, text: string): void {
+  const session = sessions.get(id);
+  if (!session) return;
+  appendOutput(session, { timestamp: now(), stream: "system", text });
+}
+
+/**
+ * Record one AgentError for a failed scheduled-run attempt, tagged with the
+ * attempt number out of the total (e.g. "attempt 2/3").
+ */
+export function recordScheduledAttemptError(
+  id: number,
+  attempt: number,
+  totalAttempts: number,
+  err: unknown
+): void {
+  const session = sessions.get(id);
+  if (!session) return;
+  const msg = err instanceof Error ? err.message : String(err);
+  recordSessionError({
+    sessionId: session.meta.id,
+    sessionName: session.meta.name,
+    agent: session.meta.agent,
+    message: `Scheduled run failed (attempt ${attempt}/${totalAttempts}): ${msg}`,
+    context: `Scheduled one-shot run of session "${session.meta.name}" (ID: ${session.meta.id}) failed on attempt ${attempt} of ${totalAttempts}.`,
+    userId: session.meta.userId,
+    err,
+    managed: session,
+  });
+}
+
+/**
+ * Run a scheduled session's prompt exactly once: start it as a one-shot
+ * (interactive, non-loop) run, wait for the single turn to complete, then stop
+ * the session so it returns to "stopped". Resolves on success; rejects if the
+ * turn fails or the session errors during startup/execution.
+ *
+ * Caller (scheduled-session-manager) is responsible for retry/skip logic.
+ */
+export async function runOneShotTurn(id: number): Promise<void> {
+  const session = sessions.get(id);
+  if (!session) throw new Error(`Session ${id} not found`);
+  if (session.meta.status === "running") {
+    throw new Error(`Session ${id} is already running`);
+  }
+
+  session.oneShot = true;
+
+  const done = new Promise<void>((resolve, reject) => {
+    session.oneShotResolver = () => {
+      session.oneShotResolver = null;
+      session.oneShotRejecter = null;
+      resolve();
+    };
+    session.oneShotRejecter = (err: Error) => {
+      session.oneShotResolver = null;
+      session.oneShotRejecter = null;
+      reject(err);
+    };
+  });
+
+  try {
+    await startSession(id);
+    await done;
+  } finally {
+    session.oneShot = false;
+    session.oneShotResolver = null;
+    session.oneShotRejecter = null;
+    // Return the session to "stopped" — a one-shot must never stay running.
+    try {
+      await stopSession(id);
+    } catch {
+      /* best effort */
+    }
+  }
 }
 
 export function getAllSessions(userId?: number): Session[] {
@@ -1012,6 +1136,9 @@ export function updateSessionFields(
   if (updates.mcpServers !== undefined) session.meta.mcpServers = updates.mcpServers?.length ? updates.mcpServers : undefined;
   if (updates.excludedMcpServerNames !== undefined) session.meta.excludedMcpServerNames = updates.excludedMcpServerNames?.length ? updates.excludedMcpServerNames : undefined;
   if (updates.tabIds !== undefined) session.meta.tabIds = updates.tabIds?.length ? updates.tabIds : undefined;
+  if (updates.cronExpression !== undefined) session.meta.cronExpression = updates.cronExpression || undefined;
+  if (updates.cronTimezone !== undefined) session.meta.cronTimezone = updates.cronTimezone || undefined;
+  if (updates.retries !== undefined) session.meta.retries = updates.retries != null ? updates.retries : undefined;
 
   broadcastToUser(session.meta.userId, { type: "session-updated", session: sanitizeSessionForClient(session.meta) });
   persistSession(id);
@@ -1113,6 +1240,18 @@ export async function startSession(id: number): Promise<boolean> {
       taskId: session.meta.currentTaskId,
       ...toErrorFields(err),
     });
+
+    // One-shot (scheduled) run: reject the awaiter so runOneShotTurn() can
+    // apply its per-attempt retry/error logic. The tagged per-attempt
+    // AgentError is recorded by the scheduler, so we DON'T also record the
+    // generic fatal error here (it would double-count every failed attempt).
+    if (session.oneShot && session.oneShotRejecter) {
+      const rejecter = session.oneShotRejecter;
+      session.oneShotResolver = null;
+      session.oneShotRejecter = null;
+      rejecter(err instanceof Error ? err : new Error(msg));
+      return;
+    }
 
     // Record the error for the UI
     recordSessionError({
@@ -1360,6 +1499,13 @@ async function runSession(managed: ManagedSession): Promise<void> {
       // Send initial prompt
       if (meta.prompt.trim()) {
         await streamPrompt(managed, meta.prompt);
+      }
+
+      // One-shot (scheduled) run: the prompt has completed exactly once —
+      // signal success and return so runOneShotTurn() can stop the session.
+      if (managed.oneShot) {
+        managed.oneShotResolver?.();
+        return;
       }
 
       // Session stays alive — just monitor the process
@@ -2715,6 +2861,14 @@ async function runSessionAca(managed: ManagedSession): Promise<void> {
       if (meta.prompt.trim()) {
         await streamPromptAca(managed, meta.prompt);
       }
+
+      // One-shot (scheduled) run: the prompt has completed exactly once —
+      // signal success and return so runOneShotTurn() can stop the session.
+      if (managed.oneShot) {
+        managed.oneShotResolver?.();
+        return;
+      }
+
       setActivity(managed, { type: "idle", detail: "Waiting for prompts..." });
 
       // Keep alive: wait for worker disconnect or session stop

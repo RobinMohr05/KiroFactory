@@ -411,6 +411,23 @@ export interface Session {
    * planner which only reads files via MCP and never builds/tests/commits.
    */
   forceLocal?: boolean;
+  /**
+   * Cron expression for a scheduled one-shot session (Looper view only). When
+   * set, the session is armed by scheduled-session-manager.ts: on each cron
+   * tick it starts, runs its prompt once, then stops itself. Absent for
+   * normal (manual / loop) sessions.
+   */
+  cronExpression?: string;
+  /**
+   * IANA timezone the `cronExpression` is evaluated in (e.g. "Europe/Berlin").
+   * Only meaningful alongside `cronExpression`.
+   */
+  cronTimezone?: string;
+  /**
+   * Number of times a failed scheduled run is retried before giving up.
+   * Defaults to 0. Only meaningful alongside `cronExpression`.
+   */
+  retries?: number;
 }
 
 export interface CreateSessionInput {
@@ -454,6 +471,12 @@ export interface CreateSessionInput {
    * Not accepted from the public POST /api/sessions body.
    */
   forceLocal?: boolean;
+  /** Cron expression for a scheduled one-shot session (Looper view). */
+  cronExpression?: string;
+  /** IANA timezone the cron expression is evaluated in. */
+  cronTimezone?: string;
+  /** Retry count for a failed scheduled run (default 0). */
+  retries?: number;
 }
 
 /**
@@ -475,6 +498,12 @@ export interface UpdateSessionInput {
   mcpServers?: McpServerConfig[] | null;
   excludedMcpServerNames?: string[];
   tabIds?: number[];
+  /** Cron expression for a scheduled one-shot session (Looper view). Null clears it. */
+  cronExpression?: string | null;
+  /** IANA timezone the cron expression is evaluated in. Null clears it. */
+  cronTimezone?: string | null;
+  /** Retry count for a failed scheduled run (default 0). */
+  retries?: number;
 }
 
 // ─── Flocks (auto-scaling session pools) ─────────────────────────────────────
