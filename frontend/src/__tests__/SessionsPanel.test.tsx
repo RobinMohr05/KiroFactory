@@ -11,8 +11,8 @@ vi.mock('../utils/api', () => ({
   apiFetch: vi.fn().mockResolvedValue({ ok: true, json: async () => [] }),
 }));
 
-vi.mock('../components/FlockPanel', () => ({
-  FlockPanel: () => <div data-testid="flock-panel">FlockPanel</div>,
+vi.mock('../components/AutoScalerPanel', () => ({
+  AutoScalerPanel: () => <div data-testid="autoscaler-panel">AutoScalerPanel</div>,
 }));
 
 const mockNavigate = vi.fn();

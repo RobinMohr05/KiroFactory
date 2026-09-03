@@ -1,7 +1,7 @@
 /**
- * Flock Manager — auto-scaling session pools.
+ * AutoScaler Manager — auto-scaling session pools.
  *
- * A "Flock" watches the claimable task queue for a specific agent/tab
+ * A "AutoScaler" watches the claimable task queue for a specific agent/tab
  * combination and spins up single-claim sessions to match, up to a
  * configurable concurrency cap. Each session claims one task, resolves it,
  * then idles for `idleTimeoutSeconds`. If no new task arrives in that
@@ -9,26 +9,26 @@
  * task arriving at any time triggers a reconciliation pass that may spawn
  * fresh sessions.
  *
- * Run-state (which sessions belong to a running Flock) is in-memory only,
- * matching the existing session-manager pattern. Only the Flock's
+ * Run-state (which sessions belong to a running AutoScaler) is in-memory only,
+ * matching the existing session-manager pattern. Only the AutoScaler's
  * configuration record persists across restarts.
  */
 
 import { broadcastToUser } from "./websocket-handler.js";
-import { createFlock as dbCreateFlock, getFlockById, getAllFlocks as dbGetAllFlocks, updateFlockStatus, deleteFlock as dbDeleteFlock } from "./db/flocks.js";
+import { createAutoScaler as dbCreateAutoScaler, getAutoScalerById, getAllAutoScalers as dbGetAllAutoScalers, updateAutoScalerStatus, deleteAutoScaler as dbDeleteAutoScaler } from "./db/autoscalers.js";
 import { getAvailableTaskCount, waitForTaskAvailable, notifyTaskAvailable } from "./agent/task-claimer.js";
 import { createSession, startSession, stopSession, getAllSessions } from "./session-manager.js";
 import { getAgentStageStates } from "./session-manager.js";
 import { log } from "./logger.js";
-import type { Flock, CreateFlockInput, Session } from "./types.js";
+import type { AutoScaler, CreateAutoScalerInput, Session } from "./types.js";
 
 // ---------------------------------------------------------------------------
-// In-memory flock state
+// In-memory autoScaler state
 // ---------------------------------------------------------------------------
 
-interface ManagedFlock {
-  flock: Flock;
-  /** Session IDs currently owned by this flock. */
+interface ManagedAutoScaler {
+  autoScaler: AutoScaler;
+  /** Session IDs currently owned by this autoScaler. */
   sessionIds: Set<number>;
   /** AbortController for the reconciliation loop. */
   abortController: AbortController;
@@ -36,58 +36,58 @@ interface ManagedFlock {
   reconciling: boolean;
 }
 
-const flocks = new Map<number, ManagedFlock>();
+const autoScalers = new Map<number, ManagedAutoScaler>();
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 /**
- * Create a new Flock (persisted, NOT auto-started).
+ * Create a new AutoScaler (persisted, NOT auto-started).
  */
-export async function createFlockRecord(input: CreateFlockInput): Promise<Flock> {
-  const flock = await dbCreateFlock(input);
-  broadcastToUser(flock.userId, { type: "flock-created", flock });
-  return flock;
+export async function createAutoScalerRecord(input: CreateAutoScalerInput): Promise<AutoScaler> {
+  const autoScaler = await dbCreateAutoScaler(input);
+  broadcastToUser(autoScaler.userId, { type: "autoscaler-created", autoScaler });
+  return autoScaler;
 }
 
 /**
- * Get all Flocks for a user.
+ * Get all AutoScalers for a user.
  */
-export async function getAllFlocks(userId: number): Promise<Flock[]> {
-  return dbGetAllFlocks(userId);
+export async function getAllAutoScalers(userId: number): Promise<AutoScaler[]> {
+  return dbGetAllAutoScalers(userId);
 }
 
 /**
- * Start a Flock — begins reconciliation loop.
+ * Start a AutoScaler — begins reconciliation loop.
  */
-export async function startFlock(flockId: number): Promise<Flock | null> {
-  const flock = await getFlockById(flockId);
-  if (!flock) return null;
+export async function startAutoScaler(autoScalerId: number): Promise<AutoScaler | null> {
+  const autoScaler = await getAutoScalerById(autoScalerId);
+  if (!autoScaler) return null;
 
   // Already running?
-  if (flocks.has(flockId)) {
-    return flock;
+  if (autoScalers.has(autoScalerId)) {
+    return autoScaler;
   }
 
-  const updated = await updateFlockStatus(flockId, "running");
+  const updated = await updateAutoScalerStatus(autoScalerId, "running");
   if (!updated) return null;
 
-  const managed: ManagedFlock = {
-    flock: updated,
+  const managed: ManagedAutoScaler = {
+    autoScaler: updated,
     sessionIds: new Set(),
     abortController: new AbortController(),
     reconciling: false,
   };
-  flocks.set(flockId, managed);
+  autoScalers.set(autoScalerId, managed);
 
-  broadcastToUser(updated.userId, { type: "flock-updated", flock: updated });
+  broadcastToUser(updated.userId, { type: "autoscaler-updated", autoScaler: updated });
 
   // Start the reconciliation loop (non-blocking).
   reconcileLoop(managed).catch((err) => {
-    log.warn("flock-reconcile-error", {
-      component: "flock-manager",
-      flockId,
+    log.warn("autoscaler-reconcile-error", {
+      component: "autoscaler-manager",
+      autoScalerId,
       msg: `Reconciliation loop crashed: ${err.message || err}`,
     });
   });
@@ -96,10 +96,10 @@ export async function startFlock(flockId: number): Promise<Flock | null> {
 }
 
 /**
- * Stop a Flock — stops all owned sessions and marks it stopped.
+ * Stop a AutoScaler — stops all owned sessions and marks it stopped.
  */
-export async function stopFlock(flockId: number): Promise<Flock | null> {
-  const managed = flocks.get(flockId);
+export async function stopAutoScaler(autoScalerId: number): Promise<AutoScaler | null> {
+  const managed = autoScalers.get(autoScalerId);
 
   // Stop the reconciliation loop.
   if (managed) {
@@ -114,47 +114,47 @@ export async function stopFlock(flockId: number): Promise<Flock | null> {
       }
     }
     managed.sessionIds.clear();
-    flocks.delete(flockId);
+    autoScalers.delete(autoScalerId);
   }
 
-  const updated = await updateFlockStatus(flockId, "stopped");
+  const updated = await updateAutoScalerStatus(autoScalerId, "stopped");
   if (updated) {
-    broadcastToUser(updated.userId, { type: "flock-updated", flock: updated });
+    broadcastToUser(updated.userId, { type: "autoscaler-updated", autoScaler: updated });
   }
   return updated;
 }
 
 /**
- * Delete a Flock. Stops it first if running.
+ * Delete a AutoScaler. Stops it first if running.
  */
-export async function deleteFlockRecord(flockId: number): Promise<boolean> {
+export async function deleteAutoScalerRecord(autoScalerId: number): Promise<boolean> {
   // Stop first if running.
-  const managed = flocks.get(flockId);
+  const managed = autoScalers.get(autoScalerId);
   if (managed) {
-    await stopFlock(flockId);
+    await stopAutoScaler(autoScalerId);
   }
 
-  const flock = await getFlockById(flockId);
-  const deleted = await dbDeleteFlock(flockId);
-  if (deleted && flock) {
-    broadcastToUser(flock.userId, { type: "flock-deleted", flockId });
+  const autoScaler = await getAutoScalerById(autoScalerId);
+  const deleted = await dbDeleteAutoScaler(autoScalerId);
+  if (deleted && autoScaler) {
+    broadcastToUser(autoScaler.userId, { type: "autoscaler-deleted", autoScalerId });
   }
   return deleted;
 }
 
 /**
- * Get the running session count for a flock (for UI display).
+ * Get the running session count for a autoScaler (for UI display).
  */
-export function getFlockRunningSessionCount(flockId: number): number {
-  return flocks.get(flockId)?.sessionIds.size ?? 0;
+export function getAutoScalerRunningSessionCount(autoScalerId: number): number {
+  return autoScalers.get(autoScalerId)?.sessionIds.size ?? 0;
 }
 
 /**
- * Get all flock running session counts for a user (for UI display).
+ * Get all autoScaler running session counts for a user (for UI display).
  */
-export function getFlockSessionCounts(): Map<number, number> {
+export function getAutoScalerSessionCounts(): Map<number, number> {
   const counts = new Map<number, number>();
-  for (const [id, managed] of flocks) {
+  for (const [id, managed] of autoScalers) {
     counts.set(id, managed.sessionIds.size);
   }
   return counts;
@@ -168,16 +168,16 @@ export function getFlockSessionCounts(): Map<number, number> {
  * Core reconciliation: determines how many sessions should be running and
  * spawns or lets natural attrition bring the count to the target.
  */
-async function reconcile(managed: ManagedFlock): Promise<void> {
+async function reconcile(managed: ManagedAutoScaler): Promise<void> {
   if (managed.abortController.signal.aborted) return;
   if (managed.reconciling) return;
   managed.reconciling = true;
 
   try {
-    const { flock } = managed;
+    const { autoScaler } = managed;
 
     // Prune sessions that are no longer running.
-    const allSessions = getAllSessions(flock.userId);
+    const allSessions = getAllSessions(autoScaler.userId);
     for (const sessionId of [...managed.sessionIds]) {
       const session = allSessions.find((s) => s.id === sessionId);
       if (!session || session.status !== "running") {
@@ -186,25 +186,25 @@ async function reconcile(managed: ManagedFlock): Promise<void> {
     }
 
     // Get available task count using agent's stage states.
-    const stages = await getAgentStageStates(flock.agentName);
+    const stages = await getAgentStageStates(autoScaler.agentName);
     const availableCount = await getAvailableTaskCount(
-      flock.tabIds,
+      autoScaler.tabIds,
       stages.claimState,
       stages.workingState
     );
 
     const currentRunning = managed.sessionIds.size;
     const desired =
-      flock.maxConcurrency > 0
-        ? Math.min(flock.maxConcurrency, availableCount)
+      autoScaler.maxConcurrency > 0
+        ? Math.min(autoScaler.maxConcurrency, availableCount)
         : availableCount;
 
     const toSpawn = desired - currentRunning;
     if (toSpawn <= 0) return;
 
-    log.info("flock-reconcile", {
-      component: "flock-manager",
-      flockId: flock.id,
+    log.info("autoscaler-reconcile", {
+      component: "autoscaler-manager",
+      autoScalerId: autoScaler.id,
       availableCount,
       currentRunning,
       desired,
@@ -215,14 +215,14 @@ async function reconcile(managed: ManagedFlock): Promise<void> {
     for (let i = 0; i < toSpawn; i++) {
       if (managed.abortController.signal.aborted) break;
       try {
-        const session = await spawnFlockSession(managed);
+        const session = await spawnAutoScalerSession(managed);
         if (session) {
           managed.sessionIds.add(session.id);
         }
       } catch (err) {
-        log.warn("flock-spawn-error", {
-          component: "flock-manager",
-          flockId: flock.id,
+        log.warn("autoscaler-spawn-error", {
+          component: "autoscaler-manager",
+          autoScalerId: autoScaler.id,
           msg: `Failed to spawn session: ${err instanceof Error ? err.message : err}`,
         });
         break;
@@ -234,19 +234,19 @@ async function reconcile(managed: ManagedFlock): Promise<void> {
 }
 
 /**
- * Spawn a single-claim session for the flock.
+ * Spawn a single-claim session for the autoScaler.
  */
-async function spawnFlockSession(managed: ManagedFlock): Promise<Session | null> {
-  const { flock } = managed;
+async function spawnAutoScalerSession(managed: ManagedAutoScaler): Promise<Session | null> {
+  const { autoScaler } = managed;
 
   const session = await createSession({
-    name: `${flock.name} #${managed.sessionIds.size + 1}`,
-    agent: flock.agentName,
+    name: `${autoScaler.name} #${managed.sessionIds.size + 1}`,
+    agent: autoScaler.agentName,
     loop: true,
     runs: 1, // single claim: one task, then idle/stop
-    tabIds: flock.tabIds,
-    model: flock.model,
-    userId: flock.userId,
+    tabIds: autoScaler.tabIds,
+    model: autoScaler.model,
+    userId: autoScaler.userId,
     interactive: false,
     timeoutSeconds: 0,
   });
@@ -261,24 +261,24 @@ async function spawnFlockSession(managed: ManagedFlock): Promise<Session | null>
 }
 
 /**
- * Watch a flock-owned session for completion. When it stops, trigger
+ * Watch a autoScaler-owned session for completion. When it stops, trigger
  * reconciliation to potentially spawn a replacement.
  */
-function watchSessionCompletion(managed: ManagedFlock, sessionId: number): void {
+function watchSessionCompletion(managed: ManagedAutoScaler, sessionId: number): void {
   const pollInterval = setInterval(() => {
     if (managed.abortController.signal.aborted) {
       clearInterval(pollInterval);
       return;
     }
 
-    const allSessions = getAllSessions(managed.flock.userId);
+    const allSessions = getAllSessions(managed.autoScaler.userId);
     const session = allSessions.find((s) => s.id === sessionId);
 
     if (!session || session.status !== "running") {
       clearInterval(pollInterval);
       managed.sessionIds.delete(sessionId);
 
-      // Trigger re-reconciliation if the flock is still active.
+      // Trigger re-reconciliation if the autoScaler is still active.
       if (!managed.abortController.signal.aborted) {
         reconcile(managed).catch(() => {});
       }
@@ -289,18 +289,18 @@ function watchSessionCompletion(managed: ManagedFlock, sessionId: number): void 
 /**
  * Main reconciliation loop: waits for task-available events and re-reconciles.
  */
-async function reconcileLoop(managed: ManagedFlock): Promise<void> {
-  const { flock } = managed;
+async function reconcileLoop(managed: ManagedAutoScaler): Promise<void> {
+  const { autoScaler } = managed;
   const signal = managed.abortController.signal;
 
   // Initial reconciliation.
   await reconcile(managed);
 
-  const stages = await getAgentStageStates(flock.agentName);
+  const stages = await getAgentStageStates(autoScaler.agentName);
 
   // Keep reconciling whenever a new task becomes available.
   while (!signal.aborted) {
-    await waitForTaskAvailable(flock.tabIds, stages.claimState, signal, stages.workingState);
+    await waitForTaskAvailable(autoScaler.tabIds, stages.claimState, signal, stages.workingState);
     if (signal.aborted) break;
     await reconcile(managed);
   }
