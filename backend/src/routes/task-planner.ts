@@ -133,6 +133,14 @@ if (isPoolEnabled()) {
  * System prompt for the task planner agent.
  * This instructs the AI to help the user define a well-structured task
  * through a conversational interview process.
+ *
+ * NOTE ON QUESTION FORMATTING: the frontend renderer
+ * (frontend/src/utils/renderPlannerMarkdown.ts) is the single source of truth
+ * for how these questions are displayed as cards. The formatting guidance in
+ * this prompt (each `**Qn — Title**:` header on its own line, preceded by a
+ * blank line, with `Rec:` on its own line) is a SOFT, non-load-bearing hint
+ * only — the renderer must not, and does not, rely on the model actually
+ * following it. Do not treat this format as a contract the renderer depends on.
  */
 const TASK_PLANNER_SYSTEM_PROMPT = `You are a Task Planner assistant. Your job is to help the user define a precise, actionable task through a structured interview — then produce a task description that an autonomous developer agent can execute without any follow-up questions.
 
@@ -152,9 +160,9 @@ Model the task as a decision tree. Every decision branches into further decision
 
 1. The FRONTIER is every decision whose prerequisites are already settled — the questions you can ask now without guessing at answers you haven't heard yet.
 2. Ask the entire frontier in one round. Number each question and provide your own recommended answer. Then STOP and WAIT for the user's answers before starting the next round.
-3. Format each question like this:
+3. Format each question like this — put the header on its own line, preceded by a blank line, and put \`Rec:\` on its own line (this keeps each question a visually distinct card):
 
-   **Q1 - <title>**: <question body>
+   **Q1 — <title>**: <question body>
 
    Rec: <your recommended answer>
 
