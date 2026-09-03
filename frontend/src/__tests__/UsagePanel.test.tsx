@@ -25,9 +25,45 @@ vi.mock('react-router-dom', async () => {
 const mockSetActiveView = vi.fn();
 const mockSetActiveSessionId = vi.fn();
 
-const mockUsageData = {
+// Two months of cached data, ordered oldest -> newest (as the endpoint returns).
+// July 2026 (older) and August 2026 (current/newest).
+const julyMonth = {
+  year: 2026,
+  month: 7,
+  monthLabel: 'July 2026',
+  from: '2026-07-01T00:00:00.000Z',
+  to: '2026-07-31T23:59:59.999Z',
+  totalCredits: 8.0,
+  totalCostEur: 0.32,
+  totalTurns: 2,
+  dailyBreakdown: [
+    { date: '2026-07-10', credits: 8.0, costEur: 0.32 },
+  ],
+  sessionBreakdown: [
+    {
+      sessionId: 3,
+      sessionName: 'July Session',
+      agent: 'developer-agent',
+      tabId: 1,
+      tabName: 'Tab A',
+      credits: 8.0,
+      costEur: 0.32,
+      turns: 2,
+      firstTurn: '2026-07-10T10:00:00.000Z',
+      lastTurn: '2026-07-10T15:00:00.000Z',
+    },
+  ],
+};
+
+const augustMonth = {
+  year: 2026,
+  month: 8,
+  monthLabel: 'August 2026',
+  from: '2026-08-01T00:00:00.000Z',
+  to: '2026-08-31T23:59:59.999Z',
   totalCredits: 25.5,
   totalCostEur: 1.02,
+  totalTurns: 8,
   dailyBreakdown: [
     { date: '2026-08-01', credits: 10.0, costEur: 0.40 },
     { date: '2026-08-05', credits: 15.5, costEur: 0.62 },
@@ -37,7 +73,8 @@ const mockUsageData = {
       sessionId: 1,
       sessionName: 'Dev Session',
       agent: 'developer-agent',
-      tabName: null,
+      tabId: 1,
+      tabName: 'Tab A',
       credits: 15.5,
       costEur: 0.62,
       turns: 5,
@@ -48,7 +85,8 @@ const mockUsageData = {
       sessionId: 2,
       sessionName: 'Review Session',
       agent: 'code-reviewer-agent',
-      tabName: null,
+      tabId: 2,
+      tabName: 'Tab B',
       credits: 10.0,
       costEur: 0.40,
       turns: 3,
@@ -57,6 +95,16 @@ const mockUsageData = {
     },
   ],
 };
+
+const mockMonthlyResponse = { months: [julyMonth, augustMonth] };
+
+function mockMonthly(response: unknown, ok = true) {
+  vi.mocked(api.apiFetch).mockResolvedValue({
+    ok,
+    status: ok ? 200 : 500,
+    json: async () => response,
+  } as any);
+}
 
 describe('UsagePanel', () => {
   beforeEach(() => {
@@ -78,95 +126,162 @@ describe('UsagePanel', () => {
   });
 
   it('shows error state on fetch failure', async () => {
-    vi.mocked(api.apiFetch).mockResolvedValue({
-      ok: false,
-      status: 500,
-      json: async () => ({}),
-    } as any);
+    mockMonthly({}, false);
     render(<MemoryRouter><UsagePanel /></MemoryRouter>);
     await waitFor(() => {
       expect(screen.getByText('Failed to load usage data')).toBeInTheDocument();
     });
   });
 
-  it('renders usage data correctly', async () => {
-    vi.mocked(api.apiFetch).mockResolvedValue({
-      ok: true,
-      json: async () => mockUsageData,
-    } as any);
-
+  it('opens on the current (newest) month', async () => {
+    mockMonthly(mockMonthlyResponse);
     render(<MemoryRouter><UsagePanel /></MemoryRouter>);
     await waitFor(() => {
-      expect(screen.getByText('25.50 credits')).toBeInTheDocument();
+      expect(screen.getByText('August 2026')).toBeInTheDocument();
     });
+    expect(screen.getByText('25.50 credits')).toBeInTheDocument();
     expect(screen.getByText('EUR 1.02')).toBeInTheDocument();
-    expect(screen.getByText('Dev Session')).toBeInTheDocument();
+  });
+
+  it('fetches the monthly endpoint exactly once on mount', async () => {
+    mockMonthly(mockMonthlyResponse);
+    render(<MemoryRouter><UsagePanel /></MemoryRouter>);
+    await waitFor(() => {
+      expect(screen.getByText('August 2026')).toBeInTheDocument();
+    });
+    expect(api.apiFetch).toHaveBeenCalledTimes(1);
+    expect(api.apiFetch).toHaveBeenCalledWith('/api/usage/monthly');
+  });
+
+  it('renders session data for the selected month', async () => {
+    mockMonthly(mockMonthlyResponse);
+    render(<MemoryRouter><UsagePanel /></MemoryRouter>);
+    await waitFor(() => {
+      expect(screen.getByText('Dev Session')).toBeInTheDocument();
+    });
     expect(screen.getByText('Review Session')).toBeInTheDocument();
     expect(screen.getByText('developer-agent')).toBeInTheDocument();
     expect(screen.getByText('code-reviewer-agent')).toBeInTheDocument();
   });
 
-  it('renders the tab filter dropdown', async () => {
-    vi.mocked(api.apiFetch).mockResolvedValue({
-      ok: true,
-      json: async () => mockUsageData,
-    } as any);
+  it('navigates between months without any network request', async () => {
+    mockMonthly(mockMonthlyResponse);
+    render(<MemoryRouter><UsagePanel /></MemoryRouter>);
+    await waitFor(() => {
+      expect(screen.getByText('August 2026')).toBeInTheDocument();
+    });
 
+    expect(api.apiFetch).toHaveBeenCalledTimes(1);
+
+    // Go back to July.
+    fireEvent.click(screen.getByLabelText('Previous month'));
+    await waitFor(() => {
+      expect(screen.getByText('July 2026')).toBeInTheDocument();
+    });
+    expect(screen.getByText('8.00 credits')).toBeInTheDocument();
+    expect(screen.getByText('July Session')).toBeInTheDocument();
+
+    // Go forward to August again.
+    fireEvent.click(screen.getByLabelText('Next month'));
+    await waitFor(() => {
+      expect(screen.getByText('August 2026')).toBeInTheDocument();
+    });
+
+    // No additional fetch was triggered by navigation.
+    expect(api.apiFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('disables the forward arrow at the current month and the back arrow at the oldest', async () => {
+    mockMonthly(mockMonthlyResponse);
+    render(<MemoryRouter><UsagePanel /></MemoryRouter>);
+    await waitFor(() => {
+      expect(screen.getByText('August 2026')).toBeInTheDocument();
+    });
+
+    // At the newest month: forward disabled, back enabled.
+    expect(screen.getByLabelText('Next month')).toBeDisabled();
+    expect(screen.getByLabelText('Previous month')).not.toBeDisabled();
+
+    // Move to the oldest month.
+    fireEvent.click(screen.getByLabelText('Previous month'));
+    await waitFor(() => {
+      expect(screen.getByText('July 2026')).toBeInTheDocument();
+    });
+
+    // At the oldest month: back disabled, forward enabled.
+    expect(screen.getByLabelText('Previous month')).toBeDisabled();
+    expect(screen.getByLabelText('Next month')).not.toBeDisabled();
+  });
+
+  it('renders the tab filter dropdown', async () => {
+    mockMonthly(mockMonthlyResponse);
     render(<MemoryRouter><UsagePanel /></MemoryRouter>);
     await waitFor(() => {
       expect(screen.getByLabelText('Filter by tab')).toBeInTheDocument();
     });
     expect(screen.getByText('All Tabs')).toBeInTheDocument();
-    expect(screen.getByText('Tab A')).toBeInTheDocument();
-    expect(screen.getByText('Tab B')).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Tab A' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Tab B' })).toBeInTheDocument();
   });
 
-  it('refetches when tab filter changes', async () => {
-    vi.mocked(api.apiFetch).mockResolvedValue({
-      ok: true,
-      json: async () => mockUsageData,
-    } as any);
-
+  it('filters totals and sessions from cache when tab changes, without refetching', async () => {
+    mockMonthly(mockMonthlyResponse);
     render(<MemoryRouter><UsagePanel /></MemoryRouter>);
     await waitFor(() => {
       expect(screen.getByText('25.50 credits')).toBeInTheDocument();
     });
 
-    // Change tab filter
+    expect(api.apiFetch).toHaveBeenCalledTimes(1);
+
+    // Select Tab B — only the Review Session (tabId 2, 10.0 credits) remains.
     fireEvent.change(screen.getByLabelText('Filter by tab'), { target: { value: '2' } });
+
     await waitFor(() => {
-      expect(api.apiFetch).toHaveBeenCalledWith(
-        expect.stringContaining('tabId=2')
-      );
+      expect(screen.getByText('10.00 credits')).toBeInTheDocument();
     });
+    expect(screen.getByText('Review Session')).toBeInTheDocument();
+    expect(screen.queryByText('Dev Session')).not.toBeInTheDocument();
+
+    // No network request fired for the tab change.
+    expect(api.apiFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('persists the tab filter across month navigation', async () => {
+    mockMonthly(mockMonthlyResponse);
+    render(<MemoryRouter><UsagePanel /></MemoryRouter>);
+    await waitFor(() => {
+      expect(screen.getByText('August 2026')).toBeInTheDocument();
+    });
+
+    // Filter to Tab A.
+    fireEvent.change(screen.getByLabelText('Filter by tab'), { target: { value: '1' } });
+    await waitFor(() => {
+      // August Tab A = Dev Session (15.5).
+      expect(screen.getByText('15.50 credits')).toBeInTheDocument();
+    });
+
+    // Navigate to July — filter should still be Tab A.
+    fireEvent.click(screen.getByLabelText('Previous month'));
+    await waitFor(() => {
+      expect(screen.getByText('July 2026')).toBeInTheDocument();
+    });
+    expect((screen.getByLabelText('Filter by tab') as HTMLSelectElement).value).toBe('1');
+    // July Tab A = July Session (8.0).
+    expect(screen.getByText('8.00 credits')).toBeInTheDocument();
+    expect(screen.getByText('July Session')).toBeInTheDocument();
   });
 
   it('sorts sessions when header is clicked', async () => {
-    vi.mocked(api.apiFetch).mockResolvedValue({
-      ok: true,
-      json: async () => mockUsageData,
-    } as any);
-
+    mockMonthly(mockMonthlyResponse);
     render(<MemoryRouter><UsagePanel /></MemoryRouter>);
     await waitFor(() => {
       expect(screen.getByText('Dev Session')).toBeInTheDocument();
     });
 
-    // Default sort is by credits desc — Dev Session (15.5) comes before Review Session (10.0)
-    const sessionCells = screen.getAllByRole('button');
-    // The session rows are interactive (role=button)
-    const devRow = sessionCells.find(el => el.textContent?.includes('Dev Session'));
-    const reviewRow = sessionCells.find(el => el.textContent?.includes('Review Session'));
-    expect(devRow).toBeDefined();
-    expect(reviewRow).toBeDefined();
-
-    // Click "Turns" header to sort — it will be desc on first click since it's a new key
+    // Click "Turns" header (new key -> desc), then again to toggle to asc.
+    fireEvent.click(screen.getByText(/^Turns/));
     fireEvent.click(screen.getByText(/^Turns/));
 
-    // Click again to toggle to ascending (3 turns before 5)
-    fireEvent.click(screen.getByText(/^Turns/));
-
-    // After ascending sort, Review Session (3 turns) should appear before Dev Session (5 turns)
     const updatedRows = screen.getAllByRole('button').filter(
       el => el.textContent?.includes('Session')
     );
@@ -175,11 +290,7 @@ describe('UsagePanel', () => {
   });
 
   it('navigates to session detail on row click', async () => {
-    vi.mocked(api.apiFetch).mockResolvedValue({
-      ok: true,
-      json: async () => mockUsageData,
-    } as any);
-
+    mockMonthly(mockMonthlyResponse);
     render(<MemoryRouter><UsagePanel /></MemoryRouter>);
     await waitFor(() => {
       expect(screen.getByText('Dev Session')).toBeInTheDocument();
@@ -190,17 +301,23 @@ describe('UsagePanel', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/sessions/1');
   });
 
-  it('shows empty state when no sessions have credits', async () => {
-    vi.mocked(api.apiFetch).mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        totalCredits: 0,
-        totalCostEur: 0,
-        dailyBreakdown: [],
-        sessionBreakdown: [],
-      }),
-    } as any);
-
+  it('shows empty state when the selected month has no sessions', async () => {
+    mockMonthly({
+      months: [
+        {
+          year: 2026,
+          month: 8,
+          monthLabel: 'August 2026',
+          from: '2026-08-01T00:00:00.000Z',
+          to: '2026-08-31T23:59:59.999Z',
+          totalCredits: 0,
+          totalCostEur: 0,
+          totalTurns: 0,
+          dailyBreakdown: [],
+          sessionBreakdown: [],
+        },
+      ],
+    });
     render(<MemoryRouter><UsagePanel /></MemoryRouter>);
     await waitFor(() => {
       expect(screen.getByText('No sessions consumed credits this period.')).toBeInTheDocument();
@@ -210,89 +327,58 @@ describe('UsagePanel', () => {
 
   it('maps daily breakdown dates by string parsing, not timezone-sensitive Date object', async () => {
     // Regression: new Date('2026-08-01').getDate() can return 31 in negative UTC offsets.
-    // The fix must parse the day directly from the 'YYYY-MM-DD' string.
-    const dataWithDay1 = {
-      totalCredits: 5.0,
-      totalCostEur: 0.20,
-      dailyBreakdown: [
-        { date: '2026-08-01', credits: 5.0, costEur: 0.20 },
+    mockMonthly({
+      months: [
+        {
+          year: 2026,
+          month: 8,
+          monthLabel: 'August 2026',
+          from: '2026-08-01T00:00:00.000Z',
+          to: '2026-08-31T23:59:59.999Z',
+          totalCredits: 5.0,
+          totalCostEur: 0.20,
+          totalTurns: 1,
+          dailyBreakdown: [
+            { date: '2026-08-01', credits: 5.0, costEur: 0.20 },
+          ],
+          sessionBreakdown: [],
+        },
       ],
-      sessionBreakdown: [],
-    };
-
-    vi.mocked(api.apiFetch).mockResolvedValue({
-      ok: true,
-      json: async () => dataWithDay1,
-    } as any);
+    });
 
     render(<MemoryRouter><UsagePanel /></MemoryRouter>);
     await waitFor(() => {
       expect(screen.getByText('5.00 credits')).toBeInTheDocument();
     });
 
-    // Day 1 should have the bar with title containing "Day 1"
     const bar = screen.getByTitle(/Day 1:/);
     expect(bar).toBeInTheDocument();
     expect(bar.getAttribute('title')).toContain('5.00 credits');
   });
 
   it('renders a Tab column in the session breakdown table', async () => {
-    const dataWithTabs = {
-      totalCredits: 25.5,
-      totalCostEur: 1.02,
-      dailyBreakdown: [
-        { date: '2026-08-01', credits: 10.0, costEur: 0.40 },
-      ],
-      sessionBreakdown: [
-        {
-          sessionId: 1,
-          sessionName: 'Dev Session',
-          agent: 'developer-agent',
-          tabName: 'VCH',
-          credits: 15.5,
-          costEur: 0.62,
-          turns: 5,
-          firstTurn: '2026-08-01T10:00:00.000Z',
-          lastTurn: '2026-08-05T15:00:00.000Z',
-        },
-      ],
-    };
-
-    vi.mocked(api.apiFetch).mockResolvedValue({
-      ok: true,
-      json: async () => dataWithTabs,
-    } as any);
-
+    mockMonthly(mockMonthlyResponse);
     render(<MemoryRouter><UsagePanel /></MemoryRouter>);
     await waitFor(() => {
       expect(screen.getByText('Dev Session')).toBeInTheDocument();
     });
 
-    // There should be a "Tab" column header
     expect(screen.getByText('Tab')).toBeInTheDocument();
-    // And the tab name in the row
-    expect(screen.getByText('VCH')).toBeInTheDocument();
+    // Both August sessions belong to Tab A / Tab B respectively.
+    expect(screen.getAllByText('Tab A').length).toBeGreaterThan(0);
   });
 
   it('makes sortable table headers keyboard-accessible', async () => {
-    vi.mocked(api.apiFetch).mockResolvedValue({
-      ok: true,
-      json: async () => mockUsageData,
-    } as any);
-
+    mockMonthly(mockMonthlyResponse);
     render(<MemoryRouter><UsagePanel /></MemoryRouter>);
     await waitFor(() => {
       expect(screen.getByText('Dev Session')).toBeInTheDocument();
     });
 
-    // Each sortable th should be keyboard accessible
     const creditsHeader = screen.getByText(/^Credits/);
     expect(creditsHeader.closest('th')).toHaveAttribute('tabindex', '0');
 
-    // Should respond to Enter key
     fireEvent.keyDown(creditsHeader.closest('th')!, { key: 'Enter' });
-    // After pressing Enter on credits (already sorted desc), it toggles to asc
-    // Review Session (10.0) should now appear before Dev Session (15.5)
     const rows = screen.getAllByRole('button').filter(
       el => el.textContent?.includes('Session')
     );

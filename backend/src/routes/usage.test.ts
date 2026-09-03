@@ -258,6 +258,158 @@ describe("GET /api/usage — response shape matches frontend expectations", () =
   });
 });
 
+describe("GET /api/usage/monthly", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Every per-month getUsage call resolves with an empty summary by default.
+    (getUsage as any).mockResolvedValue({
+      totalCredits: 0,
+      totalCostEur: 0,
+      dailyBreakdown: [],
+      sessionBreakdown: [],
+    });
+  });
+
+  it("returns exactly 12 month entries", async () => {
+    const app = createApp();
+    const res = await request(app).get("/api/usage/monthly");
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty("months");
+    expect(Array.isArray(res.body.months)).toBe(true);
+    expect(res.body.months).toHaveLength(12);
+    // One getUsage call per month.
+    expect(getUsage).toHaveBeenCalledTimes(12);
+  });
+
+  it("orders months oldest -> newest", async () => {
+    const app = createApp();
+    const res = await request(app).get("/api/usage/monthly");
+    expect(res.status).toBe(200);
+
+    const months = res.body.months as Array<{ year: number; month: number; from: string }>;
+    for (let i = 1; i < months.length; i++) {
+      const prev = months[i - 1];
+      const curr = months[i];
+      const prevKey = prev.year * 12 + prev.month;
+      const currKey = curr.year * 12 + curr.month;
+      expect(currKey).toBeGreaterThan(prevKey);
+      expect(new Date(curr.from).getTime()).toBeGreaterThan(new Date(prev.from).getTime());
+    }
+  });
+
+  it("each entry has the documented fields", async () => {
+    const app = createApp();
+    const res = await request(app).get("/api/usage/monthly");
+    expect(res.status).toBe(200);
+
+    for (const entry of res.body.months) {
+      expect(entry).toHaveProperty("year");
+      expect(typeof entry.year).toBe("number");
+      expect(entry).toHaveProperty("month");
+      expect(entry.month).toBeGreaterThanOrEqual(1);
+      expect(entry.month).toBeLessThanOrEqual(12);
+      expect(entry).toHaveProperty("monthLabel");
+      expect(typeof entry.monthLabel).toBe("string");
+      expect(entry).toHaveProperty("from");
+      expect(entry.from).toMatch(/^\d{4}-\d{2}-\d{2}T00:00:00\.000Z$/);
+      expect(entry).toHaveProperty("to");
+      expect(entry.to).toMatch(/^\d{4}-\d{2}-\d{2}T23:59:59\.999Z$/);
+      expect(entry).toHaveProperty("totalCredits");
+      expect(entry).toHaveProperty("totalCostEur");
+      expect(entry).toHaveProperty("totalTurns");
+      expect(entry).toHaveProperty("dailyBreakdown");
+      expect(Array.isArray(entry.dailyBreakdown)).toBe(true);
+      expect(entry).toHaveProperty("sessionBreakdown");
+      expect(Array.isArray(entry.sessionBreakdown)).toBe(true);
+    }
+  });
+
+  it("computes totalTurns from the session breakdown per month", async () => {
+    (getUsage as any).mockResolvedValue({
+      totalCredits: 3.0,
+      totalCostEur: 0.12,
+      dailyBreakdown: [],
+      sessionBreakdown: [
+        { sessionId: 1, sessionName: "A", agent: "dev", tabId: 2, tabName: "VCH", credits: 2, costEur: 0.08, turns: 5, firstTurn: "x", lastTurn: "y" },
+        { sessionId: 2, sessionName: "B", agent: "rev", tabId: null, tabName: null, credits: 1, costEur: 0.04, turns: 3, firstTurn: "x", lastTurn: "y" },
+      ],
+    });
+
+    const app = createApp();
+    const res = await request(app).get("/api/usage/monthly");
+    expect(res.status).toBe(200);
+    for (const entry of res.body.months) {
+      expect(entry.totalTurns).toBe(8);
+      expect(entry.totalCredits).toBe(3.0);
+      expect(entry.totalCostEur).toBe(0.12);
+    }
+  });
+
+  it("sessionBreakdown entries include tabId", async () => {
+    (getUsage as any).mockResolvedValue({
+      totalCredits: 1.5,
+      totalCostEur: 0.06,
+      dailyBreakdown: [],
+      sessionBreakdown: [
+        {
+          sessionId: 1,
+          sessionName: "Dev Agent",
+          agent: "developer-agent",
+          tabId: 2,
+          tabName: "VCH",
+          credits: 1.5,
+          costEur: 0.06,
+          turns: 10,
+          firstTurn: "2026-08-20T06:00:00.000Z",
+          lastTurn: "2026-08-20T18:00:00.000Z",
+        },
+      ],
+    });
+
+    const app = createApp();
+    const res = await request(app).get("/api/usage/monthly");
+    expect(res.status).toBe(200);
+
+    const nonEmpty = res.body.months.find((m: any) => m.sessionBreakdown.length > 0);
+    expect(nonEmpty).toBeTruthy();
+    const session = nonEmpty.sessionBreakdown[0];
+    expect(session).toHaveProperty("tabId", 2);
+    expect(session).toHaveProperty("tabName", "VCH");
+  });
+
+  it("always requests all-tabs data (tabId null) even if tabId query param is provided", async () => {
+    const app = createApp();
+    await request(app).get("/api/usage/monthly?tabId=2");
+    for (const call of (getUsage as any).mock.calls) {
+      expect(call[0].tabId).toBeNull();
+    }
+  });
+
+  it("clamps months param to a max of 12", async () => {
+    const app = createApp();
+    const res = await request(app).get("/api/usage/monthly?months=48");
+    expect(res.status).toBe(200);
+    expect(res.body.months).toHaveLength(12);
+    expect(getUsage).toHaveBeenCalledTimes(12);
+  });
+
+  it("returns fewer months when a smaller months param is given", async () => {
+    const app = createApp();
+    const res = await request(app).get("/api/usage/monthly?months=3");
+    expect(res.status).toBe(200);
+    expect(res.body.months).toHaveLength(3);
+    expect(getUsage).toHaveBeenCalledTimes(3);
+  });
+
+  it("returns 500 on DB error", async () => {
+    (getUsage as any).mockRejectedValue(new Error("DB down"));
+    const app = createApp();
+    const res = await request(app).get("/api/usage/monthly");
+    expect(res.status).toBe(500);
+    expect(res.body.error).toMatch(/Failed to fetch monthly usage/i);
+  });
+});
+
 describe("GET /api/usage/current-month", () => {
   beforeEach(() => {
     vi.clearAllMocks();
