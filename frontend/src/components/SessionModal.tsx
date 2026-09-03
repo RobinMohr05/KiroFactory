@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { apiFetch } from '../utils/api';
-import { ModelCombobox } from './ModelCombobox';
+import { ModelSelect } from './ModelSelect';
 import { Cron } from 'react-js-cron';
 import 'react-js-cron/dist/styles.css';
 import type { Agent, Session, McpServerConfig } from '../types';
@@ -323,7 +323,7 @@ export function SessionModal({ session, scheduled: scheduledProp, onClose }: Ses
             </div>
             <div className="form-group">
               <label htmlFor="sessionModel">Model</label>
-              <ModelCombobox id="sessionModel" value={model} onChange={setModel} placeholder="e.g. claude-sonnet-4" />
+              <ModelSelect id="sessionModel" value={model} onChange={setModel} placeholder="e.g. claude-sonnet-4" />
             </div>
           </div>
           <div className="form-group">
