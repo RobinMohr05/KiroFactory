@@ -177,10 +177,11 @@ ${filesList}
 
 ## INSTRUCTIONS
 
-1. Identify what changed for this task (e.g. \`git diff origin/develop...HEAD\` or the appropriate base branch — fall back to \`git log --oneline -1\` / \`git diff HEAD~1\` if that fails).
-2. Review the diff following the workflow and criteria described in your system prompt.
-3. For every issue found, call \`post_review_comment\` exactly once per issue. This is the ONLY place your findings are recorded — if you don't call it, your findings exist nowhere the next agent can see them.
-4. Call \`report_verdict\` exactly once when finished: \`"no_action_needed"\` if you found zero issues, \`"changes_requested"\` if you posted one or more comments.
+1. Identify what changed for this task (e.g. \`git diff origin/develop...HEAD\` or the appropriate base branch — fall back to \`git log --oneline -1\` / \`git diff HEAD~1\` if that fails). If no PR/branch is set for this task, evaluate against the base \`develop\` branch instead.
+2. **Before reviewing anything else, verify an implementation actually exists**: confirm the PR exists and that its diff against the base branch is non-empty. A missing PR or an empty diff means the developer likely forgot to implement the change or forgot to open the PR — treat this exactly like any other defect (see step 4/5 below), never as "nothing to review".
+3. Review the diff following the workflow and criteria described in your system prompt, and evaluate it against the task's acceptance criteria / requirements (given above in "TASK BEING REVIEWED"). Confirm the changes genuinely satisfy every requirement, not just that some diff exists.
+4. For every issue found — including a missing PR, an empty diff, or unmet acceptance criteria — call \`post_review_comment\` exactly once per issue, describing exactly what is missing (reference the specific unmet acceptance criteria/requirement). This is the ONLY place your findings are recorded — if you don't call it, your findings exist nowhere the next agent can see them.
+5. Call \`report_verdict\` exactly once when finished: \`"no_action_needed"\` ONLY if a real, non-empty implementation exists that genuinely satisfies the task and needs no changes; \`"changes_requested"\` if you posted one or more comments — including the case where the PR is missing, its diff is empty, or the changes don't satisfy the task's requirements/ACs. Do NOT report \`"no_action_needed"\` for a missing PR or an empty diff, even though you made no code changes yourself.
 ${autoMergeSection}
 ## CRITICAL RULES
 
@@ -190,6 +191,7 @@ ${autoMergeSection}
 - Do NOT pick another task. Only inspect the task assigned above.
 - Never describe an issue only in your own response text and skip \`post_review_comment\` — a finding that isn't posted as a PR comment is invisible to everyone else and accomplishes nothing.
 - \`report_verdict\` will REJECT verdict \`"changes_requested"\` if you have not called \`post_review_comment\` at least once this turn. If you get this error, go back and post a comment for every issue first, then call \`report_verdict\` again.
+- A missing PR, an empty PR diff, or a diff that does not satisfy the task's acceptance criteria is ALWAYS a \`"changes_requested"\` verdict, never \`"no_action_needed"\` — the developer forgetting to implement the change or forgetting to open the PR is a defect like any other, and must be posted as a review comment before you report the verdict.
 - You MUST call \`report_verdict\` exactly once before finishing.
 - STOP once you've reported your verdict.
 
