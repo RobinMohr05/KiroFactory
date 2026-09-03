@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
+import { useEffect, useState, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { apiFetch } from '../utils/api';
@@ -42,7 +42,7 @@ type SortDir = 'asc' | 'desc';
 const POLL_INTERVAL_MS = 300000; // 5 minutes
 
 export function UsagePanel() {
-  const { tabs, setActiveView, setActiveSessionId } = useApp();
+  const { tabs, setActiveSessionId } = useApp();
   const navigate = useNavigate();
   const [months, setMonths] = useState<MonthUsage[]>([]);
   const [selectedMonthIndex, setSelectedMonthIndex] = useState<number | null>(null);
@@ -51,11 +51,6 @@ export function UsagePanel() {
   const [selectedTabId, setSelectedTabId] = useState<number | null>(null);
   const [sortKey, setSortKey] = useState<SortKey>('credits');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
-
-  // Keep the currently-selected index stable across polls without making the
-  // fetch callback depend on it (which would restart the polling interval).
-  const selectedIndexRef = useRef<number | null>(null);
-  selectedIndexRef.current = selectedMonthIndex;
 
   const fetchMonthly = useCallback(async () => {
     setError(null);
