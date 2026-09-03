@@ -242,4 +242,157 @@ describe('renderPlannerMarkdown', () => {
       expect(body).toContain('(C) Neither');
     });
   });
+
+  describe('rendering-bug fixes (task #1670)', () => {
+    // Defect 1: literal markdown leaking in the header. A header whose closing
+    // ** has a space before it (`**Q1 — Title **:`) is not treated as strong
+    // emphasis by CommonMark, so the raw ** would leak as visible text.
+    it('renders a header with ** as bold with no literal * characters', () => {
+      const input = '**Q1 — Title**: What is the scope?\nRec: yes';
+      const result = renderPlannerMarkdown(input);
+      const headerMatch = result.match(/<div class="planner-question-header">([\s\S]*?)<\/div>/);
+      expect(headerMatch).not.toBeNull();
+      const header = headerMatch![1];
+      expect(header).toContain('<strong>');
+      expect(header).not.toContain('*');
+    });
+
+    it('does not leak ** when the closing marker has a stray space', () => {
+      const input = '**Q1 — Title **: What is the scope?\nRec: yes';
+      const result = renderPlannerMarkdown(input);
+      const headerMatch = result.match(/<div class="planner-question-header">([\s\S]*?)<\/div>/);
+      expect(headerMatch).not.toBeNull();
+      const header = headerMatch![1];
+      expect(header).toContain('<strong>');
+      expect(header).not.toContain('*');
+      expect(header).toContain('Q1');
+      expect(header).toContain('Title');
+    });
+
+    // Defect 4 + (b): a full multi-question message renders as N separate cards.
+    it('renders a full multi-question message as N separate .planner-question cards', () => {
+      const input = [
+        'Here are your questions:',
+        '',
+        '**Q1 — Scope**: What is the scope?',
+        '(A) Small',
+        'Rec: (A) Small',
+        '',
+        '**Q2 — Timeline**: When?',
+        '(A) One week',
+        'Rec: (A) One week',
+        '',
+        '**Q3 — Budget**: How much?',
+        '(A) Low',
+        'Rec: (A) Low',
+      ].join('\n');
+      const result = renderPlannerMarkdown(input);
+      const matches = result.match(/class="planner-question"/g);
+      expect(matches).not.toBeNull();
+      expect(matches!.length).toBe(3);
+    });
+
+    // Defect 4 regression: the second question lost its bold ** (bare `Q3 —`)
+    // and previously got swallowed into the prior card. Must still produce two
+    // separate cards.
+    it('splits a bare (un-bolded) Q header into its own card', () => {
+      const input = [
+        '**Q2 — Timeline**: When?',
+        '(A) week',
+        'Rec: (A) week',
+        'Q3 — Budget: How much?',
+        '(A) low',
+        'Rec: (A) low',
+      ].join('\n');
+      const result = renderPlannerMarkdown(input);
+      const matches = result.match(/class="planner-question"/g);
+      expect(matches).not.toBeNull();
+      expect(matches!.length).toBe(2);
+      // The bare header must be normalized to bold with no literal *
+      expect(result).toContain('Q3');
+      expect(result).toContain('Budget');
+    });
+
+    it('normalizes a bare Q header to a bold header with no leaked markers', () => {
+      const input = 'Q1 — Scope: What is the scope?\nRec: (A) Small';
+      const result = renderPlannerMarkdown(input);
+      const headerMatch = result.match(/<div class="planner-question-header">([\s\S]*?)<\/div>/);
+      expect(headerMatch).not.toBeNull();
+      const header = headerMatch![1];
+      expect(header).toContain('<strong>');
+      expect(header).not.toContain('*');
+    });
+
+    // Defect 3: the full Rec: line renders inside its card as <strong>Rec:</strong> …
+    it('renders the full Rec: line inside its card', () => {
+      const input = '**Q1 — Scope**: What is the scope?\nRec: (A) Small — recommended for the given constraints';
+      const result = renderPlannerMarkdown(input);
+      const recMatch = result.match(/<div class="planner-question-rec">([\s\S]*?)<\/div>/);
+      expect(recMatch).not.toBeNull();
+      const rec = recMatch![1];
+      expect(rec).toContain('<strong>Rec:</strong>');
+      expect(rec).toContain('(A) Small — recommended for the given constraints');
+    });
+
+    // Defect 5 / streaming: a partial snippet with an unclosed ** must not throw.
+    it('does not throw on a partial streaming snippet with an unclosed **', () => {
+      expect(() => renderPlannerMarkdown('**Q1 — Scope**: partial with `code frag')).not.toThrow();
+      expect(() => renderPlannerMarkdown('**Q1 — Sco')).not.toThrow();
+      expect(() => renderPlannerMarkdown('some prose with an unterminated ```code fence')).not.toThrow();
+    });
+
+    // Defect 4 (reviewer follow-up): a header where the bold span closes
+    // right after the number and the separator sits OUTSIDE it — e.g.
+    // `**Q1**: Title` or `**Q1** — Title` — was not detected because the char
+    // after the number is the closing `*`, not a separator/whitespace. It must
+    // still be detected as a question header and get its own card.
+    it('detects a header where ** closes right after the number (colon outside)', () => {
+      const input = [
+        '**Q1**: What is the scope?',
+        '(A) Small',
+        'Rec: (A) Small',
+        '',
+        '**Q2**: When?',
+        '(A) week',
+        'Rec: (A) week',
+      ].join('\n');
+      const result = renderPlannerMarkdown(input);
+      const matches = result.match(/class="planner-question"/g);
+      expect(matches).not.toBeNull();
+      expect(matches!.length).toBe(2);
+      expect(result).not.toContain('**');
+    });
+
+    it('detects a header where ** closes right after the number (em-dash outside)', () => {
+      const input = [
+        '**Q1** — What is the scope?',
+        '(A) Small',
+        'Rec: (A) Small',
+        '',
+        '**Q2** — When?',
+        '(A) week',
+        'Rec: (A) week',
+      ].join('\n');
+      const result = renderPlannerMarkdown(input);
+      const matches = result.match(/class="planner-question"/g);
+      expect(matches).not.toBeNull();
+      expect(matches!.length).toBe(2);
+      expect(result).not.toContain('**');
+    });
+
+    // General catch-all: no raw ** leaks into a completed multi-question render.
+    it('leaks no ** into the final rendered output of a completed message', () => {
+      const input = [
+        '**Q1 — Scope **: What is the scope?',
+        '(A) Small',
+        'Rec: (A) Small',
+        '',
+        'Q2 — Timeline: When?',
+        '(A) week',
+        'Rec: (A) week',
+      ].join('\n');
+      const result = renderPlannerMarkdown(input);
+      expect(result).not.toContain('**');
+    });
+  });
 });

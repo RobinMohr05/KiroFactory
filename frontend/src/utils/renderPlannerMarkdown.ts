@@ -46,16 +46,78 @@ marked.use({
 });
 
 /**
- * Regex that matches the start of a question block.
- * Matches lines like:
- *   **Q1 - Title**: body    (hyphen separator)
- *   **Q1 — Title**: body    (em-dash separator)
- *   **Q1: Title**           (colon separator)
- *   **Q2 Some title**       (no separator)
- * The key is: line starts (optionally with whitespace), then "**Q" followed
- * by one or more digits, with anything else still inside the **...**.
+ * IMPORTANT — the renderer is the single source of truth for how planner
+ * output is displayed. It must NOT rely on the planner prompt (see
+ * TASK_PLANNER_SYSTEM_PROMPT in backend/src/routes/task-planner.ts) actually
+ * following its own formatting hint. The prompt only *suggests* a shape
+ * (`**Qn — Title**:` on its own line, blank-line separated, `Rec:` on its own
+ * line); this renderer is authoritative and must degrade gracefully for any
+ * reasonable markdown the planner emits, including headers whose bold markers
+ * are malformed or missing entirely.
+ *
+ * Regex that matches the start of a question block. It detects a question
+ * header by the `Q<number>` + separator pattern, whether or not the bold
+ * `**...**` markers are present. Matches lines like:
+ *   **Q1 - Title**: body    (hyphen separator, bold)
+ *   **Q1 — Title**: body    (em-dash separator, bold)
+ *   **Q1: Title**           (colon separator, bold)
+ *   **Q2 Some title**       (whitespace separator, bold)
+ *   Q3 — Budget: body       (em-dash separator, NO bold — was previously
+ *                            swallowed into the prior card; see defect #4)
+ *   Q4: body                (colon separator, no bold)
+ *   **Q1**: Title           (bold closes right after the number, separator
+ *                            OUTSIDE the bold span)
+ *   **Q1** — Title          (same, em-dash separator outside the bold span)
+ *
+ * The key is: line starts (optionally with whitespace), then optional `**`,
+ * then "Q" followed by one or more digits, then an OPTIONAL closing `**` (to
+ * cover headers whose bold span wraps only the label/number, leaving the
+ * separator outside — e.g. `**Q1**: Title`), then a separator (`—`, `–`, `-`,
+ * `:`, or whitespace). Requiring a separator avoids misfiring on prose that
+ * merely starts with a "Q<number>" token with no delimiter.
  */
-const QUESTION_LINE_RE = /^\s*\*\*Q\d+/;
+const QUESTION_LINE_RE = /^\s*(?:\*\*\s*)?Q\d+\s*(?:\*\*)?\s*(?:[—–:-]|\s)/;
+
+/**
+ * Normalizes a question header line into leak-free HTML where the header label
+ * always renders bold. Two cases, both guaranteed to emit no literal `*`:
+ *
+ *  1. The line contains a (possibly malformed) bold span around the label —
+ *     e.g. `**Q1 — Title**: rest` or the malformed `**Q1 — Title **: rest`
+ *     (stray space before the closer, which CommonMark refuses to treat as
+ *     strong emphasis and would otherwise leak `**`). We split at the label's
+ *     closing `**`, bold the label, and render the trailing remainder as normal
+ *     inline text — preserving the original "bold label + regular body" look.
+ *  2. No usable bold span (a bare `Q3 — …` header that lost its markers, or a
+ *     line with a single stray `*`). We strip every `*` and bold the whole
+ *     header line.
+ *
+ * In all cases any inline markup inside the parts (e.g. `` `code` ``) is
+ * preserved via inline rendering, and no `*` survives into the output.
+ */
+function renderQuestionHeader(line: string): string {
+  const trimmed = line.trim();
+  if (!trimmed) return '';
+
+  const inline = (s: string): string =>
+    s ? (marked.parseInline(s) as string).trim() : '';
+
+  // Try to isolate a leading bold label: `**<label>**<rest>`. Tolerate a stray
+  // space just inside the markers (`** label **`) that would break CommonMark.
+  const boldMatch = trimmed.match(/^\*\*\s*([\s\S]*?)\s*\*\*(.*)$/);
+  if (boldMatch) {
+    const label = boldMatch[1].replace(/\*/g, '').trim();
+    const rest = boldMatch[2].replace(/\*/g, '');
+    const restHtml = inline(rest);
+    return restHtml
+      ? `<strong>${inline(label)}</strong>${restHtml}`
+      : `<strong>${inline(label)}</strong>`;
+  }
+
+  // No bold span present — strip any stray * and bold the whole header line.
+  const bare = trimmed.replace(/\*/g, '').trim();
+  return bare ? `<strong>${inline(bare)}</strong>` : '';
+}
 
 /**
  * Matches a "Rec:" line (recommendation), optionally with leading whitespace.
@@ -236,8 +298,11 @@ function renderQuestionCard(lines: string[]): string {
   const headerLine = trimmedLines[0];
   const bodyLines = trimmedLines.slice(1);
 
-  // Render the header line as markdown (preserves **bold** etc.)
-  const headerHtml = (marked.parse(headerLine) as string).trim();
+  // Normalize the header to a single, consistent bold form. This guarantees the
+  // header always renders bold with no leaked `*` characters, regardless of
+  // whether the original line used well-formed bold, malformed bold (stray
+  // space before the closing **), or no bold at all (a bare `Q3 — …`).
+  const headerHtml = renderQuestionHeader(headerLine);
 
   // Separate body lines from Rec: lines
   const recLines: string[] = [];

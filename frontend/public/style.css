@@ -3641,8 +3641,11 @@ textarea:focus {
   border-radius: var(--radius-sm);
   font-family: monospace;
   font-size: 0.85em;
+  /* Inline `code` spans inside question cards can be long, unbroken tokens
+     (file paths, identifiers). Allow breaking anywhere so they wrap instead of
+     overflowing the card horizontally. */
   word-break: break-word;
-  overflow-wrap: break-word;
+  overflow-wrap: anywhere;
 }
 
 .planner-message pre {
@@ -3672,6 +3675,11 @@ textarea:focus {
   border-radius: var(--radius-sm);
   padding: 0.6rem;
   margin: 0.5rem 0;
+  /* Contain long unbroken tokens (inline code, URLs) so a card wraps/clips
+     instead of overflowing the chat bubble horizontally. */
+  min-width: 0;
+  overflow: hidden;
+  overflow-wrap: anywhere;
 }
 
 .planner-message.assistant .planner-question + .planner-question {
