@@ -68,6 +68,37 @@ describe("buildReviewPrompt", () => {
       expect(promptWithout).toContain("report_verdict");
     });
   });
+
+  describe("no-implementation / missing-PR safeguard", () => {
+    it("instructs the inspector to verify a non-empty implementation/PR exists before reporting a verdict", () => {
+      const prompt = buildReviewPrompt(makeTask(), "/workspace");
+      expect(prompt).toContain("verify an implementation actually exists");
+      expect(prompt).toContain("PR exists");
+      expect(prompt).toContain("diff against the base branch is non-empty");
+    });
+
+    it("instructs the inspector to evaluate the diff against the task's acceptance criteria", () => {
+      const prompt = buildReviewPrompt(makeTask(), "/workspace");
+      expect(prompt).toContain("acceptance criteria");
+    });
+
+    it("instructs the inspector to report changes_requested (not no_action_needed) when the PR/diff is missing or empty", () => {
+      const prompt = buildReviewPrompt(makeTask(), "/workspace");
+      expect(prompt).toContain("missing PR, an empty PR diff, or a diff that does not satisfy the task's acceptance criteria");
+      expect(prompt).toContain('ALWAYS a `"changes_requested"` verdict, never `"no_action_needed"`');
+    });
+
+    it("instructs the inspector to only report no_action_needed when a real implementation satisfies the task", () => {
+      const prompt = buildReviewPrompt(makeTask(), "/workspace");
+      expect(prompt).toContain("ONLY if a real, non-empty implementation exists that genuinely satisfies the task");
+    });
+
+    it("falls back to evaluating against the develop branch when no PR/branch is set", () => {
+      const task = makeTask({ branch: null, pullRequestUrl: null });
+      const prompt = buildReviewPrompt(task, "/workspace");
+      expect(prompt).toContain("evaluate against the base \`develop\` branch");
+    });
+  });
 });
 
 describe("buildDevPrompt", () => {

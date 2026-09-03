@@ -1826,6 +1826,17 @@ async function runLoopMode(
       // "no_action_needed" means already implemented / no issues found — always
       // resolve to stages.resolveState, never skip straight to "done".
       // The developer-agent saying "already implemented" still needs code review.
+      //
+      // Note (task #1599): runLoopModeAca() has an additional safety net here that
+      // sends an inspector's "no_action_needed" back to "todo" when the task has
+      // no PR URL recorded at all. That check is NOT replicated in this local-mode
+      // loop: local mode has no git-delivery MCP round-trip that reports a PR URL
+      // per turn, and `task.pullRequestUrl` here reflects whatever the ACA/local
+      // dev-agent pipeline stored previously (if anything) rather than something
+      // this loop can verify against a real diff. Since local mode can't
+      // meaningfully distinguish "no PR because nothing was implemented" from
+      // "no PR because this deployment mode doesn't track one", the check is left
+      // to the inspector's own judgment here, same as an empty-but-existing diff.
       if (managed.turnVerdict === "no_action_needed") {
         // Preserve existing branch/PR — the agent found nothing to do so it
         // never pushed anything, and we must not wipe what a prior stage stored.
@@ -3570,7 +3581,39 @@ async function runLoopModeAca(
       //   review and QA can run. An inspector saying "looks good" goes to "reviewed"
       //   so QA can run. Only markTaskDone() is called when ALL pipeline stages are
       //   already satisfied, which never applies here.
-      if (promptResult.verdict === "no_action_needed" && !promptResult.hasChanges) {
+      //
+      // Safety net: an inspector-kind agent reporting "no_action_needed" with NO
+      // PR URL recorded anywhere (neither this turn's promptResult.prUrl nor the
+      // task's own pullRequestUrl from a prior stage) means nothing was ever
+      // delivered to review — there is no implementation to have passed. This
+      // guards against an inspector rubber-stamping a task the developer forgot
+      // to implement (or forgot to open a PR for) — see task #1554. Scoped
+      // strictly to "no PR at all"; a PR that exists but has an empty/insufficient
+      // diff is left to the inspector's own judgment (see buildReviewPrompt()).
+      if (
+        stages.kind === "inspector" &&
+        promptResult.verdict === "no_action_needed" &&
+        !promptResult.prUrl &&
+        !task.pullRequestUrl
+      ) {
+        await resetTask(task.id, "todo", promptResult.branchName || undefined, promptResult.prUrl || undefined);
+        appendOutput(managed, {
+          timestamp: now(),
+          stream: "stderr",
+          text: `✖ Inspector reported "no_action_needed" but task ${task.id} has no pull request recorded — nothing was delivered to review. Task sent back to "todo".`,
+        });
+        recordSessionError({
+          sessionId: meta.id,
+          sessionName: meta.name,
+          agent: meta.agent,
+          message: `Inspector agent (${meta.agent}) passed task with "no_action_needed" but no PR URL was recorded — nothing was actually implemented/delivered`,
+          context: `Task "${task.title}" (ID: ${task.id}, type: ${task.type}, priority: P${task.priority}) has no pullRequestUrl on the task and none reported this turn. The developer likely forgot to implement the change or forgot to open a PR.`,
+          taskId: task.id,
+          taskTitle: task.title,
+          userId: meta.userId,
+          managed,
+        });
+      } else if (promptResult.verdict === "no_action_needed" && !promptResult.hasChanges) {
         // When the agent found nothing to do it never touched the repo, so
         // branchName/prUrl in promptResult are empty. Preserve whatever the
         // previous pipeline stage already stored rather than overwriting with null.
