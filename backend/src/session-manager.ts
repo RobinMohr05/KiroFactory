@@ -1502,9 +1502,27 @@ async function runSession(managed: ManagedSession): Promise<void> {
       }
 
       // One-shot (scheduled) run: the prompt has completed exactly once —
-      // signal success and return so runOneShotTurn() can stop the session.
+      // signal success/failure and return so runOneShotTurn() can stop the
+      // session. Mirrors the same MCP-init-failure check runLoopMode uses
+      // (line ~1902): a required MCP server failing to start means the agent
+      // was missing tools it expected, so whatever the turn produced isn't
+      // trustworthy — reject instead of resolving so the scheduler retries.
       if (managed.oneShot) {
-        managed.oneShotResolver?.();
+        if (managed.runner?.mcpServerInitFailures.length) {
+          const failedNames = managed.runner.mcpServerInitFailures
+            .map((f) => f.name || "unknown")
+            .join(", ");
+          appendOutput(managed, {
+            timestamp: now(),
+            stream: "stderr",
+            text: `✖ MCP server(s) [${failedNames}] failed to start — the agent was missing tools it needed.`,
+          });
+          managed.oneShotRejecter?.(
+            new Error(`Required MCP server(s) failed to initialize this turn: ${failedNames} — any verdict/result reported is unreliable`)
+          );
+        } else {
+          managed.oneShotResolver?.();
+        }
         return;
       }
 
@@ -2858,14 +2876,33 @@ async function runSessionAca(managed: ManagedSession): Promise<void> {
       }
     } else {
       // Interactive mode: send initial prompt, then wait for user follow-ups
+      let oneShotPromptResult: WorkerPromptResult | undefined;
       if (meta.prompt.trim()) {
-        await streamPromptAca(managed, meta.prompt);
+        oneShotPromptResult = await streamPromptAca(managed, meta.prompt);
       }
 
       // One-shot (scheduled) run: the prompt has completed exactly once —
-      // signal success and return so runOneShotTurn() can stop the session.
+      // signal success/failure and return so runOneShotTurn() can stop the
+      // session. Mirrors the same MCP-init-failure check runLoopModeAca uses
+      // (line ~3653): a required MCP server failing to start means the agent
+      // was missing tools it expected, so whatever the turn produced isn't
+      // trustworthy — reject instead of resolving so the scheduler retries.
       if (managed.oneShot) {
-        managed.oneShotResolver?.();
+        if (oneShotPromptResult?.mcpServerInitFailures?.length) {
+          const failedNames = oneShotPromptResult.mcpServerInitFailures
+            .map((f) => f.name || "unknown")
+            .join(", ");
+          appendOutput(managed, {
+            timestamp: now(),
+            stream: "stderr",
+            text: `✖ MCP server(s) [${failedNames}] failed to start — the agent was missing tools it needed.`,
+          });
+          managed.oneShotRejecter?.(
+            new Error(`Required MCP server(s) failed to initialize this turn: ${failedNames} — any verdict/result reported is unreliable`)
+          );
+        } else {
+          managed.oneShotResolver?.();
+        }
         return;
       }
 
