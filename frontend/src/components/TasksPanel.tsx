@@ -38,7 +38,14 @@ function readCollapsedColumns(): TaskState[] {
 export function TasksPanel() {
   const { tasks, setTasks, currentSort, setCurrentSort, currentTabId, tabs, fetchTabTasks, pendingOps, highlightedTaskId, setHighlightedTaskId } = useApp();
   const [editingTask, setEditingTask] = useState<Task | null | undefined>(undefined);
-  const [showPlanner, setShowPlanner] = useState(false);
+  // Approach A: once opened, the planner modal stays MOUNTED so its live Kiro
+  // session, chat transcript, and refs survive an outside-click dismiss. A
+  // separate `plannerOpen` flag drives visibility (hidden via CSS) rather than
+  // conditional mounting. `plannerMounted` is dropped back to false only when
+  // the session is truly gone (Cancel, full success, or the 5-minute idle
+  // timer expiring while parked) so the next open starts a brand-new session.
+  const [plannerMounted, setPlannerMounted] = useState(false);
+  const [plannerOpen, setPlannerOpen] = useState(false);
   const [collapsedColumns, setCollapsedColumns] = useState<TaskState[]>(() => readCollapsedColumns());
   const isMobile = useMobileBreakpoint();
   // undefined = no modal, null = create new, Task = editing
@@ -114,10 +121,18 @@ export function TasksPanel() {
     if (currentTabId) await fetchTabTasks(currentTabId);
   };
 
+  // + Task: resume a parked (hidden-but-alive) planner if one exists —
+  // un-hiding it keeps its session, transcript, and refs intact — otherwise
+  // mount a fresh planner instance (new session).
+  const openPlanner = useCallback(() => {
+    setPlannerMounted(true);
+    setPlannerOpen(true);
+  }, []);
+
   return (
     <section id="panel-boards" role="tabpanel" aria-labelledby="tab-boards">
       <div className="toolbar">
-        <button className="btn btn-primary" id="newTaskBtn" onClick={() => setShowPlanner(true)}>+ Task</button>
+        <button className="btn btn-primary" id="newTaskBtn" onClick={openPlanner}>+ Task</button>
         <select
           id="taskSortSelect"
           className="sort-select"
@@ -201,8 +216,14 @@ export function TasksPanel() {
         <TaskModal task={editingTask} onClose={() => setEditingTask(undefined)} />
       )}
 
-      {showPlanner && (
-        <TaskPlannerModal onClose={() => setShowPlanner(false)} onSwitchToManual={() => setEditingTask(null)} />
+      {plannerMounted && (
+        <TaskPlannerModal
+          hidden={!plannerOpen}
+          onClose={() => { setPlannerOpen(false); setPlannerMounted(false); }}
+          onDismiss={() => setPlannerOpen(false)}
+          onExpire={() => { setPlannerOpen(false); setPlannerMounted(false); }}
+          onSwitchToManual={() => setEditingTask(null)}
+        />
       )}
     </section>
   );
