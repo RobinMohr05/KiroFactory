@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { apiFetch } from '../utils/api';
-import { ModelCombobox } from './ModelCombobox';
+import { ModelSelect } from './ModelSelect';
 import type { AutoScaler } from '../types';
 
 /**
@@ -147,7 +147,7 @@ export function AutoScalerPanel() {
           </div>
           <div className="form-group">
             <label htmlFor="autoScalerModel">Model (optional)</label>
-            <ModelCombobox id="autoScalerModel" value={model} onChange={setModel} placeholder="e.g. claude-sonnet-4-20250514" />
+            <ModelSelect id="autoScalerModel" value={model} onChange={setModel} placeholder="e.g. claude-sonnet-4-20250514" />
           </div>
           <div className="form-group">
             <label htmlFor="autoScalerMaxConcurrency">Max Concurrency (0 = unlimited)</label>

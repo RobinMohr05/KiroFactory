@@ -32,6 +32,17 @@ export interface McpServerEntry {
   env: Array<{ name: string; value: string }>;
 }
 
+/**
+ * A model advertised by kiro-cli in the ACP `SessionModelState.availableModels`
+ * list. Mirrors the ACP `ModelInfo` shape (`@agentclientprotocol/sdk`), kept
+ * as a local interface to avoid a hard import-time dependency on the SDK.
+ */
+export interface ModelInfo {
+  modelId: string;
+  name: string;
+  description?: string | null;
+}
+
 export interface KiroRunnerOptions {
   /** Agent name from .kiro/agents/ (optional — omit for agentless sessions) */
   agent?: string;
@@ -141,6 +152,15 @@ export class KiroRunner {
    * losing a tool mid-run had no visible signal at all. Reset on newSession().
    */
   private _mcpServerInitFailures: Array<{ name: string | null }> = [];
+
+  /**
+   * The models the connected kiro-cli reports it can use, captured from the
+   * `models.availableModels` field of the initial `session/new` response (an
+   * ACP `SessionModelState`). Empty when the agent didn't advertise any model
+   * state. Used by the /api/models detection route. Each entry follows the
+   * ACP `ModelInfo` shape: `{ modelId, name, description? }`.
+   */
+  private _availableModels: ModelInfo[] = [];
 
   private constructor(proc: ChildProcess) {
     this.proc = proc;
@@ -380,6 +400,14 @@ export class KiroRunner {
     });
     client.sessionId = result.sessionId;
 
+    // Capture the agent's advertised model state (ACP SessionModelState),
+    // if present, so the /api/models detection route can read it. This is an
+    // experimental/optional ACP field — older kiro-cli builds may omit it.
+    const models = (result as { models?: { availableModels?: ModelInfo[] } | null }).models;
+    if (models?.availableModels?.length) {
+      client._availableModels = models.availableModels;
+    }
+
     return client;
   }
 
@@ -564,5 +592,14 @@ export class KiroRunner {
    */
   get mcpServerInitFailures(): Array<{ name: string | null }> {
     return this._mcpServerInitFailures;
+  }
+
+  /**
+   * Models the connected kiro-cli reported it can use, captured from the
+   * initial `session/new` response's ACP `SessionModelState`. Empty array when
+   * the agent advertised no model state. See `_availableModels` doc.
+   */
+  get availableModels(): ModelInfo[] {
+    return this._availableModels;
   }
 }

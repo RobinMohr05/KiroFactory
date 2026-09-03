@@ -366,3 +366,44 @@ describe("isPoolEnabled", () => {
     expect(isPoolEnabled()).toBe(false);
   });
 });
+
+describe("resolvePlannerModel", () => {
+  // System-managed default: pin the planner to claude-sonnet-4.6 (the tier just
+  // below sonnet-5) when available, falling back down the sonnet chain, then
+  // Auto (null) only if none are present.
+  it("chooses claude-sonnet-4.6 when it is in the detected list", async () => {
+    const { resolvePlannerModel } = await import("./routes/task-planner.js");
+    expect(
+      resolvePlannerModel([
+        "claude-sonnet-4",
+        "claude-sonnet-4.5",
+        "claude-sonnet-4.6",
+        "claude-opus-5",
+      ])
+    ).toBe("claude-sonnet-4.6");
+  });
+
+  it("falls back to claude-sonnet-4.5 when 4.6 is absent", async () => {
+    const { resolvePlannerModel } = await import("./routes/task-planner.js");
+    expect(
+      resolvePlannerModel(["claude-sonnet-4", "claude-sonnet-4.5", "claude-opus-5"])
+    ).toBe("claude-sonnet-4.5");
+  });
+
+  it("falls back to claude-sonnet-4 when 4.6 and 4.5 are absent", async () => {
+    const { resolvePlannerModel } = await import("./routes/task-planner.js");
+    expect(resolvePlannerModel(["claude-sonnet-4", "claude-opus-5"])).toBe(
+      "claude-sonnet-4"
+    );
+  });
+
+  it("returns null (Auto) when no sonnet tier is available", async () => {
+    const { resolvePlannerModel } = await import("./routes/task-planner.js");
+    expect(resolvePlannerModel(["claude-opus-5", "gpt-4o"])).toBeNull();
+  });
+
+  it("returns null (Auto) when the detected list is empty", async () => {
+    const { resolvePlannerModel } = await import("./routes/task-planner.js");
+    expect(resolvePlannerModel([])).toBeNull();
+  });
+});
