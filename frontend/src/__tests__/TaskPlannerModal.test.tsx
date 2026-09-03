@@ -1479,6 +1479,48 @@ describe('TaskPlannerModal - outside-click dismiss keeps session alive', () => {
     });
     expect(backdrop.hasAttribute('hidden')).toBe(true);
   });
+
+  it('ignores a global image paste while parked (hidden) — no preventDefault, no attachment', async () => {
+    // Regression: keeping the modal mounted while parked (approach A) left the
+    // window-level paste listener active. Pasting an image elsewhere in the app
+    // while a planner is hidden would be swallowed (preventDefault) and added to
+    // the hidden modal's attachment list in the background. The handler must be
+    // inert while hidden.
+    const { container, rerender } = render(
+      <TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} onDismiss={vi.fn()} hidden={false} />
+    );
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    // Park it.
+    await act(async () => {
+      rerender(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} onDismiss={vi.fn()} hidden={true} />);
+    });
+
+    // Build a synthetic paste event carrying an image file.
+    const file = new File([new Uint8Array([1, 2, 3])], 'pasted.png', { type: 'image/png' });
+    const pasteEvent = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(pasteEvent, 'clipboardData', {
+      value: {
+        items: [
+          {
+            kind: 'file',
+            type: 'image/png',
+            getAsFile: () => file,
+          },
+        ],
+      },
+    });
+
+    await act(async () => {
+      window.dispatchEvent(pasteEvent);
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    // While hidden, the handler must not swallow the paste...
+    expect(pasteEvent.defaultPrevented).toBe(false);
+    // ...nor add the image as an attachment (no attachment chip rendered).
+    expect(container.querySelector('.task-planner-attachment')).toBeNull();
+  });
 });
 
 describe('TaskPlannerModal - 5-minute idle timer on parked sessions', () => {
@@ -1554,5 +1596,45 @@ describe('TaskPlannerModal - 5-minute idle timer on parked sessions', () => {
       ([url, opts]) => typeof url === 'string' && url.includes('/api/task-planner/') && opts?.method === 'DELETE'
     );
     expect(deleteCalls.length).toBe(0);
+  });
+
+  it('still expires after 5 minutes even if onExpire identity changes on parent re-renders while hidden', async () => {
+    // Regression: the idle-timer effect had onExpire in its dep array, so a
+    // parent (TasksPanel) passing an inline arrow onExpire that changes identity
+    // on every re-render (e.g. on every WebSocket task update) would tear down
+    // and restart the 5-minute timer indefinitely — the parked session would
+    // never expire. The timer must depend only on hidden/sessionId transitions.
+    let expireCount = 0;
+    const renderWith = (hidden: boolean) => (
+      <TaskPlannerModal
+        onClose={vi.fn()}
+        onSwitchToManual={vi.fn()}
+        onDismiss={vi.fn()}
+        // Fresh identity on every render, exactly like an inline arrow in the parent.
+        onExpire={() => { expireCount++; }}
+        hidden={hidden}
+      />
+    );
+    const { rerender } = render(renderWith(false));
+    await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+
+    // Park the modal (hidden) — starts the 5-minute timer.
+    await act(async () => { rerender(renderWith(true)); });
+
+    // Simulate repeated parent re-renders (still hidden) every 30s, each passing
+    // a NEW onExpire arrow, for a total elapsed time well past 5 minutes.
+    for (let i = 0; i < 12; i++) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30 * 1000);
+        rerender(renderWith(true));
+      });
+    }
+
+    // 12 * 30s = 6 minutes elapsed while hidden — the session must have expired.
+    expect(expireCount).toBe(1);
+    const deleteCalls = apiFetchMock.mock.calls.filter(
+      ([url, opts]) => url === '/api/task-planner/800' && opts?.method === 'DELETE'
+    );
+    expect(deleteCalls.length).toBe(1);
   });
 });

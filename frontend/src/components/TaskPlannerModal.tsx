@@ -72,6 +72,19 @@ export function TaskPlannerModal({ onClose, onSwitchToManual, hidden = false, on
   const cleanedUpSessionRef = useRef<Set<number>>(new Set());
   // Holds the parked-session idle timeout id so it can be cleared reliably.
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Keep onExpire in a ref so the idle-timer effect can call the latest
+  // callback WITHOUT listing it as a dependency. The parent (TasksPanel) passes
+  // an inline arrow whose identity changes on every re-render (e.g. on every
+  // WebSocket task update); if that were an effect dep, each such re-render
+  // while parked would tear down and restart the 5-minute timer, so the parked
+  // session would never actually expire.
+  const onExpireRef = useRef(onExpire);
+  onExpireRef.current = onExpire;
+  // Keep the parked/hidden state in a ref so window-level listeners (e.g. the
+  // global paste handler) can early-return while parked WITHOUT being re-bound
+  // on every hidden toggle.
+  const hiddenRef = useRef(hidden);
+  hiddenRef.current = hidden;
 
   // Keep ref in sync for WS handler
   useEffect(() => {
@@ -437,6 +450,10 @@ export function TaskPlannerModal({ onClose, onSwitchToManual, hidden = false, on
   // Paste event listener — attach image(s) from clipboard when modal is open
   useEffect(() => {
     const handlePaste = (e: ClipboardEvent) => {
+      // While parked (hidden), the modal is still mounted but must be inert —
+      // don't swallow (preventDefault) or capture image pastes happening
+      // elsewhere in the app.
+      if (hiddenRef.current) return;
       const items = e.clipboardData?.items;
       if (!items) return;
 
@@ -647,7 +664,7 @@ export function TaskPlannerModal({ onClose, onSwitchToManual, hidden = false, on
         cleanedUpSessionRef.current.add(parkedSessionId);
         apiFetch(`/api/task-planner/${parkedSessionId}`, { method: 'DELETE' }).catch(() => { /* ignore cleanup errors */ });
       }
-      onExpire?.();
+      onExpireRef.current?.();
     }, 5 * 60 * 1000);
     return () => {
       if (idleTimerRef.current) {
@@ -655,7 +672,7 @@ export function TaskPlannerModal({ onClose, onSwitchToManual, hidden = false, on
         idleTimerRef.current = null;
       }
     };
-  }, [hidden, sessionId, onExpire]);
+  }, [hidden, sessionId]);
 
   const handleSwitchToManual = async () => {
     await handleClose();
