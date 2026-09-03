@@ -12,7 +12,12 @@ interface ModelComboboxProps {
 function labelFor(id: string): string {
   const normalized = id.trim() || 'auto';
   const match = KIRO_MODELS.find(m => m.id === normalized);
-  return match ? match.name : (KIRO_MODELS.find(m => m.id === 'auto')?.name ?? 'auto');
+  if (match) return match.name;
+  // A stored value that isn't in the known list (e.g. a legacy session saved
+  // before this restriction) is shown verbatim rather than misrepresented as
+  // "Auto (default)", so the displayed text matches the value the parent still
+  // holds and would submit if the field is left untouched.
+  return normalized;
 }
 
 function findMatch(query: string) {
@@ -118,11 +123,11 @@ export function ModelCombobox({ value, onChange, id, placeholder }: ModelCombobo
         onKeyDown={handleKeyDown}
       />
       {listVisible && filtered.length > 0 && (
-        <ul className="combobox-listbox" role="listbox">
+        <ul className="combobox-list" role="listbox">
           {filtered.map((m, idx) => (
             <li
               key={m.id}
-              className={`combobox-option${idx === highlightIndex ? ' highlighted' : ''}`}
+              className={`combobox-option${idx === highlightIndex ? ' combobox-option-highlighted' : ''}`}
               role="option"
               aria-selected={idx === highlightIndex}
               onMouseDown={(e) => { e.preventDefault(); commit(m.id); }}

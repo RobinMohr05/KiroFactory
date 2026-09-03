@@ -83,4 +83,42 @@ describe('ModelCombobox', () => {
 
     expect(onChange).toHaveBeenCalledWith('minimax-m2.1');
   });
+
+  it('renders the dropdown container with the existing combobox-list class', () => {
+    const { container } = render(<ModelCombobox value="" onChange={vi.fn()} />);
+    const input = screen.getByRole('combobox');
+    fireEvent.focus(input);
+
+    const list = container.querySelector('ul[role="listbox"]');
+    expect(list).not.toBeNull();
+    expect(list).toHaveClass('combobox-list');
+  });
+
+  it('marks the keyboard-highlighted option with combobox-option-highlighted', () => {
+    render(<ModelCombobox value="" onChange={vi.fn()} />);
+    const input = screen.getByRole('combobox');
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'qwen' } });
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+
+    const highlighted = screen.getByText('Qwen3 Coder Next');
+    expect(highlighted).toHaveClass('combobox-option-highlighted');
+  });
+
+  it('displays a stored value not in KIRO_MODELS as its raw id (not the auto label)', () => {
+    render(<ModelCombobox value="legacy-unknown-model" onChange={vi.fn()} />);
+    expect(screen.getByRole('combobox')).toHaveValue('legacy-unknown-model');
+  });
+
+  it('reverts to the raw out-of-list stored value when blurred with non-matching text', () => {
+    const onChange = vi.fn();
+    render(<ModelCombobox value="legacy-unknown-model" onChange={onChange} />);
+    const input = screen.getByRole('combobox');
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'still-not-matching' } });
+    fireEvent.blur(input);
+
+    expect(onChange).not.toHaveBeenCalled();
+    expect(input).toHaveValue('legacy-unknown-model');
+  });
 });
