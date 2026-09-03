@@ -899,6 +899,61 @@ export function recordScheduledAttemptError(
 }
 
 /**
+ * The outcome of an ACA/remote one-shot turn, as decided from its
+ * WorkerPromptResult. `resolve` = the turn succeeded and the one-shot promise
+ * should resolve; `reject` = the turn failed and the scheduler should retry +
+ * record a per-attempt AgentError (`reason` is the Error message, `logText`
+ * the stderr line to surface in the session output).
+ */
+export type OneShotAcaClassification =
+  | { outcome: "resolve" }
+  | { outcome: "reject"; reason: string; logText: string };
+
+/**
+ * Classify an ACA/remote one-shot turn result as success or failure.
+ *
+ * The local `streamPrompt` path throws on failure and so reaches
+ * `startSession`'s reject path directly, but `streamPromptAca` returns a
+ * WorkerPromptResult instead of throwing. This mirrors the exact failure
+ * signals `runLoopModeAca` checks so an ACA/remote scheduled turn that failed
+ * rejects (→ retry + per-attempt AgentError) instead of silently resolving as
+ * a success:
+ *   - `mcpServerInitFailures` — a required MCP server failed to start, so the
+ *     agent was missing tools it expected and the result isn't trustworthy
+ *     (runLoopModeAca ~line 3653). Checked first: it invalidates any other
+ *     signal the turn reported.
+ *   - `error` — an ACP error, timeout, or git failure (runLoopModeAca ~line 3612).
+ *   - `stopReason === "cancelled"` — the turn was cut off (timeout / explicit
+ *     cancel) before reaching end_turn (runLoopModeAca ~line 3660).
+ */
+export function classifyOneShotAcaResult(
+  result: WorkerPromptResult | undefined
+): OneShotAcaClassification {
+  if (result?.mcpServerInitFailures?.length) {
+    const failedNames = result.mcpServerInitFailures
+      .map((f) => f.name || "unknown")
+      .join(", ");
+    return {
+      outcome: "reject",
+      reason: `Required MCP server(s) failed to initialize this turn: ${failedNames} — any verdict/result reported is unreliable`,
+      logText: `MCP server(s) [${failedNames}] failed to start — the agent was missing tools it needed.`,
+    };
+  }
+  if (result?.error) {
+    return {
+      outcome: "reject",
+      reason: result.error,
+      logText: `Agent turn failed: ${result.error}`,
+    };
+  }
+  if (result?.stopReason === "cancelled") {
+    const reason = "Agent turn was cancelled (timeout) before completing — stopReason: cancelled";
+    return { outcome: "reject", reason, logText: reason };
+  }
+  return { outcome: "resolve" };
+}
+
+/**
  * Run a scheduled session's prompt exactly once: start it as a one-shot
  * (interactive, non-loop) run, wait for the single turn to complete, then stop
  * the session so it returns to "stopped". Resolves on success; rejects if the
@@ -2883,23 +2938,22 @@ async function runSessionAca(managed: ManagedSession): Promise<void> {
 
       // One-shot (scheduled) run: the prompt has completed exactly once —
       // signal success/failure and return so runOneShotTurn() can stop the
-      // session. Mirrors the same MCP-init-failure check runLoopModeAca uses
-      // (line ~3653): a required MCP server failing to start means the agent
-      // was missing tools it expected, so whatever the turn produced isn't
-      // trustworthy — reject instead of resolving so the scheduler retries.
+      // session. Unlike the local streamPrompt path (which throws on failure
+      // and so reaches startSession's reject path directly), streamPromptAca
+      // returns a WorkerPromptResult instead of throwing, so we must inspect
+      // the same failure signals runLoopModeAca checks and reject explicitly.
+      // Otherwise a failed scheduled turn in ACA/remote mode (the production
+      // deployment mode) would resolve as success — the scheduler would never
+      // retry and never record a per-attempt AgentError.
       if (managed.oneShot) {
-        if (oneShotPromptResult?.mcpServerInitFailures?.length) {
-          const failedNames = oneShotPromptResult.mcpServerInitFailures
-            .map((f) => f.name || "unknown")
-            .join(", ");
+        const classified = classifyOneShotAcaResult(oneShotPromptResult);
+        if (classified.outcome === "reject") {
           appendOutput(managed, {
             timestamp: now(),
             stream: "stderr",
-            text: `✖ MCP server(s) [${failedNames}] failed to start — the agent was missing tools it needed.`,
+            text: `✖ ${classified.logText}`,
           });
-          managed.oneShotRejecter?.(
-            new Error(`Required MCP server(s) failed to initialize this turn: ${failedNames} — any verdict/result reported is unreliable`)
-          );
+          managed.oneShotRejecter?.(new Error(classified.reason));
         } else {
           managed.oneShotResolver?.();
         }
