@@ -49,9 +49,12 @@ import {
   createSession,
   getSession,
   deleteSession,
+  updateSessionFields,
 } from "../session-manager.js";
 import { armSession, disarmSession, triggerRunNow } from "../scheduled-session-manager.js";
 import sessionsRouter from "./sessions.js";
+
+const updateSessionFieldsMock = vi.mocked(updateSessionFields);
 
 function createApp() {
   const app = express();
@@ -120,6 +123,121 @@ describe("POST /api/sessions — cron validation", () => {
       expect.objectContaining({ cronExpression: "0 9 * * *", cronTimezone: "Europe/Berlin", retries: 2 })
     );
     expect(armSession).toHaveBeenCalledWith(1, "0 9 * * *", "Europe/Berlin", 2);
+  });
+});
+
+describe("POST /api/sessions — retries validation", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("returns 400 for a non-numeric retries value", async () => {
+    const res = await request(createApp())
+      .post("/api/sessions")
+      .send({ name: "S", cronExpression: "0 9 * * *", cronTimezone: "UTC", retries: "abc" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/retries/i);
+    expect(createSession).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 for a negative retries value", async () => {
+    const res = await request(createApp())
+      .post("/api/sessions")
+      .send({ name: "S", cronExpression: "0 9 * * *", cronTimezone: "UTC", retries: -1 });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/retries/i);
+    expect(createSession).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 for a non-integer retries value", async () => {
+    const res = await request(createApp())
+      .post("/api/sessions")
+      .send({ name: "S", cronExpression: "0 9 * * *", cronTimezone: "UTC", retries: 1.5 });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/retries/i);
+    expect(createSession).not.toHaveBeenCalled();
+  });
+
+  it("accepts a valid non-negative integer retries value", async () => {
+    vi.mocked(createSession).mockResolvedValue({
+      ...SESSION_FIXTURE,
+      cronExpression: "0 9 * * *",
+      cronTimezone: "UTC",
+      retries: 3,
+    });
+
+    const res = await request(createApp())
+      .post("/api/sessions")
+      .send({ name: "S", cronExpression: "0 9 * * *", cronTimezone: "UTC", retries: 3 });
+
+    expect(res.status).toBe(201);
+    expect(createSession).toHaveBeenCalledWith(expect.objectContaining({ retries: 3 }));
+  });
+});
+
+describe("PATCH /api/sessions/:id — retries validation", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("returns 400 for a non-numeric retries value", async () => {
+    vi.mocked(getSession).mockReturnValue({
+      ...SESSION_FIXTURE,
+      cronExpression: "0 9 * * *",
+      cronTimezone: "UTC",
+    });
+
+    const res = await request(createApp())
+      .patch("/api/sessions/1")
+      .send({ retries: "abc" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/retries/i);
+    expect(updateSessionFieldsMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 for a negative retries value", async () => {
+    vi.mocked(getSession).mockReturnValue({
+      ...SESSION_FIXTURE,
+      cronExpression: "0 9 * * *",
+      cronTimezone: "UTC",
+    });
+
+    const res = await request(createApp())
+      .patch("/api/sessions/1")
+      .send({ retries: -2 });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/retries/i);
+    expect(updateSessionFieldsMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 for a non-integer retries value", async () => {
+    vi.mocked(getSession).mockReturnValue({
+      ...SESSION_FIXTURE,
+      cronExpression: "0 9 * * *",
+      cronTimezone: "UTC",
+    });
+
+    const res = await request(createApp())
+      .patch("/api/sessions/1")
+      .send({ retries: 2.7 });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/retries/i);
+    expect(updateSessionFieldsMock).not.toHaveBeenCalled();
+  });
+
+  it("accepts a valid non-negative integer retries value", async () => {
+    vi.mocked(getSession)
+      .mockReturnValueOnce({ ...SESSION_FIXTURE, cronExpression: "0 9 * * *", cronTimezone: "UTC" })
+      .mockReturnValueOnce({ ...SESSION_FIXTURE, cronExpression: "0 9 * * *", cronTimezone: "UTC", retries: 4 });
+
+    const res = await request(createApp())
+      .patch("/api/sessions/1")
+      .send({ retries: 4 });
+
+    expect(res.status).toBe(200);
+    expect(updateSessionFieldsMock).toHaveBeenCalledWith(1, expect.objectContaining({ retries: 4 }));
   });
 });
 

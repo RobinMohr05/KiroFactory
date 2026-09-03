@@ -56,6 +56,28 @@ function validateCronFields(
   return null;
 }
 
+/**
+ * Validate the scheduled-session `retries` field. Returns an error message
+ * string (for a 400 response) when the value is present but not a
+ * non-negative integer, or null when it's valid / absent.
+ *
+ * This enforces the field's contract at the API boundary regardless of client
+ * (the frontend clamps via Math.max, but a direct API call can otherwise
+ * persist a non-numeric/NaN/negative/fractional value that later breaks the
+ * `totalAttempts = Math.max(0, retries) + 1` math in runScheduledSessionOnce —
+ * e.g. NaN makes the retry loop never run, so the session silently no-ops with
+ * no AgentError recorded).
+ */
+function validateRetries(retries: unknown): string | null {
+  if (retries === undefined || retries === null) {
+    return null;
+  }
+  if (typeof retries !== "number" || !Number.isInteger(retries) || retries < 0) {
+    return "retries must be a non-negative integer";
+  }
+  return null;
+}
+
 // GET /api/sessions — list all sessions for the authenticated user (without full output)
 router.get("/", (req: Request, res: Response) => {
   try {
@@ -90,6 +112,12 @@ router.post("/", async (req: Request, res: Response) => {
     const cronError = validateCronFields(input.cronExpression, input.cronTimezone);
     if (cronError) {
       res.status(400).json({ error: cronError });
+      return;
+    }
+
+    const retriesError = validateRetries(input.retries);
+    if (retriesError) {
+      res.status(400).json({ error: retriesError });
       return;
     }
 
@@ -468,6 +496,17 @@ router.patch("/:id", (req: Request, res: Response) => {
     if (rest.cronExpression !== undefined) updates.cronExpression = rest.cronExpression;
     if (rest.cronTimezone !== undefined) updates.cronTimezone = rest.cronTimezone;
     if (rest.retries !== undefined) updates.retries = rest.retries;
+
+    // Validate `retries` at the boundary before it's persisted (see
+    // validateRetries) so a direct API call can't store a non-numeric/NaN/
+    // negative/fractional value that later breaks the scheduled-run retry math.
+    if (updates.retries !== undefined) {
+      const retriesError = validateRetries(updates.retries);
+      if (retriesError) {
+        res.status(400).json({ error: retriesError });
+        return;
+      }
+    }
 
     // Validate cron config whenever any cron field is touched and the session
     // would remain scheduled after the update. Resolve the *effective*
