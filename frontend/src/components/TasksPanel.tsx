@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
-import { apiFetch, truncateUrl } from '../utils/api';
+import { apiFetch } from '../utils/api';
 import { TaskCard } from './TaskCard';
 import { TaskModal } from './TaskModal';
 import { TaskPlannerModal } from './TaskPlannerModal';
@@ -36,7 +36,7 @@ function readCollapsedColumns(): TaskState[] {
 }
 
 export function TasksPanel() {
-  const { tasks, setTasks, currentSort, setCurrentSort, currentTabId, tabs, fetchTabTasks, pendingOps, highlightedTaskId, setHighlightedTaskId } = useApp();
+  const { tasks, setTasks, currentSort, setCurrentSort, currentTabId, fetchTabTasks, pendingOps, highlightedTaskId, setHighlightedTaskId } = useApp();
   const [editingTask, setEditingTask] = useState<Task | null | undefined>(undefined);
   // Approach A: once opened, the planner modal stays MOUNTED so its live Kiro
   // session, chat transcript, and refs survive an outside-click dismiss. A
@@ -71,8 +71,6 @@ export function TasksPanel() {
     const timer = setTimeout(() => setHighlightedTaskId(null), 2000);
     return () => clearTimeout(timer);
   }, [highlightedTaskId, setHighlightedTaskId]);
-
-  const currentTab = tabs.find(t => t.id === currentTabId);
 
   const sortedTasks = useCallback((state: TaskState) => {
     const columnTasks = tasks.filter(t => t.state === state);
@@ -133,28 +131,22 @@ export function TasksPanel() {
     <section id="panel-boards" role="tabpanel" aria-labelledby="tab-boards">
       <div className="toolbar">
         <button className="btn btn-primary" id="newTaskBtn" onClick={openPlanner}>+ Task</button>
-        <select
-          id="taskSortSelect"
-          className="sort-select"
-          aria-label="Sort tasks by"
-          value={currentSort}
-          onChange={(e) => setCurrentSort(e.target.value as typeof currentSort)}
-        >
-          <option value="priority">Sort: Priority</option>
-          <option value="updated">Sort: Last Edited</option>
-          <option value="created">Sort: Created</option>
-        </select>
-        <button className="btn btn-secondary btn-sm" id="refreshTasksBtn" title="Refresh tasks" aria-label="Refresh tasks" onClick={handleRefresh}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M23 4v6h-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/><path d="M1 20v-6h6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-        </button>
-        {currentTab?.repositoryUrl && (
-          <div className="board-repo-indicator">
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2 2.5A2.5 2.5 0 014.5 0h8.75a.75.75 0 01.75.75v12.5a.75.75 0 01-.75.75h-2.5a.75.75 0 110-1.5h1.75v-2h-8a1 1 0 00-.714 1.7.75.75 0 01-1.072 1.05A2.495 2.495 0 012 11.5v-9z" fill="currentColor"/><path d="M6.25 1a.75.75 0 00-.75.75v5.5a.75.75 0 001.28.53L8 6.56l1.22 1.22a.75.75 0 001.28-.53v-5.5A.75.75 0 009.75 1h-3.5z" fill="currentColor"/></svg>
-            <a href={currentTab.repositoryUrl} target="_blank" rel="noopener noreferrer" title={currentTab.repositoryUrl}>
-              {truncateUrl(currentTab.repositoryUrl)}
-            </a>
-          </div>
-        )}
+        <div className="toolbar-right">
+          <select
+            id="taskSortSelect"
+            className="sort-select"
+            aria-label="Sort tasks by"
+            value={currentSort}
+            onChange={(e) => setCurrentSort(e.target.value as typeof currentSort)}
+          >
+            <option value="priority">Sort: Priority</option>
+            <option value="updated">Sort: Last Edited</option>
+            <option value="created">Sort: Created</option>
+          </select>
+          <button className="btn btn-secondary btn-sm" id="refreshTasksBtn" title="Refresh tasks" aria-label="Refresh tasks" onClick={handleRefresh}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M23 4v6h-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/><path d="M1 20v-6h6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+          </button>
+        </div>
       </div>
 
       {isMobile ? (

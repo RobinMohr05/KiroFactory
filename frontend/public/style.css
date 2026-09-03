@@ -649,6 +649,13 @@ section[role="tabpanel"][hidden] {
   flex-wrap: wrap;
 }
 
+.toolbar-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
 .sort-select {
   margin-left: auto;
   padding: 0.35rem 0.6rem;
