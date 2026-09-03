@@ -3584,7 +3584,6 @@ textarea:focus {
   font-size: 0.85rem;
   line-height: 1.5;
   word-wrap: break-word;
-  white-space: pre-wrap;
 }
 
 .planner-message.user {
@@ -3592,6 +3591,7 @@ textarea:focus {
   background: var(--ta-mango);
   color: var(--ta-rubber);
   border-bottom-right-radius: 4px;
+  white-space: pre-wrap;
 }
 
 .planner-message.assistant {
@@ -3682,6 +3682,44 @@ textarea:focus {
   padding: 0;
   border-radius: 0;
   font-size: inherit;
+}
+
+/* Question cards in AI Task Planner assistant messages */
+.planner-question {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-left: 3px solid var(--ta-mango);
+  border-radius: var(--radius-sm);
+  padding: 0.6rem;
+  margin: 0.5rem 0;
+}
+
+.planner-message.assistant .planner-question + .planner-question {
+  margin-top: 0.5rem;
+}
+
+.planner-question-header {
+  color: var(--ta-mango);
+  font-weight: 600;
+}
+
+.planner-question-header p {
+  margin: 0;
+}
+
+.planner-question-body {
+  margin-top: 0.35rem;
+}
+
+.planner-question-body p {
+  margin: 0.2rem 0;
+}
+
+.planner-question-rec {
+  margin-top: 0.35rem;
+  padding-left: 0.75rem;
+  color: var(--text-muted);
+  font-size: 0.82rem;
 }
 
 /* Task card preview area */
