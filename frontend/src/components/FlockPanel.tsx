@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { apiFetch } from '../utils/api';
+import { ModelCombobox } from './ModelCombobox';
 import type { Flock } from '../types';
 
 /**
@@ -44,7 +45,10 @@ export function FlockPanel() {
           name: name.trim(),
           agentName,
           tabIds: selectedTabIds,
-          model: model.trim() || undefined,
+          model: (() => {
+            const trimmed = model.trim();
+            return trimmed && trimmed !== 'auto' ? trimmed : undefined;
+          })(),
           maxConcurrency,
           idleTimeoutSeconds,
         }),
@@ -142,13 +146,7 @@ export function FlockPanel() {
           </div>
           <div className="form-group">
             <label htmlFor="flockModel">Model (optional)</label>
-            <input
-              id="flockModel"
-              type="text"
-              value={model}
-              onChange={e => setModel(e.target.value)}
-              placeholder="e.g. claude-sonnet-4-20250514"
-            />
+            <ModelCombobox id="flockModel" value={model} onChange={setModel} placeholder="e.g. claude-sonnet-4-20250514" />
           </div>
           <div className="form-group">
             <label htmlFor="flockMaxConcurrency">Max Concurrency (0 = unlimited)</label>
