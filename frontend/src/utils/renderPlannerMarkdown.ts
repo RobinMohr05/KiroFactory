@@ -258,8 +258,15 @@ function renderQuestionCard(lines: string[]): string {
     cardHtml += `<div class="planner-question-header">${headerHtml}</div>\n`;
   }
 
-  // Body content
-  const bodyText = regularBodyLines.join('\n').trim();
+  // Body content — option lines (e.g. "(A) ...", "(B) ...") are emitted one
+  // per line by the planner and are semantically list-like, so they must stay
+  // on separate lines even though breaks:true is off for prose reflow. Append
+  // two trailing spaces to each body line so real markdown hard breaks (<br>)
+  // apply within the card body.
+  const bodyText = regularBodyLines
+    .map((line) => (line.trim() === '' ? line : line.replace(/\s+$/, '') + '  '))
+    .join('\n')
+    .trim();
   if (bodyText) {
     const bodyHtml = (marked.parse(bodyText) as string).trim();
     cardHtml += `<div class="planner-question-body">${bodyHtml}</div>\n`;
@@ -267,9 +274,16 @@ function renderQuestionCard(lines: string[]): string {
 
   // Rec: lines
   for (const recLine of recLines) {
-    // Render the Rec: line as inline markdown, but wrap in the rec class
+    // Render the Rec: line as inline markdown, but wrap in the rec class.
+    // Emphasize the leading "Rec:" label itself so it stands out from the
+    // recommended answer text (the .planner-question-rec wrapper only mutes/
+    // indents the whole line).
     const recContent = recLine.trim();
-    const recHtml = (marked.parseInline(recContent) as string).trim();
+    const recBody = recContent.replace(REC_LINE_RE, '').trim();
+    const recBodyHtml = recBody ? (marked.parseInline(recBody) as string).trim() : '';
+    const recHtml = recBodyHtml
+      ? `<strong>Rec:</strong> ${recBodyHtml}`
+      : '<strong>Rec:</strong>';
     cardHtml += `<div class="planner-question-rec">${recHtml}</div>\n`;
   }
 

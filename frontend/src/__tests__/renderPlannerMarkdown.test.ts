@@ -214,5 +214,32 @@ describe('renderPlannerMarkdown', () => {
       const result = renderPlannerMarkdown(input);
       expect(result).toContain('planner-question');
     });
+
+    it('emphasizes the "Rec" label within the .planner-question-rec sub-line', () => {
+      const input = '**Q1 - Scope**: What is the scope?\n(A) Small\nRec: (A) Small';
+      const result = renderPlannerMarkdown(input);
+      // The "Rec:" label itself must be bolded, distinct from the answer text
+      expect(result).toMatch(/<strong>Rec:<\/strong>/);
+    });
+
+    it('keeps option lines on separate lines inside a question card', () => {
+      const input = [
+        '**Q1 - Size**: What size?',
+        '(A) Small',
+        '(B) Large',
+        '(C) Neither',
+        'Rec: (A) Small',
+      ].join('\n');
+      const result = renderPlannerMarkdown(input);
+      // Options must not collapse onto a single line; expect <br> separators
+      const bodyMatch = result.match(/<div class="planner-question-body">([\s\S]*?)<\/div>/);
+      expect(bodyMatch).not.toBeNull();
+      const body = bodyMatch![1];
+      expect(body).toContain('<br');
+      // All three options should be present
+      expect(body).toContain('(A) Small');
+      expect(body).toContain('(B) Large');
+      expect(body).toContain('(C) Neither');
+    });
   });
 });
