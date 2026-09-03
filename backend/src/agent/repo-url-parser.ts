@@ -68,3 +68,29 @@ export function buildTaskBranchName(
 ): string {
   return `${taskType}/#${taskId}_${slugifyTitle(taskTitle)}`;
 }
+
+/**
+ * Sanitize a branch name before it is persisted to `t.branch` or used to
+ * build a shell/env value.
+ *
+ * `t.branch` is treated as ground truth once written — every AC1/AC2 sibling
+ * lookup and the ACA worker's `TASK_BRANCH_NAME` env var copy it verbatim,
+ * with no sanitization anywhere downstream. A single malformed write (e.g.
+ * stray leading/trailing whitespace or an embedded newline, however it got
+ * there) becomes permanent and propagates to every sibling task and to the
+ * git-delivery MCP server's `git checkout -B <name>` call, which fails with
+ * an invalid-ref error. Call this at every write site (`setTaskBranchAndPr`,
+ * `resolveTask`, `resetTask`) so no caller can persist a value one raw
+ * `.trim()` wouldn't have caught — regardless of what originally produced it.
+ *
+ * Returns `null` (never persist / never fall back to a raw value) if the
+ * input is empty after trimming, since git does not allow an empty ref name.
+ */
+export function sanitizeBranchName(branch: string | null | undefined): string | null {
+  if (branch == null) return null;
+  // Collapse any internal whitespace/control characters (newlines, tabs,
+  // carriage returns) that could break a `git checkout -B <name>` invocation
+  // or make an env var value invalid, then trim the ends.
+  const cleaned = branch.replace(/[\r\n\t]+/g, "").trim();
+  return cleaned || null;
+}

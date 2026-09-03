@@ -50,6 +50,7 @@ import neo4j, { type ManagedTransaction } from "neo4j-driver";
 import { readQuery, writeQuery } from "../db/connection.js";
 import type { Task } from "../types.js";
 import { getTaskById, getTasksByBranch, getTasksByGroupId } from "../db/tasks.js";
+import { sanitizeBranchName } from "./repo-url-parser.js";
 
 // ---------------------------------------------------------------------------
 // Task-available event bus
@@ -402,7 +403,7 @@ export async function resolveTask(
 
     if (branch !== undefined) {
       setParts.push("t.branch = $branch");
-      params.branch = branch;
+      params.branch = sanitizeBranchName(branch);
     }
     if (pullRequestUrl !== undefined) {
       setParts.push("t.pullRequestUrl = $pullRequestUrl");
@@ -452,7 +453,7 @@ export async function resetTask(
 
     if (branch !== undefined) {
       setParts.push("t.branch = $branch");
-      params.branch = branch;
+      params.branch = sanitizeBranchName(branch);
     }
     if (pullRequestUrl !== undefined) {
       setParts.push("t.pullRequestUrl = $pullRequestUrl");

@@ -18,7 +18,7 @@ import { claimTask, resolveTask, resetTask, getAvailableTaskCount, waitForTaskAv
 import type { ClaimedTask } from "./agent/task-claimer.js";
 import { buildDevPrompt, buildReviewPrompt } from "./agent/prompt-builder.js";
 import { hasLocalGitChanges } from "./agent/local-git-check.js";
-import { buildPersistentBranchName, buildTaskBranchName } from "./agent/repo-url-parser.js";
+import { buildPersistentBranchName, buildTaskBranchName, sanitizeBranchName } from "./agent/repo-url-parser.js";
 import { resolveGitProvider, type GitProvider } from "./types.js";
 import {
   getAllSessionsFromDb,
@@ -3263,6 +3263,13 @@ async function runLoopModeAca(
     // Race conditions between tasks in the same group are prevented by the
     // NOT EXISTS clause in claimTask() — only one task per group can be in a
     // workingState at any time.
+    //
+    // Sanitize task.branch as soon as it's read here, before any sibling
+    // lookup or use. This is the single point both the AC1 (task.branch set)
+    // and AC2 (inherited from a sibling below) paths flow through, so it also
+    // guards any row already persisted with a malformed value before the
+    // write-side fix in resolveTask/resetTask/setTaskBranchAndPr.
+    task.branch = sanitizeBranchName(task.branch);
     let siblingTasks: Array<{ id: number; title: string; type: string; description: string; pullRequestUrl: string | null }> | undefined;
     if (task.branch) {
       try {
@@ -3304,8 +3311,13 @@ async function runLoopModeAca(
           // Find a sibling that already has a branch assigned
           const siblingWithBranch = groupSiblings.find(s => s.branch);
           if (siblingWithBranch && siblingWithBranch.branch) {
-            // Inherit the branch (and PR URL) from the sibling
-            task.branch = siblingWithBranch.branch;
+            // Inherit the branch (and PR URL) from the sibling. Sanitized
+            // defensively even though the write side (resolveTask/resetTask/
+            // setTaskBranchAndPr) now sanitizes too — this guards any row
+            // already persisted with a malformed value before that fix, so
+            // an old poisoned branch doesn't keep failing sync_task_branch
+            // for every future sibling that inherits it.
+            task.branch = sanitizeBranchName(siblingWithBranch.branch);
             task.pullRequestUrl = siblingWithBranch.pullRequestUrl || task.pullRequestUrl;
             siblingTasks = groupSiblings.map(s => ({ id: s.id, title: s.title, type: s.type, description: s.description, pullRequestUrl: s.pullRequestUrl }));
             appendOutput(managed, {

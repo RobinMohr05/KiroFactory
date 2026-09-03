@@ -506,6 +506,22 @@ function buildBranchName(taskType, taskId, taskTitle) {
 }
 
 /**
+ * Strip embedded newlines/tabs/CR and trim ends from a branch name received
+ * from the orchestrator (`taskMeta.branch`, inherited from a possibly
+ * pre-existing DB row) before it's used in a `git checkout -B <name>` call
+ * or passed as the `TASK_BRANCH_NAME` env var. Defense-in-depth alongside
+ * the backend-side sanitization in resolveTask/resetTask/setTaskBranchAndPr
+ * — this is the last point before the value reaches an actual git
+ * invocation, so it also neutralizes any row written before that fix.
+ * Returns null if nothing but whitespace remains.
+ */
+function sanitizeBranchName(branch) {
+  if (!branch) return null;
+  const cleaned = String(branch).replace(/[\r\n\t]+/g, "").trim();
+  return cleaned || null;
+}
+
+/**
  * Reset the working tree so a branch checkout can't fail on a dirty state.
  *
  * This runs before starting a new task. Any committed work of the previous task
@@ -2864,7 +2880,7 @@ function handlePrompt(text, taskMeta) {
         execFileArgs("git", ["fetch", "origin"], { cwd: WORKSPACE });
 
         if (taskMeta.branch) {
-          currentBranchName = taskMeta.branch;
+          currentBranchName = sanitizeBranchName(taskMeta.branch);
         } else {
           // Compute the deterministic branch name so the git-delivery MCP
           // tools (sync_task_branch / submit_task_changes) know which branch
@@ -2883,12 +2899,13 @@ function handlePrompt(text, taskMeta) {
       } else {
         // Inspector-kind: checkout the task branch as before (they need to be
         // on it for git diff). This is the unchanged original logic.
-        if (taskMeta.branch) {
+        const inspectorBranch = sanitizeBranchName(taskMeta.branch);
+        if (inspectorBranch) {
           resetWorkingTree();
-          execFileArgs("git", ["fetch", authRemoteUrl || "origin", taskMeta.branch], { cwd: WORKSPACE });
-          execFileArgs("git", ["checkout", "-B", taskMeta.branch, "FETCH_HEAD"], { cwd: WORKSPACE });
-          currentBranchName = taskMeta.branch;
-          sendOutput(`Checked out existing branch: ${taskMeta.branch} (reset to origin's latest)`, "system");
+          execFileArgs("git", ["fetch", authRemoteUrl || "origin", inspectorBranch], { cwd: WORKSPACE });
+          execFileArgs("git", ["checkout", "-B", inspectorBranch, "FETCH_HEAD"], { cwd: WORKSPACE });
+          currentBranchName = inspectorBranch;
+          sendOutput(`Checked out existing branch: ${inspectorBranch} (reset to origin's latest)`, "system");
         } else {
           const deterministicBranch = buildBranchName(taskMeta.type || "task", taskMeta.id, taskMeta.title);
           const remoteRef = execFileArgs(

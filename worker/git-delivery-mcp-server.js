@@ -38,7 +38,15 @@ const SERVER_VERSION = "1.0.0";
 // ---------------------------------------------------------------------------
 
 const WORKSPACE = process.env.WORKSPACE || "/workspace";
-const TASK_BRANCH_NAME = process.env.TASK_BRANCH_NAME || "";
+// .replace() strips any embedded newline/tab/CR and .trim() removes leading/
+// trailing whitespace — defense-in-depth against a malformed branch value
+// reaching a `git checkout -B <name>` call (which fails on invalid refs).
+// The primary fix is sanitizing at the DB write sites (resolveTask/resetTask/
+// setTaskBranchAndPr in the backend), but this env var is also the one place
+// a pre-existing corrupted DB row, or any future path that sets this env var
+// without going through those writers, would otherwise reach an actual git
+// invocation unsanitized.
+const TASK_BRANCH_NAME = (process.env.TASK_BRANCH_NAME || "").replace(/[\r\n\t]+/g, "").trim();
 const DEV_BRANCH = process.env.DEV_BRANCH || "develop";
 const TASK_ID = process.env.TASK_ID || "";
 const TASK_TITLE = process.env.TASK_TITLE || "";

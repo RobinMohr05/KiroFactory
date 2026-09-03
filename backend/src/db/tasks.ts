@@ -35,6 +35,7 @@ import { readQuery, writeQuery } from "./connection.js";
 import { getNextId } from "./id-counter.js";
 import type { Task, CreateTaskInput, UpdateTaskInput } from "../types.js";
 import { DependencyCycleError, isGitProvider } from "../types.js";
+import { sanitizeBranchName } from "../agent/repo-url-parser.js";
 
 /**
  * Precomputed claim-ordering rank from `origin` — mirrors the SQL `CASE
@@ -497,11 +498,12 @@ export async function setTaskBranchAndPr(
   branch: string | null,
   pullRequestUrl: string | null
 ): Promise<void> {
+  const cleanBranch = sanitizeBranchName(branch);
   await writeQuery(async (tx: ManagedTransaction) => {
     await tx.run(
       `MATCH (t:Task {id: $taskId})
        SET t.branch = $branch, t.pullRequestUrl = $pullRequestUrl, t.updatedAt = datetime()`,
-      { taskId, branch, pullRequestUrl }
+      { taskId, branch: cleanBranch, pullRequestUrl }
     );
   });
 }

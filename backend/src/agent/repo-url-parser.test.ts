@@ -7,7 +7,7 @@
 
 import { describe, it, expect } from "vitest";
 
-import { buildPersistentBranchName, buildTaskBranchName } from "../agent/repo-url-parser.js";
+import { buildPersistentBranchName, buildTaskBranchName, sanitizeBranchName } from "../agent/repo-url-parser.js";
 
 describe("buildPersistentBranchName", () => {
   it("should produce a slugified branch name with session ID suffix", () => {
@@ -68,5 +68,36 @@ describe("buildTaskBranchName", () => {
     const a = buildTaskBranchName("bug", 1, "Duplicate title");
     const b = buildTaskBranchName("bug", 2, "Duplicate title");
     expect(a).not.toBe(b);
+  });
+});
+
+describe("sanitizeBranchName", () => {
+  it("should strip a leading newline (the AC2 inherited-branch bug)", () => {
+    const result = sanitizeBranchName("\nbug/#1554_wire-session-model-selection-through-to-containerized-worker");
+    expect(result).toBe("bug/#1554_wire-session-model-selection-through-to-containerized-worker");
+  });
+
+  it("should strip trailing/internal newlines, tabs, and carriage returns", () => {
+    expect(sanitizeBranchName("feature/#1_test\n")).toBe("feature/#1_test");
+    expect(sanitizeBranchName("feature/#1\n_test")).toBe("feature/#1_test");
+    expect(sanitizeBranchName("feature/#1_test\r\n")).toBe("feature/#1_test");
+    expect(sanitizeBranchName("feature/#1_test\t")).toBe("feature/#1_test");
+  });
+
+  it("should trim leading/trailing whitespace", () => {
+    expect(sanitizeBranchName("  feature/#1_test  ")).toBe("feature/#1_test");
+  });
+
+  it("should pass through an already-clean branch name unchanged", () => {
+    expect(sanitizeBranchName("bug/#598_local-mode-pipeline-has-no-commit-gate")).toBe(
+      "bug/#598_local-mode-pipeline-has-no-commit-gate"
+    );
+  });
+
+  it("should return null for null, undefined, empty, or whitespace-only input", () => {
+    expect(sanitizeBranchName(null)).toBeNull();
+    expect(sanitizeBranchName(undefined)).toBeNull();
+    expect(sanitizeBranchName("")).toBeNull();
+    expect(sanitizeBranchName("   \n\t  ")).toBeNull();
   });
 });
