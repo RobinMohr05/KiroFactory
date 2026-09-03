@@ -341,6 +341,45 @@ describe('renderPlannerMarkdown', () => {
       expect(() => renderPlannerMarkdown('some prose with an unterminated ```code fence')).not.toThrow();
     });
 
+    // Defect 4 (reviewer follow-up): a header where the bold span closes
+    // right after the number and the separator sits OUTSIDE it — e.g.
+    // `**Q1**: Title` or `**Q1** — Title` — was not detected because the char
+    // after the number is the closing `*`, not a separator/whitespace. It must
+    // still be detected as a question header and get its own card.
+    it('detects a header where ** closes right after the number (colon outside)', () => {
+      const input = [
+        '**Q1**: What is the scope?',
+        '(A) Small',
+        'Rec: (A) Small',
+        '',
+        '**Q2**: When?',
+        '(A) week',
+        'Rec: (A) week',
+      ].join('\n');
+      const result = renderPlannerMarkdown(input);
+      const matches = result.match(/class="planner-question"/g);
+      expect(matches).not.toBeNull();
+      expect(matches!.length).toBe(2);
+      expect(result).not.toContain('**');
+    });
+
+    it('detects a header where ** closes right after the number (em-dash outside)', () => {
+      const input = [
+        '**Q1** — What is the scope?',
+        '(A) Small',
+        'Rec: (A) Small',
+        '',
+        '**Q2** — When?',
+        '(A) week',
+        'Rec: (A) week',
+      ].join('\n');
+      const result = renderPlannerMarkdown(input);
+      const matches = result.match(/class="planner-question"/g);
+      expect(matches).not.toBeNull();
+      expect(matches!.length).toBe(2);
+      expect(result).not.toContain('**');
+    });
+
     // General catch-all: no raw ** leaks into a completed multi-question render.
     it('leaks no ** into the final rendered output of a completed message', () => {
       const input = [

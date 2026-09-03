@@ -65,13 +65,18 @@ marked.use({
  *   Q3 — Budget: body       (em-dash separator, NO bold — was previously
  *                            swallowed into the prior card; see defect #4)
  *   Q4: body                (colon separator, no bold)
+ *   **Q1**: Title           (bold closes right after the number, separator
+ *                            OUTSIDE the bold span)
+ *   **Q1** — Title          (same, em-dash separator outside the bold span)
  *
  * The key is: line starts (optionally with whitespace), then optional `**`,
- * then "Q" followed by one or more digits, then a separator (`—`, `–`, `-`,
+ * then "Q" followed by one or more digits, then an OPTIONAL closing `**` (to
+ * cover headers whose bold span wraps only the label/number, leaving the
+ * separator outside — e.g. `**Q1**: Title`), then a separator (`—`, `–`, `-`,
  * `:`, or whitespace). Requiring a separator avoids misfiring on prose that
  * merely starts with a "Q<number>" token with no delimiter.
  */
-const QUESTION_LINE_RE = /^\s*(?:\*\*\s*)?Q\d+\s*(?:[—–:-]|\s)/;
+const QUESTION_LINE_RE = /^\s*(?:\*\*\s*)?Q\d+\s*(?:\*\*)?\s*(?:[—–:-]|\s)/;
 
 /**
  * Normalizes a question header line into leak-free HTML where the header label
