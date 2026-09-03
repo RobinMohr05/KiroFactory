@@ -9,6 +9,19 @@ import type { Task, OutputEntry, SessionActivity } from '../types';
 interface TaskPlannerModalProps {
   onClose: () => void;
   onSwitchToManual: () => void;
+  /** When true, the modal is parked (kept mounted + session alive) but hidden via CSS. */
+  hidden?: boolean;
+  /**
+   * Outside-click (backdrop) dismiss: hide the modal WITHOUT stopping the
+   * underlying session, so it can be resumed later. No DELETE, no unmount.
+   */
+  onDismiss?: () => void;
+  /**
+   * Fired after a parked (hidden) session has been idle past the 5-minute
+   * timer and this component has already DELETEd it — the parent should drop
+   * its parked reference (unmount) so the next open starts fresh.
+   */
+  onExpire?: () => void;
 }
 
 interface PlannerMessage {
@@ -37,7 +50,7 @@ const ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'
 const MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB
 const MAX_ATTACHMENTS = 3;
 
-export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModalProps) {
+export function TaskPlannerModal({ onClose, onSwitchToManual, hidden = false, onDismiss, onExpire }: TaskPlannerModalProps) {
   const { currentTabId, setTasks } = useApp();
   const [messages, setMessages] = useState<PlannerMessage[]>([]);
   const [inputText, setInputText] = useState('');
@@ -47,6 +60,9 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
   const [parsedTasks, setParsedTasks] = useState<ParsedTask[] | null>(null);
   const [previewDetailIndex, setPreviewDetailIndex] = useState<number | null>(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  // Bumped by "Start Over" to re-run the session-start effect on the same
+  // mounted instance (no unmount/remount, no flicker).
+  const [restartNonce, setRestartNonce] = useState(0);
   const attachmentsRef = useRef<Attachment[]>([]);
   const messagesRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -54,6 +70,21 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
   const partialMessageRef = useRef<string>('');
   const sessionIdRef = useRef<number | null>(null);
   const cleanedUpSessionRef = useRef<Set<number>>(new Set());
+  // Holds the parked-session idle timeout id so it can be cleared reliably.
+  const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Keep onExpire in a ref so the idle-timer effect can call the latest
+  // callback WITHOUT listing it as a dependency. The parent (TasksPanel) passes
+  // an inline arrow whose identity changes on every re-render (e.g. on every
+  // WebSocket task update); if that were an effect dep, each such re-render
+  // while parked would tear down and restart the 5-minute timer, so the parked
+  // session would never actually expire.
+  const onExpireRef = useRef(onExpire);
+  onExpireRef.current = onExpire;
+  // Keep the parked/hidden state in a ref so window-level listeners (e.g. the
+  // global paste handler) can early-return while parked WITHOUT being re-bound
+  // on every hidden toggle.
+  const hiddenRef = useRef(hidden);
+  hiddenRef.current = hidden;
 
   // Keep ref in sync for WS handler
   useEffect(() => {
@@ -168,7 +199,7 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
       // already cleaned up via the Cancel button.
       cleanupOrphan();
     };
-  }, [currentTabId]);
+  }, [currentTabId, restartNonce]);
 
   // Listen for WebSocket output and activity
   useEffect(() => {
@@ -419,6 +450,10 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
   // Paste event listener — attach image(s) from clipboard when modal is open
   useEffect(() => {
     const handlePaste = (e: ClipboardEvent) => {
+      // While parked (hidden), the modal is still mounted but must be inert —
+      // don't swallow (preventDefault) or capture image pastes happening
+      // elsewhere in the app.
+      if (hiddenRef.current) return;
       const items = e.clipboardData?.items;
       if (!items) return;
 
@@ -586,6 +621,59 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
     onClose();
   };
 
+  /**
+   * Tear down the current session (stop the CLI) and immediately spin up a
+   * brand-new one in the SAME open modal — no unmount/remount, no flicker.
+   * Clears all conversation state, then bumps restartNonce so the shared
+   * session-start effect re-runs down the same path the initial mount uses.
+   */
+  const handleStartOver = async () => {
+    const previousSessionId = sessionId;
+    if (previousSessionId && !cleanedUpSessionRef.current.has(previousSessionId)) {
+      cleanedUpSessionRef.current.add(previousSessionId);
+      try {
+        await apiFetch(`/api/task-planner/${previousSessionId}`, { method: 'DELETE' });
+      } catch { /* ignore cleanup errors */ }
+    }
+    // Clear all conversation state.
+    partialMessageRef.current = '';
+    setMessages([]);
+    setParsedTasks(null);
+    setPreviewDetailIndex(null);
+    setAttachments([]);
+    setInputText('');
+    setReady(false);
+    setStatus('connecting');
+    setSessionId(null);
+    // Re-run the session-start effect to create a fresh session.
+    setRestartNonce(n => n + 1);
+  };
+
+  // 5-minute idle timer for a parked (hidden) session. When the modal is
+  // dismissed via outside-click it stays mounted + alive but hidden; if the
+  // user doesn't resume within 5 minutes, DELETE the session (stop the CLI)
+  // and notify the parent to drop its parked reference so the next open
+  // starts a completely new session. Resuming (hidden -> false) clears the
+  // timer before it fires.
+  useEffect(() => {
+    if (!hidden || sessionId === null) return;
+    const parkedSessionId = sessionId;
+    idleTimerRef.current = setTimeout(() => {
+      idleTimerRef.current = null;
+      if (!cleanedUpSessionRef.current.has(parkedSessionId)) {
+        cleanedUpSessionRef.current.add(parkedSessionId);
+        apiFetch(`/api/task-planner/${parkedSessionId}`, { method: 'DELETE' }).catch(() => { /* ignore cleanup errors */ });
+      }
+      onExpireRef.current?.();
+    }, 5 * 60 * 1000);
+    return () => {
+      if (idleTimerRef.current) {
+        clearTimeout(idleTimerRef.current);
+        idleTimerRef.current = null;
+      }
+    };
+  }, [hidden, sessionId]);
+
   const handleSwitchToManual = async () => {
     await handleClose();
     onSwitchToManual();
@@ -613,7 +701,11 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
   const statusDotClass = status === 'ready' ? 'status-dot connected' : status === 'thinking' ? 'status-dot thinking' : 'status-dot';
 
   return (
-    <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) handleClose(); }}>
+    <div
+      className="modal-backdrop"
+      hidden={hidden}
+      onClick={(e) => { if (e.target === e.currentTarget) { if (onDismiss) onDismiss(); else handleClose(); } }}
+    >
       <div className="modal modal-wide task-planner-modal" role="dialog" aria-labelledby="taskPlannerTitle">
         <div className="task-planner-header">
           <h2 id="taskPlannerTitle">AI Task Planner</h2>
@@ -724,6 +816,7 @@ export function TaskPlannerModal({ onClose, onSwitchToManual }: TaskPlannerModal
         )}
         <div className="task-planner-actions">
           <button className="btn btn-secondary btn-sm" onClick={handleClose}>Cancel</button>
+          <button className="btn btn-secondary btn-sm" onClick={handleStartOver}>Start Over</button>
           <button className="btn btn-secondary btn-sm" onClick={handleSwitchToManual}>Create manually instead</button>
           <button className="btn btn-primary btn-sm" disabled={!parsedTasks} onClick={handleCreateTask}>{parsedTasks && parsedTasks.length > 1 ? 'Create Tasks' : 'Create Task'}</button>
         </div>

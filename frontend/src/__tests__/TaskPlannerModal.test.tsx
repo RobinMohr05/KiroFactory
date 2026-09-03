@@ -1328,3 +1328,313 @@ describe('TaskPlannerModal - multi-task batch support', () => {
   });
 });
 
+
+describe('TaskPlannerModal - Start Over button', () => {
+  let apiFetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiFetchMock = vi.mocked(api.apiFetch);
+    mockUseApp({ currentTabId: 1 });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  function dispatchAssistantMessage(sessionId: number, text: string) {
+    window.dispatchEvent(new CustomEvent('ws-session-output', {
+      detail: { sessionId, entry: { stream: 'stdout', text } },
+    }));
+    window.dispatchEvent(new CustomEvent('ws-session-activity', {
+      detail: { sessionId, activity: { type: 'idle' } },
+    }));
+  }
+
+  it('renders a "Start Over" button between Cancel and "Create manually instead"', async () => {
+    apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (url === '/api/task-planner/start' && opts?.method === 'POST') {
+        return { ok: true, json: async () => ({ sessionId: 1 }) };
+      }
+      if (opts?.method === 'DELETE') return { ok: true, json: async () => ({}) };
+      return { ok: true, json: async () => ({}) };
+    });
+
+    const { container } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    const buttons = Array.from(container.querySelectorAll('.task-planner-actions .btn'));
+    const labels = buttons.map(b => b.textContent);
+    const cancelIdx = labels.indexOf('Cancel');
+    const startOverIdx = labels.indexOf('Start Over');
+    const manualIdx = labels.indexOf('Create manually instead');
+    expect(startOverIdx).toBeGreaterThan(-1);
+    expect(startOverIdx).toBe(cancelIdx + 1);
+    expect(manualIdx).toBe(startOverIdx + 1);
+    // Styled as a small secondary button
+    const startOverBtn = buttons[startOverIdx];
+    expect(startOverBtn.classList.contains('btn-secondary')).toBe(true);
+    expect(startOverBtn.classList.contains('btn-sm')).toBe(true);
+  });
+
+  it('clicking Start Over DELETEs old session, POSTs a new /start, and clears the transcript', async () => {
+    let startCount = 0;
+    apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (url === '/api/task-planner/start' && opts?.method === 'POST') {
+        startCount++;
+        return { ok: true, json: async () => ({ sessionId: startCount === 1 ? 500 : 600 }) };
+      }
+      if (opts?.method === 'DELETE') return { ok: true, json: async () => ({}) };
+      return { ok: true, json: async () => ({}) };
+    });
+
+    const { getByText, queryByText, container } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    // Produce an assistant message + parsed task so there is transcript to clear.
+    await act(async () => {
+      dispatchAssistantMessage(500, '```json:task\n{"title": "Old", "priority": 2, "type": "bug"}\n```');
+      await new Promise(r => setTimeout(r, 10));
+    });
+    expect(queryByText('✅ Task ready to create! Click "Create Task" to add it to your board.')).toBeTruthy();
+    // The parsed-task preview card is rendered.
+    expect(container.querySelector('.task-planner-preview')).toBeTruthy();
+
+    // Click Start Over.
+    await act(async () => {
+      getByText('Start Over').click();
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    // The old session (500) must be DELETEd.
+    const deleteCalls = apiFetchMock.mock.calls.filter(
+      ([url, opts]) => url === '/api/task-planner/500' && opts?.method === 'DELETE'
+    );
+    expect(deleteCalls.length).toBe(1);
+
+    // A second /start POST must have been issued.
+    expect(startCount).toBe(2);
+
+    // The old parsed-task preview must be gone (transcript cleared).
+    expect(container.querySelector('.task-planner-preview')).toBeNull();
+    expect(queryByText('✅ Task ready to create! Click "Create Task" to add it to your board.')).toBeNull();
+  });
+});
+
+describe('TaskPlannerModal - outside-click dismiss keeps session alive', () => {
+  let apiFetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiFetchMock = vi.mocked(api.apiFetch);
+    apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (url === '/api/task-planner/start' && opts?.method === 'POST') {
+        return { ok: true, json: async () => ({ sessionId: 700 }) };
+      }
+      if (opts?.method === 'DELETE') return { ok: true, json: async () => ({}) };
+      return { ok: true, json: async () => ({}) };
+    });
+    mockUseApp({ currentTabId: 1 });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('clicking the backdrop calls onDismiss and does NOT DELETE the session', async () => {
+    const onDismiss = vi.fn();
+    const onClose = vi.fn();
+    const { container } = render(
+      <TaskPlannerModal onClose={onClose} onSwitchToManual={vi.fn()} onDismiss={onDismiss} />
+    );
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    const backdrop = container.querySelector('.modal-backdrop') as HTMLElement;
+    await act(async () => {
+      // Click directly on the backdrop (target === currentTarget).
+      backdrop.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    expect(onDismiss).toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+
+    const deleteCalls = apiFetchMock.mock.calls.filter(
+      ([url, opts]) => typeof url === 'string' && url.includes('/api/task-planner/') && opts?.method === 'DELETE'
+    );
+    expect(deleteCalls.length).toBe(0);
+  });
+
+  it('applies the hidden attribute to the backdrop when hidden prop is true', async () => {
+    const { container, rerender } = render(
+      <TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} onDismiss={vi.fn()} hidden={false} />
+    );
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    const backdrop = container.querySelector('.modal-backdrop') as HTMLElement;
+    expect(backdrop.hasAttribute('hidden')).toBe(false);
+
+    await act(async () => {
+      rerender(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} onDismiss={vi.fn()} hidden={true} />);
+    });
+    expect(backdrop.hasAttribute('hidden')).toBe(true);
+  });
+
+  it('ignores a global image paste while parked (hidden) — no preventDefault, no attachment', async () => {
+    // Regression: keeping the modal mounted while parked (approach A) left the
+    // window-level paste listener active. Pasting an image elsewhere in the app
+    // while a planner is hidden would be swallowed (preventDefault) and added to
+    // the hidden modal's attachment list in the background. The handler must be
+    // inert while hidden.
+    const { container, rerender } = render(
+      <TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} onDismiss={vi.fn()} hidden={false} />
+    );
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    // Park it.
+    await act(async () => {
+      rerender(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} onDismiss={vi.fn()} hidden={true} />);
+    });
+
+    // Build a synthetic paste event carrying an image file.
+    const file = new File([new Uint8Array([1, 2, 3])], 'pasted.png', { type: 'image/png' });
+    const pasteEvent = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(pasteEvent, 'clipboardData', {
+      value: {
+        items: [
+          {
+            kind: 'file',
+            type: 'image/png',
+            getAsFile: () => file,
+          },
+        ],
+      },
+    });
+
+    await act(async () => {
+      window.dispatchEvent(pasteEvent);
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    // While hidden, the handler must not swallow the paste...
+    expect(pasteEvent.defaultPrevented).toBe(false);
+    // ...nor add the image as an attachment (no attachment chip rendered).
+    expect(container.querySelector('.task-planner-attachment')).toBeNull();
+  });
+});
+
+describe('TaskPlannerModal - 5-minute idle timer on parked sessions', () => {
+  let apiFetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    apiFetchMock = vi.mocked(api.apiFetch);
+    apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (url === '/api/task-planner/start' && opts?.method === 'POST') {
+        return { ok: true, json: async () => ({ sessionId: 800 }) };
+      }
+      if (opts?.method === 'DELETE') return { ok: true, json: async () => ({}) };
+      return { ok: true, json: async () => ({}) };
+    });
+    mockUseApp({ currentTabId: 1 });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
+
+  it('DELETEs the session and calls onExpire after 5 minutes hidden', async () => {
+    const onExpire = vi.fn();
+    const { rerender } = render(
+      <TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} onDismiss={vi.fn()} onExpire={onExpire} hidden={false} />
+    );
+    // Let /start resolve.
+    await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+
+    // Park the modal (hidden).
+    await act(async () => {
+      rerender(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} onDismiss={vi.fn()} onExpire={onExpire} hidden={true} />);
+    });
+
+    // Advance 5 minutes.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5 * 60 * 1000 + 100);
+    });
+
+    const deleteCalls = apiFetchMock.mock.calls.filter(
+      ([url, opts]) => url === '/api/task-planner/800' && opts?.method === 'DELETE'
+    );
+    expect(deleteCalls.length).toBe(1);
+    expect(onExpire).toHaveBeenCalled();
+  });
+
+  it('cancels the idle timer when the modal is un-hidden before 5 minutes', async () => {
+    const onExpire = vi.fn();
+    const { rerender } = render(
+      <TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} onDismiss={vi.fn()} onExpire={onExpire} hidden={false} />
+    );
+    await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+
+    // Park it.
+    await act(async () => {
+      rerender(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} onDismiss={vi.fn()} onExpire={onExpire} hidden={true} />);
+    });
+    // Resume before 5 minutes.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2 * 60 * 1000);
+      rerender(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} onDismiss={vi.fn()} onExpire={onExpire} hidden={false} />);
+    });
+    // Advance well past the original 5-minute window.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+    });
+
+    expect(onExpire).not.toHaveBeenCalled();
+    const deleteCalls = apiFetchMock.mock.calls.filter(
+      ([url, opts]) => typeof url === 'string' && url.includes('/api/task-planner/') && opts?.method === 'DELETE'
+    );
+    expect(deleteCalls.length).toBe(0);
+  });
+
+  it('still expires after 5 minutes even if onExpire identity changes on parent re-renders while hidden', async () => {
+    // Regression: the idle-timer effect had onExpire in its dep array, so a
+    // parent (TasksPanel) passing an inline arrow onExpire that changes identity
+    // on every re-render (e.g. on every WebSocket task update) would tear down
+    // and restart the 5-minute timer indefinitely — the parked session would
+    // never expire. The timer must depend only on hidden/sessionId transitions.
+    let expireCount = 0;
+    const renderWith = (hidden: boolean) => (
+      <TaskPlannerModal
+        onClose={vi.fn()}
+        onSwitchToManual={vi.fn()}
+        onDismiss={vi.fn()}
+        // Fresh identity on every render, exactly like an inline arrow in the parent.
+        onExpire={() => { expireCount++; }}
+        hidden={hidden}
+      />
+    );
+    const { rerender } = render(renderWith(false));
+    await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+
+    // Park the modal (hidden) — starts the 5-minute timer.
+    await act(async () => { rerender(renderWith(true)); });
+
+    // Simulate repeated parent re-renders (still hidden) every 30s, each passing
+    // a NEW onExpire arrow, for a total elapsed time well past 5 minutes.
+    for (let i = 0; i < 12; i++) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30 * 1000);
+        rerender(renderWith(true));
+      });
+    }
+
+    // 12 * 30s = 6 minutes elapsed while hidden — the session must have expired.
+    expect(expireCount).toBe(1);
+    const deleteCalls = apiFetchMock.mock.calls.filter(
+      ([url, opts]) => url === '/api/task-planner/800' && opts?.method === 'DELETE'
+    );
+    expect(deleteCalls.length).toBe(1);
+  });
+});
