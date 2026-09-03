@@ -135,6 +135,10 @@
   background: rgba(233, 87, 24, 0.2);
 }
 
+[data-theme="dark"] .badge-group {
+  background: rgba(255, 176, 46, 0.22);
+}
+
 [data-theme="dark"] .board-item-action:hover {
   background: rgba(255, 255, 255, 0.1);
 }
@@ -984,6 +988,12 @@ textarea:focus {
 .badge-blocked {
   background: rgba(233, 87, 24, 0.12);
   color: var(--blocked-color);
+  font-weight: 600;
+}
+
+.badge-group {
+  background: rgba(255, 176, 46, 0.14);
+  color: var(--accent-text);
   font-weight: 600;
 }
 

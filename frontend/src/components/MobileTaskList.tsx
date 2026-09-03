@@ -189,6 +189,9 @@ function MobileTaskCard({ task, onClick }: { task: Task; onClick: () => void }) 
           {task.isBlocked && (
             <span className="badge badge-blocked" title={`Blocked by: ${blockedTitles}`}>⛔ Blocked</span>
           )}
+          {task.groupId && (
+            <span className="badge badge-group" title={`Shares a branch/PR with group "${task.groupId}"`}>🔗 {task.groupId}</span>
+          )}
         </div>
       </div>
     </div>

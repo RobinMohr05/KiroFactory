@@ -24,6 +24,7 @@ export function TaskModal({ task, onClose }: TaskModalProps) {
   const [origin, setOrigin] = useState<string>(task?.origin || 'user');
   const [branch, setBranch] = useState(task?.branch || '');
   const [pullRequestUrl, setPullRequestUrl] = useState(task?.pullRequestUrl || '');
+  const [groupId, setGroupId] = useState(task?.groupId || '');
   const [error, setError] = useState('');
 
   // Copy task ID state
@@ -143,6 +144,7 @@ export function TaskModal({ task, onClose }: TaskModalProps) {
             origin,
             branch: branch.trim() || null,
             pullRequestUrl: pullRequestUrl.trim() || null,
+            groupId: groupId.trim() || null,
             dependsOn,
           }),
         });
@@ -269,6 +271,18 @@ export function TaskModal({ task, onClose }: TaskModalProps) {
                 <div className="form-group">
                   <label htmlFor="taskPullRequestUrl">Pull Request URL</label>
                   <input type="text" id="taskPullRequestUrl" placeholder="No PR yet" value={pullRequestUrl} onChange={(e) => setPullRequestUrl(e.target.value)} />
+                </div>
+              </div>
+              <div className="form-row">
+                <div className="form-group">
+                  <label htmlFor="taskGroupId">Group ID</label>
+                  <input
+                    type="text"
+                    id="taskGroupId"
+                    placeholder="No group — set the same value on related tasks to share a branch/PR"
+                    value={groupId}
+                    onChange={(e) => setGroupId(e.target.value)}
+                  />
                 </div>
               </div>
             </>

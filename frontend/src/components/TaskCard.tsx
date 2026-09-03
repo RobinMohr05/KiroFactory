@@ -67,6 +67,9 @@ export function TaskCard({ task, onClick, highlighted, disableInteraction }: Tas
         {task.isBlocked && (
           <span className="badge badge-blocked" title={`Blocked by: ${blockedTitles}`}>⛔ Blocked</span>
         )}
+        {task.groupId && (
+          <span className="badge badge-group" title={`Shares a branch/PR with group "${task.groupId}"`}>🔗 {task.groupId}</span>
+        )}
         <span className="card-origin" title={task.origin || 'user'}>{originIcon}</span>
       </div>
     </div>

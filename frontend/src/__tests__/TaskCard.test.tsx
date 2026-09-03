@@ -43,6 +43,17 @@ describe('TaskCard', () => {
     expect(screen.queryByText('⛔ Blocked')).not.toBeInTheDocument();
   });
 
+  it('renders group badge when task has a groupId', () => {
+    const groupedTask: Task = { ...baseTask, groupId: 'session-model-fix' };
+    render(<TaskCard task={groupedTask} onClick={() => {}} />);
+    expect(screen.getByText('🔗 session-model-fix')).toBeInTheDocument();
+  });
+
+  it('does not render group badge when task has no groupId', () => {
+    render(<TaskCard task={baseTask} onClick={() => {}} />);
+    expect(screen.queryByText(/🔗/)).not.toBeInTheDocument();
+  });
+
   it('has correct data attributes', () => {
     const { container } = render(<TaskCard task={baseTask} onClick={() => {}} />);
     const card = container.querySelector('.task-card');

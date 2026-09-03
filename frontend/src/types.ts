@@ -17,6 +17,8 @@ export interface Task {
   origin?: 'user' | 'ai' | 'user-assisted';
   branch?: string | null;
   pullRequestUrl?: string | null;
+  /** Tasks sharing the same groupId are worked on the same branch/PR (see backend AC2 sibling-branch inheritance). Editable only from the edit-task view — never accepted on task creation. */
+  groupId?: string | null;
   createdAt?: string;
   updatedAt?: string;
   isBlocked?: boolean;
