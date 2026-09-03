@@ -56,6 +56,12 @@ export interface Session {
   excludedMcpServerNames?: string[];
   mcpServers?: McpServerConfig[];
   timeoutSeconds?: number;
+  /** Cron expression for a scheduled one-shot session (Looper view only). */
+  cronExpression?: string;
+  /** IANA timezone the cron expression is evaluated in. */
+  cronTimezone?: string;
+  /** Retry count for a failed scheduled run (default 0). */
+  retries?: number;
 }
 
 export interface SessionActivity {

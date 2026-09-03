@@ -193,6 +193,12 @@ function mapRecordToSession(record: Neo4jRecord): Session {
     isPermanent: !!props.isPermanent,
     sortOrder: (props.sortOrder as number) ?? 0,
     forceLocal: !!props.forceLocal,
+    cronExpression: (props.cronExpression as string) || undefined,
+    cronTimezone: (props.cronTimezone as string) || undefined,
+    retries:
+      props.retries !== null && props.retries !== undefined
+        ? Number(props.retries)
+        : undefined,
     output: [], // Output is in-memory only — never persisted, matches the original.
   };
 }
@@ -300,6 +306,7 @@ export async function insertSession(session: Session): Promise<number> {
           currentTaskTitle: $currentTaskTitle,
           pinned: $pinned, isPermanent: $isPermanent, sortOrder: $sortOrder, forceLocal: $forceLocal,
           excludedMcpServerNames: $excludedMcpServerNames,
+          cronExpression: $cronExpression, cronTimezone: $cronTimezone, retries: $retries,
           createdAt: datetime($createdAt), startedAt: datetime($startedAt)
         })
         CREATE (owner)-[:OWNS]->(s)
@@ -349,6 +356,9 @@ export async function insertSession(session: Session): Promise<number> {
         createdAt: session.createdAt,
         startedAt: session.startedAt ?? null,
         userId: session.userId,
+        cronExpression: session.cronExpression ?? null,
+        cronTimezone: session.cronTimezone ?? null,
+        retries: session.retries ?? null,
         tabIds: session.tabIds ?? [],
         mcpServers: buildMcpServerParams(session.mcpServers),
         rawMcpServers: buildRawMcpServerParams(session.rawMcpServers),
@@ -434,6 +444,7 @@ export async function updateSessionMeta(session: Session): Promise<void> {
             s.currentTaskTitle = $currentTaskTitle,
             s.pinned = $pinned, s.sortOrder = $sortOrder, s.forceLocal = $forceLocal,
             s.excludedMcpServerNames = $excludedMcpServerNames,
+            s.cronExpression = $cronExpression, s.cronTimezone = $cronTimezone, s.retries = $retries,
             s.startedAt = datetime($startedAt)
         WITH s
         OPTIONAL MATCH (s)-[oldTabRel:IN_TAB]->(:Tab)
@@ -492,6 +503,9 @@ export async function updateSessionMeta(session: Session): Promise<void> {
         tabIds: session.tabIds ?? [],
         mcpServers: buildMcpServerParams(session.mcpServers),
         rawMcpServers: buildRawMcpServerParams(session.rawMcpServers),
+        cronExpression: session.cronExpression ?? null,
+        cronTimezone: session.cronTimezone ?? null,
+        retries: session.retries ?? null,
       }
     );
   });

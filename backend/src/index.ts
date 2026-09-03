@@ -31,6 +31,7 @@ import webhookTasksRouter from "./routes/webhook-tasks.js";
 import { runMigration } from "./db/migrate.js";
 import { tryConnect, isDbAvailable, closePool } from "./db/connection.js";
 import { shutdownAllSessions, initSessions } from "./session-manager.js";
+import { initScheduledSessions, disarmAll as disarmAllScheduled } from "./scheduled-session-manager.js";
 import { apiErrorLogger, uncaughtErrorLogger } from "./middleware/error-logger.js";
 import { log } from "./logger.js";
 
@@ -211,6 +212,11 @@ async function start(): Promise<void> {
 
     // Restore sessions from DB (requires DB connection)
     await initSessions();
+
+    // Arm cron schedules for scheduled (one-shot) sessions. Runs after
+    // initSessions() so the in-memory session store is populated; scheduled
+    // sessions were already excluded from initSessions()'s auto-restart path.
+    await initScheduledSessions();
   } else {
     log.warn("db-unavailable-at-startup", {
       component: "startup",
@@ -261,6 +267,7 @@ async function shutdown(): Promise<void> {
   log.info("shutdown", { component: "startup", msg: "Shutting down..." });
 
   stopWslDiagnosticsCollector();
+  disarmAllScheduled();
   await shutdownAllSessions();
   await plannerPool.shutdown();
   server.close();

@@ -15,6 +15,7 @@ export function SessionsPanel() {
   const navigate = useNavigate();
   const { id: routeId } = useParams<{ id?: string }>();
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showScheduledModal, setShowScheduledModal] = useState(false);
   const [editingSession, setEditingSession] = useState<Session | null>(null);
   const [output, setOutput] = useState<OutputEntry[]>([]);
   const [activity, setActivity] = useState<SessionActivity | null>(null);
@@ -102,6 +103,11 @@ export function SessionsPanel() {
   const handleStop = async () => {
     if (!activeSessionId) return;
     await apiFetch(`/api/sessions/${activeSessionId}/stop`, { method: 'POST' });
+  };
+
+  const handleRunNow = async () => {
+    if (!activeSessionId) return;
+    await apiFetch(`/api/sessions/${activeSessionId}/run-now`, { method: 'POST' });
   };
 
   const handleDelete = async () => {
@@ -276,6 +282,7 @@ export function SessionsPanel() {
   );
 
   const isRunning = activeSession?.status === 'running';
+  const isScheduled = !!activeSession?.cronExpression;
   const isInteractive = activeSession?.interactive !== false;
   const isLoop = activeSession?.loop === true;
   const canSendPrompt = isRunning && isInteractive && !isLoop;
@@ -335,6 +342,9 @@ export function SessionsPanel() {
             {user?.uiViewMode !== 'looper' && (
               <button id="newSessionBtn" className="btn btn-primary" onClick={() => setShowCreateModal(true)}>+ New Session</button>
             )}
+            {user?.uiViewMode === 'looper' && (
+              <button id="newScheduledSessionBtn" className="btn btn-primary" onClick={() => setShowScheduledModal(true)}>+ Scheduled Session</button>
+            )}
           </div>
           <ul
             className="session-list-pinned"
@@ -380,6 +390,27 @@ export function SessionsPanel() {
             )}
           </ul>
           )}
+          {user?.uiViewMode === 'looper' && (
+            <ul className="session-list" id="scheduledSessionList" aria-label="Scheduled sessions">
+              {sortedSessions.filter(s => !s.pinned && s.cronExpression).map(session => (
+                <SessionListItem
+                  key={session.id}
+                  session={session}
+                  active={session.id === activeSessionId}
+                  hasErrors={sessionNamesWithErrors.has(session.name)}
+                  onClick={() => handleMobileSessionClick(session.id)}
+                  onDragStart={(e) => handleDragStart(e, session)}
+                  onDragEnd={handleDragEnd}
+                  onDragOver={handleDragOver}
+                  onDrop={(e) => handleDrop(e, session)}
+                  onContextMenu={(e) => handleContextMenu(e, session)}
+                />
+              ))}
+              {sortedSessions.filter(s => !s.pinned && s.cronExpression).length === 0 && (
+                <li className="session-empty-hint">No scheduled sessions yet. Create one with + Scheduled Session.</li>
+              )}
+            </ul>
+          )}
           {user?.uiViewMode === 'looper' && <FlockPanel />}
         </aside>
         <div className={`session-detail-panel${detailHidden ? ' mobile-hidden' : ''}`} id="sessionDetailPanel">
@@ -408,6 +439,9 @@ export function SessionsPanel() {
                 <div className="session-controls">
                   <button className="btn btn-success btn-sm" disabled={isRunning} onClick={handleStart}>Start</button>
                   <button className="btn btn-danger btn-sm" disabled={!isRunning} onClick={handleStop}>Stop</button>
+                  {isScheduled && (
+                    <button className="btn btn-primary btn-sm" id="sessionRunNowBtn" disabled={isRunning} title={isRunning ? 'A run is already in progress' : 'Run this scheduled session now'} onClick={handleRunNow}>Run now</button>
+                  )}
                   <button className="btn btn-secondary btn-sm" id="sessionEditBtn" disabled={isRunning} title={isRunning ? 'Stop the session to edit its settings' : 'Edit session settings'} onClick={handleEdit}>Edit</button>
                   <button className="btn btn-secondary btn-sm" onClick={() => setOutput([])}>Clear</button>
                   <button className={`btn btn-secondary btn-sm${deleteConfirmPending ? ' btn-confirm-pending' : ''}`} disabled={!!activeSession.isPermanent} onClick={handleDeleteClick}>{deleteConfirmPending ? 'Confirm?' : 'Delete'}</button>
@@ -441,6 +475,16 @@ export function SessionsPanel() {
                 <span className="session-tabs-label">Tabs:</span>
                 <span className="session-tabs-list">{sessionTabNames}</span>
               </div>
+              {isScheduled && (
+                <div className="session-schedule-bar" data-testid="session-schedule-bar">
+                  <span className="session-schedule-label">Schedule:</span>
+                  <span className="session-schedule-cron"><code>{activeSession.cronExpression}</code></span>
+                  <span className="session-schedule-tz">{activeSession.cronTimezone}</span>
+                  {(activeSession.retries ?? 0) > 0 && (
+                    <span className="session-schedule-retries">· retries: {activeSession.retries}</span>
+                  )}
+                </div>
+              )}
               <div className="session-activity" id="sessionActivityBar">
                 <span className={`activity-dot activity-${activity?.type || 'idle'}`}></span>
                 <span>{activity?.detail || activity?.type || 'Idle'}</span>
@@ -458,10 +502,11 @@ export function SessionsPanel() {
         </div>
       </div>
 
-      {(showCreateModal || editingSession) && (
+      {(showCreateModal || showScheduledModal || editingSession) && (
         <SessionModal
           session={editingSession}
-          onClose={() => { setShowCreateModal(false); setEditingSession(null); }}
+          scheduled={showScheduledModal || (!!editingSession && !!editingSession.cronExpression)}
+          onClose={() => { setShowCreateModal(false); setShowScheduledModal(false); setEditingSession(null); }}
         />
       )}
 
