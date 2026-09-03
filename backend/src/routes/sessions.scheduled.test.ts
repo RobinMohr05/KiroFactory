@@ -148,6 +148,56 @@ describe("PATCH /api/sessions/:id — cron validation & (dis)arm", () => {
     expect(res.body.error).toMatch(/timezone/i);
   });
 
+  it("returns 400 for a timezone-only update with an invalid tz on an already-scheduled session", async () => {
+    // Already-scheduled session: cronExpression is stored, request omits it and
+    // only changes the timezone to an invalid value. Must still validate.
+    vi.mocked(getSession).mockReturnValue({
+      ...SESSION_FIXTURE,
+      cronExpression: "0 9 * * *",
+      cronTimezone: "UTC",
+    });
+
+    const res = await request(createApp())
+      .patch("/api/sessions/1")
+      .send({ cronTimezone: "Nowhere/Land" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/timezone/i);
+    expect(armSession).not.toHaveBeenCalled();
+    expect(disarmSession).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 for a retries-only update when the stored timezone is invalid", async () => {
+    // Defensive: touching only retries on a scheduled session still validates
+    // the effective (stored) cron config, so a persisted-bad tz can't slip
+    // through and silently disarm the schedule.
+    vi.mocked(getSession).mockReturnValue({
+      ...SESSION_FIXTURE,
+      cronExpression: "0 9 * * *",
+      cronTimezone: "Nowhere/Land",
+    });
+
+    const res = await request(createApp())
+      .patch("/api/sessions/1")
+      .send({ retries: 3 });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/timezone/i);
+  });
+
+  it("allows a timezone-only update with a valid tz on an already-scheduled session", async () => {
+    vi.mocked(getSession)
+      .mockReturnValueOnce({ ...SESSION_FIXTURE, cronExpression: "0 9 * * *", cronTimezone: "UTC" }) // ownership check
+      .mockReturnValueOnce({ ...SESSION_FIXTURE, cronExpression: "0 9 * * *", cronTimezone: "Europe/Berlin" }); // post-update read
+
+    const res = await request(createApp())
+      .patch("/api/sessions/1")
+      .send({ cronTimezone: "Europe/Berlin" });
+
+    expect(res.status).toBe(200);
+    expect(armSession).toHaveBeenCalledWith(1, "0 9 * * *", "Europe/Berlin", undefined);
+  });
+
   it("re-arms the scheduler when cron fields are set", async () => {
     vi.mocked(getSession)
       .mockReturnValueOnce(SESSION_FIXTURE) // ownership check

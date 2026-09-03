@@ -469,16 +469,30 @@ router.patch("/:id", (req: Request, res: Response) => {
     if (rest.cronTimezone !== undefined) updates.cronTimezone = rest.cronTimezone;
     if (rest.retries !== undefined) updates.retries = rest.retries;
 
-    // Validate cron config when the expression is being set (not cleared).
-    if (updates.cronExpression) {
-      // Resolve the effective timezone: the incoming value if provided,
-      // otherwise the session's existing one.
+    // Validate cron config whenever any cron field is touched and the session
+    // would remain scheduled after the update. Resolve the *effective*
+    // expression and timezone from the incoming values, falling back to the
+    // session's stored values. This ensures a timezone-only (or retries-only)
+    // PATCH on an already-scheduled session is still validated — otherwise an
+    // invalid IANA timezone could be persisted with a 200 while silently
+    // disarming the schedule.
+    const cronFieldsTouched =
+      updates.cronExpression !== undefined ||
+      updates.cronTimezone !== undefined ||
+      updates.retries !== undefined;
+    if (cronFieldsTouched) {
+      const effectiveExpression =
+        updates.cronExpression !== undefined ? updates.cronExpression : session.cronExpression;
       const effectiveTz =
         updates.cronTimezone !== undefined ? updates.cronTimezone : session.cronTimezone;
-      const cronError = validateCronFields(updates.cronExpression, effectiveTz);
-      if (cronError) {
-        res.status(400).json({ error: cronError });
-        return;
+      // Only validate when the effective result leaves the session scheduled.
+      // An explicit clear (cronExpression set to "" / null) skips validation.
+      if (effectiveExpression) {
+        const cronError = validateCronFields(effectiveExpression, effectiveTz);
+        if (cronError) {
+          res.status(400).json({ error: cronError });
+          return;
+        }
       }
     }
 
@@ -497,7 +511,7 @@ router.patch("/:id", (req: Request, res: Response) => {
     }
 
     // (Re)arm or disarm the scheduler when cron fields changed.
-    if (updates.cronExpression !== undefined || updates.cronTimezone !== undefined || updates.retries !== undefined) {
+    if (cronFieldsTouched) {
       const updated = getSession(id);
       if (updated?.cronExpression) {
         armSession(id, updated.cronExpression, updated.cronTimezone, updated.retries);
