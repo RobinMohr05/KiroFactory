@@ -36,7 +36,7 @@ const SCHEMA_STATEMENTS: string[] = [
   "CREATE CONSTRAINT task_id_key IF NOT EXISTS FOR (t:Task) REQUIRE t.id IS NODE KEY",
   "CREATE CONSTRAINT agent_id_key IF NOT EXISTS FOR (a:Agent) REQUIRE a.id IS NODE KEY",
   "CREATE CONSTRAINT session_id_key IF NOT EXISTS FOR (s:Session) REQUIRE s.id IS NODE KEY",
-  "CREATE CONSTRAINT flock_id_key IF NOT EXISTS FOR (f:Flock) REQUIRE f.id IS NODE KEY",
+  "CREATE CONSTRAINT autoscaler_id_key IF NOT EXISTS FOR (a:AutoScaler) REQUIRE a.id IS NODE KEY",
   "CREATE CONSTRAINT turn_id_key IF NOT EXISTS FOR (t:Turn) REQUIRE t.id IS NODE KEY",
 
   // ── Infrastructure node keys (Counter, Settings — not domain entities) ──
@@ -100,6 +100,21 @@ export async function runMigration(): Promise<boolean> {
       await runSchemaStatement(statement);
     }
     console.log("[migrate] Schema bootstrap complete.");
+
+    // ── Flock → AutoScaler relabel ─────────────────────────────────────────
+    // The "Flock" feature was renamed to "Auto-Scaler". Any nodes created
+    // before the rename still carry the old `:Flock` label; relabel them to
+    // `:AutoScaler` so they satisfy the autoscaler_id_key constraint and are
+    // found by the renamed db/autoscalers.ts queries. Idempotent and safe to
+    // run on every startup: when no `:Flock` nodes exist the MATCH yields no
+    // rows and this is a no-op.
+    try {
+      await writeQuery(async (tx) => {
+        await tx.run(`MATCH (f:Flock) SET f:AutoScaler REMOVE f:Flock`);
+      });
+    } catch (err: any) {
+      console.warn(`[migrate] ⚠ Flock→AutoScaler relabel failed: ${err.message || err}`);
+    }
 
     // ── Chat session backfill ──────────────────────────────────────────────
     // Ensures every user has at least one permanent "Chat" session.

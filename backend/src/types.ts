@@ -506,11 +506,11 @@ export interface UpdateSessionInput {
   retries?: number;
 }
 
-// ─── Flocks (auto-scaling session pools) ─────────────────────────────────────
+// ─── Auto-Scalers (auto-scaling session pools) ───────────────────────────────
 
-export type FlockStatus = "running" | "stopped";
+export type AutoScalerStatus = "running" | "stopped";
 
-export interface Flock {
+export interface AutoScaler {
   id: number;
   name: string;
   userId: number;
@@ -519,11 +519,11 @@ export interface Flock {
   model?: string;
   maxConcurrency: number;
   idleTimeoutSeconds: number;
-  status: FlockStatus;
+  status: AutoScalerStatus;
   createdAt: string;
 }
 
-export interface CreateFlockInput {
+export interface CreateAutoScalerInput {
   name: string;
   userId: number;
   agentName: string;
@@ -559,9 +559,9 @@ export type WsServerMessage =
   | { type: "error-created"; error: AgentError }
   | { type: "error-dismissed"; errorId: string }
   | { type: "errors-cleared" }
-  | { type: "flock-created"; flock: Flock }
-  | { type: "flock-updated"; flock: Flock }
-  | { type: "flock-deleted"; flockId: number }
+  | { type: "autoscaler-created"; autoScaler: AutoScaler }
+  | { type: "autoscaler-updated"; autoScaler: AutoScaler }
+  | { type: "autoscaler-deleted"; autoScalerId: number }
   | { type: "wsl-diagnostic-line"; line: WslDiagnosticLine }
   | { type: "connected"; message: string };
 

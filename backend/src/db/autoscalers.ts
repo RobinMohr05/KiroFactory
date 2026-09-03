@@ -1,11 +1,11 @@
 /**
- * Neo4j-backed data access for the `:Flock` node label — auto-scaling
+ * Neo4j-backed data access for the `:AutoScaler` node label — auto-scaling
  * session pools that spin up single-claim sessions to match the number of
  * claimable tasks for a chosen agent, up to a concurrency cap.
  *
  * Graph model:
- *   (:User)-[:OWNS]->(:Flock)    ownership
- *   (:Flock)-[:IN_TAB]->(:Tab)   tab assignments (list property mirror)
+ *   (:User)-[:OWNS]->(:AutoScaler)    ownership
+ *   (:AutoScaler)-[:IN_TAB]->(:Tab)   tab assignments (list property mirror)
  *
  * Follows the same patterns as db/agents.ts and db/sessions.ts.
  */
@@ -13,16 +13,16 @@
 import type { ManagedTransaction } from "neo4j-driver";
 import { readQuery, writeQuery } from "./connection.js";
 import { getNextId } from "./id-counter.js";
-import type { Flock, CreateFlockInput, FlockStatus } from "../types.js";
+import type { AutoScaler, CreateAutoScalerInput, AutoScalerStatus } from "../types.js";
 
 /**
- * Map raw Neo4j record data to a Flock object.
+ * Map raw Neo4j record data to a AutoScaler object.
  */
-function mapToFlock(
+function mapToAutoScaler(
   props: Record<string, unknown>,
   tabIds: number[],
   userId: number | null
-): Flock {
+): AutoScaler {
   return {
     id: props.id as number,
     name: props.name as string,
@@ -32,7 +32,7 @@ function mapToFlock(
     model: (props.model as string) || undefined,
     maxConcurrency: (props.maxConcurrency as number) ?? 5,
     idleTimeoutSeconds: (props.idleTimeoutSeconds as number) ?? 30,
-    status: (props.status as FlockStatus) || "stopped",
+    status: (props.status as AutoScalerStatus) || "stopped",
     createdAt: (props.createdAt as { toString(): string }).toString(),
   };
 }
@@ -42,14 +42,14 @@ function mapToFlock(
 // ---------------------------------------------------------------------------
 
 /**
- * Create a new Flock.
+ * Create a new AutoScaler.
  */
-export async function createFlock(input: CreateFlockInput): Promise<Flock> {
-  const id = await getNextId("Flock");
+export async function createAutoScaler(input: CreateAutoScalerInput): Promise<AutoScaler> {
+  const id = await getNextId("AutoScaler");
 
   return writeQuery(async (tx: ManagedTransaction) => {
     const result = await tx.run(
-      `CREATE (f:Flock {
+      `CREATE (f:AutoScaler {
          id: $id, name: $name, agentName: $agentName,
          model: $model, maxConcurrency: $maxConcurrency,
          idleTimeoutSeconds: $idleTimeoutSeconds,
@@ -64,7 +64,7 @@ export async function createFlock(input: CreateFlockInput): Promise<Flock> {
        MERGE (f)-[:IN_TAB]->(t)
        WITH f, collect(t.id) AS tabs
        OPTIONAL MATCH (owner2:User)-[:OWNS]->(f)
-       RETURN f{.*} AS flock, tabs, owner2.id AS userId`,
+       RETURN f{.*} AS autoScaler, tabs, owner2.id AS userId`,
       {
         id,
         name: input.name,
@@ -81,89 +81,89 @@ export async function createFlock(input: CreateFlockInput): Promise<Flock> {
     // the empty-tabs case with a fallback query.
     if (result.records.length === 0) {
       const fallback = await tx.run(
-        `MATCH (f:Flock {id: $id})
+        `MATCH (f:AutoScaler {id: $id})
          OPTIONAL MATCH (f)-[:IN_TAB]->(t:Tab)
          WITH f, collect(t.id) AS tabs
          OPTIONAL MATCH (owner:User)-[:OWNS]->(f)
-         RETURN f{.*} AS flock, tabs, owner.id AS userId`,
+         RETURN f{.*} AS autoScaler, tabs, owner.id AS userId`,
         { id }
       );
       const record = fallback.records[0];
-      return mapToFlock(record.get("flock"), record.get("tabs"), record.get("userId"));
+      return mapToAutoScaler(record.get("autoScaler"), record.get("tabs"), record.get("userId"));
     }
 
     const record = result.records[0];
-    return mapToFlock(record.get("flock"), record.get("tabs"), record.get("userId"));
+    return mapToAutoScaler(record.get("autoScaler"), record.get("tabs"), record.get("userId"));
   });
 }
 
 /**
- * Get a Flock by numeric ID.
+ * Get a AutoScaler by numeric ID.
  */
-export async function getFlockById(id: number): Promise<Flock | null> {
+export async function getAutoScalerById(id: number): Promise<AutoScaler | null> {
   return readQuery(async (tx: ManagedTransaction) => {
     const result = await tx.run(
-      `MATCH (f:Flock {id: $id})
+      `MATCH (f:AutoScaler {id: $id})
        OPTIONAL MATCH (f)-[:IN_TAB]->(t:Tab)
        WITH f, collect(t.id) AS tabIds
        OPTIONAL MATCH (owner:User)-[:OWNS]->(f)
-       RETURN f{.*} AS flock, tabIds, owner.id AS userId`,
+       RETURN f{.*} AS autoScaler, tabIds, owner.id AS userId`,
       { id }
     );
     if (result.records.length === 0) return null;
     const record = result.records[0];
-    return mapToFlock(record.get("flock"), record.get("tabIds"), record.get("userId"));
+    return mapToAutoScaler(record.get("autoScaler"), record.get("tabIds"), record.get("userId"));
   });
 }
 
 /**
- * Get all Flocks for a given user.
+ * Get all AutoScalers for a given user.
  */
-export async function getAllFlocks(userId: number): Promise<Flock[]> {
+export async function getAllAutoScalers(userId: number): Promise<AutoScaler[]> {
   return readQuery(async (tx: ManagedTransaction) => {
     const result = await tx.run(
-      `MATCH (u:User {id: $userId})-[:OWNS]->(f:Flock)
+      `MATCH (u:User {id: $userId})-[:OWNS]->(f:AutoScaler)
        OPTIONAL MATCH (f)-[:IN_TAB]->(t:Tab)
        WITH f, collect(t.id) AS tabIds
        OPTIONAL MATCH (owner:User)-[:OWNS]->(f)
-       RETURN f{.*} AS flock, tabIds, owner.id AS userId
+       RETURN f{.*} AS autoScaler, tabIds, owner.id AS userId
        ORDER BY f.createdAt DESC`,
       { userId }
     );
     return result.records.map((record) =>
-      mapToFlock(record.get("flock"), record.get("tabIds"), record.get("userId"))
+      mapToAutoScaler(record.get("autoScaler"), record.get("tabIds"), record.get("userId"))
     );
   });
 }
 
 /**
- * Update a Flock's status.
+ * Update a AutoScaler's status.
  */
-export async function updateFlockStatus(id: number, status: FlockStatus): Promise<Flock | null> {
+export async function updateAutoScalerStatus(id: number, status: AutoScalerStatus): Promise<AutoScaler | null> {
   return writeQuery(async (tx: ManagedTransaction) => {
     const result = await tx.run(
-      `MATCH (f:Flock {id: $id})
+      `MATCH (f:AutoScaler {id: $id})
        SET f.status = $status
        WITH f
        OPTIONAL MATCH (f)-[:IN_TAB]->(t:Tab)
        WITH f, collect(t.id) AS tabIds
        OPTIONAL MATCH (owner:User)-[:OWNS]->(f)
-       RETURN f{.*} AS flock, tabIds, owner.id AS userId`,
+       RETURN f{.*} AS autoScaler, tabIds, owner.id AS userId`,
       { id, status }
     );
     if (result.records.length === 0) return null;
     const record = result.records[0];
-    return mapToFlock(record.get("flock"), record.get("tabIds"), record.get("userId"));
+    return mapToAutoScaler(record.get("autoScaler"), record.get("tabIds"), record.get("userId"));
   });
 }
 
 /**
- * Delete a Flock by numeric ID.
+ * Delete a AutoScaler by numeric ID.
  */
-export async function deleteFlock(id: number): Promise<boolean> {
+export async function deleteAutoScaler(id: number): Promise<boolean> {
   return writeQuery(async (tx: ManagedTransaction) => {
     const result = await tx.run(
-      `MATCH (f:Flock {id: $id})
+      `MATCH (f:AutoScaler {id: $id})
        DETACH DELETE f
        RETURN count(f) AS deletedCount`,
       { id }

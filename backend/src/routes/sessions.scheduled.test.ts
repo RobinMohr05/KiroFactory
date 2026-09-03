@@ -4,7 +4,7 @@
  *  - creating/updating cron fields (re)arms or disarms the scheduler
  *  - POST /api/sessions/:id/run-now triggers a one-shot run
  *
- * Uses the same mock-based supertest pattern as routes/flocks.test.ts.
+ * Uses the same mock-based supertest pattern as routes/autoscalers.test.ts.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";

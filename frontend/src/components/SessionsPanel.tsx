@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { SessionModal } from './SessionModal';
 import { SessionDetailTabs } from './SessionDetailTabs';
-import { FlockPanel } from './FlockPanel';
+import { AutoScalerPanel } from './AutoScalerPanel';
 import { apiFetch } from '../utils/api';
 import { formatCreditsWithEur } from '../utils/format';
 import { useConfirmAction } from '../hooks/useConfirmAction';
@@ -411,7 +411,7 @@ export function SessionsPanel() {
               )}
             </ul>
           )}
-          {user?.uiViewMode === 'looper' && <FlockPanel />}
+          {user?.uiViewMode === 'looper' && <AutoScalerPanel />}
         </aside>
         <div className={`session-detail-panel${detailHidden ? ' mobile-hidden' : ''}`} id="sessionDetailPanel">
           {!activeSession ? (
