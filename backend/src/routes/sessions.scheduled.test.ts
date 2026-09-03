@@ -48,6 +48,7 @@ vi.mock("../db/turns.js", () => ({ getTurnsBySession: vi.fn().mockResolvedValue(
 import {
   createSession,
   getSession,
+  deleteSession,
 } from "../session-manager.js";
 import { armSession, disarmSession, triggerRunNow } from "../scheduled-session-manager.js";
 import sessionsRouter from "./sessions.js";
@@ -197,5 +198,35 @@ describe("POST /api/sessions/:id/run-now", () => {
 
     expect(res.status).toBe(404);
     expect(triggerRunNow).not.toHaveBeenCalled();
+  });
+});
+
+describe("DELETE /api/sessions/:id — disarms the scheduler", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("disarms the scheduled session's timer after a successful delete", async () => {
+    vi.mocked(getSession).mockReturnValue({
+      ...SESSION_FIXTURE,
+      cronExpression: "0 9 * * *",
+      cronTimezone: "UTC",
+    });
+    vi.mocked(deleteSession).mockReturnValue(true);
+
+    const res = await request(createApp()).delete("/api/sessions/1");
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(deleteSession).toHaveBeenCalledWith(1);
+    expect(disarmSession).toHaveBeenCalledWith(1);
+  });
+
+  it("does not disarm when the delete fails (session not found)", async () => {
+    vi.mocked(getSession).mockReturnValue(SESSION_FIXTURE);
+    vi.mocked(deleteSession).mockReturnValue(false);
+
+    const res = await request(createApp()).delete("/api/sessions/1");
+
+    expect(res.status).toBe(404);
+    expect(disarmSession).not.toHaveBeenCalled();
   });
 });

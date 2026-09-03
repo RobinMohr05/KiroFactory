@@ -542,6 +542,9 @@ router.delete("/:id", async (req: Request, res: Response) => {
       res.status(404).json({ error: "Session not found" });
       return;
     }
+    // A scheduled session leaves an armed timer in the scheduler; disarm it so
+    // the deleted session's cron schedule stops firing (no-op if not armed).
+    disarmSession(id);
     res.json({ success: true });
   } catch (err) {
     log.error("route-error", {
