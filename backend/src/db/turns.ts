@@ -95,6 +95,7 @@ export interface UsageSummary {
     sessionId: number;
     sessionName: string;
     agent: string;
+    tabId: number | null;
     tabName: string | null;
     credits: number;
     costEur: number;
@@ -365,16 +366,17 @@ export async function getUsage(params: {
           AND t.startedAt <= $to
           ${tabFilter}
         OPTIONAL MATCH (s)-[:IN_TAB]->(tab:Tab)
-        WITH t, s, collect(DISTINCT tab.name) AS tabNames
+        WITH t, s, collect(DISTINCT {id: tab.id, name: tab.name}) AS tabs
         WITH s.id AS sessionId, s.name AS sessionName, s.agent AS agent,
-             CASE WHEN size(tabNames) > 0 THEN tabNames[0] ELSE null END AS tabName,
+             CASE WHEN size(tabs) > 0 THEN tabs[0].id ELSE null END AS tabId,
+             CASE WHEN size(tabs) > 0 THEN tabs[0].name ELSE null END AS tabName,
              sum(t.credits) AS credits,
              sum(t.costEur) AS costEur,
              count(t) AS turns,
              min(t.startedAt) AS firstTurn,
              max(t.startedAt) AS lastTurn,
              collect({date: substring(t.startedAt, 0, 10), credits: t.credits, costEur: t.costEur}) AS turnDetails
-        RETURN sessionId, sessionName, agent, tabName, credits, costEur, turns, firstTurn, lastTurn, turnDetails
+        RETURN sessionId, sessionName, agent, tabId, tabName, credits, costEur, turns, firstTurn, lastTurn, turnDetails
         ORDER BY credits DESC
       `,
       {
@@ -400,6 +402,7 @@ export async function getUsage(params: {
         sessionId: record.get("sessionId") as number,
         sessionName: record.get("sessionName") as string,
         agent: (record.get("agent") as string) ?? "",
+        tabId: (record.get("tabId") as number | null) ?? null,
         tabName: (record.get("tabName") as string | null) ?? null,
         credits,
         costEur,
