@@ -63,6 +63,13 @@ const AGENT_KIND = process.env.AGENT_KIND || "editor";
  * hardcoded default in ensureAgentConfig() below.
  */
 const AGENT_CONFIG_JSON_B64 = process.env.AGENT_CONFIG_JSON_B64;
+/**
+ * Optional model override (session.meta.model, e.g. "claude-sonnet-4-5"),
+ * forwarded by aca-worker-spawner.ts/wsl-worker-spawner.ts. When unset,
+ * kiro-cli picks its own default (currently "Auto") — spawnKiro() below
+ * only appends --model when this is non-empty.
+ */
+const MODEL = process.env.MODEL || "";
 const REPO_URL = process.env.REPO_URL;
 const DEV_BRANCH_CANDIDATES = (process.env.DEV_BRANCH || "develop").split(",").map(b => b.trim());
 let DEV_BRANCH = DEV_BRANCH_CANDIDATES[0];
@@ -2683,9 +2690,15 @@ function handleAcpMessage(msg) {
 
 function spawnKiro() {
   const args = AGENT_NAME ? ["acp", "--agent", AGENT_NAME] : ["acp"];
+  if (MODEL) args.push("--model", MODEL);
   const env = buildSpawnEnv(process.env, KIRO_API_KEY);
 
-  sendOutput(AGENT_NAME ? `Starting kiro-cli acp --agent ${AGENT_NAME}` : "Starting kiro-cli acp (no agent)", "system");
+  sendOutput(
+    AGENT_NAME
+      ? `Starting kiro-cli acp --agent ${AGENT_NAME}${MODEL ? ` --model ${MODEL}` : ""}`
+      : `Starting kiro-cli acp (no agent)${MODEL ? ` --model ${MODEL}` : ""}`,
+    "system"
+  );
 
   kiroProc = spawn("kiro-cli", args, { stdio: ["pipe", "pipe", "pipe"], env, cwd: WORKSPACE });
 

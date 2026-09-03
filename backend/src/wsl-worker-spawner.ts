@@ -397,7 +397,13 @@ export async function startWorkerJob(
   mcpSidecar?: McpProxySidecarConfig | null,
   gitOptions?: WorkerGitOptions | null,
   agentKind?: "editor" | "inspector",
-  agentConfigBase64?: string
+  agentConfigBase64?: string,
+  /**
+   * Session's stored model override (session.meta.model, e.g.
+   * "claude-sonnet-4-5"). When unset/empty, kiro-cli picks its own default
+   * (currently "Auto") — the worker never applies a model flag on its own.
+   */
+  model?: string | null
 ): Promise<WslWorkerExecution> {
   const kiroApiKey = await getUserKiroApiKey(userId);
   if (!kiroApiKey) {
@@ -436,6 +442,10 @@ export async function startWorkerJob(
 
     if (agentConfigBase64) {
       envArgs.push("-e", `AGENT_CONFIG_JSON_B64=${agentConfigBase64}`);
+    }
+
+    if (model) {
+      envArgs.push("-e", `MODEL=${model}`);
     }
 
     let proxyHostname = "";

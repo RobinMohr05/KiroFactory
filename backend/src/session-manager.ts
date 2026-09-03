@@ -180,7 +180,8 @@ interface ContainerWorkerSpawner {
     mcpSidecar: McpProxySidecarConfig | null | undefined,
     gitOptions: unknown,
     agentKind: "editor" | "inspector" | undefined,
-    agentConfigBase64: string | undefined
+    agentConfigBase64: string | undefined,
+    model: string | null | undefined
   ): Promise<ContainerWorkerExecution>;
   stop(executionName: string): Promise<void>;
   status(executionName: string): Promise<ContainerWorkerStatus>;
@@ -191,7 +192,7 @@ interface ContainerWorkerSpawner {
 function makeAcaSpawner(config: AcaWorkerConfig): ContainerWorkerSpawner {
   return {
     kind: "aca",
-    start: (sessionId, agentName, userId, timeoutSeconds, mcpSidecar, gitOptions, agentKind, agentConfigBase64) =>
+    start: (sessionId, agentName, userId, timeoutSeconds, mcpSidecar, gitOptions, agentKind, agentConfigBase64, model) =>
       startAcaWorkerJob(
         config,
         sessionId,
@@ -201,7 +202,8 @@ function makeAcaSpawner(config: AcaWorkerConfig): ContainerWorkerSpawner {
         mcpSidecar,
         gitOptions as Parameters<typeof startAcaWorkerJob>[6],
         agentKind,
-        agentConfigBase64
+        agentConfigBase64,
+        model
       ),
     stop: (executionName) => stopAcaWorkerJob(config, executionName),
     status: (executionName) => getAcaWorkerJobStatus(config, executionName),
@@ -212,7 +214,7 @@ function makeAcaSpawner(config: AcaWorkerConfig): ContainerWorkerSpawner {
 function makeWslSpawner(config: WslWorkerConfig): ContainerWorkerSpawner {
   return {
     kind: "wsl",
-    start: async (sessionId, agentName, userId, timeoutSeconds, mcpSidecar, gitOptions, agentKind, agentConfigBase64) => {
+    start: async (sessionId, agentName, userId, timeoutSeconds, mcpSidecar, gitOptions, agentKind, agentConfigBase64, model) => {
       const execution = await startWslWorkerJob(
         config,
         sessionId,
@@ -222,7 +224,8 @@ function makeWslSpawner(config: WslWorkerConfig): ContainerWorkerSpawner {
         mcpSidecar,
         gitOptions as Parameters<typeof startWslWorkerJob>[6],
         agentKind,
-        agentConfigBase64
+        agentConfigBase64,
+        model
       );
 
       // Reversed connection direction (see wsl-worker-spawner.ts's module doc
@@ -2655,7 +2658,8 @@ async function runSessionAca(managed: ManagedSession): Promise<void> {
       mcpSidecar,
       gitOptions,
       agentKind,
-      agentConfigBase64
+      agentConfigBase64,
+      meta.model
     );
 
     managed.acaExecutionName = execution.executionName;

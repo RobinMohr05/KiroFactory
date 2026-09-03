@@ -224,7 +224,13 @@ export async function startWorkerJob(
    * The worker writes this to the workspace before invoking kiro-cli, unless
    * the target repo already ships its own file of the same name.
    */
-  agentConfigBase64?: string
+  agentConfigBase64?: string,
+  /**
+   * Session's stored model override (session.meta.model, e.g.
+   * "claude-sonnet-4-5"). When unset/empty, kiro-cli picks its own default
+   * (currently "Auto") — the worker never applies a model flag on its own.
+   */
+  model?: string | null
 ): Promise<AcaJobExecution> {
   // Decrypt the user's Kiro API key
   const kiroApiKey = await getUserKiroApiKey(userId);
@@ -255,6 +261,10 @@ export async function startWorkerJob(
 
   if (agentConfigBase64) {
     envVars.push({ name: "AGENT_CONFIG_JSON_B64", value: agentConfigBase64 });
+  }
+
+  if (model) {
+    envVars.push({ name: "MODEL", value: model });
   }
 
   // MCP proxy sidecar: tell the worker where to connect (localhost because same pod)
