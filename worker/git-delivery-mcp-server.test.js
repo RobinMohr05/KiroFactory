@@ -646,6 +646,72 @@ describe("git-delivery-mcp-server", () => {
       assert.equal(deliveryResult.pushed, true);
     });
 
+    it("recovers from a non-fast-forward push rejection by rebasing and retrying", async () => {
+      const deliveryPath = join(workspace.base, "delivery-result.json");
+
+      // Simulate another run (e.g. a sibling task, or resolve_review_comment
+      // from a previous run) advancing the same remote task branch after
+      // this workspace last synced — the exact race from the transcript
+      // that led to submit_task_changes failing outright with no retry.
+      const otherClone = mkdtempSync(join(tmpdir(), "git-delivery-other-clone-"));
+      execSync(`git clone "${workspace.remoteDir}" .`, { cwd: otherClone });
+      execSync('git config user.email "test@test.com"', { cwd: otherClone });
+      execSync('git config user.name "Test"', { cwd: otherClone });
+      execSync("git checkout -b feature/#70_submit-test", { cwd: otherClone });
+      writeFileSync(join(otherClone, "from-other-run.txt"), "advanced by another run\n");
+      execSync("git add -A && git commit -m other-run-advances-branch", { cwd: otherClone });
+      execSync("git push origin feature/#70_submit-test", { cwd: otherClone });
+      rmSync(otherClone, { recursive: true, force: true });
+
+      // This workspace is now behind origin/feature/#70_submit-test. Make an
+      // unrelated local change and submit — the plain push should be
+      // rejected as non-fast-forward, then recovered via fetch+rebase+retry.
+      writeFileSync(join(workspace.workspaceDir, "new-file.txt"), "hello world\n");
+
+      server = spawnServer({
+        TASK_BRANCH_NAME: "feature/#70_submit-test",
+        DEV_BRANCH: "develop",
+        WORKSPACE: workspace.workspaceDir,
+        TASK_ID: "70",
+        REPO_URL: workspace.remoteDir,
+        DELIVERY_RESULT_PATH: deliveryPath,
+        GIT_PROVIDER: "github",
+      });
+
+      await server.sendAndWaitResponse({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {},
+      });
+
+      const response = await server.sendAndWaitResponse({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: { name: "submit_task_changes", arguments: { title: "Add new file" } },
+      });
+
+      const result = JSON.parse(response.result.content[0].text);
+      assert.equal(result.committed, true);
+      assert.equal(result.pushed, true, `Expected push to recover but got: ${JSON.stringify(result)}`);
+      assert.equal(result.branchName, "feature/#70_submit-test");
+
+      // Both commits (the other run's and this one's, rebased on top) must
+      // be present on the remote branch — recovery must not have dropped
+      // either side's work.
+      execSync("git fetch origin feature/#70_submit-test", { cwd: workspace.workspaceDir });
+      const remoteLog = execSync(
+        `git log FETCH_HEAD --format=%s`,
+        { cwd: workspace.workspaceDir, encoding: "utf-8" }
+      );
+      assert.ok(remoteLog.includes("other-run-advances-branch"));
+      assert.ok(remoteLog.includes("Add new file"));
+
+      const deliveryResult = JSON.parse(readFileSync(deliveryPath, "utf-8"));
+      assert.equal(deliveryResult.pushed, true);
+    });
+
     it("requires title parameter", async () => {
       server = spawnServer({
         TASK_BRANCH_NAME: "feature/#70_submit-test",

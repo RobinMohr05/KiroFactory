@@ -92,6 +92,66 @@ function execGit(args, opts = {}) {
   }
 }
 
+/**
+ * Push HEAD to `refs/heads/<branchName>` on `remote`, automatically
+ * recovering from non-fast-forward rejections by fetching and rebasing onto
+ * the moved remote tip before retrying.
+ *
+ * Mirrors worker.js's pushWithRebaseRetry(): a non-fast-forward rejection
+ * means the remote branch advanced after this workspace last synced — e.g.
+ * a second run against the same task (editor -> review comment -> editor
+ * again) or resolve_review_comment/finalize_branch_sync writing to the
+ * branch between this call's last sync and its push. That is a recoverable
+ * race, not a credential/permission problem — the caller upstream
+ * (worker.js/session-manager.ts) treats any push failure after a successful
+ * commit as `deliveryFailed` and permanently blocks the task for the rest
+ * of the session on the assumption retrying can't help, which is only true
+ * for real auth/permission errors. Without this retry, submit_task_changes
+ * had no equivalent of worker.js's own recovery and could fail a task
+ * outright on a transient, self-resolvable race.
+ *
+ * A genuine auth/permission error (bad PAT, no write access, unknown host)
+ * produces a different git error and is returned immediately without
+ * retrying, so it still surfaces (and blocks) as the real problem it is.
+ */
+function pushWithRebaseRetry(remote, branchName, maxAttempts = 3) {
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      execGit(["push", remote, `HEAD:refs/heads/${branchName}`]);
+      return { pushed: true };
+    } catch (err) {
+      const pushError = redactSecrets(err?.message || String(err));
+      lastError = pushError;
+
+      const isNonFastForward = /\[rejected\]|non-fast-forward|fetch first|behind its remote/i.test(pushError);
+      if (!isNonFastForward || attempt === maxAttempts) {
+        return { pushed: false, pushError };
+      }
+
+      try {
+        execGit(["fetch", remote, branchName]);
+        // FETCH_HEAD, not refs/remotes/origin/<branch> — fetching from a raw
+        // authenticated URL (not the "origin" remote name) only updates
+        // FETCH_HEAD.
+        execGit(["rebase", "FETCH_HEAD"]);
+      } catch (rebaseErr) {
+        // A real conflict (or fetch failure) needs a human/agent to resolve,
+        // not a blind retry — abort so the workspace isn't left mid-rebase,
+        // and surface both errors together for diagnosis.
+        try {
+          execGit(["rebase", "--abort"]);
+        } catch { /* no rebase in progress */ }
+        const rebaseError = redactSecrets(rebaseErr?.message || String(rebaseErr));
+        return { pushed: false, pushError: `${pushError} (rebase retry failed: ${rebaseError})` };
+      }
+    }
+  }
+
+  return { pushed: false, pushError: lastError };
+}
+
 // ---------------------------------------------------------------------------
 // Provider detection & URL helpers (mirrors worker.js)
 // ---------------------------------------------------------------------------
@@ -483,15 +543,9 @@ async function handleSubmitTaskChanges(args) {
     if (localAhead) {
       // Attempt push of existing commits
       const remote = buildAuthRemoteUrl();
-      let pushed = false;
-      let pushError = null;
-
-      try {
-        execGit(["push", remote, `HEAD:refs/heads/${branchName}`]);
-        pushed = true;
-      } catch (err) {
-        pushError = redactSecrets(err?.message || String(err));
-      }
+      const pushResult = pushWithRebaseRetry(remote, branchName);
+      const pushed = pushResult.pushed;
+      let pushError = pushResult.pushError || null;
 
       // Handle PR creation/update after successful push
       let prUrl = getTaskPrUrl();
@@ -572,15 +626,9 @@ async function handleSubmitTaskChanges(args) {
   // Push to the authenticated remote
   const remote = buildAuthRemoteUrl();
   const branchName = TASK_BRANCH_NAME || execGit(["rev-parse", "--abbrev-ref", "HEAD"]);
-  let pushed = false;
-  let pushError = null;
-
-  try {
-    execGit(["push", remote, `HEAD:refs/heads/${branchName}`]);
-    pushed = true;
-  } catch (err) {
-    pushError = redactSecrets(err?.message || String(err));
-  }
+  const pushResult = pushWithRebaseRetry(remote, branchName);
+  const pushed = pushResult.pushed;
+  let pushError = pushResult.pushError || null;
 
   // Handle PR creation/update
   let prUrl = getTaskPrUrl();
