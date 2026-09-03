@@ -1,5 +1,5 @@
 /**
- * Tests for flock-manager.ts — auto-scaling session pool orchestration.
+ * Tests for autoscaler-manager.ts — auto-scaling session pool orchestration.
  *
  * Uses mocks (no real DB) following the same pattern as
  * idle-loop-task-visibility-fixes.test.ts and session-pin-reorder-fixes.test.ts.
@@ -9,12 +9,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // --- Mocks ---
 
-vi.mock("./db/flocks.js", () => ({
-  createFlock: vi.fn(),
-  getFlockById: vi.fn(),
-  getAllFlocks: vi.fn(),
-  updateFlockStatus: vi.fn(),
-  deleteFlock: vi.fn(),
+vi.mock("./db/autoscalers.js", () => ({
+  createAutoScaler: vi.fn(),
+  getAutoScalerById: vi.fn(),
+  getAllAutoScalers: vi.fn(),
+  updateAutoScalerStatus: vi.fn(),
+  deleteAutoScaler: vi.fn(),
 }));
 
 vi.mock("./websocket-handler.js", () => ({
@@ -47,15 +47,15 @@ vi.mock("./logger.js", () => ({
 }));
 
 // Re-import the module fresh for each test — the module holds in-memory
-// state (the `flocks` Map), so we need to ensure clean state between tests.
+// state (the `autoScalers` Map), so we need to ensure clean state between tests.
 // Unfortunately vi.resetModules() + dynamic import is needed here.
 
-import type { Flock, Session } from "./types.js";
+import type { AutoScaler, Session } from "./types.js";
 
-function makeFlock(overrides: Partial<Flock> = {}): Flock {
+function makeAutoScaler(overrides: Partial<AutoScaler> = {}): AutoScaler {
   return {
     id: 1,
-    name: "Test Flock",
+    name: "Test AutoScaler",
     userId: 1,
     agentName: "developer-agent",
     tabIds: [1],
@@ -70,7 +70,7 @@ function makeFlock(overrides: Partial<Flock> = {}): Flock {
 function makeSession(overrides: Partial<Session> = {}): Session {
   return {
     id: 100,
-    name: "Test Flock #1",
+    name: "Test AutoScaler #1",
     agent: "developer-agent",
     status: "stopped",
     prompt: "",
@@ -95,19 +95,19 @@ async function flushAsync(ms = 200): Promise<void> {
   await new Promise((r) => setTimeout(r, ms));
 }
 
-describe("flock-manager", () => {
+describe("autoscaler-manager", () => {
   // We import these at the top, but the mocks are set up before import.
-  let createFlockRecord: typeof import("./flock-manager.js")["createFlockRecord"];
-  let startFlock: typeof import("./flock-manager.js")["startFlock"];
-  let stopFlock: typeof import("./flock-manager.js")["stopFlock"];
-  let deleteFlockRecord: typeof import("./flock-manager.js")["deleteFlockRecord"];
-  let getFlockRunningSessionCount: typeof import("./flock-manager.js")["getFlockRunningSessionCount"];
-  let getFlockSessionCounts: typeof import("./flock-manager.js")["getFlockSessionCounts"];
+  let createAutoScalerRecord: typeof import("./autoscaler-manager.js")["createAutoScalerRecord"];
+  let startAutoScaler: typeof import("./autoscaler-manager.js")["startAutoScaler"];
+  let stopAutoScaler: typeof import("./autoscaler-manager.js")["stopAutoScaler"];
+  let deleteAutoScalerRecord: typeof import("./autoscaler-manager.js")["deleteAutoScalerRecord"];
+  let getAutoScalerRunningSessionCount: typeof import("./autoscaler-manager.js")["getAutoScalerRunningSessionCount"];
+  let getAutoScalerSessionCounts: typeof import("./autoscaler-manager.js")["getAutoScalerSessionCounts"];
 
-  let dbCreateFlock: typeof import("./db/flocks.js")["createFlock"];
-  let getFlockById: typeof import("./db/flocks.js")["getFlockById"];
-  let updateFlockStatus: typeof import("./db/flocks.js")["updateFlockStatus"];
-  let dbDeleteFlock: typeof import("./db/flocks.js")["deleteFlock"];
+  let dbCreateAutoScaler: typeof import("./db/autoscalers.js")["createAutoScaler"];
+  let getAutoScalerById: typeof import("./db/autoscalers.js")["getAutoScalerById"];
+  let updateAutoScalerStatus: typeof import("./db/autoscalers.js")["updateAutoScalerStatus"];
+  let dbDeleteAutoScaler: typeof import("./db/autoscalers.js")["deleteAutoScaler"];
   let broadcastToUser: typeof import("./websocket-handler.js")["broadcastToUser"];
   let getAvailableTaskCount: typeof import("./agent/task-claimer.js")["getAvailableTaskCount"];
   let waitForTaskAvailable: typeof import("./agent/task-claimer.js")["waitForTaskAvailable"];
@@ -120,22 +120,22 @@ describe("flock-manager", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
 
-    // Reset the flock-manager module to get clean in-memory state.
+    // Reset the autoscaler-manager module to get clean in-memory state.
     vi.resetModules();
 
-    const flockMgr = await import("./flock-manager.js");
-    createFlockRecord = flockMgr.createFlockRecord;
-    startFlock = flockMgr.startFlock;
-    stopFlock = flockMgr.stopFlock;
-    deleteFlockRecord = flockMgr.deleteFlockRecord;
-    getFlockRunningSessionCount = flockMgr.getFlockRunningSessionCount;
-    getFlockSessionCounts = flockMgr.getFlockSessionCounts;
+    const autoScalerMgr = await import("./autoscaler-manager.js");
+    createAutoScalerRecord = autoScalerMgr.createAutoScalerRecord;
+    startAutoScaler = autoScalerMgr.startAutoScaler;
+    stopAutoScaler = autoScalerMgr.stopAutoScaler;
+    deleteAutoScalerRecord = autoScalerMgr.deleteAutoScalerRecord;
+    getAutoScalerRunningSessionCount = autoScalerMgr.getAutoScalerRunningSessionCount;
+    getAutoScalerSessionCounts = autoScalerMgr.getAutoScalerSessionCounts;
 
-    const dbFlocks = await import("./db/flocks.js");
-    dbCreateFlock = dbFlocks.createFlock;
-    getFlockById = dbFlocks.getFlockById;
-    updateFlockStatus = dbFlocks.updateFlockStatus;
-    dbDeleteFlock = dbFlocks.deleteFlock;
+    const dbAutoScalers = await import("./db/autoscalers.js");
+    dbCreateAutoScaler = dbAutoScalers.createAutoScaler;
+    getAutoScalerById = dbAutoScalers.getAutoScalerById;
+    updateAutoScalerStatus = dbAutoScalers.updateAutoScalerStatus;
+    dbDeleteAutoScaler = dbAutoScalers.deleteAutoScaler;
 
     const ws = await import("./websocket-handler.js");
     broadcastToUser = ws.broadcastToUser;
@@ -157,55 +157,55 @@ describe("flock-manager", () => {
     );
   });
 
-  describe("createFlockRecord", () => {
-    it("creates a flock in the DB and broadcasts to the user", async () => {
-      const flock = makeFlock();
-      vi.mocked(dbCreateFlock).mockResolvedValue(flock);
+  describe("createAutoScalerRecord", () => {
+    it("creates a autoScaler in the DB and broadcasts to the user", async () => {
+      const autoScaler = makeAutoScaler();
+      vi.mocked(dbCreateAutoScaler).mockResolvedValue(autoScaler);
 
-      const result = await createFlockRecord({
-        name: "Test Flock",
+      const result = await createAutoScalerRecord({
+        name: "Test AutoScaler",
         userId: 1,
         agentName: "developer-agent",
         tabIds: [1],
       });
 
-      expect(result).toEqual(flock);
-      expect(dbCreateFlock).toHaveBeenCalledWith({
-        name: "Test Flock",
+      expect(result).toEqual(autoScaler);
+      expect(dbCreateAutoScaler).toHaveBeenCalledWith({
+        name: "Test AutoScaler",
         userId: 1,
         agentName: "developer-agent",
         tabIds: [1],
       });
       expect(broadcastToUser).toHaveBeenCalledWith(1, {
-        type: "flock-created",
-        flock,
+        type: "autoscaler-created",
+        autoScaler,
       });
     });
   });
 
-  describe("startFlock", () => {
-    it("marks the flock as running and broadcasts the update", async () => {
-      const stoppedFlock = makeFlock({ status: "stopped" });
-      const runningFlock = makeFlock({ status: "running" });
-      vi.mocked(getFlockById).mockResolvedValue(stoppedFlock);
-      vi.mocked(updateFlockStatus).mockResolvedValue(runningFlock);
+  describe("startAutoScaler", () => {
+    it("marks the autoScaler as running and broadcasts the update", async () => {
+      const stoppedAutoScaler = makeAutoScaler({ status: "stopped" });
+      const runningAutoScaler = makeAutoScaler({ status: "running" });
+      vi.mocked(getAutoScalerById).mockResolvedValue(stoppedAutoScaler);
+      vi.mocked(updateAutoScalerStatus).mockResolvedValue(runningAutoScaler);
       vi.mocked(getAvailableTaskCount).mockResolvedValue(0);
 
-      const result = await startFlock(1);
+      const result = await startAutoScaler(1);
 
-      expect(result).toEqual(runningFlock);
-      expect(updateFlockStatus).toHaveBeenCalledWith(1, "running");
+      expect(result).toEqual(runningAutoScaler);
+      expect(updateAutoScalerStatus).toHaveBeenCalledWith(1, "running");
       expect(broadcastToUser).toHaveBeenCalledWith(1, {
-        type: "flock-updated",
-        flock: runningFlock,
+        type: "autoscaler-updated",
+        autoScaler: runningAutoScaler,
       });
     });
 
     it("spawns sessions up to maxConcurrency when tasks are available", async () => {
-      const stoppedFlock = makeFlock({ status: "stopped", maxConcurrency: 3 });
-      const runningFlock = makeFlock({ status: "running", maxConcurrency: 3 });
-      vi.mocked(getFlockById).mockResolvedValue(stoppedFlock);
-      vi.mocked(updateFlockStatus).mockResolvedValue(runningFlock);
+      const stoppedAutoScaler = makeAutoScaler({ status: "stopped", maxConcurrency: 3 });
+      const runningAutoScaler = makeAutoScaler({ status: "running", maxConcurrency: 3 });
+      vi.mocked(getAutoScalerById).mockResolvedValue(stoppedAutoScaler);
+      vi.mocked(updateAutoScalerStatus).mockResolvedValue(runningAutoScaler);
       vi.mocked(getAvailableTaskCount).mockResolvedValue(8);
       vi.mocked(getAllSessions).mockReturnValue([]);
 
@@ -215,7 +215,7 @@ describe("flock-manager", () => {
       );
       vi.mocked(startSession).mockResolvedValue(undefined as any);
 
-      await startFlock(1);
+      await startAutoScaler(1);
       await flushAsync();
 
       // Should have spawned exactly 3 sessions (min(maxConcurrency=3, available=8))
@@ -224,10 +224,10 @@ describe("flock-manager", () => {
     });
 
     it("spawns one session per task when maxConcurrency=0 (unlimited)", async () => {
-      const stoppedFlock = makeFlock({ status: "stopped", maxConcurrency: 0 });
-      const runningFlock = makeFlock({ status: "running", maxConcurrency: 0 });
-      vi.mocked(getFlockById).mockResolvedValue(stoppedFlock);
-      vi.mocked(updateFlockStatus).mockResolvedValue(runningFlock);
+      const stoppedAutoScaler = makeAutoScaler({ status: "stopped", maxConcurrency: 0 });
+      const runningAutoScaler = makeAutoScaler({ status: "running", maxConcurrency: 0 });
+      vi.mocked(getAutoScalerById).mockResolvedValue(stoppedAutoScaler);
+      vi.mocked(updateAutoScalerStatus).mockResolvedValue(runningAutoScaler);
       vi.mocked(getAvailableTaskCount).mockResolvedValue(4);
       vi.mocked(getAllSessions).mockReturnValue([]);
 
@@ -237,7 +237,7 @@ describe("flock-manager", () => {
       );
       vi.mocked(startSession).mockResolvedValue(undefined as any);
 
-      await startFlock(1);
+      await startAutoScaler(1);
       await flushAsync();
 
       // unlimited: should spawn 4 sessions (all available tasks)
@@ -245,14 +245,14 @@ describe("flock-manager", () => {
     });
 
     it("spawns no sessions when no tasks are available", async () => {
-      const stoppedFlock = makeFlock({ status: "stopped" });
-      const runningFlock = makeFlock({ status: "running" });
-      vi.mocked(getFlockById).mockResolvedValue(stoppedFlock);
-      vi.mocked(updateFlockStatus).mockResolvedValue(runningFlock);
+      const stoppedAutoScaler = makeAutoScaler({ status: "stopped" });
+      const runningAutoScaler = makeAutoScaler({ status: "running" });
+      vi.mocked(getAutoScalerById).mockResolvedValue(stoppedAutoScaler);
+      vi.mocked(updateAutoScalerStatus).mockResolvedValue(runningAutoScaler);
       vi.mocked(getAvailableTaskCount).mockResolvedValue(0);
       vi.mocked(getAllSessions).mockReturnValue([]);
 
-      await startFlock(1);
+      await startAutoScaler(1);
       await flushAsync();
 
       expect(createSession).not.toHaveBeenCalled();
@@ -267,14 +267,14 @@ describe("flock-manager", () => {
         requiresTask: true,
       });
 
-      const stoppedFlock = makeFlock({ status: "stopped" });
-      const runningFlock = makeFlock({ status: "running" });
-      vi.mocked(getFlockById).mockResolvedValue(stoppedFlock);
-      vi.mocked(updateFlockStatus).mockResolvedValue(runningFlock);
+      const stoppedAutoScaler = makeAutoScaler({ status: "stopped" });
+      const runningAutoScaler = makeAutoScaler({ status: "running" });
+      vi.mocked(getAutoScalerById).mockResolvedValue(stoppedAutoScaler);
+      vi.mocked(updateAutoScalerStatus).mockResolvedValue(runningAutoScaler);
       vi.mocked(getAvailableTaskCount).mockResolvedValue(0);
       vi.mocked(getAllSessions).mockReturnValue([]);
 
-      await startFlock(1);
+      await startAutoScaler(1);
       await flushAsync();
 
       expect(getAvailableTaskCount).toHaveBeenCalledWith(
@@ -285,13 +285,13 @@ describe("flock-manager", () => {
     });
   });
 
-  describe("stopFlock", () => {
-    it("stops all owned sessions and marks flock as stopped", async () => {
-      // First start the flock so it has in-memory state
-      const stoppedFlock = makeFlock({ status: "stopped" });
-      const runningFlock = makeFlock({ status: "running" });
-      vi.mocked(getFlockById).mockResolvedValue(stoppedFlock);
-      vi.mocked(updateFlockStatus).mockResolvedValue(runningFlock);
+  describe("stopAutoScaler", () => {
+    it("stops all owned sessions and marks autoScaler as stopped", async () => {
+      // First start the autoScaler so it has in-memory state
+      const stoppedAutoScaler = makeAutoScaler({ status: "stopped" });
+      const runningAutoScaler = makeAutoScaler({ status: "running" });
+      vi.mocked(getAutoScalerById).mockResolvedValue(stoppedAutoScaler);
+      vi.mocked(updateAutoScalerStatus).mockResolvedValue(runningAutoScaler);
       vi.mocked(getAvailableTaskCount).mockResolvedValue(2);
       vi.mocked(getAllSessions).mockReturnValue([]);
 
@@ -302,66 +302,66 @@ describe("flock-manager", () => {
       vi.mocked(startSession).mockResolvedValue(undefined as any);
       vi.mocked(stopSession).mockResolvedValue(true);
 
-      await startFlock(1);
+      await startAutoScaler(1);
       await flushAsync();
 
-      // Now stop it — need to re-mock updateFlockStatus for the stop call
-      const stoppedFlockResult = makeFlock({ status: "stopped" });
-      vi.mocked(updateFlockStatus).mockResolvedValue(stoppedFlockResult);
+      // Now stop it — need to re-mock updateAutoScalerStatus for the stop call
+      const stoppedAutoScalerResult = makeAutoScaler({ status: "stopped" });
+      vi.mocked(updateAutoScalerStatus).mockResolvedValue(stoppedAutoScalerResult);
 
-      const result = await stopFlock(1);
+      const result = await stopAutoScaler(1);
 
       expect(result?.status).toBe("stopped");
       expect(stopSession).toHaveBeenCalled();
       expect(broadcastToUser).toHaveBeenCalledWith(
         1,
-        expect.objectContaining({ type: "flock-updated" })
+        expect.objectContaining({ type: "autoscaler-updated" })
       );
     });
 
-    it("returns null when flock doesn't exist in DB", async () => {
-      // No in-memory flock and DB returns null
-      vi.mocked(updateFlockStatus).mockResolvedValue(null);
-      const result = await stopFlock(999);
+    it("returns null when autoScaler doesn't exist in DB", async () => {
+      // No in-memory autoScaler and DB returns null
+      vi.mocked(updateAutoScalerStatus).mockResolvedValue(null);
+      const result = await stopAutoScaler(999);
       expect(result).toBeNull();
     });
   });
 
-  describe("deleteFlockRecord", () => {
-    it("deletes the flock and broadcasts deletion", async () => {
-      const flock = makeFlock();
-      vi.mocked(getFlockById).mockResolvedValue(flock);
-      vi.mocked(dbDeleteFlock).mockResolvedValue(true);
+  describe("deleteAutoScalerRecord", () => {
+    it("deletes the autoScaler and broadcasts deletion", async () => {
+      const autoScaler = makeAutoScaler();
+      vi.mocked(getAutoScalerById).mockResolvedValue(autoScaler);
+      vi.mocked(dbDeleteAutoScaler).mockResolvedValue(true);
 
-      const result = await deleteFlockRecord(1);
+      const result = await deleteAutoScalerRecord(1);
 
       expect(result).toBe(true);
       expect(broadcastToUser).toHaveBeenCalledWith(1, {
-        type: "flock-deleted",
-        flockId: 1,
+        type: "autoscaler-deleted",
+        autoScalerId: 1,
       });
     });
   });
 
-  describe("getFlockRunningSessionCount", () => {
-    it("returns 0 when flock is not running", () => {
-      expect(getFlockRunningSessionCount(999)).toBe(0);
+  describe("getAutoScalerRunningSessionCount", () => {
+    it("returns 0 when autoScaler is not running", () => {
+      expect(getAutoScalerRunningSessionCount(999)).toBe(0);
     });
   });
 
-  describe("getFlockSessionCounts", () => {
-    it("returns an empty map when no flocks are running", () => {
-      const counts = getFlockSessionCounts();
+  describe("getAutoScalerSessionCounts", () => {
+    it("returns an empty map when no autoScalers are running", () => {
+      const counts = getAutoScalerSessionCounts();
       expect(counts.size).toBe(0);
     });
   });
 
   describe("concurrency capping", () => {
     it("does not exceed maxConcurrency even with more tasks available", async () => {
-      const stoppedFlock = makeFlock({ status: "stopped", maxConcurrency: 2 });
-      const runningFlock = makeFlock({ status: "running", maxConcurrency: 2 });
-      vi.mocked(getFlockById).mockResolvedValue(stoppedFlock);
-      vi.mocked(updateFlockStatus).mockResolvedValue(runningFlock);
+      const stoppedAutoScaler = makeAutoScaler({ status: "stopped", maxConcurrency: 2 });
+      const runningAutoScaler = makeAutoScaler({ status: "running", maxConcurrency: 2 });
+      vi.mocked(getAutoScalerById).mockResolvedValue(stoppedAutoScaler);
+      vi.mocked(updateAutoScalerStatus).mockResolvedValue(runningAutoScaler);
       vi.mocked(getAvailableTaskCount).mockResolvedValue(10);
       vi.mocked(getAllSessions).mockReturnValue([]);
 
@@ -371,7 +371,7 @@ describe("flock-manager", () => {
       );
       vi.mocked(startSession).mockResolvedValue(undefined as any);
 
-      await startFlock(1);
+      await startAutoScaler(1);
       await flushAsync();
 
       expect(createSession).toHaveBeenCalledTimes(2);

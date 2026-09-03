@@ -26,7 +26,7 @@ import credentialsRouter from "./routes/credentials.js";
 import adminRouter from "./routes/admin.js";
 import taskPlannerRouter, { plannerPool } from "./routes/task-planner.js";
 import taskPlannerBoardMcpRouter from "./routes/task-planner-board-mcp.js";
-import flocksRouter from "./routes/flocks.js";
+import autoscalersRouter from "./routes/autoscalers.js";
 import usageRouter from "./routes/usage.js";
 import webhookTasksRouter from "./routes/webhook-tasks.js";
 import { runMigration } from "./db/migrate.js";
@@ -104,7 +104,7 @@ app.use("/api/users/me/credentials", requireDb, credentialsRouter);
 app.use("/api/admin", requireDb, adminRouter);
 app.use("/api/task-planner", requireDb, taskPlannerRouter);
 app.use("/api/task-planner-board-mcp", requireDb, taskPlannerBoardMcpRouter);
-app.use("/api/flocks", requireDb, flocksRouter);
+app.use("/api/autoscalers", requireDb, autoscalersRouter);
 app.use("/api/usage", requireDb, usageRouter);
 app.use("/api/webhooks/tasks", requireDb, webhookTasksRouter);
 

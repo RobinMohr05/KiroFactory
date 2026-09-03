@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState, useCallback, type ReactNode } from 'react';
-import type { Tab, Task, Session, Agent, AgentError, OutputEntry, SessionActivity, User, ViewTab, UiViewMode, WsMessage, Flock } from '../types';
+import type { Tab, Task, Session, Agent, AgentError, OutputEntry, SessionActivity, User, ViewTab, UiViewMode, WsMessage, AutoScaler } from '../types';
 import { apiFetch } from '../utils/api';
 import { usePlannerPresence } from '../hooks/usePlannerPresence';
 
@@ -11,7 +11,7 @@ interface AppState {
   sessions: Session[];
   agents: Agent[];
   errors: AgentError[];
-  flocks: Flock[];
+  autoScalers: AutoScaler[];
   connected: boolean;
   activeSessionId: number | null;
   activeAgentId: number | null;
@@ -32,13 +32,13 @@ interface AppContextValue extends AppState {
   setSessions: React.Dispatch<React.SetStateAction<Session[]>>;
   setAgents: React.Dispatch<React.SetStateAction<Agent[]>>;
   setErrors: React.Dispatch<React.SetStateAction<AgentError[]>>;
-  setFlocks: React.Dispatch<React.SetStateAction<Flock[]>>;
+  setAutoScalers: React.Dispatch<React.SetStateAction<AutoScaler[]>>;
   fetchTabs: () => Promise<void>;
   fetchTabTasks: (tabId: number) => Promise<void>;
   fetchSessions: () => Promise<void>;
   fetchAgents: () => Promise<void>;
   fetchErrors: () => Promise<void>;
-  fetchFlocks: () => Promise<void>;
+  fetchAutoScalers: () => Promise<void>;
   logout: () => Promise<void>;
   pendingOps: React.MutableRefObject<Set<string>>;
   /**
@@ -66,7 +66,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [errors, setErrors] = useState<AgentError[]>([]);
-  const [flocks, setFlocks] = useState<Flock[]>([]);
+  const [autoScalers, setAutoScalers] = useState<AutoScaler[]>([]);
   const [connected, setConnected] = useState(false);
   const [activeSessionId, setActiveSessionId] = useState<number | null>(null);
   const [activeAgentId, setActiveAgentId] = useState<number | null>(null);
@@ -158,14 +158,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const fetchFlocks = useCallback(async () => {
+  const fetchAutoScalers = useCallback(async () => {
     try {
-      const res = await apiFetch('/api/flocks');
+      const res = await apiFetch('/api/autoscalers');
       if (!res.ok) return;
-      const data: Flock[] = await res.json();
-      setFlocks(data);
+      const data: AutoScaler[] = await res.json();
+      setAutoScalers(data);
     } catch (e) {
-      console.error('Failed to fetch flocks:', e);
+      console.error('Failed to fetch autoScalers:', e);
     }
   }, []);
 
@@ -365,27 +365,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setErrors([]);
         break;
       }
-      case 'flock-created': {
-        setFlocks(prev => {
-          if (prev.find(f => f.id === message.flock.id)) return prev;
-          return [...prev, message.flock];
+      case 'autoscaler-created': {
+        setAutoScalers(prev => {
+          if (prev.find(f => f.id === message.autoScaler.id)) return prev;
+          return [...prev, message.autoScaler];
         });
         break;
       }
-      case 'flock-updated': {
-        setFlocks(prev => {
-          const idx = prev.findIndex(f => f.id === message.flock.id);
+      case 'autoscaler-updated': {
+        setAutoScalers(prev => {
+          const idx = prev.findIndex(f => f.id === message.autoScaler.id);
           if (idx !== -1) {
             const next = [...prev];
-            next[idx] = { ...next[idx], ...message.flock };
+            next[idx] = { ...next[idx], ...message.autoScaler };
             return next;
           }
-          return [...prev, message.flock];
+          return [...prev, message.autoScaler];
         });
         break;
       }
-      case 'flock-deleted': {
-        setFlocks(prev => prev.filter(f => f.id !== message.flockId));
+      case 'autoscaler-deleted': {
+        setAutoScalers(prev => prev.filter(f => f.id !== message.autoScalerId));
         break;
       }
       case 'wsl-diagnostic-line': {
@@ -464,7 +464,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     fetchSessions();
     fetchAgents();
     fetchErrors();
-    fetchFlocks();
+    fetchAutoScalers();
 
     return () => {
       // Detach immediately so a stale socket (still closing async) never
@@ -475,7 +475,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (staleWs) staleWs.close();
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
     };
-  }, [connectWebSocket, fetchTabs, fetchSessions, fetchAgents, fetchErrors, fetchFlocks]);
+  }, [connectWebSocket, fetchTabs, fetchSessions, fetchAgents, fetchErrors, fetchAutoScalers]);
 
   // Polling fallback: refetch tasks every 3s while WebSocket is disconnected
   useEffect(() => {
@@ -535,7 +535,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     sessions,
     agents,
     errors,
-    flocks,
+    autoScalers,
     connected,
     activeSessionId,
     activeAgentId,
@@ -553,13 +553,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setSessions,
     setAgents,
     setErrors,
-    setFlocks,
+    setAutoScalers,
     fetchTabs,
     fetchTabTasks,
     fetchSessions,
     fetchAgents,
     fetchErrors,
-    fetchFlocks,
+    fetchAutoScalers,
     logout,
     pendingOps,
     setUiViewMode,

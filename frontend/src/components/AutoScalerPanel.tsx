@@ -2,15 +2,15 @@ import { useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { apiFetch } from '../utils/api';
 import { ModelSelect } from './ModelSelect';
-import type { Flock } from '../types';
+import type { AutoScaler } from '../types';
 
 /**
- * Flock controls panel — rendered inside the SessionsPanel sidebar only when
- * the user's uiViewMode is 'looper'. Shows a form to create a new Flock and
- * a list of existing Flocks with start/stop/delete controls.
+ * Auto-Scaler controls panel — rendered inside the SessionsPanel sidebar only when
+ * the user's uiViewMode is 'looper'. Shows a form to create a new Auto-Scaler and
+ * a list of existing Auto-Scalers with start/stop/delete controls.
  */
-export function FlockPanel() {
-  const { flocks, setFlocks, agents, tabs, user, fetchFlocks } = useApp();
+export function AutoScalerPanel() {
+  const { autoScalers, setAutoScalers, agents, tabs, user, fetchAutoScalers } = useApp();
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState('');
   const [agentName, setAgentName] = useState('');
@@ -38,7 +38,7 @@ export function FlockPanel() {
     }
 
     try {
-      const res = await apiFetch('/api/flocks', {
+      const res = await apiFetch('/api/autoscalers', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -55,7 +55,7 @@ export function FlockPanel() {
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        setFormError(data.error || 'Failed to create flock');
+        setFormError(data.error || 'Failed to create auto-scaler');
         return;
       }
       setShowForm(false);
@@ -65,28 +65,28 @@ export function FlockPanel() {
       setModel('');
       setMaxConcurrency(5);
       setIdleTimeoutSeconds(30);
-      await fetchFlocks();
+      await fetchAutoScalers();
     } catch (err) {
       setFormError('Network error');
     }
   };
 
-  const handleStart = async (flockId: number) => {
+  const handleStart = async (autoScalerId: number) => {
     try {
-      await apiFetch(`/api/flocks/${flockId}/start`, { method: 'POST' });
+      await apiFetch(`/api/autoscalers/${autoScalerId}/start`, { method: 'POST' });
     } catch { /* WS update will reflect state */ }
   };
 
-  const handleStop = async (flockId: number) => {
+  const handleStop = async (autoScalerId: number) => {
     try {
-      await apiFetch(`/api/flocks/${flockId}/stop`, { method: 'POST' });
+      await apiFetch(`/api/autoscalers/${autoScalerId}/stop`, { method: 'POST' });
     } catch { /* WS update will reflect state */ }
   };
 
-  const handleDelete = async (flockId: number) => {
+  const handleDelete = async (autoScalerId: number) => {
     try {
-      await apiFetch(`/api/flocks/${flockId}`, { method: 'DELETE' });
-      setFlocks(prev => prev.filter(f => f.id !== flockId));
+      await apiFetch(`/api/autoscalers/${autoScalerId}`, { method: 'DELETE' });
+      setAutoScalers(prev => prev.filter(f => f.id !== autoScalerId));
     } catch { /* ignore */ }
   };
 
@@ -97,32 +97,33 @@ export function FlockPanel() {
   };
 
   return (
-    <div className="flock-panel" data-testid="flock-panel">
-      <div className="flock-panel-header">
-        <h4>Flocks</h4>
+    <div className="autoscaler-panel" data-testid="autoscaler-panel">
+      <div className="autoscaler-panel-header">
+        <h4>Auto-Scalers</h4>
         <button
           className="btn btn-primary btn-sm"
           onClick={() => setShowForm(!showForm)}
         >
-          {showForm ? 'Cancel' : '+ New Flock'}
+          {showForm ? 'Cancel' : '+ New Auto-Scaler'}
         </button>
       </div>
+      <p className="autoscaler-panel-tagline">Auto-scaling pool of agent sessions that scales to match the task queue.</p>
 
       {showForm && (
-        <form className="flock-create-form" onSubmit={handleCreate}>
+        <form className="autoscaler-create-form" onSubmit={handleCreate}>
           <div className="form-group">
-            <label htmlFor="flockName">Name</label>
+            <label htmlFor="autoScalerName">Name</label>
             <input
-              id="flockName"
+              id="autoScalerName"
               type="text"
               value={name}
               onChange={e => setName(e.target.value)}
-              placeholder="My Flock"
+              placeholder="My Auto-Scaler"
             />
           </div>
           <div className="form-group">
-            <label htmlFor="flockAgent">Agent</label>
-            <select id="flockAgent" value={agentName} onChange={e => setAgentName(e.target.value)}>
+            <label htmlFor="autoScalerAgent">Agent</label>
+            <select id="autoScalerAgent" value={agentName} onChange={e => setAgentName(e.target.value)}>
               <option value="">Select agent...</option>
               {agents.map(a => (
                 <option key={a.id} value={a.name}>{a.name}</option>
@@ -131,9 +132,9 @@ export function FlockPanel() {
           </div>
           <div className="form-group">
             <label>Tabs</label>
-            <div className="flock-tab-checkboxes">
+            <div className="autoscaler-tab-checkboxes">
               {tabs.map(t => (
-                <label key={t.id} className="flock-tab-checkbox">
+                <label key={t.id} className="autoscaler-tab-checkbox">
                   <input
                     type="checkbox"
                     checked={selectedTabIds.includes(t.id)}
@@ -145,13 +146,13 @@ export function FlockPanel() {
             </div>
           </div>
           <div className="form-group">
-            <label htmlFor="flockModel">Model (optional)</label>
-            <ModelSelect id="flockModel" value={model} onChange={setModel} placeholder="e.g. claude-sonnet-4-20250514" />
+            <label htmlFor="autoScalerModel">Model (optional)</label>
+            <ModelSelect id="autoScalerModel" value={model} onChange={setModel} placeholder="e.g. claude-sonnet-4-20250514" />
           </div>
           <div className="form-group">
-            <label htmlFor="flockMaxConcurrency">Max Concurrency (0 = unlimited)</label>
+            <label htmlFor="autoScalerMaxConcurrency">Max Concurrency (0 = unlimited)</label>
             <input
-              id="flockMaxConcurrency"
+              id="autoScalerMaxConcurrency"
               type="number"
               min={0}
               value={maxConcurrency}
@@ -159,9 +160,9 @@ export function FlockPanel() {
             />
           </div>
           <div className="form-group">
-            <label htmlFor="flockIdleTimeout">Idle Timeout (seconds)</label>
+            <label htmlFor="autoScalerIdleTimeout">Idle Timeout (seconds)</label>
             <input
-              id="flockIdleTimeout"
+              id="autoScalerIdleTimeout"
               type="number"
               min={0}
               value={idleTimeoutSeconds}
@@ -170,51 +171,51 @@ export function FlockPanel() {
           </div>
           {formError && <div className="form-message error">{formError}</div>}
           <div className="form-actions">
-            <button type="submit" className="btn btn-primary btn-sm">Create Flock</button>
+            <button type="submit" className="btn btn-primary btn-sm">Create Auto-Scaler</button>
           </div>
         </form>
       )}
 
-      <ul className="flock-list">
-        {flocks.map(flock => (
-          <FlockCard
-            key={flock.id}
-            flock={flock}
-            onStart={() => handleStart(flock.id)}
-            onStop={() => handleStop(flock.id)}
-            onDelete={() => handleDelete(flock.id)}
+      <ul className="autoscaler-list">
+        {autoScalers.map(autoScaler => (
+          <AutoScalerCard
+            key={autoScaler.id}
+            autoScaler={autoScaler}
+            onStart={() => handleStart(autoScaler.id)}
+            onStop={() => handleStop(autoScaler.id)}
+            onDelete={() => handleDelete(autoScaler.id)}
           />
         ))}
-        {flocks.length === 0 && !showForm && (
-          <li className="flock-empty-hint">No flocks yet. Create one to auto-scale sessions.</li>
+        {autoScalers.length === 0 && !showForm && (
+          <li className="autoscaler-empty-hint">No auto-scalers yet. Create one to auto-scale sessions.</li>
         )}
       </ul>
     </div>
   );
 }
 
-function FlockCard({ flock, onStart, onStop, onDelete }: {
-  flock: Flock;
+function AutoScalerCard({ autoScaler, onStart, onStop, onDelete }: {
+  autoScaler: AutoScaler;
   onStart: () => void;
   onStop: () => void;
   onDelete: () => void;
 }) {
-  const isRunning = flock.status === 'running';
+  const isRunning = autoScaler.status === 'running';
 
   return (
-    <li className={`flock-card${isRunning ? ' flock-running' : ''}`} data-flock-id={flock.id}>
-      <div className="flock-card-header">
-        <span className="flock-card-name">{flock.name}</span>
-        <span className={`flock-status-badge status-${flock.status}`}>{flock.status}</span>
+    <li className={`autoscaler-card${isRunning ? ' autoscaler-running' : ''}`} data-autoscaler-id={autoScaler.id}>
+      <div className="autoscaler-card-header">
+        <span className="autoscaler-card-name">{autoScaler.name}</span>
+        <span className={`autoscaler-status-badge status-${autoScaler.status}`}>{autoScaler.status}</span>
       </div>
-      <div className="flock-card-meta">
-        <span>Agent: {flock.agentName}</span>
-        <span>Max: {flock.maxConcurrency === 0 ? '∞' : flock.maxConcurrency}</span>
-        {flock.runningSessionCount !== undefined && (
-          <span>Running: {flock.runningSessionCount}</span>
+      <div className="autoscaler-card-meta">
+        <span>Agent: {autoScaler.agentName}</span>
+        <span>Max: {autoScaler.maxConcurrency === 0 ? '∞' : autoScaler.maxConcurrency}</span>
+        {autoScaler.runningSessionCount !== undefined && (
+          <span>Running: {autoScaler.runningSessionCount}</span>
         )}
       </div>
-      <div className="flock-card-controls">
+      <div className="autoscaler-card-controls">
         <button
           className="btn btn-success btn-sm"
           disabled={isRunning}

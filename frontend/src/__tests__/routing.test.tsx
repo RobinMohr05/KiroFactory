@@ -207,7 +207,7 @@ describe('Routing', () => {
         if (url === '/api/sessions') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) });
         if (url === '/api/agents') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) });
         if (url === '/api/errors') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) });
-        if (url === '/api/flocks') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) });
+        if (url === '/api/autoscalers') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) });
         if (url === '/api/usage/current-month') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ totalCostEur: 0 }) });
         return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) });
       }));

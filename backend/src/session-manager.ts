@@ -34,7 +34,7 @@ import {
 import { getUserKiroApiKey, getUserById } from "./db/users.js";
 import { getAllDecryptedCredentials, getDecryptedCredential } from "./db/credentials.js";
 import { isDbAvailable } from "./db/connection.js";
-import { getTaskAutoMergePrs, areAllGroupTasksDone } from "./db/tasks.js";
+import { getTaskAutoMergePrs, areAllGroupTasksDone, createTask } from "./db/tasks.js";
 import { recordError, type RecordErrorInput } from "./error-store.js";
 import { log, logSessionEvent, logWorkerEvent, toErrorFields } from "./logger.js";
 import { getAgentTabs, getTabById } from "./db/tabs.js";
@@ -645,6 +645,50 @@ export function handleWorkerAgentError(sessionId: number, message: string, conte
     source: "self-reported",
     managed: session,
   });
+}
+
+/**
+ * Handle a task spec reported by an inspector-kind agent, forwarded by the
+ * worker over the WebSocket as a "task-create" action (originating from the
+ * create_task MCP tool — see task-create-mcp-server.js). Creates a real
+ * DB-backed task via the same createTask() the authenticated POST /api/tasks
+ * route calls, tagged origin "ai" and scoped to the session's own tabs, then
+ * broadcasts task-created so the board updates live. Mirrors
+ * handleWorkerAgentError's session-lookup-then-no-op-if-missing shape.
+ *
+ * A no-op for an unknown/unregistered session id.
+ */
+export async function handleWorkerTaskCreate(
+  sessionId: number,
+  spec: { title: string; description: string; type: "improvement" | "bug" | "feature"; priority: 1 | 2 | 3 | 4; files: string[] }
+): Promise<void> {
+  const session = sessions.get(sessionId);
+  if (!session) return;
+
+  try {
+    const task = await createTask({
+      title: spec.title,
+      description: spec.description,
+      type: spec.type,
+      priority: spec.priority,
+      files: spec.files,
+      origin: "ai",
+      tabIds: session.meta.tabIds,
+    });
+    broadcastToUser(session.meta.userId, { type: "task-created", task });
+    appendOutput(session, {
+      timestamp: now(),
+      stream: "system",
+      text: `Task created: "${task.title}" (#${task.id})`,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    appendOutput(session, {
+      timestamp: now(),
+      stream: "stderr",
+      text: `Warning: Failed to create task from agent report: ${msg}`,
+    });
+  }
 }
 
 function appendOutput(session: ManagedSession, entry: OutputEntry): void {
@@ -4071,6 +4115,10 @@ function initWorkerEventHandler(): void {
 
     onWorkerAgentError(sessionId: number, message: string, context: string) {
       handleWorkerAgentError(sessionId, message, context);
+    },
+
+    onWorkerTaskCreate(sessionId: number, spec) {
+      void handleWorkerTaskCreate(sessionId, spec);
     },
 
     onWorkerPromptDone(sessionId: number, result: unknown) {
