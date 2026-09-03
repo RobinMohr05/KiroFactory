@@ -36,7 +36,7 @@ export interface ModelsResponse {
 }
 
 /** How long to wait for kiro-cli detection before giving up (ms). */
-const DETECTION_TIMEOUT_MS = 20_000;
+const DETECTION_TIMEOUT_MS = Number(process.env.MODEL_DETECTION_TIMEOUT_MS) || 20_000;
 
 /**
  * Successful-detection cache, held for the process lifetime. `null` means
@@ -50,16 +50,36 @@ let cachedModels: DetectedModel[] | null = null;
  * advertised model state. Throws on any failure (missing binary, ACP error,
  * or timeout) — the caller maps that to the auto-only fallback.
  */
-async function detectModels(): Promise<DetectedModel[]> {
-  let runner: KiroRunner | null = null;
+async function detectModels(timeoutMs: number = DETECTION_TIMEOUT_MS): Promise<DetectedModel[]> {
   let timer: NodeJS.Timeout | undefined;
+  const runnerPromise = KiroRunner.create({ cwd: process.cwd() });
+
+  // If the timeout wins the race, `runnerPromise` may still resolve afterward
+  // with a live `kiro-cli acp` subprocess. Attach a cleanup so that a
+  // late-arriving runner is always closed (reaped) instead of leaking for the
+  // lifetime of the backend process. `timedOut` is flipped the moment the
+  // timeout fires; the reaper only closes the runner in that case, leaving the
+  // normal (runner-wins) path to the `finally` block below — so the subprocess
+  // is never double-closed.
+  let timedOut = false;
+  runnerPromise
+    .then((r) => {
+      if (timedOut) {
+        // Lost the race (timeout fired first) — close the orphaned subprocess.
+        return r.close();
+      }
+    })
+    .catch(() => {
+      /* create() rejected, or close() failed — nothing to reap. */
+    });
+
+  let runner: KiroRunner | null = null;
   try {
-    const runnerPromise = KiroRunner.create({ cwd: process.cwd() });
     const timeout = new Promise<never>((_resolve, reject) => {
-      timer = setTimeout(
-        () => reject(new Error(`Model detection timed out after ${DETECTION_TIMEOUT_MS}ms`)),
-        DETECTION_TIMEOUT_MS
-      );
+      timer = setTimeout(() => {
+        timedOut = true;
+        reject(new Error(`Model detection timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
     });
     runner = await Promise.race([runnerPromise, timeout]);
     return runner.availableModels.map((m) => ({

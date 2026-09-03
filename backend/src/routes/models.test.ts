@@ -89,6 +89,10 @@ describe("GET /api/models", () => {
     expect(second.body.models).toEqual([{ id: "m1", name: "Model One", description: null }]);
     // Detection ran only once — the second request served the cache.
     expect(createMock).toHaveBeenCalledTimes(1);
+    // The runner is closed exactly once when it wins the race — the timeout
+    // reaper must not double-close it.
+    await new Promise((r) => setImmediate(r));
+    expect(runner.close).toHaveBeenCalledTimes(1);
   });
 
   it("returns the auto-only fallback and does NOT cache on detection failure", async () => {
@@ -108,5 +112,42 @@ describe("GET /api/models", () => {
 
     expect(createMock).toHaveBeenCalledTimes(2);
     expect(second.body.models).toEqual([{ id: "m1", name: "Model One", description: null }]);
+  });
+
+  it("closes a runner that resolves after the detection timeout has already won", async () => {
+    // Force a very short detection timeout so the race resolves deterministically
+    // in real time without waiting the full 20s. Read at module-eval time, so it
+    // must be set before freshApp() re-imports the module.
+    const prev = process.env.MODEL_DETECTION_TIMEOUT_MS;
+    process.env.MODEL_DETECTION_TIMEOUT_MS = "10";
+    try {
+      // A runner whose create() settles only after the timeout has fired,
+      // simulating a kiro-cli subprocess that comes up too late.
+      const runner = makeRunner([{ modelId: "late", name: "Late Model" }]);
+      let resolveRunner: (r: typeof runner) => void = () => {};
+      const runnerReady = new Promise<typeof runner>((resolve) => {
+        resolveRunner = resolve;
+      });
+      createMock.mockReturnValue(runnerReady);
+
+      const app = await freshApp();
+      const res = await request(app).get("/api/models");
+
+      // The timeout won: auto-only fallback, not cached, error logged.
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ default: "auto", models: [] });
+      expect(log.error).toHaveBeenCalled();
+
+      // The orphaned subprocess finally comes up: it must be reaped, not leaked.
+      resolveRunner(runner);
+      await runnerReady;
+      // Flush the cleanup promise chain attached to the runner promise.
+      await new Promise((r) => setImmediate(r));
+
+      expect(runner.close).toHaveBeenCalledTimes(1);
+    } finally {
+      if (prev === undefined) delete process.env.MODEL_DETECTION_TIMEOUT_MS;
+      else process.env.MODEL_DETECTION_TIMEOUT_MS = prev;
+    }
   });
 });
