@@ -23,6 +23,7 @@ import { buildPlannerRepoMcpServer } from "./task-planner-mcp.js";
 import { buildPlannerBoardMcpServer } from "./task-planner-board-mcp.js";
 import { PlannerSessionPool, type PooledRunner } from "../planner-session-pool.js";
 import { KiroRunner } from "../agent/kiro-runner.js";
+import { getDetectedModelIds } from "./models.js";
 import { resolve } from "node:path";
 import type { CreateTaskInput } from "../types.js";
 import { recordError } from "../error-store.js";
@@ -56,6 +57,57 @@ const POOL_IDLE_TIMEOUT_MS = Number(process.env.PLANNER_POOL_IDLE_MS) || 20 * 60
 let runnerIdSeq = 0;
 
 /**
+ * System-managed model preference for AI Task Planner sessions.
+ *
+ * The planner is deliberately pinned to claude-sonnet-4.6 — the Claude Sonnet
+ * tier just below sonnet-5 — to avoid the high-traffic congestion common on
+ * sonnet-5. There's no runtime traffic/availability signal exposed by kiro-cli
+ * or the ACP ModelInfo shape, so we simply pin the next-highest sonnet rather
+ * than attempting sonnet-5 with runtime fallback.
+ *
+ * These are the literal kiro-cli model identifiers (with dots), in descending
+ * preference order. This default is system-managed and NOT user-configurable.
+ */
+const PLANNER_MODEL_PREFERENCE = [
+  "claude-sonnet-4.6",
+  "claude-sonnet-4.5",
+  "claude-sonnet-4",
+] as const;
+
+/**
+ * Resolve the planner session's model against a list of detected model IDs.
+ *
+ * Returns the highest-preference sonnet tier present in `availableIds`
+ * (claude-sonnet-4.6, then 4.5, then 4), or `null` (Auto — let kiro-cli pick)
+ * when none of them are available. Pure and synchronous so it can be unit
+ * tested without spawning kiro-cli.
+ */
+export function resolvePlannerModel(availableIds: string[]): string | null {
+  const available = new Set(availableIds);
+  for (const modelId of PLANNER_MODEL_PREFERENCE) {
+    if (available.has(modelId)) return modelId;
+  }
+  return null;
+}
+
+/**
+ * Detect the available models and resolve the planner's system-managed model
+ * from them. Logs which model was chosen. Never throws — a detection failure
+ * yields an empty list, which resolves to `null` (Auto).
+ */
+export async function resolvePlannerModelFromDetection(): Promise<string | null> {
+  const availableIds = await getDetectedModelIds();
+  const chosen = resolvePlannerModel(availableIds);
+  log.info("planner-model-resolved", {
+    component: "task-planner",
+    chosenModel: chosen ?? "auto",
+    detectedCount: availableIds.length,
+    msg: `Resolved AI Task Planner model to ${chosen ?? "auto (no preferred sonnet tier detected)"}`,
+  });
+  return chosen;
+}
+
+/**
  * Check whether the warm pool can be used.
  *
  * DESIGN DECISION — API key handling for pooled runners:
@@ -86,9 +138,10 @@ export function isPoolEnabled(): boolean {
  * Per-user keys cannot be injected into an already-running process.
  */
 async function createPoolRunner(): Promise<PooledKiroRunner> {
+  const model = await resolvePlannerModelFromDetection();
   const runner = await KiroRunner.create({
     cwd: DEFAULT_POOL_CWD,
-    model: null,
+    model,
     // kiroApiKey is intentionally NOT passed here — KiroRunner.create() will
     // automatically pick up process.env.KIRO_API_KEY (the server's global key).
     // See isPoolEnabled() guard for why per-user keys can't be used in the pool.
@@ -401,6 +454,12 @@ router.post("/start", async (req: Request, res: Response) => {
     // Create a dedicated interactive session for this planning conversation.
     // forceLocal ensures the planner never triggers an ACA Job execution —
     // it only needs to chat and read files via MCP, never build/test/commit.
+    //
+    // The planner model is a system-managed default (claude-sonnet-4.6 when
+    // available, falling back down the sonnet chain, else Auto) — it is NOT
+    // user-configurable. This applies to the cold-start path here; warm pool
+    // runners bake the same resolution in at spawn time (see createPoolRunner).
+    const plannerModel = await resolvePlannerModelFromDetection();
     const session = await createSession({
       name: "Task Planner",
       prompt: systemPrompt,
@@ -413,6 +472,7 @@ router.post("/start", async (req: Request, res: Response) => {
       pinned: false,
       forceLocal: true,
       rawMcpServers,
+      model: plannerModel ?? undefined,
     });
 
     // Try to use a warm runner from the pool (keyed by tabId).

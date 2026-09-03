@@ -124,4 +124,30 @@ router.get("/", async (_req: Request, res: Response) => {
   }
 });
 
+/**
+ * Return the list of detected model IDs (the literal kiro-cli identifiers,
+ * e.g. "claude-sonnet-4.6"), reusing the same process-lifetime cache and
+ * detection path as `GET /api/models`.
+ *
+ * On detection failure (missing binary / ACP error / timeout) this resolves
+ * to an empty array rather than throwing — callers treat "no detected models"
+ * the same as "model unavailable" and fall back accordingly. Successful
+ * detections are cached so repeated callers don't re-spawn kiro-cli.
+ */
+export async function getDetectedModelIds(): Promise<string[]> {
+  if (cachedModels) return cachedModels.map((m) => m.id);
+  try {
+    const models = await detectModels();
+    cachedModels = models;
+    return models.map((m) => m.id);
+  } catch (err) {
+    log.error("model-detection-failed", {
+      component: "models",
+      ...toErrorFields(err),
+      msg: "Failed to detect available models — treating as none detected",
+    });
+    return [];
+  }
+}
+
 export default router;

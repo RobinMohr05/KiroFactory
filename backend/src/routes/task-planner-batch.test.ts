@@ -80,6 +80,15 @@ vi.mock("../agent/kiro-runner.js", () => ({
   KiroRunner: { create: vi.fn() },
 }));
 
+vi.mock("./models.js", () => ({
+  getDetectedModelIds: vi.fn().mockResolvedValue([
+    "claude-sonnet-4",
+    "claude-sonnet-4.5",
+    "claude-sonnet-4.6",
+    "claude-opus-5",
+  ]),
+}));
+
 vi.mock("../middleware/auth.js", () => ({
   requireAuth: (_req: any, _res: any, next: any) => next(),
   getUserId: () => 1,
@@ -121,6 +130,17 @@ describe("POST /api/task-planner/start — board MCP server integration", () => 
     const boardEntry = mcpServers.find((s: { name: string }) => s.name === "task-board");
     expect(boardEntry).toBeDefined();
     expect(boardEntry!.type).toBe("http");
+  });
+
+  it("creates the planner session with model claude-sonnet-4.6 when it is available", async () => {
+    await supertest(app)
+      .post("/api/task-planner/start")
+      .send({ tabId: 1 })
+      .expect(201);
+
+    expect(createSessionMock).toHaveBeenCalledTimes(1);
+    const sessionOpts = createSessionMock.mock.calls[0][0];
+    expect(sessionOpts.model).toBe("claude-sonnet-4.6");
   });
 });
 
