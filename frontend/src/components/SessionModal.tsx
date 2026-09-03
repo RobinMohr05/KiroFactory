@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { apiFetch } from '../utils/api';
+import { ModelCombobox } from './ModelCombobox';
 import type { Agent, Session, McpServerConfig } from '../types';
 
 interface SessionModalProps {
@@ -91,6 +92,9 @@ export function SessionModal({ session, onClose }: SessionModalProps) {
 
     const mcpServers = customMcpServers.filter(s => s.name.trim() && s.command.trim());
 
+    const trimmedModel = model.trim();
+    const effectiveModel = trimmedModel && trimmedModel !== 'auto' ? trimmedModel : null;
+
     try {
       if (isEditing) {
         // Update existing session via PATCH
@@ -98,7 +102,7 @@ export function SessionModal({ session, onClose }: SessionModalProps) {
           name: name.trim(),
           prompt: prompt.trim() || null,
           cwd: cwd.trim() || null,
-          model: model.trim() || null,
+          model: effectiveModel,
           timeoutSeconds: timeoutSeconds || 0,
           interactive: effectiveInteractive,
           loop: effectiveLoop,
@@ -129,7 +133,7 @@ export function SessionModal({ session, onClose }: SessionModalProps) {
           name: name.trim(),
           prompt: prompt.trim() || undefined,
           cwd: cwd.trim() || undefined,
-          model: model.trim() || undefined,
+          model: effectiveModel ?? undefined,
           timeoutSeconds: timeoutSeconds || undefined,
           interactive: effectiveInteractive,
           loop: effectiveLoop,
@@ -215,7 +219,7 @@ export function SessionModal({ session, onClose }: SessionModalProps) {
             </div>
             <div className="form-group">
               <label htmlFor="sessionModel">Model</label>
-              <input type="text" id="sessionModel" placeholder="e.g. claude-sonnet-4" value={model} onChange={(e) => setModel(e.target.value)} />
+              <ModelCombobox id="sessionModel" value={model} onChange={setModel} placeholder="e.g. claude-sonnet-4" />
             </div>
           </div>
           <div className="form-group">
