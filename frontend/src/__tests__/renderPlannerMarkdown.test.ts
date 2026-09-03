@@ -68,9 +68,18 @@ describe('renderPlannerMarkdown', () => {
       expect(result).toContain('<p>Hello world</p>');
     });
 
-    it('renders line breaks with breaks:true', () => {
+    it('does not insert <br> for single newlines (no breaks:true)', () => {
+      // Single \n should NOT produce a <br> — it should flow as a space
       const result = renderPlannerMarkdown('line 1\nline 2');
-      expect(result).toContain('<br');
+      expect(result).not.toContain('<br');
+    });
+
+    it('separates blank-line-delimited paragraphs into distinct <p> blocks', () => {
+      const result = renderPlannerMarkdown('paragraph one\n\nparagraph two');
+      expect(result).toContain('<p>');
+      // Both paragraphs should be present
+      expect(result).toContain('paragraph one');
+      expect(result).toContain('paragraph two');
     });
   });
 
@@ -130,6 +139,80 @@ describe('renderPlannerMarkdown', () => {
       const result = renderPlannerMarkdown('![alt text](https://example.com/img.png)');
       expect(result).not.toContain('<img');
       expect(result).not.toContain('example.com/img.png');
+    });
+  });
+
+  describe('question card grouping', () => {
+    const TWO_QUESTION_INPUT = [
+      'Here are your questions:',
+      '',
+      '**Q1 - Project scope**: What is the scope of this project?',
+      '(A) Small',
+      '(B) Large',
+      'Rec: (A) Small',
+      '',
+      '**Q2 - Timeline**: When should this be done?',
+      '(A) One week',
+      '(B) One month',
+      'Rec: (B) One month',
+      '',
+      'Please answer the questions above.',
+    ].join('\n');
+
+    it('wraps each **Qn** block in a .planner-question card', () => {
+      const result = renderPlannerMarkdown(TWO_QUESTION_INPUT);
+      // Should have exactly 2 question cards
+      const matches = result.match(/class="planner-question"/g);
+      expect(matches).not.toBeNull();
+      expect(matches!.length).toBe(2);
+    });
+
+    it('places intro text outside any question card', () => {
+      const result = renderPlannerMarkdown(TWO_QUESTION_INPUT);
+      // The intro "Here are your questions" must appear before the first card
+      const introIdx = result.indexOf('Here are your questions');
+      const firstCardIdx = result.indexOf('planner-question');
+      expect(introIdx).toBeGreaterThanOrEqual(0);
+      expect(firstCardIdx).toBeGreaterThanOrEqual(0);
+      expect(introIdx).toBeLessThan(firstCardIdx);
+    });
+
+    it('places outro text outside any question card', () => {
+      const result = renderPlannerMarkdown(TWO_QUESTION_INPUT);
+      const lastCardEnd = result.lastIndexOf('</div>');
+      const outroIdx = result.lastIndexOf('Please answer the questions above');
+      expect(outroIdx).toBeGreaterThanOrEqual(0);
+      expect(outroIdx).toBeGreaterThan(lastCardEnd);
+    });
+
+    it('wraps Rec: line in .planner-question-rec element', () => {
+      const result = renderPlannerMarkdown(TWO_QUESTION_INPUT);
+      expect(result).toContain('planner-question-rec');
+    });
+
+    it('contains both question headers inside their cards', () => {
+      const result = renderPlannerMarkdown(TWO_QUESTION_INPUT);
+      expect(result).toContain('Q1 - Project scope');
+      expect(result).toContain('Q2 - Timeline');
+    });
+
+    it('passes through text with no **Qn** blocks unchanged (no cards)', () => {
+      const input = 'This is just a regular message with **bold** text.';
+      const result = renderPlannerMarkdown(input);
+      expect(result).not.toContain('planner-question');
+      expect(result).toContain('<strong>bold</strong>');
+    });
+
+    it('handles Q1: syntax (colon after number)', () => {
+      const input = '**Q1: What is your goal?**\nSome body text\nRec: Answer A';
+      const result = renderPlannerMarkdown(input);
+      expect(result).toContain('planner-question');
+    });
+
+    it('handles Q1 — syntax (em-dash after number)', () => {
+      const input = '**Q1 — What is your goal?**\nSome body text\nRec: Answer A';
+      const result = renderPlannerMarkdown(input);
+      expect(result).toContain('planner-question');
     });
   });
 });
