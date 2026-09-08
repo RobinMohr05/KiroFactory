@@ -308,6 +308,11 @@ export function AutoScalerDetailView({
       if (editMaxConcurrency !== autoScaler.maxConcurrency) patch.maxConcurrency = editMaxConcurrency;
       if (editIdleTimeoutSeconds !== autoScaler.idleTimeoutSeconds) patch.idleTimeoutSeconds = editIdleTimeoutSeconds;
 
+      if (Object.keys(patch).length === 0) {
+        setSaving(false);
+        return; // nothing changed, skip the network call
+      }
+
       const res = await apiFetch(`/api/autoscalers/${autoScaler.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -414,7 +419,7 @@ export function AutoScalerDetailView({
         </div>
         <div className="form-group">
           <label htmlFor="editAutoScalerModel">Model</label>
-          <ModelSelect id="editAutoScalerModel" value={editModel} onChange={setEditModel} />
+          <ModelSelect id="editAutoScalerModel" value={editModel} onChange={setEditModel} disabled={isRunning} />
         </div>
         <div className="form-group">
           <label htmlFor="editAutoScalerMaxConcurrency">Max Concurrency (0 = unlimited)</label>

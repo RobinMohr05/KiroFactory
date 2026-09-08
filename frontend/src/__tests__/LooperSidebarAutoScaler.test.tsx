@@ -418,6 +418,10 @@ describe('AutoScaler detail view — edit form', () => {
     render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
     fireEvent.click(document.querySelector('[data-autoscaler-id="10"]')!);
 
+    // Change the name so the patch body is non-empty (empty patches are skipped)
+    const nameInput = document.getElementById('editAutoScalerName') as HTMLInputElement;
+    fireEvent.change(nameInput, { target: { value: 'Different Name' } });
+
     const saveBtn = screen.getByRole('button', { name: /save/i });
     fireEvent.click(saveBtn);
 

@@ -21,6 +21,7 @@ interface ModelSelectProps {
   onChange: (value: string) => void;
   id?: string;
   placeholder?: string;
+  disabled?: boolean;
 }
 
 /**
@@ -37,7 +38,7 @@ interface ModelSelectProps {
  * Exposes value/onChange props so it's a drop-in for the existing model
  * fields (SessionModal, FlockPanel).
  */
-export function ModelSelect({ value, onChange, id, placeholder }: ModelSelectProps) {
+export function ModelSelect({ value, onChange, id, placeholder, disabled }: ModelSelectProps) {
   const [models, setModels] = useState<DetectedModel[]>([]);
   // A stable listId so the input can point its `list` attribute at the datalist.
   const listId = `${id ?? 'model-select'}-list`;
@@ -73,6 +74,7 @@ export function ModelSelect({ value, onChange, id, placeholder }: ModelSelectPro
         autoComplete="off"
         placeholder={placeholder}
         value={value}
+        disabled={disabled}
         onChange={(e) => onChange(e.target.value)}
       />
       <datalist id={listId}>
