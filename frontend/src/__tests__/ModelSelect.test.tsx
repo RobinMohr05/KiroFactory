@@ -1,11 +1,106 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { ModelSelect } from '../components/ModelSelect';
 
 // Mock apiFetch so the component's on-mount /api/models fetch is controllable.
 vi.mock('../utils/api', () => ({
   apiFetch: vi.fn(),
 }));
+
+// antd's Select uses CSS selectors that jsdom (nwsapi) doesn't support,
+// causing SyntaxError crashes in tests. We replace it with a lightweight
+// functional stub that exposes the same props the component relies on.
+vi.mock('antd', () => {
+  const React = require('react');
+
+  /**
+   * Stub for antd Select. Renders a <select> plus a hidden loading indicator
+   * so tests can inspect all relevant state and behaviour without hitting
+   * jsdom's CSS parser limitations.
+   */
+  const Select = ({
+    id,
+    value,
+    onChange,
+    options = [],
+    filterOption,
+    loading,
+    placeholder,
+    showSearch,
+    style,
+    autoClearSearchValue,
+  }: {
+    id?: string;
+    value?: string;
+    onChange?: (v: string) => void;
+    options?: Array<{ value: string; label: string }>;
+    filterOption?: (input: string, option?: { value: string; label: string }) => boolean;
+    loading?: boolean;
+    placeholder?: string;
+    showSearch?: boolean;
+    style?: React.CSSProperties;
+    autoClearSearchValue?: boolean;
+  }) => {
+    const [search, setSearch] = React.useState('');
+
+    // Determine visible options: if there's search text, apply filterOption.
+    const visibleOptions = search
+      ? options.filter((opt) =>
+          filterOption ? filterOption(search, opt) : true
+        )
+      : options;
+
+    return React.createElement(
+      'div',
+      { 'data-testid': 'antd-select', style },
+      // Loading indicator
+      loading
+        ? React.createElement('span', {
+            className: 'ant-select-loading',
+            'aria-label': 'loading',
+          })
+        : null,
+      // Search input (always rendered when showSearch=true)
+      showSearch
+        ? React.createElement('input', {
+            className: 'ant-select-selection-search-input',
+            'aria-label': 'search',
+            value: search,
+            onChange: (e: React.ChangeEvent<HTMLInputElement>) =>
+              setSearch(e.target.value),
+          })
+        : null,
+      // Selected-value display (mirrors .ant-select-selection-item)
+      React.createElement(
+        'span',
+        { className: 'ant-select-selection-item' },
+        options.find((o) => o.value === value)?.label ?? value ?? placeholder ?? ''
+      ),
+      // The native <select> drives actual value/onChange
+      React.createElement(
+        'select',
+        {
+          id,
+          value: value ?? '',
+          onChange: (e: React.ChangeEvent<HTMLSelectElement>) => {
+            if (onChange) onChange(e.target.value);
+            setSearch('');
+          },
+          'aria-label': placeholder ?? 'model',
+        },
+        visibleOptions.map((opt) =>
+          React.createElement(
+            'option',
+            { key: opt.value, value: opt.value, title: opt.label },
+            opt.label
+          )
+        )
+      )
+    );
+  };
+
+  return { Select };
+});
 
 import { apiFetch } from '../utils/api';
 
@@ -14,11 +109,6 @@ function mockModels(models: Array<{ id: string; name: string; description?: stri
     ok: true,
     json: async () => ({ default: 'auto', models }),
   });
-}
-
-/** All <option> elements from the component's datalist. */
-function datalistOptions(container: HTMLElement): HTMLOptionElement[] {
-  return Array.from(container.querySelectorAll('datalist option'));
 }
 
 describe('ModelSelect', () => {
@@ -32,80 +122,159 @@ describe('ModelSelect', () => {
     await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/api/models'));
   });
 
-  it('shows "Auto (default)" as the first option whose value is empty', async () => {
+  it('renders with "Auto (default)" selectable and defaults to the Auto (empty-value) state when value=""', async () => {
     const { container } = render(<ModelSelect value="" onChange={vi.fn()} />);
     await waitFor(() => expect(apiFetch).toHaveBeenCalled());
-    const options = datalistOptions(container);
-    expect(options[0].value).toBe('');
-    expect(options[0].textContent).toMatch(/Auto \(default\)/i);
+
+    // "Auto (default)" should appear as a <select> option
+    const options = Array.from(container.querySelectorAll('option'));
+    const autoOption = options.find((o) => o.value === '');
+    expect(autoOption).toBeTruthy();
+    expect(autoOption?.textContent).toMatch(/Auto \(default\)/i);
+
+    // The selection-item display should show Auto
+    const selectionItem = container.querySelector('.ant-select-selection-item');
+    expect(selectionItem?.textContent).toMatch(/Auto \(default\)/i);
   });
 
-  it('renders each detected model with name as label and description as title', async () => {
+  it('after the mocked fetch resolves, detected model ids appear as options and can be selected, firing onChange with the model id', async () => {
     mockModels([
-      { id: 'claude-sonnet-4', name: 'Claude Sonnet 4', description: 'Balanced model' },
-      { id: 'claude-opus-5', name: 'Claude Opus 5', description: null },
+      { id: 'claude-sonnet-4.6', name: 'Claude Sonnet', description: null },
+      { id: 'claude-opus-4.5', name: 'Claude Opus', description: null },
     ]);
-    const { container } = render(<ModelSelect value="" onChange={vi.fn()} />);
 
-    await waitFor(() => expect(datalistOptions(container).length).toBe(3));
-    const options = datalistOptions(container);
-
-    const sonnet = options.find((o) => o.value === 'claude-sonnet-4')!;
-    expect(sonnet).toBeTruthy();
-    expect(sonnet.label).toBe('Claude Sonnet 4');
-    expect(sonnet.title).toBe('Balanced model');
-
-    const opus = options.find((o) => o.value === 'claude-opus-5')!;
-    expect(opus).toBeTruthy();
-    expect(opus.label).toBe('Claude Opus 5');
-    // No description -> no title.
-    expect(opus.title).toBe('');
-  });
-
-  it('calls onChange with the typed value (free-typed values are accepted)', async () => {
-    const onChange = vi.fn();
-    render(<ModelSelect value="" onChange={onChange} />);
-    await waitFor(() => expect(apiFetch).toHaveBeenCalled());
-
-    const input = screen.getByRole('combobox');
-    fireEvent.change(input, { target: { value: 'some-undetected-model' } });
-    expect(onChange).toHaveBeenCalledWith('some-undetected-model');
-  });
-
-  it('reflects the current value in the input', async () => {
-    render(<ModelSelect value="claude-opus-5" onChange={vi.fn()} />);
-    await waitFor(() => expect(apiFetch).toHaveBeenCalled());
-    expect(screen.getByRole('combobox')).toHaveValue('claude-opus-5');
-  });
-
-  it('stays usable with only the Auto option when the fetch fails', async () => {
-    (apiFetch as any).mockRejectedValue(new Error('network'));
     const onChange = vi.fn();
     const { container } = render(<ModelSelect value="" onChange={onChange} />);
 
     await waitFor(() => expect(apiFetch).toHaveBeenCalled());
 
-    const options = datalistOptions(container);
-    expect(options).toHaveLength(1);
-    expect(options[0].value).toBe('');
+    // Both model ids should appear as options (label = id per spec)
+    const options = Array.from(container.querySelectorAll('option'));
+    const sonnet = options.find((o) => o.value === 'claude-sonnet-4.6');
+    const opus = options.find((o) => o.value === 'claude-opus-4.5');
+    expect(sonnet).toBeTruthy();
+    expect(opus).toBeTruthy();
+    // Label is the id, not name
+    expect(sonnet?.title).toBe('claude-sonnet-4.6');
+    expect(opus?.title).toBe('claude-opus-4.5');
 
-    const input = screen.getByRole('combobox');
-    fireEvent.change(input, { target: { value: 'typed-anyway' } });
-    expect(onChange).toHaveBeenCalledWith('typed-anyway');
+    // Selecting fires onChange with the model id
+    const select = container.querySelector('select')!;
+    fireEvent.change(select, { target: { value: 'claude-sonnet-4.6' } });
+    expect(onChange).toHaveBeenCalledWith('claude-sonnet-4.6');
   });
 
-  it('renders only the Auto option when the response is not ok', async () => {
-    (apiFetch as any).mockResolvedValue({ ok: false, json: async () => ({}) });
+  it('typing filters the option list by id (case-insensitive)', async () => {
+    mockModels([
+      { id: 'claude-sonnet-4.6', name: 'Claude Sonnet', description: null },
+      { id: 'claude-opus-4.5', name: 'Claude Opus', description: null },
+      { id: 'gpt-4o', name: 'GPT-4o', description: null },
+    ]);
+
     const { container } = render(<ModelSelect value="" onChange={vi.fn()} />);
     await waitFor(() => expect(apiFetch).toHaveBeenCalled());
-    const options = datalistOptions(container);
+
+    // Type to filter
+    const searchInput = container.querySelector('.ant-select-selection-search-input')!;
+    await act(async () => {
+      fireEvent.change(searchInput, { target: { value: 'SONNET' } });
+    });
+
+    const options = Array.from(container.querySelectorAll('option'));
+    const values = options.map((o) => o.value);
+    expect(values).toContain('claude-sonnet-4.6');
+    // "Auto (default)" is always shown (filterOption returns true for value='')
+    expect(values).toContain('');
+    expect(values).not.toContain('claude-opus-4.5');
+    expect(values).not.toContain('gpt-4o');
+  });
+
+  it('when value is an id not present in the fetched list, shows that value with "(not detected)" affordance', async () => {
+    mockModels([
+      { id: 'claude-sonnet-4.6', name: 'Claude Sonnet', description: null },
+    ]);
+
+    const { container } = render(
+      <ModelSelect value="some-old-model" onChange={vi.fn()} />
+    );
+
+    await waitFor(() => expect(apiFetch).toHaveBeenCalled());
+
+    // The selection-item display should contain the value and "(not detected)"
+    await waitFor(() => {
+      const selectionItem = container.querySelector('.ant-select-selection-item');
+      expect(selectionItem?.textContent).toContain('some-old-model');
+      expect(selectionItem?.textContent).toContain('(not detected)');
+    });
+
+    // It should also appear as a selectable option with the "(not detected)" label
+    const options = Array.from(container.querySelectorAll('option'));
+    const unknownOpt = options.find((o) => o.value === 'some-old-model');
+    expect(unknownOpt).toBeTruthy();
+    expect(unknownOpt?.title).toContain('(not detected)');
+  });
+
+  it('on fetch failure, only "Auto (default)" is offered', async () => {
+    (apiFetch as any).mockRejectedValue(new Error('network error'));
+
+    const { container } = render(<ModelSelect value="" onChange={vi.fn()} />);
+    await waitFor(() => expect(apiFetch).toHaveBeenCalled());
+
+    // Wait for loading to finish
+    await waitFor(() => {
+      expect(container.querySelector('.ant-select-loading')).not.toBeInTheDocument();
+    });
+
+    const options = Array.from(container.querySelectorAll('option'));
+    expect(options).toHaveLength(1);
+    expect(options[0].value).toBe('');
+    expect(options[0].textContent).toMatch(/Auto \(default\)/i);
+  });
+
+  it('on empty models response, only "Auto (default)" is offered', async () => {
+    mockModels([]);
+
+    const { container } = render(<ModelSelect value="" onChange={vi.fn()} />);
+    await waitFor(() => expect(apiFetch).toHaveBeenCalled());
+
+    await waitFor(() => {
+      expect(container.querySelector('.ant-select-loading')).not.toBeInTheDocument();
+    });
+
+    const options = Array.from(container.querySelectorAll('option'));
     expect(options).toHaveLength(1);
     expect(options[0].value).toBe('');
   });
 
-  it('passes through the id prop to the input', async () => {
-    render(<ModelSelect id="sessionModel" value="" onChange={vi.fn()} />);
+  it('passes through the id prop to the underlying select', async () => {
+    const { container } = render(<ModelSelect id="sessionModel" value="" onChange={vi.fn()} />);
     await waitFor(() => expect(apiFetch).toHaveBeenCalled());
-    expect(screen.getByRole('combobox')).toHaveAttribute('id', 'sessionModel');
+
+    const select = container.querySelector('#sessionModel');
+    expect(select).toBeInTheDocument();
+  });
+
+  it('shows loading state while /api/models is in flight', async () => {
+    let resolveModels!: (v: any) => void;
+    (apiFetch as any).mockReturnValue(
+      new Promise((resolve) => { resolveModels = resolve; })
+    );
+
+    const { container } = render(<ModelSelect value="" onChange={vi.fn()} />);
+
+    // Should show loading indicator while pending
+    await waitFor(() => {
+      expect(container.querySelector('.ant-select-loading')).toBeInTheDocument();
+    });
+
+    // Resolve the fetch
+    await act(async () => {
+      resolveModels({ ok: true, json: async () => ({ default: 'auto', models: [] }) });
+    });
+
+    // Loading should be gone
+    await waitFor(() => {
+      expect(container.querySelector('.ant-select-loading')).not.toBeInTheDocument();
+    });
   });
 });
