@@ -32,6 +32,7 @@ function mapToAutoScaler(
     model: (props.model as string) || undefined,
     maxConcurrency: (props.maxConcurrency as number) ?? 5,
     idleTimeoutSeconds: (props.idleTimeoutSeconds as number) ?? 30,
+    keepWarmWhileTasksExist: (props.keepWarmWhileTasksExist as boolean) ?? false,
     status: (props.status as AutoScalerStatus) || "stopped",
     createdAt: (props.createdAt as { toString(): string }).toString(),
   };
@@ -53,6 +54,7 @@ export async function createAutoScaler(input: CreateAutoScalerInput): Promise<Au
          id: $id, name: $name, agentName: $agentName,
          model: $model, maxConcurrency: $maxConcurrency,
          idleTimeoutSeconds: $idleTimeoutSeconds,
+         keepWarmWhileTasksExist: $keepWarmWhileTasksExist,
          status: 'stopped', createdAt: datetime()
        })
        WITH f
@@ -72,6 +74,7 @@ export async function createAutoScaler(input: CreateAutoScalerInput): Promise<Au
         model: input.model ?? null,
         maxConcurrency: input.maxConcurrency ?? 5,
         idleTimeoutSeconds: input.idleTimeoutSeconds ?? 30,
+        keepWarmWhileTasksExist: input.keepWarmWhileTasksExist ?? false,
         userId: input.userId,
         tabIds: input.tabIds,
       }

@@ -519,6 +519,13 @@ export interface AutoScaler {
   model?: string;
   maxConcurrency: number;
   idleTimeoutSeconds: number;
+  /**
+   * When true: maintain a floor of at least 1 running session whenever any
+   * non-done task exists in the autoscaler's tabs, even if nothing is currently
+   * claimable. Useful to keep an agent warm while blocked tasks are waiting.
+   * When false (default): only start sessions when tasks are actually claimable.
+   */
+  keepWarmWhileTasksExist: boolean;
   status: AutoScalerStatus;
   createdAt: string;
 }
@@ -531,6 +538,8 @@ export interface CreateAutoScalerInput {
   model?: string;
   maxConcurrency?: number;
   idleTimeoutSeconds?: number;
+  /** When true, maintain a warm session floor. Defaults to false. */
+  keepWarmWhileTasksExist?: boolean;
 }
 
 // ─── WebSocket Messages ──────────────────────────────────────────────────────

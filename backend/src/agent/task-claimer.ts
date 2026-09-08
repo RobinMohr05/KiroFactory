@@ -559,6 +559,36 @@ export async function getAvailableTaskCount(
   return count;
 }
 
+/**
+ * Count tasks that are NOT yet "done" across the given tabs.
+ *
+ * Unlike getAvailableTaskCount, this intentionally does NOT apply the
+ * claimState / groupId / DEPENDS_ON filters — it counts EVERY task in
+ * those tabs whose state is not "done", regardless of whether it's
+ * currently claimable. Used by the AutoScaler's "keep one warm" mode
+ * to decide whether to maintain a floor session even when nothing is
+ * claimable (e.g. all remaining tasks are blocked by dependencies or
+ * are already being worked on by other sessions).
+ *
+ * "done" is the only terminal state in this codebase; there is no
+ * archived or cancelled state.
+ *
+ * @param tabIds Optional tab IDs to scope the count. If empty/undefined, counts all tasks.
+ */
+export async function getNonDoneTaskCount(tabIds?: number[]): Promise<number> {
+  const effectiveTabIds = tabIds && tabIds.length > 0 ? tabIds : null;
+  return readQuery(async (tx: ManagedTransaction) => {
+    const result = await tx.run(
+      `MATCH (t:Task)
+       WHERE t.state <> 'done'
+         AND ($tabIds IS NULL OR EXISTS { MATCH (t)-[:IN_TAB]->(tab:Tab) WHERE tab.id IN $tabIds })
+       RETURN count(t) AS count`,
+      { tabIds: effectiveTabIds }
+    );
+    return result.records[0].get("count") as number;
+  });
+}
+
 export interface ClaimFailureDiagnosis {
   /**
    * "empty": nothing in claimState at all (the ordinary idle case).
