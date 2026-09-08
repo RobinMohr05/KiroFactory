@@ -523,3 +523,152 @@ describe('AutoScaler review comment fixes', () => {
     expect(placeholderOption?.text).toMatch(/select agent/i);
   });
 });
+
+describe('PR Review Comment fixes — round 2', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+  });
+
+  // Issue 1: handleDelete should show inline error on failure (not swallow it)
+  it('shows inline delete error when DELETE request fails', async () => {
+    const { apiFetch } = await import('../utils/api');
+    vi.mocked(apiFetch).mockImplementation(async (_url: string, opts?: RequestInit) => {
+      if (opts?.method === 'DELETE') {
+        return { ok: false, json: async () => ({ error: 'Failed to delete' }) } as any;
+      }
+      return { ok: true, json: async () => [] } as any;
+    });
+
+    mockUseApp({ autoScalers: [baseAutoScaler] });
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
+    fireEvent.click(document.querySelector('[data-autoscaler-id="10"]')!);
+
+    // First click puts it in confirm-pending state (useConfirmAction)
+    const deleteBtn = screen.getByRole('button', { name: /delete/i });
+    fireEvent.click(deleteBtn);
+    // Second click actually fires handleDelete
+    const confirmBtn = screen.getByRole('button', { name: /confirm/i });
+    fireEvent.click(confirmBtn);
+
+    // Should show delete error
+    await screen.findByText('Failed to delete');
+  });
+
+  // Issue 1b: handleDelete shows 'Network error' on thrown exception
+  it('shows "Network error" when DELETE throws an exception', async () => {
+    const { apiFetch } = await import('../utils/api');
+    vi.mocked(apiFetch).mockImplementation(async (_url: string, opts?: RequestInit) => {
+      if (opts?.method === 'DELETE') {
+        throw new Error('Network failure');
+      }
+      return { ok: true, json: async () => [] } as any;
+    });
+
+    mockUseApp({ autoScalers: [baseAutoScaler] });
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
+    fireEvent.click(document.querySelector('[data-autoscaler-id="10"]')!);
+
+    const deleteBtn = screen.getByRole('button', { name: /delete/i });
+    fireEvent.click(deleteBtn);
+    const confirmBtn = screen.getByRole('button', { name: /confirm/i });
+    fireEvent.click(confirmBtn);
+
+    await screen.findByText('Network error');
+  });
+
+  // Issue 2: tabIds useEffect should not overwrite unsaved edits on WS update
+  it('unsaved tabId edits are NOT overwritten when auto-scaler WS update arrives with same tabIds', async () => {
+    const { rerender } = render(
+      <MemoryRouter><SessionsPanel /></MemoryRouter>
+    );
+
+    // Start with autoScaler having tabIds: [1]
+    mockUseApp({
+      autoScalers: [baseAutoScaler],
+      tabs: [{ id: 1, name: 'VCH' }, { id: 2, name: 'Other' }],
+    });
+    rerender(<MemoryRouter><SessionsPanel /></MemoryRouter>);
+
+    // Select the autoScaler
+    fireEvent.click(document.querySelector('[data-autoscaler-id="10"]')!);
+
+    // Toggle tab 2 on (user edits tabIds)
+    const tab2Checkbox = screen.getAllByRole('checkbox').find(
+      (cb) => (cb as HTMLInputElement).closest('label')?.textContent?.includes('Other')
+    ) as HTMLInputElement;
+    expect(tab2Checkbox).toBeTruthy();
+    fireEvent.click(tab2Checkbox);
+    expect(tab2Checkbox.checked).toBe(true);
+
+    // Simulate a WS update arriving with the SAME tabIds (new array reference, same contents)
+    const updatedScaler = { ...baseAutoScaler, tabIds: [1] }; // new array object but same values
+    mockUseApp({
+      autoScalers: [updatedScaler],
+      tabs: [{ id: 1, name: 'VCH' }, { id: 2, name: 'Other' }],
+    });
+    rerender(<MemoryRouter><SessionsPanel /></MemoryRouter>);
+
+    // The user's unsaved edit (tab 2 checked) should NOT have been reset
+    // Find the tab 2 checkbox again after rerender
+    const tab2CheckboxAfter = screen.getAllByRole('checkbox').find(
+      (cb) => (cb as HTMLInputElement).closest('label')?.textContent?.includes('Other')
+    ) as HTMLInputElement;
+    expect(tab2CheckboxAfter).toBeTruthy();
+    expect(tab2CheckboxAfter.checked).toBe(true);
+  });
+
+  // Issue 3: detail view must have Start/Stop buttons to act on the "stop it first" hint
+  it('detail view header has Start button (disabled when running) when auto-scaler is running', () => {
+    mockUseApp({ autoScalers: [runningAutoScaler] });
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
+    fireEvent.click(document.querySelector('[data-autoscaler-id="11"]')!);
+
+    const detail = screen.getByTestId('autoscaler-detail-panel');
+    // There should be a Stop button in the detail view (to act without going back to sidebar)
+    // Look specifically in the detail header / title area
+    const stopBtn = Array.from(detail.querySelectorAll('button')).find(
+      (btn) => btn.textContent?.match(/^stop$/i) && !btn.disabled
+    );
+    expect(stopBtn).toBeTruthy();
+  });
+
+  it('detail view header has Stop button disabled when auto-scaler is stopped', () => {
+    mockUseApp({ autoScalers: [baseAutoScaler] });
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
+    fireEvent.click(document.querySelector('[data-autoscaler-id="10"]')!);
+
+    const detail = screen.getByTestId('autoscaler-detail-panel');
+    const stopBtn = Array.from(detail.querySelectorAll('button')).find(
+      (btn) => btn.textContent?.match(/^stop$/i)
+    );
+    expect(stopBtn).toBeTruthy();
+    expect((stopBtn as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('detail view header has Start button disabled when auto-scaler is running', () => {
+    mockUseApp({ autoScalers: [runningAutoScaler] });
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
+    fireEvent.click(document.querySelector('[data-autoscaler-id="11"]')!);
+
+    const detail = screen.getByTestId('autoscaler-detail-panel');
+    const startBtn = Array.from(detail.querySelectorAll('button')).find(
+      (btn) => btn.textContent?.match(/^start$/i)
+    );
+    expect(startBtn).toBeTruthy();
+    expect((startBtn as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('detail view header has Start button enabled when auto-scaler is stopped', () => {
+    mockUseApp({ autoScalers: [baseAutoScaler] });
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
+    fireEvent.click(document.querySelector('[data-autoscaler-id="10"]')!);
+
+    const detail = screen.getByTestId('autoscaler-detail-panel');
+    const startBtn = Array.from(detail.querySelectorAll('button')).find(
+      (btn) => btn.textContent?.match(/^start$/i)
+    );
+    expect(startBtn).toBeTruthy();
+    expect((startBtn as HTMLButtonElement).disabled).toBe(false);
+  });
+});

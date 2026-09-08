@@ -276,13 +276,20 @@ export function AutoScalerDetailView({
   const [editIdleTimeoutSeconds, setEditIdleTimeoutSeconds] = useState(autoScaler.idleTimeoutSeconds);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   // Re-sync form state when the autoScaler prop changes (e.g. via WS autoscaler-updated event).
   // This ensures the edit form shows up-to-date values even if a WS event arrives while the
   // detail view is open (the component is not remounted because the key doesn't change).
   useEffect(() => { setEditName(autoScaler.name); }, [autoScaler.name]);
   useEffect(() => { setEditAgentName(autoScaler.agentName); }, [autoScaler.agentName]);
-  useEffect(() => { setEditTabIds(autoScaler.tabIds); }, [autoScaler.tabIds]);
+  // Use a stable string key for tabIds: arrays are never reference-equal after a state rebuild,
+  // so using [autoScaler.tabIds] directly would fire on every WS update and overwrite unsaved
+  // edits. Serialising to a sorted string means the effect only fires when values actually change.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const tabIdsKey = autoScaler.tabIds.slice().sort((a, b) => a - b).join(',');
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { setEditTabIds(autoScaler.tabIds); }, [tabIdsKey]);
   useEffect(() => { setEditModel(autoScaler.model ?? ''); }, [autoScaler.model]);
   useEffect(() => { setEditMaxConcurrency(autoScaler.maxConcurrency); }, [autoScaler.maxConcurrency]);
   useEffect(() => { setEditIdleTimeoutSeconds(autoScaler.idleTimeoutSeconds); }, [autoScaler.idleTimeoutSeconds]);
@@ -335,11 +342,19 @@ export function AutoScalerDetailView({
 
   const handleDelete = async () => {
     if (isRunning) return;
+    setDeleteError(null);
     try {
-      await apiFetch(`/api/autoscalers/${autoScaler.id}`, { method: 'DELETE' });
+      const res = await apiFetch(`/api/autoscalers/${autoScaler.id}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setDeleteError(data.error || 'Failed to delete');
+        return;
+      }
       setAutoScalers(prev => prev.filter(f => f.id !== autoScaler.id));
       onClose?.();
-    } catch { /* ignore */ }
+    } catch {
+      setDeleteError('Network error');
+    }
   };
   const { isPending: deleteConfirmPending, handleClick: handleDeleteClick } = useConfirmAction(handleDelete);
 
@@ -360,6 +375,22 @@ export function AutoScalerDetailView({
           {autoScaler.runningSessionCount !== undefined && (
             <span className="autoscaler-detail-running-count">{autoScaler.runningSessionCount} running</span>
           )}
+          <button
+            className="btn btn-success btn-sm"
+            disabled={isRunning}
+            onClick={() => apiFetch(`/api/autoscalers/${autoScaler.id}/start`, { method: 'POST' }).catch(() => {})}
+            aria-label="Start"
+          >
+            Start
+          </button>
+          <button
+            className="btn btn-danger btn-sm"
+            disabled={!isRunning}
+            onClick={() => apiFetch(`/api/autoscalers/${autoScaler.id}/stop`, { method: 'POST' }).catch(() => {})}
+            aria-label="Stop"
+          >
+            Stop
+          </button>
         </div>
         <div className="autoscaler-detail-meta-grid">
           <span className="autoscaler-meta-label">Agent</span><span>{autoScaler.agentName}</span>
@@ -464,6 +495,7 @@ export function AutoScalerDetailView({
             {deleteConfirmPending ? 'Confirm?' : 'Delete'}
           </button>
         </div>
+        {deleteError && <div className="form-message error">{deleteError}</div>}
       </form>
     </div>
   );
