@@ -277,6 +277,7 @@ export function AutoScalerDetailView({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [startStopError, setStartStopError] = useState<string | null>(null);
 
   // Re-sync form state when the autoScaler prop changes (e.g. via WS autoscaler-updated event).
   // This ensures the edit form shows up-to-date values even if a WS event arrives while the
@@ -303,6 +304,32 @@ export function AutoScalerDetailView({
     setEditTabIds(prev =>
       prev.includes(tabId) ? prev.filter(id => id !== tabId) : [...prev, tabId]
     );
+  };
+
+  const handleDetailStart = async () => {
+    setStartStopError(null);
+    try {
+      const res = await apiFetch(`/api/autoscalers/${autoScaler.id}/start`, { method: 'POST' });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setStartStopError(data.error || 'Failed to start');
+      }
+    } catch {
+      setStartStopError('Network error');
+    }
+  };
+
+  const handleDetailStop = async () => {
+    setStartStopError(null);
+    try {
+      const res = await apiFetch(`/api/autoscalers/${autoScaler.id}/stop`, { method: 'POST' });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setStartStopError(data.error || 'Failed to stop');
+      }
+    } catch {
+      setStartStopError('Network error');
+    }
   };
 
   const handleSave = async (e: React.FormEvent) => {
@@ -395,7 +422,7 @@ export function AutoScalerDetailView({
           <button
             className="btn btn-success btn-sm"
             disabled={isRunning}
-            onClick={() => apiFetch(`/api/autoscalers/${autoScaler.id}/start`, { method: 'POST' }).catch(() => {})}
+            onClick={handleDetailStart}
             aria-label="Start"
           >
             Start
@@ -403,12 +430,13 @@ export function AutoScalerDetailView({
           <button
             className="btn btn-danger btn-sm"
             disabled={!isRunning}
-            onClick={() => apiFetch(`/api/autoscalers/${autoScaler.id}/stop`, { method: 'POST' }).catch(() => {})}
+            onClick={handleDetailStop}
             aria-label="Stop"
           >
             Stop
           </button>
         </div>
+        {startStopError && <div className="form-message error">{startStopError}</div>}
         <div className="autoscaler-detail-meta-grid">
           <span className="autoscaler-meta-label">Agent</span><span>{autoScaler.agentName}</span>
           <span className="autoscaler-meta-label">Tabs</span><span>{tabNames}</span>

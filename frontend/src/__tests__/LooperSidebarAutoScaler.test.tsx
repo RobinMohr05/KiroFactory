@@ -673,6 +673,183 @@ describe('PR Review Comment fixes — round 2', () => {
   });
 });
 
+describe('PR Review Comment fixes — round 4: Start/Stop error handling in detail view', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+  });
+
+  it('shows inline error when Start returns a non-OK response', async () => {
+    const { apiFetch } = await import('../utils/api');
+    vi.mocked(apiFetch).mockImplementation(async (_url: string, opts?: RequestInit) => {
+      if (opts?.method === 'POST' && (_url as string).endsWith('/start')) {
+        return { ok: false, json: async () => ({ error: 'Already running' }) } as any;
+      }
+      return { ok: true, json: async () => [] } as any;
+    });
+
+    mockUseApp({ autoScalers: [baseAutoScaler] });
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
+    fireEvent.click(document.querySelector('[data-autoscaler-id="10"]')!);
+
+    const detail = screen.getByTestId('autoscaler-detail-panel');
+    const startBtn = Array.from(detail.querySelectorAll('button')).find(
+      (btn) => btn.textContent?.match(/^start$/i)
+    ) as HTMLButtonElement;
+    expect(startBtn).toBeTruthy();
+
+    fireEvent.click(startBtn);
+
+    await screen.findByText('Already running');
+  });
+
+  it('shows inline error when Stop returns a non-OK response', async () => {
+    const { apiFetch } = await import('../utils/api');
+    vi.mocked(apiFetch).mockImplementation(async (_url: string, opts?: RequestInit) => {
+      if (opts?.method === 'POST' && (_url as string).endsWith('/stop')) {
+        return { ok: false, json: async () => ({ error: 'Not running' }) } as any;
+      }
+      return { ok: true, json: async () => [] } as any;
+    });
+
+    mockUseApp({ autoScalers: [runningAutoScaler] });
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
+    fireEvent.click(document.querySelector('[data-autoscaler-id="11"]')!);
+
+    const detail = screen.getByTestId('autoscaler-detail-panel');
+    const stopBtn = Array.from(detail.querySelectorAll('button')).find(
+      (btn) => btn.textContent?.match(/^stop$/i) && !(btn as HTMLButtonElement).disabled
+    ) as HTMLButtonElement;
+    expect(stopBtn).toBeTruthy();
+
+    fireEvent.click(stopBtn);
+
+    await screen.findByText('Not running');
+  });
+
+  it('shows "Failed to start" when Start returns non-OK with no error message', async () => {
+    const { apiFetch } = await import('../utils/api');
+    vi.mocked(apiFetch).mockImplementation(async (_url: string, opts?: RequestInit) => {
+      if (opts?.method === 'POST' && (_url as string).endsWith('/start')) {
+        return { ok: false, json: async () => ({}) } as any;
+      }
+      return { ok: true, json: async () => [] } as any;
+    });
+
+    mockUseApp({ autoScalers: [baseAutoScaler] });
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
+    fireEvent.click(document.querySelector('[data-autoscaler-id="10"]')!);
+
+    const detail = screen.getByTestId('autoscaler-detail-panel');
+    const startBtn = Array.from(detail.querySelectorAll('button')).find(
+      (btn) => btn.textContent?.match(/^start$/i)
+    ) as HTMLButtonElement;
+    fireEvent.click(startBtn);
+
+    await screen.findByText('Failed to start');
+  });
+
+  it('shows "Failed to stop" when Stop returns non-OK with no error message', async () => {
+    const { apiFetch } = await import('../utils/api');
+    vi.mocked(apiFetch).mockImplementation(async (_url: string, opts?: RequestInit) => {
+      if (opts?.method === 'POST' && (_url as string).endsWith('/stop')) {
+        return { ok: false, json: async () => ({}) } as any;
+      }
+      return { ok: true, json: async () => [] } as any;
+    });
+
+    mockUseApp({ autoScalers: [runningAutoScaler] });
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
+    fireEvent.click(document.querySelector('[data-autoscaler-id="11"]')!);
+
+    const detail = screen.getByTestId('autoscaler-detail-panel');
+    const stopBtn = Array.from(detail.querySelectorAll('button')).find(
+      (btn) => btn.textContent?.match(/^stop$/i) && !(btn as HTMLButtonElement).disabled
+    ) as HTMLButtonElement;
+    fireEvent.click(stopBtn);
+
+    await screen.findByText('Failed to stop');
+  });
+
+  it('shows "Network error" when Start throws an exception', async () => {
+    const { apiFetch } = await import('../utils/api');
+    vi.mocked(apiFetch).mockImplementation(async (_url: string, opts?: RequestInit) => {
+      if (opts?.method === 'POST' && (_url as string).endsWith('/start')) {
+        throw new Error('Network failure');
+      }
+      return { ok: true, json: async () => [] } as any;
+    });
+
+    mockUseApp({ autoScalers: [baseAutoScaler] });
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
+    fireEvent.click(document.querySelector('[data-autoscaler-id="10"]')!);
+
+    const detail = screen.getByTestId('autoscaler-detail-panel');
+    const startBtn = Array.from(detail.querySelectorAll('button')).find(
+      (btn) => btn.textContent?.match(/^start$/i)
+    ) as HTMLButtonElement;
+    fireEvent.click(startBtn);
+
+    await screen.findByText('Network error');
+  });
+
+  it('shows "Network error" when Stop throws an exception', async () => {
+    const { apiFetch } = await import('../utils/api');
+    vi.mocked(apiFetch).mockImplementation(async (_url: string, opts?: RequestInit) => {
+      if (opts?.method === 'POST' && (_url as string).endsWith('/stop')) {
+        throw new Error('Network failure');
+      }
+      return { ok: true, json: async () => [] } as any;
+    });
+
+    mockUseApp({ autoScalers: [runningAutoScaler] });
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
+    fireEvent.click(document.querySelector('[data-autoscaler-id="11"]')!);
+
+    const detail = screen.getByTestId('autoscaler-detail-panel');
+    const stopBtn = Array.from(detail.querySelectorAll('button')).find(
+      (btn) => btn.textContent?.match(/^stop$/i) && !(btn as HTMLButtonElement).disabled
+    ) as HTMLButtonElement;
+    fireEvent.click(stopBtn);
+
+    await screen.findByText('Network error');
+  });
+
+  it('clears startStopError on subsequent successful Start', async () => {
+    const { apiFetch } = await import('../utils/api');
+    let callCount = 0;
+    vi.mocked(apiFetch).mockImplementation(async (_url: string, opts?: RequestInit) => {
+      if (opts?.method === 'POST' && (_url as string).endsWith('/start')) {
+        callCount++;
+        if (callCount === 1) {
+          return { ok: false, json: async () => ({ error: 'Temporary error' }) } as any;
+        }
+        return { ok: true, json: async () => ({}) } as any;
+      }
+      return { ok: true, json: async () => [] } as any;
+    });
+
+    mockUseApp({ autoScalers: [baseAutoScaler] });
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
+    fireEvent.click(document.querySelector('[data-autoscaler-id="10"]')!);
+
+    const detail = screen.getByTestId('autoscaler-detail-panel');
+    const startBtn = Array.from(detail.querySelectorAll('button')).find(
+      (btn) => btn.textContent?.match(/^start$/i)
+    ) as HTMLButtonElement;
+
+    // First click fails — error appears
+    fireEvent.click(startBtn);
+    await screen.findByText('Temporary error');
+
+    // Second click succeeds — error clears
+    fireEvent.click(startBtn);
+    await vi.waitFor(() => {
+      expect(screen.queryByText('Temporary error')).not.toBeInTheDocument();
+    });
+  });
+});
+
 describe('PR Review Comment fixes — round 3', () => {
   beforeEach(() => {
     vi.clearAllMocks();
