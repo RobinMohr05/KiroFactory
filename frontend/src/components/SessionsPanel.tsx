@@ -43,6 +43,15 @@ export function SessionsPanel() {
     setSelectedAutoScalerId(null);
   };
 
+  // Clear selectedAutoScalerId when the selected auto-scaler is removed from the list
+  // (e.g. via autoscaler-deleted WS event), to prevent stale ID from auto-selecting a
+  // future auto-scaler that reuses the same numeric ID.
+  useEffect(() => {
+    if (selectedAutoScalerId !== null && !autoScalers.find(a => a.id === selectedAutoScalerId)) {
+      setSelectedAutoScalerId(null);
+    }
+  }, [autoScalers, selectedAutoScalerId]);
+
   // Sync route param to active session
   useEffect(() => {
     if (routeId) {

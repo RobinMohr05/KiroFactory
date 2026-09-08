@@ -84,14 +84,26 @@ export function AutoScalerPanel({
 
   const handleStart = async (autoScalerId: number) => {
     try {
-      await apiFetch(`/api/autoscalers/${autoScalerId}/start`, { method: 'POST' });
-    } catch { /* WS update will reflect state */ }
+      const res = await apiFetch(`/api/autoscalers/${autoScalerId}/start`, { method: 'POST' });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        console.error('[AutoScaler] Start failed:', data.error || res.statusText);
+      }
+    } catch (err) {
+      console.error('[AutoScaler] Start error:', err);
+    }
   };
 
   const handleStop = async (autoScalerId: number) => {
     try {
-      await apiFetch(`/api/autoscalers/${autoScalerId}/stop`, { method: 'POST' });
-    } catch { /* WS update will reflect state */ }
+      const res = await apiFetch(`/api/autoscalers/${autoScalerId}/stop`, { method: 'POST' });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        console.error('[AutoScaler] Stop failed:', data.error || res.statusText);
+      }
+    } catch (err) {
+      console.error('[AutoScaler] Stop error:', err);
+    }
   };
 
   const handleTabToggle = (tabId: number) => {
@@ -347,26 +359,27 @@ export function AutoScalerDetailView({
       setSaveError('At least one tab is required');
       return;
     }
+
+    // Build patch with only changed fields (before try/finally so we can return
+    // early without ever calling setSaving(true), avoiding a spurious state update)
+    const patch: Record<string, unknown> = {};
+    if (editName.trim() !== autoScaler.name) patch.name = editName.trim();
+    if (editAgentName !== autoScaler.agentName) patch.agentName = editAgentName;
+    // Compare tabIds (order-insensitive)
+    const sortedEdit = [...editTabIds].sort((a, b) => a - b);
+    const sortedOrig = [...autoScaler.tabIds].sort((a, b) => a - b);
+    if (JSON.stringify(sortedEdit) !== JSON.stringify(sortedOrig)) patch.tabIds = editTabIds;
+    const normalizedModel = editModel.trim() && editModel.trim() !== 'auto' ? editModel.trim() : null;
+    if (normalizedModel !== (autoScaler.model ?? null)) patch.model = normalizedModel;
+    if (editMaxConcurrency !== autoScaler.maxConcurrency) patch.maxConcurrency = editMaxConcurrency;
+    if (editIdleTimeoutSeconds !== autoScaler.idleTimeoutSeconds) patch.idleTimeoutSeconds = editIdleTimeoutSeconds;
+
+    if (Object.keys(patch).length === 0) {
+      return; // nothing changed — setSaving is never called, so no spurious re-render
+    }
+
+    setSaving(true);
     try {
-      // Build patch with only changed fields
-      const patch: Record<string, unknown> = {};
-      if (editName.trim() !== autoScaler.name) patch.name = editName.trim();
-      if (editAgentName !== autoScaler.agentName) patch.agentName = editAgentName;
-      // Compare tabIds (order-insensitive)
-      const sortedEdit = [...editTabIds].sort((a, b) => a - b);
-      const sortedOrig = [...autoScaler.tabIds].sort((a, b) => a - b);
-      if (JSON.stringify(sortedEdit) !== JSON.stringify(sortedOrig)) patch.tabIds = editTabIds;
-      const normalizedModel = editModel.trim() && editModel.trim() !== 'auto' ? editModel.trim() : null;
-      if (normalizedModel !== (autoScaler.model ?? null)) patch.model = normalizedModel;
-      if (editMaxConcurrency !== autoScaler.maxConcurrency) patch.maxConcurrency = editMaxConcurrency;
-      if (editIdleTimeoutSeconds !== autoScaler.idleTimeoutSeconds) patch.idleTimeoutSeconds = editIdleTimeoutSeconds;
-
-      if (Object.keys(patch).length === 0) {
-        return; // nothing changed — setSaving was never set, so no flicker
-      }
-
-      setSaving(true);
-
       const res = await apiFetch(`/api/autoscalers/${autoScaler.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
