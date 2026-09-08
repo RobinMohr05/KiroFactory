@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, cleanup } from '@testing-library/react';
+import { render, cleanup, fireEvent } from '@testing-library/react';
 import { act } from 'react';
 import * as AppContext from '../context/AppContext';
 import * as api from '../utils/api';
@@ -361,23 +361,25 @@ describe('TaskPlannerModal - Create manually instead', () => {
     cleanup();
   });
 
-  it('renders a "Create manually instead" button in the actions area', async () => {
-    const { getByText } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
+  it('does NOT render a "Create manually instead" button — switching to manual is done via the header dropdown', async () => {
+    const { queryByText } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
     await act(async () => { await new Promise(r => setTimeout(r, 10)); });
-    expect(getByText('Create manually instead')).toBeInTheDocument();
+    expect(queryByText('Create manually instead')).toBeNull();
   });
 
-  it('clicking "Create manually instead" calls handleClose cleanup then onSwitchToManual', async () => {
+  it('switching the header dropdown to "manual" calls handleClose cleanup then onSwitchToManual', async () => {
     const onClose = vi.fn();
     const onSwitchToManual = vi.fn();
-    const { getByText } = render(<TaskPlannerModal onClose={onClose} onSwitchToManual={onSwitchToManual} />);
+    const { container } = render(<TaskPlannerModal onClose={onClose} onSwitchToManual={onSwitchToManual} />);
 
     // Let session start resolve
     await act(async () => { await new Promise(r => setTimeout(r, 10)); });
 
-    // Click "Create manually instead"
+    // Switch the mode dropdown to "manual"
+    const header = container.querySelector('.task-planner-header');
+    const select = header!.querySelector('select') as HTMLSelectElement;
     await act(async () => {
-      getByText('Create manually instead').click();
+      fireEvent.change(select, { target: { value: 'manual' } });
     });
     await act(async () => { await new Promise(r => setTimeout(r, 10)); });
 
@@ -1435,7 +1437,7 @@ describe('TaskPlannerModal - Start Over button', () => {
     }));
   }
 
-  it('renders a "Start Over" button between Cancel and "Create manually instead"', async () => {
+  it('renders a "Start Over" button between Cancel and the Create button', async () => {
     apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
       if (url === '/api/task-planner/start' && opts?.method === 'POST') {
         return { ok: true, json: async () => ({ sessionId: 1 }) };
@@ -1451,10 +1453,10 @@ describe('TaskPlannerModal - Start Over button', () => {
     const labels = buttons.map(b => b.textContent);
     const cancelIdx = labels.indexOf('Cancel');
     const startOverIdx = labels.indexOf('Start Over');
-    const manualIdx = labels.indexOf('Create manually instead');
     expect(startOverIdx).toBeGreaterThan(-1);
     expect(startOverIdx).toBe(cancelIdx + 1);
-    expect(manualIdx).toBe(startOverIdx + 1);
+    // "Create manually instead" button no longer exists — dropdown supersedes it
+    expect(labels.indexOf('Create manually instead')).toBe(-1);
     // Styled as a small secondary button
     const startOverBtn = buttons[startOverIdx];
     expect(startOverBtn.classList.contains('btn-secondary')).toBe(true);
@@ -1720,5 +1722,134 @@ describe('TaskPlannerModal - 5-minute idle timer on parked sessions', () => {
       ([url, opts]) => url === '/api/task-planner/800' && opts?.method === 'DELETE'
     );
     expect(deleteCalls.length).toBe(1);
+  });
+});
+
+describe('TaskPlannerModal - mode dropdown', () => {
+  let apiFetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiFetchMock = vi.mocked(api.apiFetch);
+    apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (url === '/api/task-planner/start' && opts?.method === 'POST') {
+        return { ok: true, json: async () => ({ sessionId: 1 }) };
+      }
+      if (opts?.method === 'DELETE') {
+        return { ok: true, json: async () => ({}) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    mockUseApp({ currentTabId: 1 });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('renders a mode dropdown in the header that defaults to the "ai" option (AI Task Planner)', async () => {
+    const { container } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    // The dropdown must exist inside .task-planner-header
+    const header = container.querySelector('.task-planner-header');
+    expect(header).toBeTruthy();
+
+    const select = header!.querySelector('select') as HTMLSelectElement;
+    expect(select).toBeTruthy();
+
+    // Must have both options
+    const options = Array.from(select.options);
+    const values = options.map(o => o.value);
+    expect(values).toContain('ai');
+    expect(values).toContain('manual');
+
+    // Must default to 'ai'
+    expect(select.value).toBe('ai');
+  });
+
+  it('does not render the static <h2 id="taskPlannerTitle"> heading inside the header', async () => {
+    const { container } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    // The old static h2 must be gone; a select replaced it
+    const header = container.querySelector('.task-planner-header');
+    expect(header!.querySelector('h2')).toBeNull();
+  });
+
+  it('does not render the "Create manually instead" button in the actions bar', async () => {
+    const { queryByText } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    expect(queryByText('Create manually instead')).toBeNull();
+  });
+
+  it('changing the dropdown to "manual" calls the onSwitchToManual prop', async () => {
+    const onClose = vi.fn();
+    const onSwitchToManual = vi.fn();
+    const { container } = render(<TaskPlannerModal onClose={onClose} onSwitchToManual={onSwitchToManual} />);
+
+    // Let session start resolve
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    const header = container.querySelector('.task-planner-header');
+    const select = header!.querySelector('select') as HTMLSelectElement;
+
+    // Change selection to manual
+    await act(async () => {
+      fireEvent.change(select, { target: { value: 'manual' } });
+    });
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    // Should have called DELETE for session cleanup (via handleClose)
+    const deleteCalls = apiFetchMock.mock.calls.filter(
+      ([url, opts]) => typeof url === 'string' && url.includes('/api/task-planner/') && opts?.method === 'DELETE'
+    );
+    expect(deleteCalls.length).toBe(1);
+
+    // onClose and onSwitchToManual should both have been called
+    expect(onClose).toHaveBeenCalled();
+    expect(onSwitchToManual).toHaveBeenCalled();
+  });
+
+  it('selecting "ai" while already in AI mode is a no-op (no cleanup, no switch)', async () => {
+    const onClose = vi.fn();
+    const onSwitchToManual = vi.fn();
+    const { container } = render(<TaskPlannerModal onClose={onClose} onSwitchToManual={onSwitchToManual} />);
+
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    const header = container.querySelector('.task-planner-header');
+    const select = header!.querySelector('select') as HTMLSelectElement;
+    expect(select.value).toBe('ai');
+
+    // Dispatch change event for 'ai' (same as current value)
+    await act(async () => {
+      fireEvent.change(select, { target: { value: 'ai' } });
+    });
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    // Nothing should happen
+    const deleteCalls = apiFetchMock.mock.calls.filter(
+      ([url, opts]) => typeof url === 'string' && url.includes('/api/task-planner/') && opts?.method === 'DELETE'
+    );
+    expect(deleteCalls.length).toBe(0);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(onSwitchToManual).not.toHaveBeenCalled();
+  });
+
+  it('the modal dialog remains accessible (aria-labelledby wired to the select)', async () => {
+    const { container } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    const dialog = container.querySelector('[role="dialog"]');
+    expect(dialog).toBeTruthy();
+
+    const labelledById = dialog!.getAttribute('aria-labelledby');
+    expect(labelledById).toBeTruthy();
+
+    // The element referenced by aria-labelledby must exist in the DOM
+    const labelEl = container.querySelector(`#${labelledById}`);
+    expect(labelEl).toBeTruthy();
   });
 });

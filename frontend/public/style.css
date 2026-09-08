@@ -3499,12 +3499,23 @@ textarea:focus {
   flex-shrink: 0;
 }
 
-.task-planner-header h2 {
-  margin: 0;
+.planner-mode-select {
   font-family: 'Barlow', sans-serif;
   font-size: 1.1rem;
   font-weight: 600;
   color: var(--text-primary);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 0.15rem 0.35rem;
+  cursor: pointer;
+  appearance: auto;
+  outline: none;
+}
+
+.planner-mode-select:focus-visible {
+  outline: 2px solid var(--accent-color, #6366f1);
+  outline-offset: 2px;
 }
 
 .task-planner-status {
