@@ -59,6 +59,7 @@ export function TaskPlannerModal({ onClose, onSwitchToManual, hidden = false, on
   const [status, setStatus] = useState<'connecting' | 'ready' | 'thinking' | 'error'>('connecting');
   const [parsedTasks, setParsedTasks] = useState<ParsedTask[] | null>(null);
   const [previewDetailIndex, setPreviewDetailIndex] = useState<number | null>(null);
+  const [creating, setCreating] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   // Bumped by "Start Over" to re-run the session-start effect on the same
   // mounted instance (no unmount/remount, no flicker).
@@ -537,6 +538,7 @@ export function TaskPlannerModal({ onClose, onSwitchToManual, hidden = false, on
 
   const handleCreateTask = async () => {
     if (!parsedTasks || parsedTasks.length === 0 || !sessionId) return;
+    setCreating(true);
     try {
       const body = {
         tasks: parsedTasks.map(t => ({
@@ -607,6 +609,8 @@ export function TaskPlannerModal({ onClose, onSwitchToManual, hidden = false, on
       }
     } catch (e: any) {
       addMessage('system', '❌ Failed to create task: ' + e.message);
+    } finally {
+      setCreating(false);
     }
   };
 
@@ -818,7 +822,7 @@ export function TaskPlannerModal({ onClose, onSwitchToManual, hidden = false, on
           <button className="btn btn-secondary btn-sm" onClick={handleClose}>Cancel</button>
           <button className="btn btn-secondary btn-sm" onClick={handleStartOver}>Start Over</button>
           <button className="btn btn-secondary btn-sm" onClick={handleSwitchToManual}>Create manually instead</button>
-          <button className="btn btn-primary btn-sm" disabled={!parsedTasks} onClick={handleCreateTask}>{parsedTasks && parsedTasks.length > 1 ? 'Create Tasks' : 'Create Task'}</button>
+          <button className="btn btn-primary btn-sm" disabled={!parsedTasks || creating} onClick={handleCreateTask}>{creating ? (parsedTasks && parsedTasks.length > 1 ? 'Creating Tasks…' : 'Creating Task…') : (parsedTasks && parsedTasks.length > 1 ? 'Create Tasks' : 'Create Task')}</button>
         </div>
       </div>
     </div>
