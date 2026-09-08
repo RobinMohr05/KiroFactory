@@ -81,12 +81,14 @@ export function ModelSelect({ value, onChange, id, placeholder }: ModelSelectPro
 
   // Determine if the current value is "unknown" — a non-empty value not in
   // the fetched list. If so, add a synthetic "(not detected)" option so the
-  // control shows the saved value instead of appearing blank.
+  // control shows the saved value instead of appearing blank. Per Requirement 6,
+  // this option is disabled so users cannot select it — it only serves as a
+  // display affordance to show the saved value.
   const valueIsKnown =
     value === '' || models.some((m) => m.id === value);
   const syntheticOption =
     !loading && value !== '' && !valueIsKnown
-      ? [{ label: `${value} (not detected)`, value }]
+      ? [{ label: `${value} (not detected)`, value, disabled: true }]
       : [];
 
   const options = [AUTO_OPTION, ...modelOptions, ...syntheticOption];

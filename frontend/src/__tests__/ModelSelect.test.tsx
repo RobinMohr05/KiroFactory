@@ -33,7 +33,7 @@ vi.mock('antd', () => {
     id?: string;
     value?: string;
     onChange?: (v: string) => void;
-    options?: Array<{ value: string; label: string }>;
+    options?: Array<{ value: string; label: string; disabled?: boolean }>;
     filterOption?: (input: string, option?: { value: string; label: string }) => boolean;
     loading?: boolean;
     placeholder?: string;
@@ -91,7 +91,7 @@ vi.mock('antd', () => {
         visibleOptions.map((opt) =>
           React.createElement(
             'option',
-            { key: opt.value, value: opt.value, title: opt.label },
+            { key: opt.value, value: opt.value, title: opt.label, disabled: opt.disabled },
             opt.label
           )
         )
@@ -207,11 +207,14 @@ describe('ModelSelect', () => {
       expect(selectionItem?.textContent).toContain('(not detected)');
     });
 
-    // It should also appear as a selectable option with the "(not detected)" label
+    // Per Requirement 6, the synthetic "(not detected)" entry is present only
+    // as a display affordance — it must be disabled so users cannot select it
+    // as a normal option from the dropdown.
     const options = Array.from(container.querySelectorAll('option'));
     const unknownOpt = options.find((o) => o.value === 'some-old-model');
     expect(unknownOpt).toBeTruthy();
     expect(unknownOpt?.title).toContain('(not detected)');
+    expect(unknownOpt?.disabled).toBe(true);
   });
 
   it('on fetch failure, only "Auto (default)" is offered', async () => {
