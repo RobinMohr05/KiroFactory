@@ -348,5 +348,53 @@ describe("AutoScaler routes", () => {
 
       expect(res.status).toBe(200);
     });
+
+    it("trims leading/trailing whitespace from name before storing", async () => {
+      vi.mocked(getAutoScalerById).mockResolvedValue(AUTOSCALER_FIXTURE);
+      const updated = { ...AUTOSCALER_FIXTURE, name: "Trimmed Name" };
+      vi.mocked(updateAutoScalerRecord).mockResolvedValue(updated);
+
+      const res = await request(createApp())
+        .patch("/api/autoscalers/1")
+        .send({ name: "  Trimmed Name  " });
+
+      expect(res.status).toBe(200);
+      expect(updateAutoScalerRecord).toHaveBeenCalledWith(1, { name: "Trimmed Name" });
+    });
+
+    it("trims leading/trailing whitespace from agentName before storing", async () => {
+      vi.mocked(getAutoScalerById).mockResolvedValue(AUTOSCALER_FIXTURE);
+      const updated = { ...AUTOSCALER_FIXTURE, agentName: "my-agent" };
+      vi.mocked(updateAutoScalerRecord).mockResolvedValue(updated);
+
+      const res = await request(createApp())
+        .patch("/api/autoscalers/1")
+        .send({ agentName: "  my-agent  " });
+
+      expect(res.status).toBe(200);
+      expect(updateAutoScalerRecord).toHaveBeenCalledWith(1, { agentName: "my-agent" });
+    });
+
+    it("returns 400 when name is whitespace-only", async () => {
+      vi.mocked(getAutoScalerById).mockResolvedValue(AUTOSCALER_FIXTURE);
+
+      const res = await request(createApp())
+        .patch("/api/autoscalers/1")
+        .send({ name: "   " });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain("name");
+    });
+
+    it("returns 400 when agentName is whitespace-only", async () => {
+      vi.mocked(getAutoScalerById).mockResolvedValue(AUTOSCALER_FIXTURE);
+
+      const res = await request(createApp())
+        .patch("/api/autoscalers/1")
+        .send({ agentName: "   " });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain("agentName");
+    });
   });
 });

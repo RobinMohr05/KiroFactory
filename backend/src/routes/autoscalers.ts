@@ -239,8 +239,8 @@ router.patch("/:id", async (req: Request, res: Response) => {
       maxConcurrency: number;
       idleTimeoutSeconds: number;
     }> = {};
-    if (name !== undefined) fields.name = name;
-    if (agentName !== undefined) fields.agentName = agentName;
+    if (name !== undefined) fields.name = name.trim();
+    if (agentName !== undefined) fields.agentName = agentName.trim();
     if (tabIds !== undefined) fields.tabIds = tabIds;
     if (model !== undefined) fields.model = model;
     if (maxConcurrency !== undefined) fields.maxConcurrency = maxConcurrency;
