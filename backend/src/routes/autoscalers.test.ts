@@ -196,6 +196,12 @@ describe("AutoScaler routes", () => {
     });
 
     it("editing tabIds re-syncs tab assignments", async () => {
+      // NOTE: this test mocks updateAutoScalerRecord at the route level and
+      // cannot catch DB-layer query-cardinality bugs (e.g. duplicate tab IDs
+      // returned when N input tabIds × M existing tabs expand via OPTIONAL MATCH).
+      // The fix for that class of bug — using WITH DISTINCT f before the final
+      // OPTIONAL MATCH — lives in db/autoscalers.ts and requires a Neo4j
+      // integration test to verify properly. This test only covers the route logic.
       vi.mocked(getAutoScalerById).mockResolvedValue(AUTOSCALER_FIXTURE);
       const updated = { ...AUTOSCALER_FIXTURE, tabIds: [2, 3] };
       vi.mocked(updateAutoScalerRecord).mockResolvedValue(updated);
@@ -324,6 +330,23 @@ describe("AutoScaler routes", () => {
         .send({ name: "New Name" });
 
       expect(res.status).toBe(404);
+    });
+
+    it("returns 422 when all provided tabIds refer to non-existent tabs (DB layer returns null)", async () => {
+      // First call: ownership check (returns the autoscaler)
+      // Second call: re-fetch after null update to distinguish "deleted" from "invalid tabs"
+      vi.mocked(getAutoScalerById)
+        .mockResolvedValueOnce(AUTOSCALER_FIXTURE)  // ownership check
+        .mockResolvedValueOnce(AUTOSCALER_FIXTURE); // re-fetch after null return
+      // The DB layer returns null when all tabIds are invalid (no tabs were merged).
+      vi.mocked(updateAutoScalerRecord).mockResolvedValue(null);
+
+      const res = await request(createApp())
+        .patch("/api/autoscalers/1")
+        .send({ tabIds: [9999, 8888] });
+
+      expect(res.status).toBe(422);
+      expect(res.body.error).toContain("tabIds");
     });
 
     it("returns 400 when model is not a string or null", async () => {

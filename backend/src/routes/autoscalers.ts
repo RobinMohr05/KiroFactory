@@ -253,6 +253,18 @@ router.patch("/:id", async (req: Request, res: Response) => {
 
     const updated = await updateAutoScalerRecord(id, fields);
     if (!updated) {
+      // null can mean either the auto-scaler was concurrently deleted, or
+      // all provided tabIds referred to non-existent Tab nodes (silent data
+      // loss guard in the DB layer). Distinguish the two cases:
+      if (fields.tabIds !== undefined) {
+        // Re-fetch to check if the node still exists.
+        const stillExists = await getAutoScalerById(id);
+        if (stillExists) {
+          // Node is still there — tabIds were all invalid.
+          res.status(422).json({ error: "None of the provided tabIds refer to existing tabs" });
+          return;
+        }
+      }
       res.status(404).json({ error: "AutoScaler not found" });
       return;
     }

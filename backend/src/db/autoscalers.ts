@@ -189,8 +189,13 @@ export async function updateAutoScaler(
 
     if (fields.tabIds !== undefined) {
       // Re-sync IN_TAB relationships: delete existing, MERGE new ones.
-      // Use OPTIONAL MATCH for tab lookup so that invalid tab IDs don't drop
-      // the entire query result (which would delete existing rels with no replacements).
+      // We MATCH (not OPTIONAL MATCH) for tab lookup so that we can detect
+      // whether any provided IDs are valid. If none resolve to real Tab nodes,
+      // we return null rather than silently deleting all tab assignments.
+      //
+      // Cardinality note: after UNWIND + FOREACH we have N rows (one per tid).
+      // Adding WITH DISTINCT f collapses that back to 1 row before the final
+      // OPTIONAL MATCH, preventing N×M row explosion in collect().
       params.tabIds = fields.tabIds;
       const setClause = setEntries.length > 0 ? `SET ${setEntries.join(", ")}` : "";
       query = `
@@ -203,7 +208,7 @@ export async function updateAutoScaler(
         UNWIND $tabIds AS tid
         OPTIONAL MATCH (t:Tab {id: tid})
         FOREACH (_ IN CASE WHEN t IS NOT NULL THEN [1] ELSE [] END | MERGE (f)-[:IN_TAB]->(t))
-        WITH f
+        WITH DISTINCT f
         OPTIONAL MATCH (f)-[:IN_TAB]->(linked:Tab)
         WITH f, collect(linked.id) AS tabIds
         OPTIONAL MATCH (owner:User)-[:OWNS]->(f)
@@ -226,7 +231,18 @@ export async function updateAutoScaler(
     const result = await tx.run(query, params);
     if (result.records.length === 0) return null;
     const record = result.records[0];
-    return mapToAutoScaler(record.get("autoScaler"), record.get("tabIds"), record.get("userId"));
+
+    // Guard against silent data loss: if the caller requested a tabIds re-sync
+    // but every provided ID was non-existent, collect() returns [] — meaning
+    // all previous tab assignments were deleted and none were replaced.
+    // Return null so the route can surface a 404/422 rather than responding 200
+    // with an auto-scaler that has no tabs.
+    const resultTabIds: number[] = record.get("tabIds");
+    if (fields.tabIds !== undefined && fields.tabIds.length > 0 && resultTabIds.length === 0) {
+      return null;
+    }
+
+    return mapToAutoScaler(record.get("autoScaler"), resultTabIds, record.get("userId"));
   });
 }
 
