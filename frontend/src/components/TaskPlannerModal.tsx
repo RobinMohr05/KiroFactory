@@ -716,6 +716,7 @@ export function TaskPlannerModal({ onClose, onSwitchToManual, hidden = false, on
             id="taskPlannerTitle"
             className="planner-mode-select"
             defaultValue="ai"
+            aria-label="Planner mode"
             onChange={(e) => {
               if (e.target.value === 'manual') {
                 handleSwitchToManual();
