@@ -347,7 +347,6 @@ export function AutoScalerDetailView({
       setSaveError('At least one tab is required');
       return;
     }
-    setSaving(true);
     try {
       // Build patch with only changed fields
       const patch: Record<string, unknown> = {};
@@ -363,8 +362,10 @@ export function AutoScalerDetailView({
       if (editIdleTimeoutSeconds !== autoScaler.idleTimeoutSeconds) patch.idleTimeoutSeconds = editIdleTimeoutSeconds;
 
       if (Object.keys(patch).length === 0) {
-        return; // nothing changed, skip the network call; finally { setSaving(false) } runs anyway
+        return; // nothing changed — setSaving was never set, so no flicker
       }
+
+      setSaving(true);
 
       const res = await apiFetch(`/api/autoscalers/${autoScaler.id}`, {
         method: 'PATCH',
