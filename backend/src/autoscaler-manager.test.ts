@@ -583,6 +583,8 @@ describe("autoscaler-manager", () => {
 
       // Should NOT spawn any session (floor 0 when keepWarmWhileTasksExist=false)
       expect(createSession).not.toHaveBeenCalled();
+      // keepWarmWhileTasksExist=false: should never query non-done count
+      expect(getNonDoneTaskCount).not.toHaveBeenCalled();
     });
   });
 

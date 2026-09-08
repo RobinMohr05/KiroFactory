@@ -71,6 +71,13 @@ interface ManagedAutoScaler {
    * pass, ensuring no session death or task arrival goes unprocessed for long.
    */
   pendingReconcile: boolean;
+  /**
+   * Active idle-watcher interval handles started by watchSessionIdle. Stored here so
+   * stopAutoScaler can clear them immediately instead of relying on lazy self-cleanup
+   * on the next tick. Each watchSessionIdle call registers its handle on creation and
+   * removes it when the interval is cleared.
+   */
+  idleIntervals: Set<ReturnType<typeof setInterval>>;
 }
 
 const autoScalers = new Map<number, ManagedAutoScaler>();
@@ -117,6 +124,7 @@ export async function startAutoScaler(autoScalerId: number): Promise<AutoScaler 
     abortController: new AbortController(),
     reconciling: false,
     pendingReconcile: false,
+    idleIntervals: new Set(),
   };
   autoScalers.set(autoScalerId, managed);
 
@@ -143,6 +151,15 @@ export async function stopAutoScaler(autoScalerId: number): Promise<AutoScaler |
   // Stop the reconciliation loop.
   if (managed) {
     managed.abortController.abort();
+
+    // Explicitly clear all idle-watcher intervals so they stop immediately
+    // rather than relying on lazy self-cleanup on the next tick. Without this,
+    // intervals fire one more time (up to 1s later) after abort, which can
+    // produce spurious stopSession calls and log entries during teardown.
+    for (const handle of managed.idleIntervals) {
+      clearInterval(handle);
+    }
+    managed.idleIntervals.clear();
 
     // Stop all owned sessions.
     for (const sessionId of managed.sessionIds) {
@@ -410,6 +427,7 @@ function watchSessionIdle(managed: ManagedAutoScaler, sessionId: number): void {
     try {
       if (managed.abortController.signal.aborted) {
         clearInterval(pollInterval);
+        managed.idleIntervals.delete(pollInterval);
         return;
       }
 
@@ -419,6 +437,7 @@ function watchSessionIdle(managed: ManagedAutoScaler, sessionId: number): void {
       if (!session || session.status !== "running") {
         // Session is gone — nothing to do, watchSessionCompletion handles cleanup.
         clearInterval(pollInterval);
+        managed.idleIntervals.delete(pollInterval);
         return;
       }
 
@@ -461,10 +480,18 @@ function watchSessionIdle(managed: ManagedAutoScaler, sessionId: number): void {
           idleMs = 0;
           return;
         }
+        // No non-done tasks left — check abort before proceeding, since stopAutoScaler
+        // may have been called concurrently during the DB await above.
+        if (managed.abortController.signal.aborted) {
+          clearInterval(pollInterval);
+          managed.idleIntervals.delete(pollInterval);
+          return;
+        }
       }
 
       // Stop this idle session.
       clearInterval(pollInterval);
+      managed.idleIntervals.delete(pollInterval);
       log.info("autoscaler-idle-stop", {
         component: "autoscaler-manager",
         autoScalerId: autoScaler.id,
@@ -483,6 +510,8 @@ function watchSessionIdle(managed: ManagedAutoScaler, sessionId: number): void {
       checking = false;
     }
   }, POLL_MS);
+  // Register the interval handle so stopAutoScaler can clear it immediately on teardown.
+  managed.idleIntervals.add(pollInterval);
 }
 
 /**
@@ -493,6 +522,14 @@ function watchSessionIdle(managed: ManagedAutoScaler, sessionId: number): void {
  * killing the loop permanently. Without this, any DB error would propagate
  * out of the while loop, the call-site `.catch()` would log a warning, and
  * the autoscaler would stop scaling forever until manually restarted.
+ *
+ * Note: when keepWarmWhileTasksExist=true, the floor session's death when
+ * all tasks become "done" is handled by watchSessionIdle (which checks
+ * getNonDoneTaskCount on each idle timeout), NOT by this reconcile loop.
+ * We rely on FALLBACK_POLL_MS and notifyTaskAvailable() from state changes
+ * for all other floor maintenance. No separate "task done" notification
+ * is needed here — the idle timer is the documented mechanism for floor
+ * session death once all tasks are complete.
  */
 async function reconcileLoop(managed: ManagedAutoScaler): Promise<void> {
   const { autoScaler } = managed;
