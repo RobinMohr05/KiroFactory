@@ -108,7 +108,7 @@ export function ModelSelect({ value, onChange, id, placeholder }: ModelSelectPro
   // Wrap onChange to extract the raw string value from the labelInValue object
   // that antd passes when `labelInValue` is enabled — keeping the public API
   // as `onChange: (value: string) => void`.
-  const handleChange = (selected: { value: string; label: React.ReactNode }) => {
+  const handleChange = (selected: { value: string; label: string }) => {
     onChange(selected.value);
   };
 

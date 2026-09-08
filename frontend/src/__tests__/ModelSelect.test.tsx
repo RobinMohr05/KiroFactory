@@ -1,3 +1,4 @@
+import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { ModelSelect } from '../components/ModelSelect';
@@ -11,7 +12,6 @@ vi.mock('../utils/api', () => ({
 // causing SyntaxError crashes in tests. We replace it with a lightweight
 // functional stub that exposes the same props the component relies on.
 vi.mock('antd', () => {
-  const React = require('react');
 
   /**
    * Stub for antd Select. Renders a <select> plus a hidden loading indicator
