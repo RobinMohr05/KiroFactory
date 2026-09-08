@@ -65,6 +65,12 @@ interface ManagedAutoScaler {
   abortController: AbortController;
   /** Whether a reconciliation is currently in progress (prevents re-entrant runs). */
   reconciling: boolean;
+  /**
+   * Set to true when a reconcile() call is dropped because one is already in progress.
+   * The in-progress reconcile checks this in its finally block and triggers a follow-up
+   * pass, ensuring no session death or task arrival goes unprocessed for long.
+   */
+  pendingReconcile: boolean;
 }
 
 const autoScalers = new Map<number, ManagedAutoScaler>();
@@ -110,6 +116,7 @@ export async function startAutoScaler(autoScalerId: number): Promise<AutoScaler 
     floorSessionId: null,
     abortController: new AbortController(),
     reconciling: false,
+    pendingReconcile: false,
   };
   autoScalers.set(autoScalerId, managed);
 
@@ -205,10 +212,20 @@ export function getAutoScalerSessionCounts(): Map<number, number> {
  * Desired formula:
  *   floor = (keepWarmWhileTasksExist && nonDoneCount > 0) ? 1 : 0
  *   desired = max(floor, min(maxConcurrency || Infinity, claimableCount))
+ *
+ * @param stages - Pre-fetched agent stage states. When provided, the DB call to
+ *   getAgentStageStates is skipped (used by reconcileLoop to avoid a redundant fetch).
  */
-async function reconcile(managed: ManagedAutoScaler): Promise<void> {
+async function reconcile(managed: ManagedAutoScaler, stages?: { claimState: string; workingState: string }): Promise<void> {
   if (managed.abortController.signal.aborted) return;
-  if (managed.reconciling) return;
+  if (managed.reconciling) {
+    // Another reconcile is already in progress — mark that a follow-up is needed
+    // so the in-progress pass re-runs after finishing rather than silently dropping
+    // this request. This prevents under-provisioning when a session dies during
+    // an ongoing reconcile.
+    managed.pendingReconcile = true;
+    return;
+  }
   managed.reconciling = true;
 
   try {
@@ -226,12 +243,13 @@ async function reconcile(managed: ManagedAutoScaler): Promise<void> {
       }
     }
 
-    // Get available task count using agent's stage states.
-    const stages = await getAgentStageStates(autoScaler.agentName);
+    // Get agent stage states — reuse the provided snapshot if available (avoids
+    // a redundant DB/config hit when called from reconcileLoop).
+    const resolvedStages = stages ?? await getAgentStageStates(autoScaler.agentName);
     const claimableCount = await getAvailableTaskCount(
       autoScaler.tabIds,
-      stages.claimState,
-      stages.workingState
+      resolvedStages.claimState,
+      resolvedStages.workingState
     );
 
     // Compute floor: 1 if keepWarmWhileTasksExist and any non-done tasks exist.
@@ -283,6 +301,12 @@ async function reconcile(managed: ManagedAutoScaler): Promise<void> {
     }
   } finally {
     managed.reconciling = false;
+    // If a reconcile was dropped while we were busy, run it now so that session
+    // deaths and task arrivals during the previous pass are not missed.
+    if (managed.pendingReconcile && !managed.abortController.signal.aborted) {
+      managed.pendingReconcile = false;
+      reconcile(managed).catch(() => {});
+    }
   }
 }
 
@@ -310,8 +334,18 @@ async function spawnAutoScalerSession(managed: ManagedAutoScaler): Promise<Sessi
   watchSessionCompletion(managed, session.id);
 
   // Arm idle-death timer for this session if idleTimeoutSeconds > 0.
+  // idleTimeoutSeconds = 0 means "no idle timeout" — sessions run until the
+  // autoscaler is stopped. This is intentional but can catch operators by
+  // surprise, so we emit a warning to make it visible in the logs.
   if (autoScaler.idleTimeoutSeconds > 0) {
     watchSessionIdle(managed, session.id);
+  } else {
+    log.warn("autoscaler-no-idle-timeout", {
+      component: "autoscaler-manager",
+      autoScalerId: autoScaler.id,
+      sessionId: session.id,
+      msg: "idleTimeoutSeconds=0: session will run indefinitely until the autoscaler is stopped. Set idleTimeoutSeconds > 0 to enable automatic idle-death.",
+    });
   }
 
   return session;
@@ -440,20 +474,50 @@ function watchSessionIdle(managed: ManagedAutoScaler, sessionId: number): void {
 
 /**
  * Main reconciliation loop: waits for task-available events and re-reconciles.
+ *
+ * The loop body is wrapped in a try/catch so a single transient failure
+ * (e.g. a Neo4j network hiccup) retries after a brief backoff rather than
+ * killing the loop permanently. Without this, any DB error would propagate
+ * out of the while loop, the call-site `.catch()` would log a warning, and
+ * the autoscaler would stop scaling forever until manually restarted.
  */
 async function reconcileLoop(managed: ManagedAutoScaler): Promise<void> {
   const { autoScaler } = managed;
   const signal = managed.abortController.signal;
 
-  // Initial reconciliation.
-  await reconcile(managed);
+  // Run the initial reconcile pass, then keep reconciling whenever a new task
+  // becomes available. Each iteration (including the first) is wrapped in a
+  // try/catch so transient errors retry with a brief backoff rather than
+  // killing the loop permanently.
+  //
+  // Structure: the first iteration runs an initial reconcile without waiting;
+  // subsequent iterations wait for a task-available event first.
+  let firstIteration = true;
 
-  const stages = await getAgentStageStates(autoScaler.agentName);
-
-  // Keep reconciling whenever a new task becomes available.
   while (!signal.aborted) {
-    await waitForTaskAvailable(autoScaler.tabIds, stages.claimState, signal, stages.workingState);
-    if (signal.aborted) break;
-    await reconcile(managed);
+    try {
+      // Fetch agent stage states fresh each iteration so both waitForTaskAvailable
+      // and reconcile always use the same, up-to-date snapshot.
+      const stages = await getAgentStageStates(autoScaler.agentName);
+
+      if (!firstIteration) {
+        // Wait for a new task to become available before reconciling again.
+        await waitForTaskAvailable(autoScaler.tabIds, stages.claimState, signal, stages.workingState);
+        if (signal.aborted) break;
+      }
+      firstIteration = false;
+
+      await reconcile(managed, stages);
+    } catch (err) {
+      if (signal.aborted) break;
+      log.warn("autoscaler-reconcile-error", {
+        component: "autoscaler-manager",
+        autoScalerId: autoScaler.id,
+        msg: `Reconcile loop iteration failed, will retry: ${err instanceof Error ? err.message : err}`,
+      });
+      firstIteration = false;
+      // Brief backoff before retrying to avoid a tight error loop.
+      await new Promise((r) => setTimeout(r, 5000));
+    }
   }
 }
