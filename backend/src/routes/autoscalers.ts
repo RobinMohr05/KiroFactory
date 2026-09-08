@@ -226,6 +226,10 @@ router.patch("/:id", async (req: Request, res: Response) => {
       res.status(400).json({ error: "idleTimeoutSeconds must be a number" });
       return;
     }
+    if (model !== undefined && model !== null && typeof model !== "string") {
+      res.status(400).json({ error: "model must be a string or null" });
+      return;
+    }
 
     const fields: Partial<{
       name: string;

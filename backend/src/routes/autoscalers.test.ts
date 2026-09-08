@@ -303,5 +303,39 @@ describe("AutoScaler routes", () => {
 
       expect(res.status).toBe(400);
     });
+
+    it("returns 404 when updateAutoScalerRecord returns null (concurrent delete)", async () => {
+      vi.mocked(getAutoScalerById).mockResolvedValue(AUTOSCALER_FIXTURE);
+      vi.mocked(updateAutoScalerRecord).mockResolvedValue(null);
+
+      const res = await request(createApp())
+        .patch("/api/autoscalers/1")
+        .send({ name: "New Name" });
+
+      expect(res.status).toBe(404);
+    });
+
+    it("returns 400 when model is not a string or null", async () => {
+      vi.mocked(getAutoScalerById).mockResolvedValue(AUTOSCALER_FIXTURE);
+
+      const res = await request(createApp())
+        .patch("/api/autoscalers/1")
+        .send({ model: 42 });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain("model");
+    });
+
+    it("accepts model as null (clears model)", async () => {
+      vi.mocked(getAutoScalerById).mockResolvedValue(AUTOSCALER_FIXTURE);
+      const updated = { ...AUTOSCALER_FIXTURE, model: undefined };
+      vi.mocked(updateAutoScalerRecord).mockResolvedValue(updated);
+
+      const res = await request(createApp())
+        .patch("/api/autoscalers/1")
+        .send({ model: null });
+
+      expect(res.status).toBe(200);
+    });
   });
 });

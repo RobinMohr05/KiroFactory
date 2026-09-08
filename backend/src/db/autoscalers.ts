@@ -189,6 +189,8 @@ export async function updateAutoScaler(
 
     if (fields.tabIds !== undefined) {
       // Re-sync IN_TAB relationships: delete existing, MERGE new ones.
+      // Use OPTIONAL MATCH for tab lookup so that invalid tab IDs don't drop
+      // the entire query result (which would delete existing rels with no replacements).
       params.tabIds = fields.tabIds;
       const setClause = setEntries.length > 0 ? `SET ${setEntries.join(", ")}` : "";
       query = `
@@ -199,9 +201,11 @@ export async function updateAutoScaler(
         DELETE r
         WITH f
         UNWIND $tabIds AS tid
-        MATCH (t:Tab {id: tid})
-        MERGE (f)-[:IN_TAB]->(t)
-        WITH f, collect(t.id) AS tabIds
+        OPTIONAL MATCH (t:Tab {id: tid})
+        FOREACH (_ IN CASE WHEN t IS NOT NULL THEN [1] ELSE [] END | MERGE (f)-[:IN_TAB]->(t))
+        WITH f
+        OPTIONAL MATCH (f)-[:IN_TAB]->(linked:Tab)
+        WITH f, collect(linked.id) AS tabIds
         OPTIONAL MATCH (owner:User)-[:OWNS]->(f)
         RETURN f{.*} AS autoScaler, tabIds, owner.id AS userId
       `;
