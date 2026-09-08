@@ -246,6 +246,11 @@ router.patch("/:id", async (req: Request, res: Response) => {
     if (maxConcurrency !== undefined) fields.maxConcurrency = maxConcurrency;
     if (idleTimeoutSeconds !== undefined) fields.idleTimeoutSeconds = idleTimeoutSeconds;
 
+    if (Object.keys(fields).length === 0) {
+      res.status(400).json({ error: "No fields to update" });
+      return;
+    }
+
     const updated = await updateAutoScalerRecord(id, fields);
     if (!updated) {
       res.status(404).json({ error: "AutoScaler not found" });

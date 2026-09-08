@@ -304,6 +304,17 @@ describe("AutoScaler routes", () => {
       expect(res.status).toBe(400);
     });
 
+    it("returns 400 when no fields are provided in the body", async () => {
+      vi.mocked(getAutoScalerById).mockResolvedValue(AUTOSCALER_FIXTURE);
+
+      const res = await request(createApp())
+        .patch("/api/autoscalers/1")
+        .send({});
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain("No fields to update");
+    });
+
     it("returns 404 when updateAutoScalerRecord returns null (concurrent delete)", async () => {
       vi.mocked(getAutoScalerById).mockResolvedValue(AUTOSCALER_FIXTURE);
       vi.mocked(updateAutoScalerRecord).mockResolvedValue(null);

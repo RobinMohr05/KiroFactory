@@ -14,6 +14,7 @@ vi.mock("./db/autoscalers.js", () => ({
   getAutoScalerById: vi.fn(),
   getAllAutoScalers: vi.fn(),
   updateAutoScalerStatus: vi.fn(),
+  updateAutoScaler: vi.fn(),
   deleteAutoScaler: vi.fn(),
 }));
 
@@ -98,6 +99,7 @@ async function flushAsync(ms = 200): Promise<void> {
 describe("autoscaler-manager", () => {
   // We import these at the top, but the mocks are set up before import.
   let createAutoScalerRecord: typeof import("./autoscaler-manager.js")["createAutoScalerRecord"];
+  let updateAutoScalerRecord: typeof import("./autoscaler-manager.js")["updateAutoScalerRecord"];
   let startAutoScaler: typeof import("./autoscaler-manager.js")["startAutoScaler"];
   let stopAutoScaler: typeof import("./autoscaler-manager.js")["stopAutoScaler"];
   let deleteAutoScalerRecord: typeof import("./autoscaler-manager.js")["deleteAutoScalerRecord"];
@@ -105,6 +107,7 @@ describe("autoscaler-manager", () => {
   let getAutoScalerSessionCounts: typeof import("./autoscaler-manager.js")["getAutoScalerSessionCounts"];
 
   let dbCreateAutoScaler: typeof import("./db/autoscalers.js")["createAutoScaler"];
+  let dbUpdateAutoScaler: typeof import("./db/autoscalers.js")["updateAutoScaler"];
   let getAutoScalerById: typeof import("./db/autoscalers.js")["getAutoScalerById"];
   let updateAutoScalerStatus: typeof import("./db/autoscalers.js")["updateAutoScalerStatus"];
   let dbDeleteAutoScaler: typeof import("./db/autoscalers.js")["deleteAutoScaler"];
@@ -125,6 +128,7 @@ describe("autoscaler-manager", () => {
 
     const autoScalerMgr = await import("./autoscaler-manager.js");
     createAutoScalerRecord = autoScalerMgr.createAutoScalerRecord;
+    updateAutoScalerRecord = autoScalerMgr.updateAutoScalerRecord;
     startAutoScaler = autoScalerMgr.startAutoScaler;
     stopAutoScaler = autoScalerMgr.stopAutoScaler;
     deleteAutoScalerRecord = autoScalerMgr.deleteAutoScalerRecord;
@@ -133,6 +137,7 @@ describe("autoscaler-manager", () => {
 
     const dbAutoScalers = await import("./db/autoscalers.js");
     dbCreateAutoScaler = dbAutoScalers.createAutoScaler;
+    dbUpdateAutoScaler = dbAutoScalers.updateAutoScaler;
     getAutoScalerById = dbAutoScalers.getAutoScalerById;
     updateAutoScalerStatus = dbAutoScalers.updateAutoScalerStatus;
     dbDeleteAutoScaler = dbAutoScalers.deleteAutoScaler;
@@ -180,6 +185,31 @@ describe("autoscaler-manager", () => {
         type: "autoscaler-created",
         autoScaler,
       });
+    });
+  });
+
+  describe("updateAutoScalerRecord", () => {
+    it("updates the autoScaler in the DB and broadcasts autoscaler-updated to the user", async () => {
+      const updatedAutoScaler = makeAutoScaler({ name: "Renamed" });
+      vi.mocked(dbUpdateAutoScaler).mockResolvedValue(updatedAutoScaler);
+
+      const result = await updateAutoScalerRecord(1, { name: "Renamed" });
+
+      expect(result).toEqual(updatedAutoScaler);
+      expect(dbUpdateAutoScaler).toHaveBeenCalledWith(1, { name: "Renamed" });
+      expect(broadcastToUser).toHaveBeenCalledWith(1, {
+        type: "autoscaler-updated",
+        autoScaler: updatedAutoScaler,
+      });
+    });
+
+    it("returns null and does not broadcast when the autoScaler does not exist", async () => {
+      vi.mocked(dbUpdateAutoScaler).mockResolvedValue(null);
+
+      const result = await updateAutoScalerRecord(999, { name: "Ghost" });
+
+      expect(result).toBeNull();
+      expect(broadcastToUser).not.toHaveBeenCalled();
     });
   });
 
