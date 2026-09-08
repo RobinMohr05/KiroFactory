@@ -5445,6 +5445,7 @@ textarea:focus {
 
 .autoscaler-card.autoscaler-card--selected.autoscaler-running {
   border-left: 3px solid var(--status-running, #4caf50);
+  outline: 1px solid var(--ta-mango); /* keeps selected indicator distinct */
 }
 
 .autoscaler-card-compact {

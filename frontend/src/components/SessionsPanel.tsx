@@ -327,6 +327,7 @@ export function SessionsPanel() {
 
   const handleMobileBack = () => {
     setMobileShowDetail(false);
+    setSelectedAutoScalerId(null);
     navigate('/sessions', { replace: true });
     // Restore scroll position after returning to list
     requestAnimationFrame(() => {
@@ -466,14 +467,22 @@ export function SessionsPanel() {
               const selectedAS = selectedAutoScalerId !== null ? autoScalers.find(a => a.id === selectedAutoScalerId) : undefined;
               if (selectedAS) {
                 return (
-                  <AutoScalerDetailView
-                    key={selectedAutoScalerId}
-                    autoScaler={selectedAS}
-                    onClose={() => {
-                      setSelectedAutoScalerId(null);
-                      if (isMobile) setMobileShowDetail(false);
-                    }}
-                  />
+                  <>
+                    {isMobile && (
+                      <button className="mobile-back-btn" onClick={() => {
+                        setSelectedAutoScalerId(null);
+                        setMobileShowDetail(false);
+                      }} aria-label="Back to auto-scaler list">←</button>
+                    )}
+                    <AutoScalerDetailView
+                      key={selectedAutoScalerId}
+                      autoScaler={selectedAS}
+                      onClose={() => {
+                        setSelectedAutoScalerId(null);
+                        if (isMobile) setMobileShowDetail(false);
+                      }}
+                    />
+                  </>
                 );
               }
               return (
