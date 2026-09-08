@@ -40,9 +40,10 @@ const AUTO_OPTION = { label: 'Auto (default)', value: '' };
  * component renders with just that Auto option and stays fully usable.
  *
  * If the incoming `value` is a non-empty string that does not match any
- * fetched option, a synthetic "(not detected)" option is added so the current
- * value is visible and preserved. It is removed as soon as the user selects
- * a different option.
+ * fetched option, a `labelInValue` shape is passed so antd displays a
+ * "(not detected)" label in the trigger face — without adding any synthetic
+ * entry to the dropdown option list (Requirement 6: the synthetic display
+ * affordance must NOT appear as a choosable item in the open dropdown).
  *
  * Exposes value/onChange props so it's a drop-in for the existing model
  * fields (SessionModal).
@@ -76,39 +77,44 @@ export function ModelSelect({ value, onChange, id, placeholder }: ModelSelectPro
     };
   }, []);
 
-  // Build the list of options from fetched models.
+  // Build the list of options from fetched models. Only real, selectable
+  // options live here — no synthetic entries.
   const modelOptions = models.map((m) => ({ label: m.id, value: m.id }));
+  const options = [AUTO_OPTION, ...modelOptions];
 
   // Determine if the current value is "unknown" — a non-empty value not in
-  // the fetched list. If so, add a synthetic "(not detected)" option so the
-  // control shows the saved value instead of appearing blank. Per Requirement 6,
-  // this option is disabled so users cannot select it — it only serves as a
-  // display affordance to show the saved value.
+  // the fetched list.
   //
   // The !loading guard prevents the "(not detected)" flash during every page
   // load: while loading, models is still [], so valueIsKnown evaluates to
   // false for *any* non-empty value — including models that will appear in the
-  // fetched list. Gating on !loading means the synthetic option only appears
-  // once the fetch has settled, so only genuinely absent models ever get the
-  // "(not detected)" label.
-  const valueIsKnown =
-    value === '' || models.some((m) => m.id === value);
-  const syntheticOption =
-    !loading && value !== '' && !valueIsKnown
-      ? [{ label: `${value} (not detected)`, value, disabled: true }]
-      : [];
+  // fetched list. Gating on !loading means we only apply the "(not detected)"
+  // label once the fetch has settled, so only genuinely absent models ever
+  // get it.
+  const valueIsKnown = value === '' || models.some((m) => m.id === value);
+  const isUnknownValue = !loading && value !== '' && !valueIsKnown;
 
-  const options = [AUTO_OPTION, ...modelOptions, ...syntheticOption];
+  // When the value is unknown, use antd's `labelInValue` shape so antd can
+  // display the custom "(not detected)" label in the trigger face without
+  // requiring that model to exist in the options list. This keeps the dropdown
+  // list clean — no disabled synthetic entry clutters the choosable options.
+  //
+  // When the value is known (or empty), pass a `labelInValue` shape too, for
+  // consistency (antd resolves the label from the options array in that case).
+  const selectValue = isUnknownValue
+    ? { value, label: `${value} (not detected)` }
+    : { value, label: value === '' ? 'Auto (default)' : value };
+
+  // Wrap onChange to extract the raw string value from the labelInValue object
+  // that antd passes when `labelInValue` is enabled — keeping the public API
+  // as `onChange: (value: string) => void`.
+  const handleChange = (selected: { value: string; label: React.ReactNode }) => {
+    onChange(selected.value);
+  };
 
   // Case-insensitive substring match against the option's value (model id).
-  // Disabled entries (the synthetic "(not detected)" option) are always
-  // excluded from the visible dropdown — the synthetic option exists solely so
-  // antd can resolve its label when it is the selected value, but it must not
-  // appear as a choosable item in the list (Requirement 6).
-  const filterOption = (input: string, option?: { value: string; label: string; disabled?: boolean }) => {
+  const filterOption = (input: string, option?: { value: string; label: string }) => {
     if (!option) return false;
-    // Never show the "(not detected)" synthetic option in the dropdown list.
-    if (option.disabled) return false;
     // Always show "Auto (default)" regardless of filter text.
     if (option.value === '') return true;
     return option.value.toLowerCase().includes(input.toLowerCase());
@@ -119,9 +125,10 @@ export function ModelSelect({ value, onChange, id, placeholder }: ModelSelectPro
       id={id}
       showSearch
       loading={loading}
-      value={value}
+      labelInValue
+      value={selectValue}
       placeholder={placeholder}
-      onChange={onChange}
+      onChange={handleChange}
       options={options}
       filterOption={filterOption}
       style={{ width: '100%' }}

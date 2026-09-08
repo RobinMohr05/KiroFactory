@@ -17,6 +17,18 @@ vi.mock('antd', () => {
    * Stub for antd Select. Renders a <select> plus a hidden loading indicator
    * so tests can inspect all relevant state and behaviour without hitting
    * jsdom's CSS parser limitations.
+   *
+   * Supports `labelInValue`: when enabled, `value` is `{ value, label }` and
+   * `onChange` is called with `{ value, label }` to match real antd behaviour.
+   *
+   * Visible option filtering:
+   * - When search text is present: apply `filterOption` callback.
+   * - When no search text: render all NON-DISABLED options. This accurately
+   *   models real antd's open-dropdown behaviour — disabled entries are never
+   *   shown as choosable items in the list regardless of `filterOption`, and
+   *   `filterOption` is not called without search text. This is what ensures
+   *   the "(not detected)" synthetic option (if it existed) would not appear
+   *   in the open dropdown without any typing.
    */
   const Select = ({
     id,
@@ -29,10 +41,11 @@ vi.mock('antd', () => {
     showSearch,
     style,
     autoClearSearchValue,
+    labelInValue,
   }: {
     id?: string;
-    value?: string;
-    onChange?: (v: string) => void;
+    value?: string | { value: string; label: React.ReactNode };
+    onChange?: (v: any) => void;
     options?: Array<{ value: string; label: string; disabled?: boolean }>;
     filterOption?: (input: string, option?: { value: string; label: string }) => boolean;
     loading?: boolean;
@@ -40,15 +53,29 @@ vi.mock('antd', () => {
     showSearch?: boolean;
     style?: React.CSSProperties;
     autoClearSearchValue?: boolean;
+    labelInValue?: boolean;
   }) => {
     const [search, setSearch] = React.useState('');
 
-    // Determine visible options: if there's search text, apply filterOption.
+    // Resolve the raw string value and display label from the (potentially
+    // labelInValue) value prop.
+    const rawValue = labelInValue && value && typeof value === 'object'
+      ? (value as { value: string; label: React.ReactNode }).value
+      : (value as string) ?? '';
+    const displayLabel = labelInValue && value && typeof value === 'object'
+      ? (value as { value: string; label: React.ReactNode }).label
+      : options.find((o) => o.value === rawValue)?.label ?? rawValue ?? placeholder ?? '';
+
+    // Determine visible options:
+    // - With search text: apply filterOption callback (antd calls it for each option).
+    // - Without search text: show all non-disabled options. Real antd does not
+    //   call filterOption when the search input is empty, and disabled options
+    //   are not shown as choosable items in the open dropdown.
     const visibleOptions = search
       ? options.filter((opt) =>
           filterOption ? filterOption(search, opt) : true
         )
-      : options;
+      : options.filter((opt) => !opt.disabled);
 
     return React.createElement(
       'div',
@@ -74,16 +101,23 @@ vi.mock('antd', () => {
       React.createElement(
         'span',
         { className: 'ant-select-selection-item' },
-        options.find((o) => o.value === value)?.label ?? value ?? placeholder ?? ''
+        displayLabel
       ),
       // The native <select> drives actual value/onChange
       React.createElement(
         'select',
         {
           id,
-          value: value ?? '',
+          value: rawValue,
           onChange: (e: React.ChangeEvent<HTMLSelectElement>) => {
-            if (onChange) onChange(e.target.value);
+            if (onChange) {
+              const selectedOpt = options.find((o) => o.value === e.target.value);
+              if (labelInValue) {
+                onChange({ value: e.target.value, label: selectedOpt?.label ?? e.target.value });
+              } else {
+                onChange(e.target.value);
+              }
+            }
             setSearch('');
           },
           'aria-label': placeholder ?? 'model',
@@ -158,7 +192,8 @@ describe('ModelSelect', () => {
     expect(sonnet?.title).toBe('claude-sonnet-4.6');
     expect(opus?.title).toBe('claude-opus-4.5');
 
-    // Selecting fires onChange with the model id
+    // Selecting fires onChange with the model id (not a labelInValue object —
+    // the component's public API is onChange: (value: string) => void)
     const select = container.querySelector('select')!;
     fireEvent.change(select, { target: { value: 'claude-sonnet-4.6' } });
     expect(onChange).toHaveBeenCalledWith('claude-sonnet-4.6');
@@ -207,14 +242,14 @@ describe('ModelSelect', () => {
       expect(selectionItem?.textContent).toContain('(not detected)');
     });
 
-    // Per Requirement 6, the synthetic "(not detected)" entry is present only
-    // as a display affordance — it must be disabled so users cannot select it
-    // as a normal option from the dropdown.
+    // Per Requirement 6, the "(not detected)" entry must NOT appear as a
+    // choosable item in the open dropdown (no search text typed). The component
+    // uses antd's labelInValue to show the label in the trigger face — no
+    // synthetic entry is added to the options array, so the dropdown list stays
+    // clean.
     const options = Array.from(container.querySelectorAll('option'));
     const unknownOpt = options.find((o) => o.value === 'some-old-model');
-    expect(unknownOpt).toBeTruthy();
-    expect(unknownOpt?.title).toContain('(not detected)');
-    expect(unknownOpt?.disabled).toBe(true);
+    expect(unknownOpt).toBeUndefined();
   });
 
   it('on fetch failure, only "Auto (default)" is offered', async () => {
