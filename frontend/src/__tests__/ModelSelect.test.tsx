@@ -280,4 +280,42 @@ describe('ModelSelect', () => {
       expect(container.querySelector('.ant-select-loading')).not.toBeInTheDocument();
     });
   });
+
+  it('does not show "(not detected)" for a known model while the fetch is still loading', async () => {
+    // This test guards against the UX regression where a model that *will*
+    // appear in the fetched list is briefly labelled "(not detected)" during
+    // the loading phase (because models=[] evaluates valueIsKnown=false).
+    let resolveModels!: (v: any) => void;
+    (apiFetch as any).mockReturnValue(
+      new Promise((resolve) => { resolveModels = resolve; })
+    );
+
+    const { container } = render(
+      <ModelSelect value="claude-sonnet-4.6" onChange={vi.fn()} />
+    );
+
+    // While the fetch is pending, the loading indicator must be present…
+    expect(container.querySelector('.ant-select-loading')).toBeInTheDocument();
+
+    // …and the "(not detected)" label must NOT appear (no flash for known models).
+    const selectionItem = container.querySelector('.ant-select-selection-item');
+    expect(selectionItem?.textContent).not.toContain('(not detected)');
+
+    // Resolve the fetch with the model present in the list
+    await act(async () => {
+      resolveModels({
+        ok: true,
+        json: async () => ({
+          default: 'auto',
+          models: [{ id: 'claude-sonnet-4.6', name: 'Claude Sonnet', description: null }],
+        }),
+      });
+    });
+
+    // After loading, value is confirmed known — still no "(not detected)"
+    await waitFor(() => {
+      expect(container.querySelector('.ant-select-loading')).not.toBeInTheDocument();
+    });
+    expect(container.querySelector('.ant-select-selection-item')?.textContent).not.toContain('(not detected)');
+  });
 });

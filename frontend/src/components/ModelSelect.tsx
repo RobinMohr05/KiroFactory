@@ -83,17 +83,18 @@ export function ModelSelect({ value, onChange, id, placeholder }: ModelSelectPro
   // the fetched list. If so, add a synthetic "(not detected)" option so the
   // control shows the saved value instead of appearing blank. Per Requirement 6,
   // this option is disabled so users cannot select it — it only serves as a
-  // display affordance to show the saved value. The !loading guard is
-  // intentionally omitted: we want the "(not detected)" label to be shown
-  // consistently from the first render (before the fetch resolves), so there
-  // is no label flash on mount for saved values that aren't in the list.
-  // valueIsKnown returns false when models is [] (during loading), so the
-  // synthetic option appears immediately and disappears once loading confirms
-  // the value is a known model.
+  // display affordance to show the saved value.
+  //
+  // The !loading guard prevents the "(not detected)" flash during every page
+  // load: while loading, models is still [], so valueIsKnown evaluates to
+  // false for *any* non-empty value — including models that will appear in the
+  // fetched list. Gating on !loading means the synthetic option only appears
+  // once the fetch has settled, so only genuinely absent models ever get the
+  // "(not detected)" label.
   const valueIsKnown =
     value === '' || models.some((m) => m.id === value);
   const syntheticOption =
-    value !== '' && !valueIsKnown
+    !loading && value !== '' && !valueIsKnown
       ? [{ label: `${value} (not detected)`, value, disabled: true }]
       : [];
 
