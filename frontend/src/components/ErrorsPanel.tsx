@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useApp } from '../context/AppContext';
-import { apiFetch, formatErrorTime } from '../utils/api';
+import { apiFetch, formatErrorTime, isLocalhost } from '../utils/api';
 import { WslDiagnosticsPanel } from './WslDiagnosticsPanel';
 import type { AgentError } from '../types';
 
@@ -97,14 +97,16 @@ export function ErrorsPanel() {
           >
             Agent Errors
           </button>
-          <button
-            className={`errors-subtab-btn ${subTab === 'wsl-docker-logs' ? 'active' : ''}`}
-            role="tab"
-            aria-selected={subTab === 'wsl-docker-logs'}
-            onClick={() => setSubTab('wsl-docker-logs')}
-          >
-            WSL/Docker Logs
-          </button>
+          {isLocalhost() && (
+            <button
+              className={`errors-subtab-btn ${subTab === 'wsl-docker-logs' ? 'active' : ''}`}
+              role="tab"
+              aria-selected={subTab === 'wsl-docker-logs'}
+              onClick={() => setSubTab('wsl-docker-logs')}
+            >
+              WSL/Docker Logs
+            </button>
+          )}
         </div>
         {subTab === 'agent-errors' ? (
           <div className="errors-list" id="errorsList">

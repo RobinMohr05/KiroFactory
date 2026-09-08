@@ -1,4 +1,13 @@
 /**
+ * Returns true when the page is served from localhost (127.0.0.1, ::1, or "localhost").
+ * Used to gate development-only UI (e.g. WSL/Docker Logs subtab).
+ */
+export function isLocalhost(): boolean {
+  const hostname = window.location.hostname;
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+}
+
+/**
  * Wrapper around fetch for all /api/* calls.
  * Automatically detects 401 responses (session expired or invalid) and redirects to login.
  */
