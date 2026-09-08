@@ -3499,14 +3499,6 @@ textarea:focus {
   flex-shrink: 0;
 }
 
-.task-planner-header h2 {
-  margin: 0;
-  font-family: 'Barlow', sans-serif;
-  font-size: 1.1rem;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
 .planner-mode-select {
   font-family: 'Barlow', sans-serif;
   font-size: 1.1rem;
@@ -3519,6 +3511,11 @@ textarea:focus {
   cursor: pointer;
   appearance: auto;
   outline: none;
+}
+
+.planner-mode-select:focus-visible {
+  outline: 2px solid var(--accent-color, #6366f1);
+  outline-offset: 2px;
 }
 
 .task-planner-status {
