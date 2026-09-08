@@ -73,3 +73,44 @@ scripts so the workspace resolves.
 Run the backend (`npm run dev -w backend`) and open `http://localhost:3500`. The backend serves
 these files directly, so just edit and refresh. In production, rebuild the backend image to ship
 frontend changes.
+
+---
+
+## Testing
+
+### Unit / component tests (Vitest)
+
+```bash
+npm test -w frontend          # run once
+npm run test:watch -w frontend  # watch mode
+```
+
+Tests live in `frontend/src/__tests__/` and use Vitest + Testing Library + jsdom.
+
+### End-to-end tests (Playwright)
+
+```bash
+# Install Chromium browser binaries (first time only)
+cd frontend && npx playwright install --with-deps chromium
+
+# Run E2E tests (starts the Vite dev server automatically)
+npm run test:e2e -w frontend
+```
+
+E2E specs live in `frontend/e2e/`. The smoke test only requires the Vite dev server — no
+backend needed. Tests that exercise authenticated flows will need the backend running on
+port 3500 (`npm run dev -w backend`).
+
+**CI integration (not yet wired — tracked as a follow-up):** the PAT used by this repository's
+CI environment does not currently have `workflow` scope, which is required to push changes to
+`.github/workflows/ci.yml`. Once that scope is granted, add these two steps to
+`.github/workflows/ci.yml` after the "Test frontend" step:
+
+```yaml
+- name: Install Playwright browsers
+  run: npx playwright install --with-deps chromium
+  working-directory: frontend
+
+- name: E2E tests (frontend)
+  run: npm run test:e2e -w frontend
+```
