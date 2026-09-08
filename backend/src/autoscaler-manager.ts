@@ -40,7 +40,7 @@
 
 import { broadcastToUser } from "./websocket-handler.js";
 import { createAutoScaler as dbCreateAutoScaler, getAutoScalerById, getAllAutoScalers as dbGetAllAutoScalers, updateAutoScalerStatus, deleteAutoScaler as dbDeleteAutoScaler } from "./db/autoscalers.js";
-import { getAvailableTaskCount, getNonDoneTaskCount, waitForTaskAvailable, notifyTaskAvailable } from "./agent/task-claimer.js";
+import { getAvailableTaskCount, getNonDoneTaskCount, waitForTaskAvailable } from "./agent/task-claimer.js";
 import { createSession, startSession, stopSession, getAllSessions } from "./session-manager.js";
 import { getAgentStageStates } from "./session-manager.js";
 import { log } from "./logger.js";
