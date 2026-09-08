@@ -281,12 +281,17 @@ export function AutoScalerDetailView({
   // Re-sync form state when the autoScaler prop changes (e.g. via WS autoscaler-updated event).
   // This ensures the edit form shows up-to-date values even if a WS event arrives while the
   // detail view is open (the component is not remounted because the key doesn't change).
+  // NOTE: These scalar-field effects will silently overwrite any unsaved user edits to those
+  // fields if a concurrent WS event changes the server-side value (e.g. another admin edits
+  // the same auto-scaler). This is an accepted tradeoff: WS updates keep the view consistent
+  // at the cost of losing in-progress edits for those fields. The tabIds field below uses a
+  // stable string key to avoid spurious fires on reference-identity changes (not for this
+  // reason), but the overwrite behaviour on actual value changes is the same.
   useEffect(() => { setEditName(autoScaler.name); }, [autoScaler.name]);
   useEffect(() => { setEditAgentName(autoScaler.agentName); }, [autoScaler.agentName]);
   // Use a stable string key for tabIds: arrays are never reference-equal after a state rebuild,
   // so using [autoScaler.tabIds] directly would fire on every WS update and overwrite unsaved
   // edits. Serialising to a sorted string means the effect only fires when values actually change.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   const tabIdsKey = autoScaler.tabIds.slice().sort((a, b) => a - b).join(',');
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { setEditTabIds(autoScaler.tabIds); }, [tabIdsKey]);
@@ -303,6 +308,10 @@ export function AutoScalerDetailView({
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaveError(null);
+    if (!editName.trim()) {
+      setSaveError('Name is required');
+      return;
+    }
     setSaving(true);
     try {
       // Build patch with only changed fields
