@@ -21,7 +21,7 @@ export function AutoScalerPanel({
   selectedId: number | null;
   onSelect: (id: number) => void;
 }) {
-  const { autoScalers, setAutoScalers, agents, tabs, fetchAutoScalers } = useApp();
+  const { autoScalers, agents, tabs, fetchAutoScalers } = useApp();
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState('');
   const [agentName, setAgentName] = useState('');
@@ -92,13 +92,6 @@ export function AutoScalerPanel({
     try {
       await apiFetch(`/api/autoscalers/${autoScalerId}/stop`, { method: 'POST' });
     } catch { /* WS update will reflect state */ }
-  };
-
-  const handleDelete = async (autoScalerId: number) => {
-    try {
-      await apiFetch(`/api/autoscalers/${autoScalerId}`, { method: 'DELETE' });
-      setAutoScalers(prev => prev.filter(f => f.id !== autoScalerId));
-    } catch { /* ignore */ }
   };
 
   const handleTabToggle = (tabId: number) => {
@@ -319,8 +312,7 @@ export function AutoScalerDetailView({
       if (editIdleTimeoutSeconds !== autoScaler.idleTimeoutSeconds) patch.idleTimeoutSeconds = editIdleTimeoutSeconds;
 
       if (Object.keys(patch).length === 0) {
-        setSaving(false);
-        return; // nothing changed, skip the network call
+        return; // nothing changed, skip the network call; finally { setSaving(false) } runs anyway
       }
 
       const res = await apiFetch(`/api/autoscalers/${autoScaler.id}`, {
