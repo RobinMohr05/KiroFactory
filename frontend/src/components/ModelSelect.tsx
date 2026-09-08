@@ -83,19 +83,31 @@ export function ModelSelect({ value, onChange, id, placeholder }: ModelSelectPro
   // the fetched list. If so, add a synthetic "(not detected)" option so the
   // control shows the saved value instead of appearing blank. Per Requirement 6,
   // this option is disabled so users cannot select it — it only serves as a
-  // display affordance to show the saved value.
+  // display affordance to show the saved value. The !loading guard is
+  // intentionally omitted: we want the "(not detected)" label to be shown
+  // consistently from the first render (before the fetch resolves), so there
+  // is no label flash on mount for saved values that aren't in the list.
+  // valueIsKnown returns false when models is [] (during loading), so the
+  // synthetic option appears immediately and disappears once loading confirms
+  // the value is a known model.
   const valueIsKnown =
     value === '' || models.some((m) => m.id === value);
   const syntheticOption =
-    !loading && value !== '' && !valueIsKnown
+    value !== '' && !valueIsKnown
       ? [{ label: `${value} (not detected)`, value, disabled: true }]
       : [];
 
   const options = [AUTO_OPTION, ...modelOptions, ...syntheticOption];
 
   // Case-insensitive substring match against the option's value (model id).
-  const filterOption = (input: string, option?: { value: string; label: string }) => {
+  // Disabled entries (the synthetic "(not detected)" option) are always
+  // excluded from the visible dropdown — the synthetic option exists solely so
+  // antd can resolve its label when it is the selected value, but it must not
+  // appear as a choosable item in the list (Requirement 6).
+  const filterOption = (input: string, option?: { value: string; label: string; disabled?: boolean }) => {
     if (!option) return false;
+    // Never show the "(not detected)" synthetic option in the dropdown list.
+    if (option.disabled) return false;
     // Always show "Auto (default)" regardless of filter text.
     if (option.value === '') return true;
     return option.value.toLowerCase().includes(input.toLowerCase());
@@ -112,9 +124,13 @@ export function ModelSelect({ value, onChange, id, placeholder }: ModelSelectPro
       options={options}
       filterOption={filterOption}
       style={{ width: '100%' }}
-      // When the user blurs without selecting, discard typed text and restore
-      // the prior committed value. antd Select does this by default when
-      // autoClearSearchValue is true (the default), but set it explicitly.
+      // autoClearSearchValue={true} (the default — set explicitly for clarity):
+      // clears the search input text after the user selects an option from the
+      // dropdown.
+      // Note: the guarantee that arbitrary typed text is never committed as a
+      // value (Requirement 5) comes from antd Select's default behavior —
+      // onChange only fires on an explicit option selection, not on blur/close.
+      // This is unrelated to autoClearSearchValue.
       autoClearSearchValue={true}
     />
   );
