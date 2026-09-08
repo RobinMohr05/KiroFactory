@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { apiFetch } from '../utils/api';
 import { ModelSelect } from './ModelSelect';
@@ -284,6 +284,16 @@ export function AutoScalerDetailView({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
+  // Re-sync form state when the autoScaler prop changes (e.g. via WS autoscaler-updated event).
+  // This ensures the edit form shows up-to-date values even if a WS event arrives while the
+  // detail view is open (the component is not remounted because the key doesn't change).
+  useEffect(() => { setEditName(autoScaler.name); }, [autoScaler.name]);
+  useEffect(() => { setEditAgentName(autoScaler.agentName); }, [autoScaler.agentName]);
+  useEffect(() => { setEditTabIds(autoScaler.tabIds); }, [autoScaler.tabIds]);
+  useEffect(() => { setEditModel(autoScaler.model ?? ''); }, [autoScaler.model]);
+  useEffect(() => { setEditMaxConcurrency(autoScaler.maxConcurrency); }, [autoScaler.maxConcurrency]);
+  useEffect(() => { setEditIdleTimeoutSeconds(autoScaler.idleTimeoutSeconds); }, [autoScaler.idleTimeoutSeconds]);
+
   const handleTabToggle = (tabId: number) => {
     setEditTabIds(prev =>
       prev.includes(tabId) ? prev.filter(id => id !== tabId) : [...prev, tabId]
@@ -303,8 +313,8 @@ export function AutoScalerDetailView({
       const sortedEdit = [...editTabIds].sort((a, b) => a - b);
       const sortedOrig = [...autoScaler.tabIds].sort((a, b) => a - b);
       if (JSON.stringify(sortedEdit) !== JSON.stringify(sortedOrig)) patch.tabIds = editTabIds;
-      const normalizedModel = editModel.trim() && editModel.trim() !== 'auto' ? editModel.trim() : undefined;
-      if (normalizedModel !== autoScaler.model) patch.model = normalizedModel;
+      const normalizedModel = editModel.trim() && editModel.trim() !== 'auto' ? editModel.trim() : null;
+      if (normalizedModel !== (autoScaler.model ?? null)) patch.model = normalizedModel;
       if (editMaxConcurrency !== autoScaler.maxConcurrency) patch.maxConcurrency = editMaxConcurrency;
       if (editIdleTimeoutSeconds !== autoScaler.idleTimeoutSeconds) patch.idleTimeoutSeconds = editIdleTimeoutSeconds;
 
@@ -396,6 +406,7 @@ export function AutoScalerDetailView({
             disabled={isRunning}
             onChange={e => setEditAgentName(e.target.value)}
           >
+            <option value="">Select agent...</option>
             {agents.map(a => (
               <option key={a.id} value={a.name}>{a.name}</option>
             ))}

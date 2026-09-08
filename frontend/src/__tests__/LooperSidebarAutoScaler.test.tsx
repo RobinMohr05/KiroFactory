@@ -428,3 +428,98 @@ describe('AutoScaler detail view — edit form', () => {
     await screen.findByText('Name already taken');
   });
 });
+
+describe('AutoScaler review comment fixes', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+  });
+
+  // Comment 1: model field should use null (not undefined) when clearing, so JSON.stringify includes it
+  it('PATCH body includes model: null when the model field is cleared (not omitted)', async () => {
+    const { apiFetch } = await import('../utils/api');
+    const mockApiFetch = vi.mocked(apiFetch);
+    mockApiFetch.mockResolvedValue({ ok: true, json: async () => ({}) } as any);
+
+    const scalerWithModel = { ...baseAutoScaler, model: 'claude-opus-4' };
+    mockUseApp({ autoScalers: [scalerWithModel] });
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
+    fireEvent.click(document.querySelector('[data-autoscaler-id="10"]')!);
+
+    // Clear the model field (set to empty string = "auto")
+    const modelInput = document.getElementById('editAutoScalerModel') as HTMLInputElement;
+    fireEvent.change(modelInput, { target: { value: '' } });
+
+    const saveBtn = screen.getByRole('button', { name: /save/i });
+    fireEvent.click(saveBtn);
+
+    await vi.waitFor(() => {
+      const patchCalls = mockApiFetch.mock.calls.filter(
+        ([, opts]) => opts && (opts as RequestInit).method === 'PATCH'
+      );
+      expect(patchCalls.length).toBeGreaterThan(0);
+      const body = JSON.parse((patchCalls[0][1] as RequestInit).body as string);
+      // model: null must be present in the body (not undefined/omitted)
+      expect(Object.prototype.hasOwnProperty.call(body, 'model')).toBe(true);
+      expect(body.model).toBeNull();
+    });
+  });
+
+  // Comment 2: edit form should re-sync when autoScaler prop changes (WS update)
+  it('edit form re-syncs when the autoScaler prop updates via WS (useEffect reset)', () => {
+    const { rerender } = render(
+      <MemoryRouter>
+        <SessionsPanel />
+      </MemoryRouter>
+    );
+
+    mockUseApp({ autoScalers: [baseAutoScaler] });
+    rerender(<MemoryRouter><SessionsPanel /></MemoryRouter>);
+
+    fireEvent.click(document.querySelector('[data-autoscaler-id="10"]')!);
+
+    // Simulate a WS update that changes the name
+    const updatedScaler = { ...baseAutoScaler, name: 'Updated By WS' };
+    mockUseApp({ autoScalers: [updatedScaler] });
+    rerender(<MemoryRouter><SessionsPanel /></MemoryRouter>);
+
+    // The edit name input should reflect the updated name
+    const nameInput = document.getElementById('editAutoScalerName') as HTMLInputElement;
+    expect(nameInput).not.toBeNull();
+    expect(nameInput.value).toBe('Updated By WS');
+  });
+
+  // Comment 3: switching sidebar view should clear selectedAutoScalerId
+  it('switching sidebar view from autoscalers to scheduled clears the selected auto-scaler', () => {
+    mockUseApp({ autoScalers: [baseAutoScaler] });
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
+
+    // Select an autoscaler
+    fireEvent.click(document.querySelector('[data-autoscaler-id="10"]')!);
+    expect(screen.getByTestId('autoscaler-detail-panel')).toBeInTheDocument();
+
+    // Switch to scheduled
+    const dropdown = screen.getByRole('combobox', { name: /sidebar view/i });
+    fireEvent.change(dropdown, { target: { value: 'scheduled' } });
+
+    // Switch back to autoscalers
+    fireEvent.change(dropdown, { target: { value: 'autoscalers' } });
+
+    // The detail panel should NOT reappear — selected ID was cleared
+    expect(screen.queryByTestId('autoscaler-detail-panel')).not.toBeInTheDocument();
+  });
+
+  // Comment 4: agent select in edit form should have a placeholder option
+  it('edit form agent select includes a placeholder "Select agent..." option', () => {
+    mockUseApp({ autoScalers: [baseAutoScaler] });
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
+    fireEvent.click(document.querySelector('[data-autoscaler-id="10"]')!);
+
+    const agentSelect = document.getElementById('editAutoScalerAgent') as HTMLSelectElement;
+    expect(agentSelect).not.toBeNull();
+    const options = Array.from(agentSelect.options).map(o => o.value);
+    expect(options).toContain('');
+    const placeholderOption = Array.from(agentSelect.options).find(o => o.value === '');
+    expect(placeholderOption?.text).toMatch(/select agent/i);
+  });
+});

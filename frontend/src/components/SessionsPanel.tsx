@@ -40,6 +40,7 @@ export function SessionsPanel() {
   const handleLooperViewChange = (view: LooperSidebarView) => {
     setLooperSidebarView(view);
     localStorage.setItem(LOOPER_SIDEBAR_VIEW_KEY, view);
+    setSelectedAutoScalerId(null);
   };
 
   // Sync route param to active session
