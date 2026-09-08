@@ -3507,6 +3507,20 @@ textarea:focus {
   color: var(--text-primary);
 }
 
+.planner-mode-select {
+  font-family: 'Barlow', sans-serif;
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 0.15rem 0.35rem;
+  cursor: pointer;
+  appearance: auto;
+  outline: none;
+}
+
 .task-planner-status {
   font-size: 0.75rem;
   color: var(--text-muted);

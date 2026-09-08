@@ -712,7 +712,19 @@ export function TaskPlannerModal({ onClose, onSwitchToManual, hidden = false, on
     >
       <div className="modal modal-wide task-planner-modal" role="dialog" aria-labelledby="taskPlannerTitle">
         <div className="task-planner-header">
-          <h2 id="taskPlannerTitle">AI Task Planner</h2>
+          <select
+            id="taskPlannerTitle"
+            className="planner-mode-select"
+            value="ai"
+            onChange={(e) => {
+              if (e.target.value === 'manual') {
+                handleSwitchToManual();
+              }
+            }}
+          >
+            <option value="ai">AI Task Planner</option>
+            <option value="manual">Manual</option>
+          </select>
           <div className="task-planner-status">
             <span className={statusDotClass}></span>
             <span className="status-text">
@@ -821,7 +833,6 @@ export function TaskPlannerModal({ onClose, onSwitchToManual, hidden = false, on
         <div className="task-planner-actions">
           <button className="btn btn-secondary btn-sm" onClick={handleClose}>Cancel</button>
           <button className="btn btn-secondary btn-sm" onClick={handleStartOver}>Start Over</button>
-          <button className="btn btn-secondary btn-sm" onClick={handleSwitchToManual}>Create manually instead</button>
           <button className="btn btn-primary btn-sm" disabled={!parsedTasks || creating} onClick={handleCreateTask}>{creating ? (parsedTasks && parsedTasks.length > 1 ? 'Creating Tasks…' : 'Creating Task…') : (parsedTasks && parsedTasks.length > 1 ? 'Create Tasks' : 'Create Task')}</button>
         </div>
       </div>
