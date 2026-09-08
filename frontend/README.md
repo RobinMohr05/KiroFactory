@@ -73,3 +73,32 @@ scripts so the workspace resolves.
 Run the backend (`npm run dev -w backend`) and open `http://localhost:3500`. The backend serves
 these files directly, so just edit and refresh. In production, rebuild the backend image to ship
 frontend changes.
+
+---
+
+## Testing
+
+### Unit / component tests (Vitest)
+
+```bash
+npm test -w frontend          # run once
+npm run test:watch -w frontend  # watch mode
+```
+
+Tests live in `frontend/src/__tests__/` and use Vitest + Testing Library + jsdom.
+
+### End-to-end tests (Playwright)
+
+```bash
+# Install Chromium browser binaries (first time only)
+cd frontend && npx playwright install --with-deps chromium
+
+# Run E2E tests (starts the Vite dev server automatically)
+npm run test:e2e -w frontend
+```
+
+E2E specs live in `frontend/e2e/`. The smoke test only requires the Vite dev server — no
+backend needed. Tests that exercise authenticated flows will need the backend running on
+port 3500 (`npm run dev -w backend`).
+
+CI runs both the Vitest suite and the Playwright smoke test on every pull request.
