@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { apiFetch } from '../utils/api';
 import { ModelSelect } from './ModelSelect';
+import { useConfirmAction } from '../hooks/useConfirmAction';
 import type { AutoScaler } from '../types';
 
 /**
@@ -294,17 +295,23 @@ export function AutoScalerDetailView({
     setSaveError(null);
     setSaving(true);
     try {
+      // Build patch with only changed fields
+      const patch: Record<string, unknown> = {};
+      if (editName.trim() !== autoScaler.name) patch.name = editName.trim();
+      if (editAgentName !== autoScaler.agentName) patch.agentName = editAgentName;
+      // Compare tabIds (order-insensitive)
+      const sortedEdit = [...editTabIds].sort((a, b) => a - b);
+      const sortedOrig = [...autoScaler.tabIds].sort((a, b) => a - b);
+      if (JSON.stringify(sortedEdit) !== JSON.stringify(sortedOrig)) patch.tabIds = editTabIds;
+      const normalizedModel = editModel.trim() && editModel.trim() !== 'auto' ? editModel.trim() : undefined;
+      if (normalizedModel !== autoScaler.model) patch.model = normalizedModel;
+      if (editMaxConcurrency !== autoScaler.maxConcurrency) patch.maxConcurrency = editMaxConcurrency;
+      if (editIdleTimeoutSeconds !== autoScaler.idleTimeoutSeconds) patch.idleTimeoutSeconds = editIdleTimeoutSeconds;
+
       const res = await apiFetch(`/api/autoscalers/${autoScaler.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: editName.trim(),
-          agentName: editAgentName,
-          tabIds: editTabIds,
-          model: editModel.trim() && editModel.trim() !== 'auto' ? editModel.trim() : undefined,
-          maxConcurrency: editMaxConcurrency,
-          idleTimeoutSeconds: editIdleTimeoutSeconds,
-        }),
+        body: JSON.stringify(patch),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -327,6 +334,7 @@ export function AutoScalerDetailView({
       onClose?.();
     } catch { /* ignore */ }
   };
+  const { isPending: deleteConfirmPending, handleClick: handleDeleteClick } = useConfirmAction(handleDelete);
 
   const tabNames = autoScaler.tabIds
     .map(tid => tabs.find(t => t.id === tid)?.name || `#${tid}`)
@@ -441,11 +449,11 @@ export function AutoScalerDetailView({
           </button>
           <button
             type="button"
-            className="btn btn-secondary btn-sm"
+            className={`btn btn-secondary btn-sm${deleteConfirmPending ? ' btn-confirm-pending' : ''}`}
             disabled={isRunning}
-            onClick={handleDelete}
+            onClick={handleDeleteClick}
           >
-            Delete
+            {deleteConfirmPending ? 'Confirm?' : 'Delete'}
           </button>
         </div>
       </form>

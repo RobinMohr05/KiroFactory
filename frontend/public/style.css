@@ -5582,6 +5582,16 @@ textarea:focus {
   border-radius: 999px;
 }
 
+.autoscaler-status-badge.status-running {
+  background: rgba(22, 163, 74, 0.1);
+  color: var(--status-connected);
+}
+
+.autoscaler-status-badge.status-stopped {
+  background: rgba(156, 163, 175, 0.1);
+  color: #6B7280;
+}
+
 /* Dark mode */
 [data-theme="dark"] .autoscaler-card {
   background: var(--bg-card, var(--bg-secondary));

@@ -459,6 +459,7 @@ export function SessionsPanel() {
             if (selectedAS) {
               return (
                 <AutoScalerDetailView
+                  key={selectedAutoScalerId}
                   autoScaler={selectedAS}
                   onClose={() => setSelectedAutoScalerId(null)}
                 />
