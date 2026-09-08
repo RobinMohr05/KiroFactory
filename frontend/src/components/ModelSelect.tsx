@@ -127,6 +127,7 @@ export function ModelSelect({ value, onChange, id, placeholder, disabled }: Mode
       showSearch
       loading={loading}
       labelInValue
+      disabled={disabled}
       value={selectValue}
       placeholder={placeholder}
       onChange={handleChange}
