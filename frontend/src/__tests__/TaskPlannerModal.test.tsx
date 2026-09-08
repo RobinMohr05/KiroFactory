@@ -1329,6 +1329,90 @@ describe('TaskPlannerModal - multi-task batch support', () => {
 });
 
 
+describe('TaskPlannerModal - Create button double-submit prevention', () => {
+  let apiFetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiFetchMock = vi.mocked(api.apiFetch);
+    apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (url === '/api/task-planner/start' && opts?.method === 'POST') {
+        return { ok: true, json: async () => ({ sessionId: 9 }) };
+      }
+      if (opts?.method === 'DELETE') {
+        return { ok: true, json: async () => ({}) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    mockUseApp({ currentTabId: 1 });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  function dispatchAssistantMessage(sessionId: number, text: string) {
+    window.dispatchEvent(new CustomEvent('ws-session-output', {
+      detail: { sessionId, entry: { stream: 'stdout', text } },
+    }));
+    window.dispatchEvent(new CustomEvent('ws-session-activity', {
+      detail: { sessionId, activity: { type: 'idle' } },
+    }));
+  }
+
+  it('disables the Create button and shows "Creating Task…" while the create request is in flight (singular)', async () => {
+    // Arrange: control when the create-task request resolves
+    let resolveCreate!: (value: { ok: boolean; json: () => Promise<{ created: any[]; failed: any[] }> }) => void;
+    const createPromise = new Promise<{ ok: boolean; json: () => Promise<{ created: any[]; failed: any[] }> }>((resolve) => {
+      resolveCreate = resolve;
+    });
+
+    apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (url === '/api/task-planner/start' && opts?.method === 'POST') {
+        return { ok: true, json: async () => ({ sessionId: 9 }) };
+      }
+      if (typeof url === 'string' && url.includes('/create-task') && opts?.method === 'POST') {
+        return createPromise;
+      }
+      if (opts?.method === 'DELETE') {
+        return { ok: true, json: async () => ({}) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+
+    const { getByText } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    // Drive modal into parsed-tasks state with a single task (singular case)
+    await act(async () => {
+      dispatchAssistantMessage(9, '```json:task\n{"title": "Add pagination", "priority": 3, "type": "feature"}\n```');
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    // Confirm the Create button is enabled before clicking
+    const createBtn = getByText('Create Task') as HTMLButtonElement;
+    expect(createBtn.disabled).toBe(false);
+
+    // Click the Create button — the request stays pending (createPromise is not resolved yet)
+    act(() => {
+      createBtn.click();
+    });
+
+    // While in-flight: button should be disabled and show "Creating Task…"
+    const creatingBtn = getByText('Creating Task…') as HTMLButtonElement;
+    expect(creatingBtn.disabled).toBe(true);
+
+    // Clean up: resolve the promise so the component finishes
+    await act(async () => {
+      resolveCreate({
+        ok: true,
+        json: async () => ({ created: [{ id: 1, title: 'Add pagination', priority: 3, type: 'feature', state: 'todo' }], failed: [] }),
+      });
+      await new Promise(r => setTimeout(r, 10));
+    });
+  });
+});
+
 describe('TaskPlannerModal - Start Over button', () => {
   let apiFetchMock: ReturnType<typeof vi.fn>;
 
