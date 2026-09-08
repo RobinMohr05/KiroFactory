@@ -312,6 +312,14 @@ export function AutoScalerDetailView({
       setSaveError('Name is required');
       return;
     }
+    if (!editAgentName) {
+      setSaveError('Agent is required');
+      return;
+    }
+    if (editTabIds.length === 0) {
+      setSaveError('At least one tab is required');
+      return;
+    }
     setSaving(true);
     try {
       // Build patch with only changed fields

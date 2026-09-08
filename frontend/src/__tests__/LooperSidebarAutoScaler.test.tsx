@@ -672,3 +672,65 @@ describe('PR Review Comment fixes — round 2', () => {
     expect((startBtn as HTMLButtonElement).disabled).toBe(false);
   });
 });
+
+describe('PR Review Comment fixes — round 3', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+  });
+
+  // Client-side validation: agentName must not be empty before submitting PATCH
+  it('shows "Agent is required" error when agent is cleared before saving (no network call)', async () => {
+    const { apiFetch } = await import('../utils/api');
+    const mockApiFetch = vi.mocked(apiFetch);
+    mockApiFetch.mockResolvedValue({ ok: true, json: async () => ({}) } as any);
+
+    mockUseApp({ autoScalers: [baseAutoScaler], agents: [{ id: 1, name: 'developer-agent', prompt: '', description: '' }] });
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
+    fireEvent.click(document.querySelector('[data-autoscaler-id="10"]')!);
+
+    const agentSelect = document.getElementById('editAutoScalerAgent') as HTMLSelectElement;
+    expect(agentSelect).not.toBeNull();
+    // Select the placeholder option (empty value)
+    fireEvent.change(agentSelect, { target: { value: '' } });
+
+    const saveBtn = screen.getByRole('button', { name: /save/i });
+    fireEvent.click(saveBtn);
+
+    // Error shown inline
+    await screen.findByText('Agent is required');
+    // No network call made
+    const patchCalls = mockApiFetch.mock.calls.filter(([, opts]) => opts && (opts as RequestInit).method === 'PATCH');
+    expect(patchCalls.length).toBe(0);
+  });
+
+  // Client-side validation: at least one tab must be selected before submitting PATCH
+  it('shows "At least one tab is required" error when all tabs unchecked before saving (no network call)', async () => {
+    const { apiFetch } = await import('../utils/api');
+    const mockApiFetch = vi.mocked(apiFetch);
+    mockApiFetch.mockResolvedValue({ ok: true, json: async () => ({}) } as any);
+
+    mockUseApp({
+      autoScalers: [baseAutoScaler],
+      tabs: [{ id: 1, name: 'VCH' }, { id: 2, name: 'Other' }],
+    });
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
+    fireEvent.click(document.querySelector('[data-autoscaler-id="10"]')!);
+
+    // Uncheck tab 1 (the only checked tab)
+    const tab1Checkbox = screen.getAllByRole('checkbox').find(
+      (cb) => (cb as HTMLInputElement).closest('label')?.textContent?.includes('VCH')
+    ) as HTMLInputElement;
+    expect(tab1Checkbox).toBeTruthy();
+    fireEvent.click(tab1Checkbox); // uncheck it
+
+    const saveBtn = screen.getByRole('button', { name: /save/i });
+    fireEvent.click(saveBtn);
+
+    // Error shown inline
+    await screen.findByText('At least one tab is required');
+    // No network call made
+    const patchCalls = mockApiFetch.mock.calls.filter(([, opts]) => opts && (opts as RequestInit).method === 'PATCH');
+    expect(patchCalls.length).toBe(0);
+  });
+});
