@@ -39,7 +39,7 @@
  */
 
 import { broadcastToUser } from "./websocket-handler.js";
-import { createAutoScaler as dbCreateAutoScaler, getAutoScalerById, getAllAutoScalers as dbGetAllAutoScalers, updateAutoScalerStatus, deleteAutoScaler as dbDeleteAutoScaler } from "./db/autoscalers.js";
+import { createAutoScaler as dbCreateAutoScaler, getAutoScalerById, getAllAutoScalers as dbGetAllAutoScalers, updateAutoScalerStatus, updateAutoScaler as dbUpdateAutoScaler, deleteAutoScaler as dbDeleteAutoScaler } from "./db/autoscalers.js";
 import { getAvailableTaskCount, getNonDoneTaskCount, waitForTaskAvailable } from "./agent/task-claimer.js";
 import { createSession, startSession, stopSession, getAllSessions } from "./session-manager.js";
 import { getAgentStageStates } from "./session-manager.js";
@@ -100,6 +100,28 @@ export async function createAutoScalerRecord(input: CreateAutoScalerInput): Prom
  */
 export async function getAllAutoScalers(userId: number): Promise<AutoScaler[]> {
   return dbGetAllAutoScalers(userId);
+}
+
+/**
+ * Update an AutoScaler's editable configuration fields. Status is not changeable here.
+ * Broadcasts an `autoscaler-updated` event on success.
+ */
+export async function updateAutoScalerRecord(
+  id: number,
+  fields: Partial<{
+    name: string;
+    agentName: string;
+    tabIds: number[];
+    model: string | null;
+    maxConcurrency: number;
+    idleTimeoutSeconds: number;
+  }>
+): Promise<AutoScaler | null> {
+  const updated = await dbUpdateAutoScaler(id, fields);
+  if (updated) {
+    broadcastToUser(updated.userId, { type: "autoscaler-updated", autoScaler: updated });
+  }
+  return updated;
 }
 
 /**

@@ -13,6 +13,9 @@ vi.mock('../utils/api', () => ({
 
 vi.mock('../components/AutoScalerPanel', () => ({
   AutoScalerPanel: () => <div data-testid="autoscaler-panel">AutoScalerPanel</div>,
+  AutoScalerDetailView: ({ autoScaler }: { autoScaler: { name: string } }) => (
+    <div data-testid="autoscaler-detail-panel">{autoScaler.name}</div>
+  ),
 }));
 
 const mockNavigate = vi.fn();

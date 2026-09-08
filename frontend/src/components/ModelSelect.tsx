@@ -22,6 +22,7 @@ interface ModelSelectProps {
   onChange: (value: string) => void;
   id?: string;
   placeholder?: string;
+  disabled?: boolean;
 }
 
 const AUTO_OPTION = { label: 'Auto (default)', value: '' };
@@ -48,7 +49,7 @@ const AUTO_OPTION = { label: 'Auto (default)', value: '' };
  * Exposes value/onChange props so it's a drop-in for the existing model
  * fields (SessionModal).
  */
-export function ModelSelect({ value, onChange, id, placeholder }: ModelSelectProps) {
+export function ModelSelect({ value, onChange, id, placeholder, disabled }: ModelSelectProps) {
   const [models, setModels] = useState<DetectedModel[]>([]);
   const [loading, setLoading] = useState(true);
   const mounted = useRef(true);
@@ -126,6 +127,7 @@ export function ModelSelect({ value, onChange, id, placeholder }: ModelSelectPro
       showSearch
       loading={loading}
       labelInValue
+      disabled={disabled}
       value={selectValue}
       placeholder={placeholder}
       onChange={handleChange}

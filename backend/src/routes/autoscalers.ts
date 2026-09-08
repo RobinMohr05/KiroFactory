@@ -6,7 +6,7 @@
 
 import { Router, type Request, type Response } from "express";
 import { requireAuth, getUserId } from "../middleware/auth.js";
-import { createAutoScalerRecord, getAllAutoScalers, startAutoScaler, stopAutoScaler, deleteAutoScalerRecord, getAutoScalerSessionCounts } from "../autoscaler-manager.js";
+import { createAutoScalerRecord, getAllAutoScalers, startAutoScaler, stopAutoScaler, deleteAutoScalerRecord, updateAutoScalerRecord, getAutoScalerSessionCounts } from "../autoscaler-manager.js";
 import { getAutoScalerById } from "../db/autoscalers.js";
 import { log, toErrorFields } from "../logger.js";
 
@@ -181,6 +181,104 @@ router.delete("/:id", async (req: Request, res: Response) => {
       msg: "Failed to delete autoScaler",
     });
     res.status(500).json({ error: "Failed to delete autoScaler" });
+  }
+});
+
+// PATCH /api/autoscalers/:id — edit an existing autoScaler's configuration.
+router.patch("/:id", async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const id = Number(req.params.id);
+    if (isNaN(id)) {
+      res.status(400).json({ error: "Invalid autoScaler id" });
+      return;
+    }
+
+    const existing = await getAutoScalerById(id);
+    if (!existing || existing.userId !== userId) {
+      res.status(404).json({ error: "AutoScaler not found" });
+      return;
+    }
+
+    if (existing.status === "running") {
+      res.status(409).json({ error: "Cannot edit a running auto-scaler. Stop it first." });
+      return;
+    }
+
+    const { name, agentName, tabIds, model, maxConcurrency, idleTimeoutSeconds } = req.body;
+
+    if (name !== undefined && (typeof name !== "string" || name.trim() === "")) {
+      res.status(400).json({ error: "name must be a non-empty string" });
+      return;
+    }
+    if (agentName !== undefined && (typeof agentName !== "string" || agentName.trim() === "")) {
+      res.status(400).json({ error: "agentName must be a non-empty string" });
+      return;
+    }
+    if (tabIds !== undefined && (!Array.isArray(tabIds) || tabIds.length === 0)) {
+      res.status(400).json({ error: "tabIds must be a non-empty array" });
+      return;
+    }
+    if (maxConcurrency !== undefined && typeof maxConcurrency !== "number") {
+      res.status(400).json({ error: "maxConcurrency must be a number" });
+      return;
+    }
+    if (idleTimeoutSeconds !== undefined && typeof idleTimeoutSeconds !== "number") {
+      res.status(400).json({ error: "idleTimeoutSeconds must be a number" });
+      return;
+    }
+    if (model !== undefined && model !== null && typeof model !== "string") {
+      res.status(400).json({ error: "model must be a string or null" });
+      return;
+    }
+
+    const fields: Partial<{
+      name: string;
+      agentName: string;
+      tabIds: number[];
+      model: string | null;
+      maxConcurrency: number;
+      idleTimeoutSeconds: number;
+    }> = {};
+    if (name !== undefined) fields.name = name.trim();
+    if (agentName !== undefined) fields.agentName = agentName.trim();
+    if (tabIds !== undefined) fields.tabIds = tabIds;
+    if (model !== undefined) fields.model = model;
+    if (maxConcurrency !== undefined) fields.maxConcurrency = maxConcurrency;
+    if (idleTimeoutSeconds !== undefined) fields.idleTimeoutSeconds = idleTimeoutSeconds;
+
+    if (Object.keys(fields).length === 0) {
+      res.status(400).json({ error: "No fields to update" });
+      return;
+    }
+
+    const updated = await updateAutoScalerRecord(id, fields);
+    if (!updated) {
+      // null can mean either the auto-scaler was concurrently deleted, or
+      // all provided tabIds referred to non-existent Tab nodes (silent data
+      // loss guard in the DB layer). Distinguish the two cases:
+      if (fields.tabIds !== undefined) {
+        // Re-fetch to check if the node still exists.
+        const stillExists = await getAutoScalerById(id);
+        if (stillExists) {
+          // Node is still there — tabIds were all invalid.
+          res.status(422).json({ error: "None of the provided tabIds refer to existing tabs" });
+          return;
+        }
+      }
+      res.status(404).json({ error: "AutoScaler not found" });
+      return;
+    }
+    res.json(updated);
+  } catch (err) {
+    log.error("route-error", {
+      component: "autoscalers",
+      method: "PATCH",
+      path: "/api/autoscalers/:id",
+      ...toErrorFields(err),
+      msg: "Failed to update autoScaler",
+    });
+    res.status(500).json({ error: "Failed to update autoScaler" });
   }
 });
 
