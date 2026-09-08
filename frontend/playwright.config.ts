@@ -8,11 +8,10 @@ import { defineConfig, devices } from '@playwright/test';
  * - The `webServer` block boots the Vite dev server on port 5173 before running tests.
  *   Tests can reach the app at http://localhost:5173.
  *
- * Note: the app requires a running backend for auth (`/api/auth/me`). The smoke
- * test only asserts on the initial page load (title + root element presence) and
- * does not require an authenticated session, because the Vite dev server proxies
- * unauthenticated API calls and the test asserts on the HTML that is always served
- * regardless of auth state.
+ * Note: the smoke test mocks `/api/auth/me` via Playwright route interception so
+ * it does not require a running backend — the mock returns a valid user object,
+ * allowing AppLayout to render its children and enabling a meaningful DOM
+ * assertion (not just the static HTML title).
  */
 export default defineConfig({
   testDir: './e2e',
