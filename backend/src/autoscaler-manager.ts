@@ -396,79 +396,92 @@ function watchSessionIdle(managed: ManagedAutoScaler, sessionId: number): void {
 
   let lastSeenTaskId: number | null | undefined = undefined; // undefined = initial / not yet seen
   let idleMs = 0;
+  // Guard against concurrent async ticks: Node.js setInterval does not wait for an async
+  // callback to finish before firing the next tick. If getNonDoneTaskCount (an async DB call)
+  // takes longer than POLL_MS to return (e.g. a Neo4j latency spike), multiple ticks could
+  // run simultaneously, leading to double stopSession calls or a dead idle watcher if one tick
+  // clears the interval while another is suspended at an await. This flag ensures only one tick
+  // is active at a time.
+  let checking = false;
 
   const pollInterval = setInterval(async () => {
-    if (managed.abortController.signal.aborted) {
-      clearInterval(pollInterval);
-      return;
-    }
+    if (checking) return;
+    checking = true;
+    try {
+      if (managed.abortController.signal.aborted) {
+        clearInterval(pollInterval);
+        return;
+      }
 
-    const allSessions = getAllSessions(autoScaler.userId);
-    const session = allSessions.find((s) => s.id === sessionId);
+      const allSessions = getAllSessions(autoScaler.userId);
+      const session = allSessions.find((s) => s.id === sessionId);
 
-    if (!session || session.status !== "running") {
-      // Session is gone — nothing to do, watchSessionCompletion handles cleanup.
-      clearInterval(pollInterval);
-      return;
-    }
+      if (!session || session.status !== "running") {
+        // Session is gone — nothing to do, watchSessionCompletion handles cleanup.
+        clearInterval(pollInterval);
+        return;
+      }
 
-    const currentTaskId = session.currentTaskId ?? null;
+      const currentTaskId = session.currentTaskId ?? null;
 
-    if (lastSeenTaskId === undefined) {
-      // First poll: initialise tracking, don't start the idle clock yet.
-      lastSeenTaskId = currentTaskId;
-      return;
-    }
+      if (lastSeenTaskId === undefined) {
+        // First poll: initialise tracking, don't start the idle clock yet.
+        lastSeenTaskId = currentTaskId;
+        return;
+      }
 
-    if (currentTaskId !== lastSeenTaskId) {
-      // A new task was claimed — reset the idle counter.
-      lastSeenTaskId = currentTaskId;
-      idleMs = 0;
-      return;
-    }
-
-    // No new claim since the last poll.
-    idleMs += POLL_MS;
-
-    if (idleMs < autoScaler.idleTimeoutSeconds * 1000) {
-      return; // not yet timed out
-    }
-
-    // Timed out. Check if this is the floor session and should be exempted.
-    const isFloorSession = managed.floorSessionId === sessionId;
-    if (isFloorSession && autoScaler.keepWarmWhileTasksExist) {
-      // Check whether any non-done task still exists — if so, keep it alive.
-      try {
-        const nonDoneCount = await getNonDoneTaskCount(autoScaler.tabIds);
-        if (nonDoneCount > 0) {
-          // Floor session is exempt — reset the idle clock and continue.
-          idleMs = 0;
-          return;
-        }
-        // No non-done tasks left — the floor is no longer needed; stop this session.
-      } catch {
-        // DB error — be conservative and keep the session alive.
+      if (currentTaskId !== lastSeenTaskId) {
+        // A new task was claimed — reset the idle counter.
+        lastSeenTaskId = currentTaskId;
         idleMs = 0;
         return;
       }
-    }
 
-    // Stop this idle session.
-    clearInterval(pollInterval);
-    log.info("autoscaler-idle-stop", {
-      component: "autoscaler-manager",
-      autoScalerId: autoScaler.id,
-      sessionId,
-      isFloorSession,
-      msg: `Session idle for ${autoScaler.idleTimeoutSeconds}s — stopping`,
-    });
+      // No new claim since the last poll.
+      idleMs += POLL_MS;
 
-    try {
-      await stopSession(sessionId);
-    } catch {
-      // best-effort
+      if (idleMs < autoScaler.idleTimeoutSeconds * 1000) {
+        return; // not yet timed out
+      }
+
+      // Timed out. Check if this is the floor session and should be exempted.
+      const isFloorSession = managed.floorSessionId === sessionId;
+      if (isFloorSession && autoScaler.keepWarmWhileTasksExist) {
+        // Check whether any non-done task still exists — if so, keep it alive.
+        try {
+          const nonDoneCount = await getNonDoneTaskCount(autoScaler.tabIds);
+          if (nonDoneCount > 0) {
+            // Floor session is exempt — reset the idle clock and continue.
+            idleMs = 0;
+            return;
+          }
+          // No non-done tasks left — the floor is no longer needed; stop this session.
+        } catch {
+          // DB error — be conservative and keep the session alive.
+          idleMs = 0;
+          return;
+        }
+      }
+
+      // Stop this idle session.
+      clearInterval(pollInterval);
+      log.info("autoscaler-idle-stop", {
+        component: "autoscaler-manager",
+        autoScalerId: autoScaler.id,
+        sessionId,
+        isFloorSession,
+        msg: `Session idle for ${autoScaler.idleTimeoutSeconds}s — stopping`,
+      });
+
+      try {
+        await stopSession(sessionId);
+      } catch {
+        // best-effort
+      }
+      // watchSessionCompletion will handle the cleanup and re-reconcile.
+    } finally {
+      checking = false;
     }
-    // watchSessionCompletion will handle the cleanup and re-reconcile.
   }, POLL_MS);
 }
 

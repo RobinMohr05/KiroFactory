@@ -521,6 +521,53 @@ describe("autoscaler-manager", () => {
       vi.useRealTimers();
     });
 
+    it("floor session stops after idleTimeoutSeconds when all tasks become done (nonDoneCount=0)", async () => {
+      vi.useFakeTimers();
+      const idleTimeoutSeconds = 30;
+      // Start with keepWarmWhileTasksExist=true, 0 claimable, 1 non-done task
+      const stoppedAutoScaler = makeAutoScaler({ status: "stopped", keepWarmWhileTasksExist: true, maxConcurrency: 5, idleTimeoutSeconds });
+      const runningAutoScaler = makeAutoScaler({ status: "running", keepWarmWhileTasksExist: true, maxConcurrency: 5, idleTimeoutSeconds });
+      vi.mocked(getAutoScalerById).mockResolvedValue(stoppedAutoScaler);
+      vi.mocked(updateAutoScalerStatus).mockResolvedValue(runningAutoScaler);
+      vi.mocked(getAvailableTaskCount).mockResolvedValue(0);
+      // Initially 1 non-done task exists — floor session is spawned and protected
+      vi.mocked(getNonDoneTaskCount).mockResolvedValue(1);
+      vi.mocked(getAllSessions).mockReturnValue([]);
+
+      let sessionCounter = 100;
+      const sessions: ReturnType<typeof makeSession>[] = [];
+      vi.mocked(createSession).mockImplementation(async () => {
+        const session = makeSession({ id: sessionCounter++, status: "running" });
+        sessions.push(session);
+        return session;
+      });
+      vi.mocked(startSession).mockResolvedValue(undefined as any);
+      vi.mocked(stopSession).mockResolvedValue(true);
+
+      await startAutoScaler(1);
+      await vi.advanceTimersByTimeAsync(0);
+
+      // Should have spawned exactly 1 floor session
+      expect(createSession).toHaveBeenCalledTimes(1);
+
+      // Make the session appear as still running
+      vi.mocked(getAllSessions).mockReturnValue(sessions.map(s => ({ ...s, status: "running" as const })));
+
+      // Advance time to just before the idle timeout — floor session should NOT be stopped
+      // because nonDoneCount is still 1
+      await vi.advanceTimersByTimeAsync((idleTimeoutSeconds - 5) * 1000);
+      expect(stopSession).not.toHaveBeenCalled();
+
+      // Now simulate all tasks becoming done (nonDoneCount = 0)
+      vi.mocked(getNonDoneTaskCount).mockResolvedValue(0);
+
+      // Advance past the idle timeout — the floor session should now be stopped
+      await vi.advanceTimersByTimeAsync(10 * 1000);
+
+      expect(stopSession).toHaveBeenCalledTimes(1);
+      vi.useRealTimers();
+    });
+
     it("(e) keepWarmWhileTasksExist=false keeps floor 0 when no claimable tasks", async () => {
       const stoppedAutoScaler = makeAutoScaler({ status: "stopped", keepWarmWhileTasksExist: false });
       const runningAutoScaler = makeAutoScaler({ status: "running", keepWarmWhileTasksExist: false });
