@@ -307,12 +307,15 @@ export function AutoScalerDetailView({
   // Re-sync form state when the autoScaler prop changes (e.g. via WS autoscaler-updated event).
   // This ensures the edit form shows up-to-date values even if a WS event arrives while the
   // detail view is open (the component is not remounted because the key doesn't change).
-  // NOTE: These scalar-field effects will silently overwrite any unsaved user edits to those
-  // fields if a concurrent WS event changes the server-side value (e.g. another admin edits
-  // the same auto-scaler). This is an accepted tradeoff: WS updates keep the view consistent
-  // at the cost of losing in-progress edits for those fields. The tabIds field below uses a
-  // stable string key to avoid spurious fires on reference-identity changes (not for this
-  // reason), but the overwrite behaviour on actual value changes is the same.
+  // NOTE: Each effect only fires when the corresponding primitive field value actually changes.
+  // WS events from Start/Stop (which flip `status` but leave name/agentName/model/etc unchanged)
+  // do NOT overwrite in-progress edits, because React bails out of effects whose dependency
+  // values are primitive-equal. The overwrite only occurs when another actor (e.g. a second
+  // admin) changes that specific field server-side and a WS event carries the new value through.
+  // In that case, losing unsaved edits is the accepted tradeoff: WS updates keep the view
+  // consistent with the actual server state. The tabIds field below uses a stable string key
+  // to avoid spurious fires on reference-identity changes (arrays are never reference-equal
+  // after a state rebuild), but the overwrite behaviour on actual value changes is the same.
   useEffect(() => { setEditName(autoScaler.name); }, [autoScaler.name]);
   useEffect(() => { setEditAgentName(autoScaler.agentName); }, [autoScaler.agentName]);
   // Use a stable string key for tabIds: arrays are never reference-equal after a state rebuild,
