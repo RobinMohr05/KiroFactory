@@ -450,25 +450,44 @@ export function SessionsPanel() {
           {user?.uiViewMode === 'looper' && looperSidebarView === 'autoscalers' && (
             <AutoScalerPanel
               selectedId={selectedAutoScalerId}
-              onSelect={(id) => setSelectedAutoScalerId(prev => prev === id ? null : id)}
+              onSelect={(id) => {
+                setSelectedAutoScalerId(prev => {
+                  const next = prev === id ? null : id;
+                  if (isMobile) setMobileShowDetail(next !== null);
+                  return next;
+                });
+              }}
             />
           )}
         </aside>
         <div className={`session-detail-panel${detailHidden ? ' mobile-hidden' : ''}`} id="sessionDetailPanel">
-          {user?.uiViewMode === 'looper' && looperSidebarView === 'autoscalers' && selectedAutoScalerId !== null && (() => {
-            const selectedAS = autoScalers.find(a => a.id === selectedAutoScalerId);
-            if (selectedAS) {
+          {user?.uiViewMode === 'looper' && looperSidebarView === 'autoscalers' ? (
+            (() => {
+              const selectedAS = selectedAutoScalerId !== null ? autoScalers.find(a => a.id === selectedAutoScalerId) : undefined;
+              if (selectedAS) {
+                return (
+                  <AutoScalerDetailView
+                    key={selectedAutoScalerId}
+                    autoScaler={selectedAS}
+                    onClose={() => {
+                      setSelectedAutoScalerId(null);
+                      if (isMobile) setMobileShowDetail(false);
+                    }}
+                  />
+                );
+              }
               return (
-                <AutoScalerDetailView
-                  key={selectedAutoScalerId}
-                  autoScaler={selectedAS}
-                  onClose={() => setSelectedAutoScalerId(null)}
-                />
+                <div className="session-empty-state">
+                  {isMobile && mobileShowDetail && (
+                    <button className="mobile-back-btn" onClick={handleMobileBack} aria-label="Back to auto-scaler list">
+                      ←
+                    </button>
+                  )}
+                  <p className="session-empty-msg">Select an auto-scaler to see details.</p>
+                </div>
               );
-            }
-            return null;
-          })()}
-          {!(user?.uiViewMode === 'looper' && looperSidebarView === 'autoscalers' && selectedAutoScalerId !== null && autoScalers.find(a => a.id === selectedAutoScalerId)) && (
+            })()
+          ) : (
             !activeSession ? (
             <div className="session-empty-state">
               {isMobile && mobileShowDetail && (
