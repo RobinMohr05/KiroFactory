@@ -3,15 +3,24 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { SessionModal } from './SessionModal';
 import { SessionDetailTabs } from './SessionDetailTabs';
-import { AutoScalerPanel } from './AutoScalerPanel';
+import { AutoScalerPanel, AutoScalerDetailView } from './AutoScalerPanel';
 import { apiFetch } from '../utils/api';
 import { formatCreditsWithEur } from '../utils/format';
 import { useConfirmAction } from '../hooks/useConfirmAction';
 import { useMobileBreakpoint } from '../hooks/useMobileBreakpoint';
 import type { Session, OutputEntry, SessionActivity } from '../types';
 
+const LOOPER_SIDEBAR_VIEW_KEY = 'vch.looperSidebarView';
+type LooperSidebarView = 'autoscalers' | 'scheduled';
+
+function readLooperSidebarView(): LooperSidebarView {
+  const stored = localStorage.getItem(LOOPER_SIDEBAR_VIEW_KEY);
+  if (stored === 'autoscalers' || stored === 'scheduled') return stored;
+  return 'autoscalers';
+}
+
 export function SessionsPanel() {
-  const { sessions, setSessions, currentTabId, activeSessionId, setActiveSessionId, tabs, pendingOps, errors, setHighlightedTaskId, user } = useApp();
+  const { sessions, setSessions, currentTabId, activeSessionId, setActiveSessionId, tabs, pendingOps, errors, setHighlightedTaskId, user, autoScalers } = useApp();
   const navigate = useNavigate();
   const { id: routeId } = useParams<{ id?: string }>();
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -23,6 +32,15 @@ export function SessionsPanel() {
   const isMobile = useMobileBreakpoint();
   const [mobileShowDetail, setMobileShowDetail] = useState(false);
   const scrollTopRef = useRef<number>(0);
+
+  // Looper-mode sidebar view: 'autoscalers' | 'scheduled' (persisted to localStorage)
+  const [looperSidebarView, setLooperSidebarView] = useState<LooperSidebarView>(readLooperSidebarView);
+  const [selectedAutoScalerId, setSelectedAutoScalerId] = useState<number | null>(null);
+
+  const handleLooperViewChange = (view: LooperSidebarView) => {
+    setLooperSidebarView(view);
+    localStorage.setItem(LOOPER_SIDEBAR_VIEW_KEY, view);
+  };
 
   // Sync route param to active session
   useEffect(() => {
@@ -338,14 +356,26 @@ export function SessionsPanel() {
     <section id="panel-sessions" role="tabpanel" aria-labelledby="tab-sessions">
       <div className="sessions-layout">
         <aside className={`session-list-panel${listHidden ? ' mobile-hidden' : ''}`} ref={listPanelRef}>
-          <div className="toolbar" role="toolbar" aria-label="Session actions">
-            {user?.uiViewMode !== 'looper' && (
+          {user?.uiViewMode === 'looper' && (
+            <div className="looper-sidebar-view-select toolbar" role="toolbar" aria-label="Looper sidebar view">
+              <label htmlFor="looperSidebarViewDropdown" className="sr-only">Sidebar view</label>
+              <select
+                id="looperSidebarViewDropdown"
+                aria-label="Sidebar view"
+                className="looper-sidebar-dropdown"
+                value={looperSidebarView}
+                onChange={(e) => handleLooperViewChange(e.target.value as LooperSidebarView)}
+              >
+                <option value="autoscalers">Auto-Scalers</option>
+                <option value="scheduled">Scheduled Sessions</option>
+              </select>
+            </div>
+          )}
+          {user?.uiViewMode !== 'looper' && (
+            <div className="toolbar" role="toolbar" aria-label="Session actions">
               <button id="newSessionBtn" className="btn btn-primary" onClick={() => setShowCreateModal(true)}>+ New Session</button>
-            )}
-            {user?.uiViewMode === 'looper' && (
-              <button id="newScheduledSessionBtn" className="btn btn-primary" onClick={() => setShowScheduledModal(true)}>+ Scheduled Session</button>
-            )}
-          </div>
+            </div>
+          )}
           <ul
             className="session-list-pinned"
             id="sessionListPinned"
@@ -390,31 +420,54 @@ export function SessionsPanel() {
             )}
           </ul>
           )}
-          {user?.uiViewMode === 'looper' && (
-            <ul className="session-list" id="scheduledSessionList" aria-label="Scheduled sessions">
-              {sortedSessions.filter(s => !s.pinned && s.cronExpression).map(session => (
-                <SessionListItem
-                  key={session.id}
-                  session={session}
-                  active={session.id === activeSessionId}
-                  hasErrors={sessionNamesWithErrors.has(session.name)}
-                  onClick={() => handleMobileSessionClick(session.id)}
-                  onDragStart={(e) => handleDragStart(e, session)}
-                  onDragEnd={handleDragEnd}
-                  onDragOver={handleDragOver}
-                  onDrop={(e) => handleDrop(e, session)}
-                  onContextMenu={(e) => handleContextMenu(e, session)}
-                />
-              ))}
-              {sortedSessions.filter(s => !s.pinned && s.cronExpression).length === 0 && (
-                <li className="session-empty-hint">No scheduled sessions yet. Create one with + Scheduled Session.</li>
-              )}
-            </ul>
+          {user?.uiViewMode === 'looper' && looperSidebarView === 'scheduled' && (
+            <>
+              <div className="toolbar" role="toolbar" aria-label="Session actions">
+                <button id="newScheduledSessionBtn" className="btn btn-primary" onClick={() => setShowScheduledModal(true)}>+ Scheduled Session</button>
+              </div>
+              <ul className="session-list" id="scheduledSessionList" aria-label="Scheduled sessions">
+                {sortedSessions.filter(s => !s.pinned && s.cronExpression).map(session => (
+                  <SessionListItem
+                    key={session.id}
+                    session={session}
+                    active={session.id === activeSessionId}
+                    hasErrors={sessionNamesWithErrors.has(session.name)}
+                    onClick={() => handleMobileSessionClick(session.id)}
+                    onDragStart={(e) => handleDragStart(e, session)}
+                    onDragEnd={handleDragEnd}
+                    onDragOver={handleDragOver}
+                    onDrop={(e) => handleDrop(e, session)}
+                    onContextMenu={(e) => handleContextMenu(e, session)}
+                  />
+                ))}
+                {sortedSessions.filter(s => !s.pinned && s.cronExpression).length === 0 && (
+                  <li className="session-empty-hint">No scheduled sessions yet. Create one with + Scheduled Session.</li>
+                )}
+              </ul>
+            </>
           )}
-          {user?.uiViewMode === 'looper' && <AutoScalerPanel />}
+          {user?.uiViewMode === 'looper' && looperSidebarView === 'autoscalers' && (
+            <AutoScalerPanel
+              selectedId={selectedAutoScalerId}
+              onSelect={(id) => setSelectedAutoScalerId(prev => prev === id ? null : id)}
+            />
+          )}
         </aside>
         <div className={`session-detail-panel${detailHidden ? ' mobile-hidden' : ''}`} id="sessionDetailPanel">
-          {!activeSession ? (
+          {user?.uiViewMode === 'looper' && looperSidebarView === 'autoscalers' && selectedAutoScalerId !== null && (() => {
+            const selectedAS = autoScalers.find(a => a.id === selectedAutoScalerId);
+            if (selectedAS) {
+              return (
+                <AutoScalerDetailView
+                  autoScaler={selectedAS}
+                  onClose={() => setSelectedAutoScalerId(null)}
+                />
+              );
+            }
+            return null;
+          })()}
+          {!(user?.uiViewMode === 'looper' && looperSidebarView === 'autoscalers' && selectedAutoScalerId !== null && autoScalers.find(a => a.id === selectedAutoScalerId)) && (
+            !activeSession ? (
             <div className="session-empty-state">
               {isMobile && mobileShowDetail && (
                 <button className="mobile-back-btn" onClick={handleMobileBack} aria-label="Back to session list">
@@ -498,6 +551,7 @@ export function SessionsPanel() {
               </div>
               <SessionPromptBar canSend={canSendPrompt} isLoop={isLoop} isInteractive={isInteractive} session={activeSession} onSend={handleSendPrompt} />
             </div>
+          )
           )}
         </div>
       </div>

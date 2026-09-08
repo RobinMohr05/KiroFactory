@@ -7,10 +7,20 @@ import type { AutoScaler } from '../types';
 /**
  * Auto-Scaler controls panel — rendered inside the SessionsPanel sidebar only when
  * the user's uiViewMode is 'looper'. Shows a form to create a new Auto-Scaler and
- * a list of existing Auto-Scalers with start/stop/delete controls.
+ * a compact list of existing Auto-Scalers with start/stop controls.
+ *
+ * Props:
+ *   selectedId    — currently selected auto-scaler id (controlled by SessionsPanel)
+ *   onSelect      — callback when the user clicks a card (passes the auto-scaler id)
  */
-export function AutoScalerPanel() {
-  const { autoScalers, setAutoScalers, agents, tabs, user, fetchAutoScalers } = useApp();
+export function AutoScalerPanel({
+  selectedId,
+  onSelect,
+}: {
+  selectedId: number | null;
+  onSelect: (id: number) => void;
+}) {
+  const { autoScalers, setAutoScalers, agents, tabs, fetchAutoScalers } = useApp();
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState('');
   const [agentName, setAgentName] = useState('');
@@ -181,9 +191,10 @@ export function AutoScalerPanel() {
           <AutoScalerCard
             key={autoScaler.id}
             autoScaler={autoScaler}
+            selected={autoScaler.id === selectedId}
+            onSelect={() => onSelect(autoScaler.id)}
             onStart={() => handleStart(autoScaler.id)}
             onStop={() => handleStop(autoScaler.id)}
-            onDelete={() => handleDelete(autoScaler.id)}
           />
         ))}
         {autoScalers.length === 0 && !showForm && (
@@ -194,50 +205,250 @@ export function AutoScalerPanel() {
   );
 }
 
-function AutoScalerCard({ autoScaler, onStart, onStop, onDelete }: {
+/**
+ * Compact auto-scaler card — shows only name, a running indicator dot, and
+ * Start/Stop buttons. Agent/max/count/Delete live in the detail view.
+ */
+function AutoScalerCard({
+  autoScaler,
+  selected,
+  onSelect,
+  onStart,
+  onStop,
+}: {
   autoScaler: AutoScaler;
+  selected: boolean;
+  onSelect: () => void;
   onStart: () => void;
   onStop: () => void;
-  onDelete: () => void;
 }) {
   const isRunning = autoScaler.status === 'running';
 
   return (
-    <li className={`autoscaler-card${isRunning ? ' autoscaler-running' : ''}`} data-autoscaler-id={autoScaler.id}>
-      <div className="autoscaler-card-header">
+    <li
+      className={`autoscaler-card${isRunning ? ' autoscaler-running' : ''}${selected ? ' autoscaler-card--selected' : ''}`}
+      data-autoscaler-id={autoScaler.id}
+      onClick={onSelect}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(); } }}
+    >
+      <div className="autoscaler-card-compact">
+        <span className={`autoscaler-status-dot${isRunning ? ' autoscaler-status-dot--running' : ''}`} aria-hidden="true" />
         <span className="autoscaler-card-name">{autoScaler.name}</span>
-        <span className={`autoscaler-status-badge status-${autoScaler.status}`}>{autoScaler.status}</span>
-      </div>
-      <div className="autoscaler-card-meta">
-        <span>Agent: {autoScaler.agentName}</span>
-        <span>Max: {autoScaler.maxConcurrency === 0 ? '∞' : autoScaler.maxConcurrency}</span>
-        {autoScaler.runningSessionCount !== undefined && (
-          <span>Running: {autoScaler.runningSessionCount}</span>
-        )}
-      </div>
-      <div className="autoscaler-card-controls">
-        <button
-          className="btn btn-success btn-sm"
-          disabled={isRunning}
-          onClick={onStart}
-        >
-          Start
-        </button>
-        <button
-          className="btn btn-danger btn-sm"
-          disabled={!isRunning}
-          onClick={onStop}
-        >
-          Stop
-        </button>
-        <button
-          className="btn btn-secondary btn-sm"
-          disabled={isRunning}
-          onClick={onDelete}
-        >
-          Delete
-        </button>
+        <div className="autoscaler-card-actions" onClick={(e) => e.stopPropagation()}>
+          <button
+            className="btn btn-success btn-sm"
+            disabled={isRunning}
+            onClick={onStart}
+            aria-label="Start"
+          >
+            Start
+          </button>
+          <button
+            className="btn btn-danger btn-sm"
+            disabled={!isRunning}
+            onClick={onStop}
+            aria-label="Stop"
+          >
+            Stop
+          </button>
+        </div>
       </div>
     </li>
+  );
+}
+
+/**
+ * Full detail + edit view for a selected auto-scaler. Rendered in the
+ * right-hand session-detail-panel by SessionsPanel.
+ */
+export function AutoScalerDetailView({
+  autoScaler,
+  onClose,
+}: {
+  autoScaler: AutoScaler;
+  onClose?: () => void;
+}) {
+  const { tabs, agents, setAutoScalers, fetchAutoScalers } = useApp();
+  const isRunning = autoScaler.status === 'running';
+
+  // Edit form state — initialised from the auto-scaler
+  const [editName, setEditName] = useState(autoScaler.name);
+  const [editAgentName, setEditAgentName] = useState(autoScaler.agentName);
+  const [editTabIds, setEditTabIds] = useState<number[]>(autoScaler.tabIds);
+  const [editModel, setEditModel] = useState(autoScaler.model ?? '');
+  const [editMaxConcurrency, setEditMaxConcurrency] = useState(autoScaler.maxConcurrency);
+  const [editIdleTimeoutSeconds, setEditIdleTimeoutSeconds] = useState(autoScaler.idleTimeoutSeconds);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const handleTabToggle = (tabId: number) => {
+    setEditTabIds(prev =>
+      prev.includes(tabId) ? prev.filter(id => id !== tabId) : [...prev, tabId]
+    );
+  };
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaveError(null);
+    setSaving(true);
+    try {
+      const res = await apiFetch(`/api/autoscalers/${autoScaler.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: editName.trim(),
+          agentName: editAgentName,
+          tabIds: editTabIds,
+          model: editModel.trim() && editModel.trim() !== 'auto' ? editModel.trim() : undefined,
+          maxConcurrency: editMaxConcurrency,
+          idleTimeoutSeconds: editIdleTimeoutSeconds,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setSaveError(data.error || 'Failed to save');
+        return;
+      }
+      await fetchAutoScalers();
+    } catch {
+      setSaveError('Network error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (isRunning) return;
+    try {
+      await apiFetch(`/api/autoscalers/${autoScaler.id}`, { method: 'DELETE' });
+      setAutoScalers(prev => prev.filter(f => f.id !== autoScaler.id));
+      onClose?.();
+    } catch { /* ignore */ }
+  };
+
+  const tabNames = autoScaler.tabIds
+    .map(tid => tabs.find(t => t.id === tid)?.name || `#${tid}`)
+    .join(', ') || 'None';
+
+  const displayModel = autoScaler.model ? autoScaler.model : 'auto';
+  const displayMax = autoScaler.maxConcurrency === 0 ? '∞' : String(autoScaler.maxConcurrency);
+  const displayCreatedAt = new Date(autoScaler.createdAt).toLocaleString();
+
+  return (
+    <div className="autoscaler-detail-panel" data-testid="autoscaler-detail-panel">
+      <div className="autoscaler-detail-header">
+        <div className="autoscaler-detail-title">
+          <h3>{autoScaler.name}</h3>
+          <span className={`autoscaler-status-badge status-${autoScaler.status}`}>{autoScaler.status}</span>
+          {autoScaler.runningSessionCount !== undefined && (
+            <span className="autoscaler-detail-running-count">{autoScaler.runningSessionCount} running</span>
+          )}
+        </div>
+        <div className="autoscaler-detail-meta-grid">
+          <span className="autoscaler-meta-label">Agent</span><span>{autoScaler.agentName}</span>
+          <span className="autoscaler-meta-label">Tabs</span><span>{tabNames}</span>
+          <span className="autoscaler-meta-label">Model</span><span>{displayModel}</span>
+          <span className="autoscaler-meta-label">Max Concurrency</span><span>{displayMax}</span>
+          <span className="autoscaler-meta-label">Idle Timeout</span><span>{autoScaler.idleTimeoutSeconds}s</span>
+          <span className="autoscaler-meta-label">Created</span><span>{displayCreatedAt}</span>
+        </div>
+      </div>
+
+      {isRunning && (
+        <div className="autoscaler-edit-disabled-hint">
+          Stop this auto-scaler first to edit its settings.
+        </div>
+      )}
+
+      <form className="autoscaler-edit-form" onSubmit={handleSave}>
+        <h4>Edit</h4>
+        <div className="form-group">
+          <label htmlFor="editAutoScalerName">Name</label>
+          <input
+            id="editAutoScalerName"
+            type="text"
+            name="name"
+            value={editName}
+            disabled={isRunning}
+            onChange={e => setEditName(e.target.value)}
+          />
+        </div>
+        <div className="form-group">
+          <label htmlFor="editAutoScalerAgent">Agent</label>
+          <select
+            id="editAutoScalerAgent"
+            value={editAgentName}
+            disabled={isRunning}
+            onChange={e => setEditAgentName(e.target.value)}
+          >
+            {agents.map(a => (
+              <option key={a.id} value={a.name}>{a.name}</option>
+            ))}
+          </select>
+        </div>
+        <div className="form-group">
+          <label>Tabs</label>
+          <div className="autoscaler-tab-checkboxes">
+            {tabs.map(t => (
+              <label key={t.id} className="autoscaler-tab-checkbox">
+                <input
+                  type="checkbox"
+                  checked={editTabIds.includes(t.id)}
+                  disabled={isRunning}
+                  onChange={() => handleTabToggle(t.id)}
+                />
+                {t.name}
+              </label>
+            ))}
+          </div>
+        </div>
+        <div className="form-group">
+          <label htmlFor="editAutoScalerModel">Model</label>
+          <ModelSelect id="editAutoScalerModel" value={editModel} onChange={setEditModel} />
+        </div>
+        <div className="form-group">
+          <label htmlFor="editAutoScalerMaxConcurrency">Max Concurrency (0 = unlimited)</label>
+          <input
+            id="editAutoScalerMaxConcurrency"
+            type="number"
+            min={0}
+            value={editMaxConcurrency}
+            disabled={isRunning}
+            onChange={e => setEditMaxConcurrency(Number(e.target.value))}
+          />
+        </div>
+        <div className="form-group">
+          <label htmlFor="editAutoScalerIdleTimeout">Idle Timeout (seconds)</label>
+          <input
+            id="editAutoScalerIdleTimeout"
+            type="number"
+            min={0}
+            value={editIdleTimeoutSeconds}
+            disabled={isRunning}
+            onChange={e => setEditIdleTimeoutSeconds(Number(e.target.value))}
+          />
+        </div>
+        {saveError && <div className="form-message error">{saveError}</div>}
+        <div className="form-actions">
+          <button
+            type="submit"
+            className="btn btn-primary btn-sm"
+            disabled={isRunning || saving}
+          >
+            Save
+          </button>
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            disabled={isRunning}
+            onClick={handleDelete}
+          >
+            Delete
+          </button>
+        </div>
+      </form>
+    </div>
   );
 }
