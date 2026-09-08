@@ -7,10 +7,14 @@ vi.mock('../context/AppContext', () => ({
   useApp: vi.fn(),
 }));
 
-vi.mock('../utils/api', () => ({
-  apiFetch: vi.fn(),
-  formatErrorTime: (t: string) => t,
-}));
+vi.mock('../utils/api', async (importActual) => {
+  const actual = await importActual<typeof import('../utils/api')>();
+  return {
+    ...actual,
+    apiFetch: vi.fn(),
+    formatErrorTime: (t: string) => t,
+  };
+});
 
 import { ErrorsPanel } from '../components/ErrorsPanel';
 
@@ -313,5 +317,74 @@ describe('ErrorsPanel - sub-tab switcher', () => {
     await waitFor(() => {
       expect(screen.getByText('✓ Copied')).toBeInTheDocument();
     });
+  });
+});
+
+describe('ErrorsPanel - WSL/Docker Logs subtab localhost gating', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.apiFetch).mockImplementation(async (url: string) => {
+      if (url === '/api/errors/wsl-diagnostics') {
+        return { ok: true, json: async () => [] } as any;
+      }
+      return { ok: true, json: async () => ({}) } as any;
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    // Restore the original location object so other tests aren't affected
+    Object.defineProperty(window, 'location', {
+      value: { hostname: 'localhost' },
+      writable: true,
+      configurable: true,
+    });
+  });
+
+  function mockHostname(hostname: string) {
+    Object.defineProperty(window, 'location', {
+      value: { hostname },
+      writable: true,
+      configurable: true,
+    });
+  }
+
+  it('shows the WSL/Docker Logs subtab when hostname is "localhost"', () => {
+    mockHostname('localhost');
+    mockUseApp({ errors: [] });
+    render(<ErrorsPanel />);
+    expect(screen.getByRole('tab', { name: 'WSL/Docker Logs' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Agent Errors' })).toBeInTheDocument();
+  });
+
+  it('shows the WSL/Docker Logs subtab when hostname is "127.0.0.1"', () => {
+    mockHostname('127.0.0.1');
+    mockUseApp({ errors: [] });
+    render(<ErrorsPanel />);
+    expect(screen.getByRole('tab', { name: 'WSL/Docker Logs' })).toBeInTheDocument();
+  });
+
+  it('shows the WSL/Docker Logs subtab when hostname is "::1"', () => {
+    mockHostname('::1');
+    mockUseApp({ errors: [] });
+    render(<ErrorsPanel />);
+    expect(screen.getByRole('tab', { name: 'WSL/Docker Logs' })).toBeInTheDocument();
+  });
+
+  it('hides the WSL/Docker Logs subtab when hostname is a non-localhost value', () => {
+    mockHostname('app.example.com');
+    mockUseApp({ errors: [] });
+    render(<ErrorsPanel />);
+    expect(screen.queryByRole('tab', { name: 'WSL/Docker Logs' })).not.toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Agent Errors' })).toBeInTheDocument();
+  });
+
+  it('still renders the errors-subtabs tablist strip when not on localhost', () => {
+    mockHostname('app.example.com');
+    mockUseApp({ errors: [] });
+    render(<ErrorsPanel />);
+    // The tablist container is still rendered even when it only has the Agent Errors tab
+    expect(screen.getByRole('tablist', { name: 'Errors view' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Agent Errors' })).toBeInTheDocument();
   });
 });
