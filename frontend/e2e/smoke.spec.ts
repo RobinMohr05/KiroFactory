@@ -10,7 +10,11 @@ import { test, expect } from '@playwright/test';
  * What we assert:
  *   1. The page title is "Vibecode Heaven" (set in index.html — stable across
  *      auth state changes and never modified by React router).
- *   2. The React root mount-point (`#root`) is present in the DOM.
+ *   2. React successfully mounted into `#root` — verified by asserting a visible
+ *      child element exists inside `#root`. `#root` itself is hardcoded in
+ *      index.html and would always pass a bare attachment check even if the JS
+ *      bundle failed to load; the `#root > *` selector only passes after React
+ *      has rendered at least one child node.
  *
  * Do NOT extend this test to require authentication or WebSocket connectivity —
  * that belongs in a separate E2E suite with a full backend fixture.
@@ -22,7 +26,8 @@ test('app root renders', async ({ page }) => {
   // HTML was served and the browser didn't hit an unexpected error page.
   await expect(page).toHaveTitle('Vibecode Heaven');
 
-  // The React root element must exist — if Vite failed to bundle or serve the
-  // app, this div would be absent or empty.
-  await expect(page.locator('#root')).toBeAttached();
+  // Assert a visible child exists inside #root — this confirms the JavaScript
+  // bundle loaded and React ran successfully. A bare `toBeAttached()` on #root
+  // would pass even if React never mounted (the div is static in index.html).
+  await expect(page.locator('#root > *')).toBeVisible();
 });
