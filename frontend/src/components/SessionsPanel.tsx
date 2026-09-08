@@ -461,11 +461,9 @@ export function SessionsPanel() {
             <AutoScalerPanel
               selectedId={selectedAutoScalerId}
               onSelect={(id) => {
-                setSelectedAutoScalerId(prev => {
-                  const next = prev === id ? null : id;
-                  if (isMobile) setMobileShowDetail(next !== null);
-                  return next;
-                });
+                const next = selectedAutoScalerId === id ? null : id;
+                setSelectedAutoScalerId(next);
+                if (isMobile) setMobileShowDetail(next !== null);
               }}
             />
           )}

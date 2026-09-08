@@ -357,6 +357,15 @@ export function AutoScalerDetailView({
     }
   };
 
+  const normalizedEditModel = editModel.trim() && editModel.trim() !== 'auto' ? editModel.trim() : null;
+  const hasChanges =
+    editName.trim() !== autoScaler.name ||
+    editAgentName !== autoScaler.agentName ||
+    JSON.stringify([...editTabIds].sort((a, b) => a - b)) !== JSON.stringify([...autoScaler.tabIds].sort((a, b) => a - b)) ||
+    normalizedEditModel !== (autoScaler.model ?? null) ||
+    editMaxConcurrency !== autoScaler.maxConcurrency ||
+    editIdleTimeoutSeconds !== autoScaler.idleTimeoutSeconds;
+
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaveError(null);
@@ -382,8 +391,7 @@ export function AutoScalerDetailView({
     const sortedEdit = [...editTabIds].sort((a, b) => a - b);
     const sortedOrig = [...autoScaler.tabIds].sort((a, b) => a - b);
     if (JSON.stringify(sortedEdit) !== JSON.stringify(sortedOrig)) patch.tabIds = editTabIds;
-    const normalizedModel = editModel.trim() && editModel.trim() !== 'auto' ? editModel.trim() : null;
-    if (normalizedModel !== (autoScaler.model ?? null)) patch.model = normalizedModel;
+    if (normalizedEditModel !== (autoScaler.model ?? null)) patch.model = normalizedEditModel;
     if (editMaxConcurrency !== autoScaler.maxConcurrency) patch.maxConcurrency = editMaxConcurrency;
     if (editIdleTimeoutSeconds !== autoScaler.idleTimeoutSeconds) patch.idleTimeoutSeconds = editIdleTimeoutSeconds;
 
@@ -554,7 +562,7 @@ export function AutoScalerDetailView({
           <button
             type="submit"
             className="btn btn-primary btn-sm"
-            disabled={isRunning || saving}
+            disabled={isRunning || saving || !hasChanges}
           >
             Save
           </button>
