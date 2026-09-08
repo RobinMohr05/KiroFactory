@@ -101,14 +101,5 @@ E2E specs live in `frontend/e2e/`. The smoke test only requires the Vite dev ser
 backend needed. Tests that exercise authenticated flows will need the backend running on
 port 3500 (`npm run dev -w backend`).
 
-**Adding E2E to CI:** add the following two steps to `.github/workflows/ci.yml` after the
-"Test frontend" step (requires a PAT with `workflow` scope to push the workflow file):
-
-```yaml
-- name: Install Playwright browsers
-  run: npx playwright install --with-deps chromium
-  working-directory: frontend
-
-- name: E2E tests (frontend)
-  run: npm run test:e2e -w frontend
-```
+E2E tests are wired into CI (`.github/workflows/ci.yml`) and run automatically on every
+pull request after the Vitest suite passes.
