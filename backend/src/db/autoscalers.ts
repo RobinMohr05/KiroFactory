@@ -158,6 +158,75 @@ export async function updateAutoScalerStatus(id: number, status: AutoScalerStatu
 }
 
 /**
+ * Update an AutoScaler's editable fields and/or tab assignments.
+ * Only the provided fields are SET; status is never changed here.
+ */
+export async function updateAutoScaler(
+  id: number,
+  fields: Partial<{
+    name: string;
+    agentName: string;
+    tabIds: number[];
+    model: string | null;
+    maxConcurrency: number;
+    idleTimeoutSeconds: number;
+  }>
+): Promise<AutoScaler | null> {
+  return writeQuery(async (tx: ManagedTransaction) => {
+    // Build a SET clause for scalar fields only (skip tabIds — handled separately).
+    const scalarFields: Record<string, unknown> = {};
+    if (fields.name !== undefined) scalarFields.name = fields.name;
+    if (fields.agentName !== undefined) scalarFields.agentName = fields.agentName;
+    if (fields.model !== undefined) scalarFields.model = fields.model;
+    if (fields.maxConcurrency !== undefined) scalarFields.maxConcurrency = fields.maxConcurrency;
+    if (fields.idleTimeoutSeconds !== undefined) scalarFields.idleTimeoutSeconds = fields.idleTimeoutSeconds;
+
+    // Build SET assignments string for non-tabIds fields.
+    const setEntries = Object.keys(scalarFields).map((k) => `f.${k} = $${k}`);
+
+    let query: string;
+    const params: Record<string, unknown> = { id, ...scalarFields };
+
+    if (fields.tabIds !== undefined) {
+      // Re-sync IN_TAB relationships: delete existing, MERGE new ones.
+      params.tabIds = fields.tabIds;
+      const setClause = setEntries.length > 0 ? `SET ${setEntries.join(", ")}` : "";
+      query = `
+        MATCH (f:AutoScaler {id: $id})
+        ${setClause}
+        WITH f
+        OPTIONAL MATCH (f)-[r:IN_TAB]->(:Tab)
+        DELETE r
+        WITH f
+        UNWIND $tabIds AS tid
+        MATCH (t:Tab {id: tid})
+        MERGE (f)-[:IN_TAB]->(t)
+        WITH f, collect(t.id) AS tabIds
+        OPTIONAL MATCH (owner:User)-[:OWNS]->(f)
+        RETURN f{.*} AS autoScaler, tabIds, owner.id AS userId
+      `;
+    } else {
+      // No tab changes — just update scalar fields.
+      const setClause = setEntries.length > 0 ? `SET ${setEntries.join(", ")}` : "";
+      query = `
+        MATCH (f:AutoScaler {id: $id})
+        ${setClause}
+        WITH f
+        OPTIONAL MATCH (f)-[:IN_TAB]->(t:Tab)
+        WITH f, collect(t.id) AS tabIds
+        OPTIONAL MATCH (owner:User)-[:OWNS]->(f)
+        RETURN f{.*} AS autoScaler, tabIds, owner.id AS userId
+      `;
+    }
+
+    const result = await tx.run(query, params);
+    if (result.records.length === 0) return null;
+    const record = result.records[0];
+    return mapToAutoScaler(record.get("autoScaler"), record.get("tabIds"), record.get("userId"));
+  });
+}
+
+/**
  * Delete a AutoScaler by numeric ID.
  */
 export async function deleteAutoScaler(id: number): Promise<boolean> {
