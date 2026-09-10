@@ -1,52 +1,89 @@
 /**
- * AutoScaler Manager — auto-scaling session pools.
+ * AutoScaler Manager — auto-scaling session pools (reuse-based model).
  *
  * A "AutoScaler" watches the claimable task queue for a specific agent/tab
- * combination and spins up loop sessions to match, up to a configurable
- * concurrency cap. Each session claims tasks until idle for
- * `idleTimeoutSeconds`, then stops itself, freeing its concurrency slot.
- * A new task arriving at any time triggers a reconciliation pass that may
- * spawn fresh sessions.
+ * combination and maintains a pool of loop sessions: some "running" (actively
+ * claiming tasks) and some "ready" (created but stopped — no container, no
+ * cost, but instantly startable). Sessions are reused via stop/start rather
+ * than deleted/recreated on every scale change.
  *
- * THREE COORDINATED BEHAVIORS
- * ───────────────────────────
+ * TWO COORDINATED BEHAVIORS
+ * ─────────────────────────
  * 1. Scale on task arrival: when tasks transition into a claimable state, the
- *    reconcile loop wakes (via waitForTaskAvailable) and spawns sessions.
+ *    reconcile loop wakes (via waitForTaskAvailable) and starts sessions (reusing
+ *    ready ones where possible, creating new ones only when the pool is exhausted).
  *    Routes already call notifyTaskAvailable() on state changes — no extra
  *    wiring needed here.
  *
- * 2. Keep-warm floor (keepWarmWhileTasksExist): when enabled, maintains
- *    exactly one "floor session" running as long as any non-done task exists
- *    in the autoscaler's tabs, even if nothing is currently claimable (e.g.
- *    all tasks are blocked by dependencies). The floor session is exempt from
- *    idle-death (behavior 3). When all tasks reach "done", the floor drops to
- *    0. When disabled (default), desired stays at 0 until something is
- *    actually claimable.
+ * 2. Idle-then-ready (not idle-then-die): sessions are spawned as loop: true.
+ *    The autoscaler arms a per-session idle timer: if a session goes
+ *    idleTimeoutSeconds without claiming a new task, it is wound down via
+ *    stopSession() (tears down its container) but its record is KEPT as a
+ *    ready pool member for reuse, rather than deleted.
  *
- *    Desired formula:
- *      floor = (keepWarmWhileTasksExist && nonDoneCount > 0) ? 1 : 0
- *      desired = max(floor, min(maxConcurrency || Infinity, claimableCount))
+ * POOL MODEL
+ * ──────────
+ * Let C = claimable count (getAvailableTaskCount), N = non-done count
+ * (getNonDoneTaskCount), cap = maxConcurrency (0 = unlimited/Infinity):
  *
- * 3. Idle-then-die: sessions are spawned as loop: true. The autoscaler arms
- *    a per-session idle timer: if a session goes idleTimeoutSeconds without
- *    claiming a new task (detected by polling currentTaskId for changes), it
- *    is stopped. The single floor session is exempt — it is kept running as
- *    long as a non-done task exists regardless of idle time.
+ *   - C > 0: targetRunning = min(cap, C + 1). The "+1" is one eager standby
+ *     session to claim the next task as soon as it's needed. Clamped to the
+ *     available pool size (running + ready) when creating new sessions.
+ *   - C == 0 and N > 0: targetRunning = min(cap, ceil(ceil(N/2)/2));
+ *     targetPool (ready + running) = min(cap, ceil(N/2)).
+ *   - N == 0: targetRunning = 0; the pool is RETAINED (not deleted) so it's
+ *     ready to reuse the next time work shows up.
  *
- * Run-state (which sessions belong to a running AutoScaler) is in-memory only,
- * matching the existing session-manager pattern. Only the AutoScaler's
- * configuration record persists across restarts.
+ * HWM (high-water mark) = the largest target-total-pool size ever observed
+ * while this autoscaler has been running. Monotonic non-decreasing, except
+ * it is clamped down when maxConcurrency itself decreases. The HWM acts as a
+ * floor for the pool: the effective pool target each reconcile is
+ * max(computedTargetPool, hwm) capped by cap, so once the pool has grown it
+ * stays at least that large (ready for reuse) rather than shrinking back
+ * toward a lower computed target. Sessions are created up to that floored
+ * target on scale-up; they are never deleted merely to shrink the pool back
+ * down — only maxConcurrency decreasing below the current pool size, or the
+ * idle-age reaper, deletes a pooled session (see trimPoolForCapDecrease /
+ * reapIdlePoolSessions below).
+ *
+ * Idle-age reaper: any pooled (ready, i.e. non-running) session whose
+ * OWNS_SESSION edge lastUsedAt is older than AUTOSCALER_POOL_MAX_IDLE_DAYS
+ * (default 7) is deleted (DB node + edge). Runs opportunistically inside
+ * reconcile() and on an hourly timer so it fires even while otherwise idle.
+ * A currently-running session is never reaped.
  */
 
 import { broadcastToUser } from "./websocket-handler.js";
-import { createAutoScaler as dbCreateAutoScaler, getAutoScalerById, getAllAutoScalers as dbGetAllAutoScalers, updateAutoScalerStatus, updateAutoScaler as dbUpdateAutoScaler, deleteAutoScaler as dbDeleteAutoScaler } from "./db/autoscalers.js";
+import {
+  createAutoScaler as dbCreateAutoScaler,
+  getAutoScalerById,
+  getAllAutoScalers as dbGetAllAutoScalers,
+  getRunningAutoScalers,
+  updateAutoScalerStatus,
+  updateAutoScaler as dbUpdateAutoScaler,
+  deleteAutoScaler as dbDeleteAutoScaler,
+  linkPooledSession,
+  touchPooledSession,
+  getPooledSessionIds,
+  getPooledSessionsWithLastUsed,
+} from "./db/autoscalers.js";
 import { getAvailableTaskCount, getNonDoneTaskCount, waitForTaskAvailable } from "./agent/task-claimer.js";
-import { createSession, startSession, stopSession, getAllSessions } from "./session-manager.js";
+import { createSession, startSession, stopSession, deleteSession, getSession, markSessionPooled } from "./session-manager.js";
 import { getAgentStageStates } from "./session-manager.js";
+import { updateSessionStatus } from "./db/sessions.js";
 import { log } from "./logger.js";
-import { isAcaModeEnabled } from "./aca-worker-spawner.js";
-import { NO_TASKS_PARK_DETAIL } from "./types.js";
 import type { AutoScaler, CreateAutoScalerInput, Session } from "./types.js";
+
+/**
+ * Idle-age reaper threshold, in days. A pooled (ready) session whose
+ * OWNS_SESSION edge lastUsedAt is older than this is deleted outright.
+ * Configurable via AUTOSCALER_POOL_MAX_IDLE_DAYS; defaults to 7.
+ */
+const POOL_MAX_IDLE_DAYS = Number(process.env.AUTOSCALER_POOL_MAX_IDLE_DAYS) || 7;
+const POOL_MAX_IDLE_MS = POOL_MAX_IDLE_DAYS * 24 * 60 * 60 * 1000;
+
+/** How often the opportunistic-but-also-timer-driven reaper sweep runs when otherwise idle. */
+const REAPER_INTERVAL_MS = 60 * 60 * 1000; // hourly
 
 // ---------------------------------------------------------------------------
 // In-memory autoScaler state
@@ -54,15 +91,14 @@ import type { AutoScaler, CreateAutoScalerInput, Session } from "./types.js";
 
 interface ManagedAutoScaler {
   autoScaler: AutoScaler;
-  /** Session IDs currently owned by this autoScaler. */
+  /** Session IDs currently owned by this autoScaler (both running and ready). */
   sessionIds: Set<number>;
   /**
-   * The "floor" session ID — exempt from idle-death when keepWarmWhileTasksExist
-   * is true and non-done tasks exist. Always the first session spawned in a
-   * reconciliation cycle that includes a floor requirement. Null when no floor
-   * session exists.
+   * High-water mark: the largest target-total-pool size ever observed while
+   * this autoscaler has been running. Monotonic non-decreasing except when
+   * maxConcurrency itself decreases (see trimPoolForCapDecrease).
    */
-  floorSessionId: number | null;
+  hwm: number;
   /** AbortController for the reconciliation loop. */
   abortController: AbortController;
   /** Whether a reconciliation is currently in progress (prevents re-entrant runs). */
@@ -80,16 +116,8 @@ interface ManagedAutoScaler {
    * removes it when the interval is cleared.
    */
   idleIntervals: Set<ReturnType<typeof setInterval>>;
-  /**
-   * Debounce timer for reconcile calls triggered by watchSessionCompletion. Multiple
-   * near-simultaneous session deaths (e.g. an entire burst idle-timing out within the
-   * same 5s poll window) each call reconcile — without a debounce each death triggers
-   * its own full reconcile pass, compounding the thundering-herd. This timer collapses
-   * those into a single deferred reconcile call.
-   *
-   * Null when no deferred reconcile is pending.
-   */
-  completionReconcileTimer: ReturnType<typeof setTimeout> | null;
+  /** Hourly reaper timer handle, so stopAutoScaler can clear it immediately. */
+  reaperInterval: ReturnType<typeof setInterval> | null;
 }
 
 const autoScalers = new Map<number, ManagedAutoScaler>();
@@ -115,6 +143,68 @@ export async function getAllAutoScalers(userId: number): Promise<AutoScaler[]> {
 }
 
 /**
+ * Resume AutoScalers that were running before a server restart.
+ *
+ * For every AutoScaler persisted with status "running": first reset any of
+ * its pooled sessions still marked "running" in the DB back to "stopped"
+ * (session-manager.ts's initSessions() already reset the in-memory copy —
+ * see its includePooled load — but the DB row itself is only rewritten via
+ * an explicit write, which this supplies), then call startAutoScaler(), which
+ * adopts the persisted pooled session IDs into managed.sessionIds (all as
+ * stopped/ready) and runs one reconcile pass.
+ *
+ * Must run after initSessions() (session-manager.ts) so the in-memory session
+ * store is already populated when reconcile inspects pooled sessions via
+ * getSession().
+ */
+export async function initAutoScalers(): Promise<void> {
+  let running: AutoScaler[] = [];
+  try {
+    running = await getRunningAutoScalers();
+  } catch (err) {
+    log.warn("autoscaler-restore-failed", {
+      component: "autoscaler-manager",
+      msg: `Failed to load running AutoScalers from DB: ${err instanceof Error ? err.message : err}`,
+    });
+    return;
+  }
+
+  if (running.length === 0) return;
+
+  log.info("autoscalers-resuming", {
+    component: "autoscaler-manager",
+    count: running.length,
+    msg: `Resuming ${running.length} AutoScaler(s) that were running before restart`,
+  });
+
+  for (const autoScaler of running) {
+    try {
+      const pooledSessionIds = await getPooledSessionIds(autoScaler.id);
+      for (const sessionId of pooledSessionIds) {
+        try {
+          await updateSessionStatus(sessionId, "stopped");
+        } catch (err) {
+          log.warn("autoscaler-pool-session-reset-error", {
+            component: "autoscaler-manager",
+            autoScalerId: autoScaler.id,
+            sessionId,
+            msg: `Failed to reset pooled session status: ${err instanceof Error ? err.message : err}`,
+          });
+        }
+      }
+
+      await startAutoScaler(autoScaler.id);
+    } catch (err) {
+      log.warn("autoscaler-resume-error", {
+        component: "autoscaler-manager",
+        autoScalerId: autoScaler.id,
+        msg: `Failed to resume AutoScaler: ${err instanceof Error ? err.message : err}`,
+      });
+    }
+  }
+}
+
+/**
  * Update an AutoScaler's editable configuration fields. Status is not changeable here.
  * Broadcasts an `autoscaler-updated` event on success.
  */
@@ -131,6 +221,19 @@ export async function updateAutoScalerRecord(
 ): Promise<AutoScaler | null> {
   const updated = await dbUpdateAutoScaler(id, fields);
   if (updated) {
+    // If this autoscaler is currently running, refresh its in-memory config
+    // snapshot so the change actually takes effect on the live instance. The
+    // reconcile loop reads managed.autoScaler.{maxConcurrency,agentName,tabIds,
+    // idleTimeoutSeconds} on every pass; without this, edits (e.g. a
+    // maxConcurrency decrease that should trigger trimPoolForCapDecrease) would
+    // only be picked up after a stop/restart. Kick a reconcile so the new
+    // config is applied immediately rather than waiting for the next
+    // task-available wake-up.
+    const managed = autoScalers.get(id);
+    if (managed) {
+      managed.autoScaler = updated;
+      reconcile(managed).catch(() => {});
+    }
     broadcastToUser(updated.userId, { type: "autoscaler-updated", autoScaler: updated });
   }
   return updated;
@@ -154,16 +257,43 @@ export async function startAutoScaler(autoScalerId: number): Promise<AutoScaler 
   const managed: ManagedAutoScaler = {
     autoScaler: updated,
     sessionIds: new Set(),
-    floorSessionId: null,
+    hwm: 0,
     abortController: new AbortController(),
     reconciling: false,
     pendingReconcile: false,
     idleIntervals: new Set(),
-    completionReconcileTimer: null,
+    reaperInterval: null,
   };
+
+  // Adopt any persisted pooled sessions (from a previous run of this
+  // AutoScaler, e.g. before a server restart) so the restarted autoscaler
+  // continues managing them rather than losing track and orphaning them.
+  try {
+    const pooledSessionIds = await getPooledSessionIds(autoScalerId);
+    for (const sessionId of pooledSessionIds) {
+      managed.sessionIds.add(sessionId);
+      markSessionPooled(sessionId);
+    }
+    // The adopted pool's size is itself a floor for the HWM — it was reached
+    // by a prior run of this autoscaler and must not silently shrink on restart.
+    managed.hwm = pooledSessionIds.length;
+  } catch (err) {
+    log.warn("autoscaler-pool-adopt-error", {
+      component: "autoscaler-manager",
+      autoScalerId,
+      msg: `Failed to load persisted pooled sessions: ${err instanceof Error ? err.message : err}`,
+    });
+  }
+
   autoScalers.set(autoScalerId, managed);
 
   broadcastToUser(updated.userId, { type: "autoscaler-updated", autoScaler: updated });
+
+  // Arm the hourly reaper sweep so idle-age deletion fires even while the
+  // autoscaler is otherwise quiet (reconcile() also runs it opportunistically).
+  managed.reaperInterval = setInterval(() => {
+    reapIdlePoolSessions(managed).catch(() => {});
+  }, REAPER_INTERVAL_MS);
 
   // Start the reconciliation loop (non-blocking).
   reconcileLoop(managed).catch((err) => {
@@ -196,13 +326,13 @@ export async function stopAutoScaler(autoScalerId: number): Promise<AutoScaler |
     }
     managed.idleIntervals.clear();
 
-    // Cancel any pending debounced reconcile so it doesn't fire after teardown.
-    if (managed.completionReconcileTimer !== null) {
-      clearTimeout(managed.completionReconcileTimer);
-      managed.completionReconcileTimer = null;
+    if (managed.reaperInterval) {
+      clearInterval(managed.reaperInterval);
+      managed.reaperInterval = null;
     }
 
-    // Stop all owned sessions.
+    // Stop (not delete) all owned sessions — they remain in the pool, ready
+    // to be reused the next time this autoscaler is started.
     for (const sessionId of managed.sessionIds) {
       try {
         await stopSession(sessionId);
@@ -211,7 +341,6 @@ export async function stopAutoScaler(autoScalerId: number): Promise<AutoScaler |
       }
     }
     managed.sessionIds.clear();
-    managed.floorSessionId = null;
     autoScalers.delete(autoScalerId);
   }
 
@@ -242,9 +371,34 @@ export async function deleteAutoScalerRecord(autoScalerId: number): Promise<bool
 
 /**
  * Get the running session count for a autoScaler (for UI display).
+ * Counts only sessions actually in "running" status — a ready (stopped,
+ * pooled) session is not counted here. See getAutoScalerReadySessionCount
+ * for the complementary ready-pool count.
  */
 export function getAutoScalerRunningSessionCount(autoScalerId: number): number {
-  return autoScalers.get(autoScalerId)?.sessionIds.size ?? 0;
+  const managed = autoScalers.get(autoScalerId);
+  if (!managed) return 0;
+  let count = 0;
+  for (const sessionId of managed.sessionIds) {
+    if (getSession(sessionId)?.status === "running") count++;
+  }
+  return count;
+}
+
+/**
+ * Get the ready (pooled, not currently running) session count for a
+ * autoScaler — the counterpart to getAutoScalerRunningSessionCount, added
+ * for UI parity with the reuse-based pool model. Not currently wired into
+ * any route/UI (no frontend work required for this task).
+ */
+export function getAutoScalerReadySessionCount(autoScalerId: number): number {
+  const managed = autoScalers.get(autoScalerId);
+  if (!managed) return 0;
+  let count = 0;
+  for (const sessionId of managed.sessionIds) {
+    if (getSession(sessionId)?.status !== "running") count++;
+  }
+  return count;
 }
 
 /**
@@ -252,10 +406,41 @@ export function getAutoScalerRunningSessionCount(autoScalerId: number): number {
  */
 export function getAutoScalerSessionCounts(): Map<number, number> {
   const counts = new Map<number, number>();
-  for (const [id, managed] of autoScalers) {
-    counts.set(id, managed.sessionIds.size);
+  for (const [id] of autoScalers) {
+    counts.set(id, getAutoScalerRunningSessionCount(id));
   }
   return counts;
+}
+
+// ---------------------------------------------------------------------------
+// Pool target calculation (pure function — the core of the reuse-based model)
+// ---------------------------------------------------------------------------
+
+/** Sentinel targetPool value meaning "retain the existing pool as-is" (N == 0 case). */
+export const RETAIN_POOL = -1;
+
+export interface PoolTargets {
+  targetRunning: number;
+  /** RETAIN_POOL when N == 0 — the pool must not be grown OR shrunk toward this. */
+  targetPool: number;
+}
+
+/**
+ * Compute the desired running count and desired total pool size (ready +
+ * running) from the claimable count (C), non-done count (N), and the
+ * concurrency cap. See this module's doc comment for the full model.
+ */
+export function computePoolTargets(claimableCount: number, nonDoneCount: number, cap: number): PoolTargets {
+  if (claimableCount > 0) {
+    const targetRunning = Math.min(cap, claimableCount + 1);
+    return { targetRunning, targetPool: targetRunning };
+  }
+  if (nonDoneCount > 0) {
+    const targetPool = Math.min(cap, Math.ceil(nonDoneCount / 2));
+    const targetRunning = Math.min(cap, Math.ceil(targetPool / 2));
+    return { targetRunning, targetPool };
+  }
+  return { targetRunning: 0, targetPool: RETAIN_POOL };
 }
 
 // ---------------------------------------------------------------------------
@@ -263,13 +448,18 @@ export function getAutoScalerSessionCounts(): Map<number, number> {
 // ---------------------------------------------------------------------------
 
 /**
- * Core reconciliation: determines how many sessions should be running and
- * spawns to reach the target. Sessions die on their own idle timer (behavior 3)
- * or are stopped by stopAutoScaler.
- *
- * Desired formula:
- *   floor = (keepWarmWhileTasksExist && nonDoneCount > 0) ? 1 : 0
- *   desired = max(floor, min(maxConcurrency || Infinity, claimableCount))
+ * Core reconciliation: determines the target running count and target pool
+ * size (see computePoolTargets), then:
+ *   - starts ready (stopped) pooled sessions and/or creates new ones to reach
+ *     targetRunning (reuse before create — see startOrCreatePooledSession),
+ *   - winds down (stopSession, keeps as ready) surplus running sessions down
+ *     to targetRunning,
+ *   - grows the pool (creates ready-but-not-started sessions) up to targetPool,
+ *   - trims the pool down to a decreased maxConcurrency cap (never below the
+ *     current running count — an actively-claiming session is never killed
+ *     just to satisfy a cap decrease),
+ *   - updates the HWM,
+ *   - runs the idle-age reaper opportunistically.
  *
  * @param stages - Pre-fetched agent stage states. When provided, the DB call to
  *   getAgentStageStates is skipped (used by reconcileLoop to avoid a redundant fetch).
@@ -289,17 +479,20 @@ async function reconcile(managed: ManagedAutoScaler, stages?: { claimState: stri
   try {
     const { autoScaler } = managed;
 
-    // Prune sessions that are no longer running.
-    const allSessions = getAllSessions(autoScaler.userId);
+    // Untrack sessions that are truly gone (deleted) — NOT sessions that are
+    // merely stopped/ready. A ready session is a pool member, not a dead one,
+    // and must stay tracked so it can be reused on the next scale-up.
     for (const sessionId of [...managed.sessionIds]) {
-      const session = allSessions.find((s) => s.id === sessionId);
-      if (!session || session.status !== "running") {
+      if (!getSession(sessionId)) {
         managed.sessionIds.delete(sessionId);
-        if (managed.floorSessionId === sessionId) {
-          managed.floorSessionId = null;
-        }
       }
     }
+
+    const cap = autoScaler.maxConcurrency > 0 ? autoScaler.maxConcurrency : Infinity;
+
+    // Cap decrease: trim the pool down before computing new targets, so a
+    // lowered maxConcurrency takes effect even while N == 0 (pool retained).
+    await trimPoolForCapDecrease(managed, cap);
 
     // Get agent stage states — reuse the provided snapshot if available (avoids
     // a redundant DB/config hit when called from reconcileLoop).
@@ -309,102 +502,105 @@ async function reconcile(managed: ManagedAutoScaler, stages?: { claimState: stri
       resolvedStages.claimState,
       resolvedStages.workingState
     );
+    const nonDoneCount = await getNonDoneTaskCount(autoScaler.tabIds);
 
-    // Compute floor: 1 if keepWarmWhileTasksExist and any non-done tasks exist.
-    let floor = 0;
-    if (autoScaler.keepWarmWhileTasksExist) {
-      const nonDoneCount = await getNonDoneTaskCount(autoScaler.tabIds);
-      floor = nonDoneCount > 0 ? 1 : 0;
+    const { targetRunning, targetPool } = computePoolTargets(claimableCount, nonDoneCount, cap);
+
+    // HWM: monotonic non-decreasing (clamped down only by trimPoolForCapDecrease
+    // above, which also lowers hwm directly when cap shrinks).
+    if (targetPool !== RETAIN_POOL && targetPool > managed.hwm) {
+      managed.hwm = targetPool;
     }
 
-    const currentRunning = managed.sessionIds.size;
-    const cap = autoScaler.maxConcurrency > 0 ? autoScaler.maxConcurrency : Infinity;
-    const desired = Math.max(floor, Math.min(cap, claimableCount));
+    // The HWM acts as a floor for the pool WHILE WORK EXISTS: once the pool
+    // has grown to a given size, later reconciles keep it at least that large
+    // (capped by cap) rather than shrinking back toward a lower computed
+    // target as N tapers off. This is what makes "never delete sessions merely
+    // to shrink toward HWM" observable as a floor — the effective growth target
+    // is max(computedTargetPool, hwm). When N == 0 the pool is RETAINED as-is
+    // (no growth, no deletion): retention means "don't delete what's there",
+    // not "recreate pool members that were legitimately reaped/trimmed", so the
+    // HWM floor does not force new creations in the idle case.
+    const effectiveTargetPool =
+      targetPool === RETAIN_POOL
+        ? RETAIN_POOL
+        : Math.min(Math.max(targetPool, managed.hwm), cap);
 
-    const toSpawn = desired - currentRunning;
-    if (toSpawn <= 0) return;
+    const poolSize = managed.sessionIds.size;
+    const runningCount = countRunning(managed);
 
     log.info("autoscaler-reconcile", {
       component: "autoscaler-manager",
       autoScalerId: autoScaler.id,
       claimableCount,
-      floor,
-      currentRunning,
-      desired,
-      toSpawn,
-      msg: `Spawning ${toSpawn} session(s)`,
+      nonDoneCount,
+      cap: cap === Infinity ? 0 : cap,
+      targetRunning,
+      targetPool,
+      effectiveTargetPool,
+      poolSize,
+      runningCount,
+      hwm: managed.hwm,
+      msg: `Reconcile: running ${runningCount}->${targetRunning}, pool ${poolSize}->${effectiveTargetPool === RETAIN_POOL ? "retained" : effectiveTargetPool} (target ${targetPool === RETAIN_POOL ? "retained" : targetPool}, hwm ${managed.hwm})`,
     });
 
-    for (let i = 0; i < toSpawn; i++) {
-      if (managed.abortController.signal.aborted) break;
-      let spawnedSessionId: number | null = null;
-      try {
-        // Is this the floor/warm session? Mark it if we need a floor and
-        // don't already have one.
-        const isFloorSession = floor > 0 && managed.floorSessionId === null;
-        const session = await spawnAutoScalerSession(managed);
-        if (session) {
-          spawnedSessionId = session.id;
-          managed.sessionIds.add(session.id);
-          if (isFloorSession) {
-            managed.floorSessionId = session.id;
-          }
-        }
-      } catch (err) {
-        log.warn("autoscaler-spawn-error", {
-          component: "autoscaler-manager",
-          autoScalerId: autoScaler.id,
-          msg: `Failed to spawn session: ${err instanceof Error ? err.message : err}`,
-        });
-        break;
-      }
-
-      // Serialize spawns to prevent the thundering-herd (task #1682): before
-      // spawning the NEXT session, wait for the one just spawned to reach an
-      // OBSERVABLE state. Its loop body runs getAvailableTaskCount/claimTask on
-      // start: on success currentTaskId becomes non-null ("claimed"); on an
-      // empty queue it sets the idle NO_TASKS_PARK_DETAIL activity ("parked").
-      // If neither is observed within SPAWN_CLAIM_WAIT_MS the session is still
-      // cold-starting ("starting") — common and healthy in ACA mode.
-      //
-      // Only a genuine "parked" (or, in local mode, an anomalous "starting")
-      // halts the burst: that means a sibling won the race for the last task or
-      // the queue is already empty, so spawning more siblings would just add to
-      // the burst of short-lived sessions the bug describes.
-      //
-      // We deliberately do NOT re-read getAvailableTaskCount between spawns:
-      // that count is cached for COUNT_CACHE_TTL_MS (5s) keyed on
-      // tabIds/claimState/workingState and is only invalidated by
-      // notifyTaskAvailable() (task creation/reset), never by a successful
-      // claim. A whole reconcile pass finishes well under 5s, so every re-read
-      // returns the identical cached value and can never trim the burst — it
-      // was a no-op. The spawned session's actual claim/park signal is the only
-      // thing that reflects a sibling winning the race for a task.
-      //
-      // Skip the wait on the last planned spawn (no next iteration to gate).
-      if (spawnedSessionId !== null && i < toSpawn - 1 && !managed.abortController.signal.aborted) {
-        const outcome = await waitForSessionToClaimOrPark(managed, spawnedSessionId);
-        // A genuine empty-queue park always halts the burst. A "starting"
-        // (not-yet-connected) session only halts in local mode — in ACA mode a
-        // slow-but-healthy cold-start routinely exceeds the wait window and must
-        // NOT be misread as a park (that would cap concurrency at 1 and defeat
-        // maxConcurrency — the PR-review defect). "claimed" continues the burst.
-        const shouldHalt = outcome === "parked" || (outcome === "starting" && !isAcaModeEnabled());
-        if (shouldHalt) {
-          log.info("autoscaler-spawn-halt", {
+    // ─── Grow the pool (create ready sessions) up to the HWM-floored target ─
+    if (effectiveTargetPool !== RETAIN_POOL && effectiveTargetPool > poolSize) {
+      const toCreate = effectiveTargetPool - poolSize;
+      for (let i = 0; i < toCreate; i++) {
+        if (managed.abortController.signal.aborted) break;
+        try {
+          const session = await createPooledSession(managed);
+          if (session) managed.sessionIds.add(session.id);
+        } catch (err) {
+          log.warn("autoscaler-spawn-error", {
             component: "autoscaler-manager",
             autoScalerId: autoScaler.id,
-            sessionId: spawnedSessionId,
-            outcome,
-            msg:
-              outcome === "parked"
-                ? "Spawned session parked without claiming a task — halting this reconcile's spawn burst to avoid a thundering herd"
-                : "Spawned session did not claim or park within the wait window (local mode) — halting this reconcile's spawn burst",
+            msg: `Failed to create pooled session: ${err instanceof Error ? err.message : err}`,
           });
           break;
         }
       }
     }
+
+    // ─── Scale running count to targetRunning ──────────────────────────────
+    const currentRunning = countRunning(managed);
+    const toStart = targetRunning - currentRunning;
+
+    if (toStart > 0) {
+      // Clamp to available pool size — reuse ready sessions first, then create
+      // new ones if the pool doesn't have enough ready members yet.
+      for (let i = 0; i < toStart; i++) {
+        if (managed.abortController.signal.aborted) break;
+        try {
+          const session = await startOrCreatePooledSession(managed);
+          if (session) managed.sessionIds.add(session.id);
+        } catch (err) {
+          log.warn("autoscaler-spawn-error", {
+            component: "autoscaler-manager",
+            autoScalerId: autoScaler.id,
+            msg: `Failed to start/create pooled session: ${err instanceof Error ? err.message : err}`,
+          });
+          break;
+        }
+      }
+    } else if (toStart < 0) {
+      // Surplus running sessions must wind down — stop (tear down container)
+      // but KEEP the record as a ready pool member for reuse.
+      const runningIds = [...managed.sessionIds].filter((id) => getSession(id)?.status === "running");
+      const toStop = Math.min(-toStart, runningIds.length);
+      for (let i = 0; i < toStop; i++) {
+        const sessionId = runningIds[i];
+        try {
+          await stopSession(sessionId);
+        } catch {
+          // best-effort — session stays tracked either way
+        }
+      }
+    }
+
+    // Opportunistic idle-age reaper sweep (also runs on an hourly timer).
+    await reapIdlePoolSessions(managed);
   } finally {
     managed.reconciling = false;
     // If a reconcile was dropped while we were busy, run it now so that session
@@ -416,98 +612,108 @@ async function reconcile(managed: ManagedAutoScaler, stages?: { claimState: stri
   }
 }
 
-/**
- * How long (ms) reconcile() waits for a freshly-spawned session to reach an
- * OBSERVABLE state (claimed a task, or parked on an empty queue) before giving
- * up on the wait.
- *
- * A spawned session's loop body (session-manager.ts runLoopMode/runLoopModeAca)
- * runs getAvailableTaskCount then claimTask on start; on success it sets
- * currentTaskId, and on an empty queue it sets its currentActivity to the idle
- * NO_TASKS_PARK_DETAIL signal before suspending in waitForTaskAvailable. For a
- * local session either happens within a few hundred ms.
- *
- * The ACA path is much slower: the worker is launched async and un-awaited, and
- * before the loop body can run at all the container must cold-start (image
- * start, Node boot, WebSocket handshake back to the orchestrator, ACP session
- * init). That routinely takes well over this window. Critically, such a session
- * has NEITHER claimed NOR parked yet — it simply hasn't connected. Timing out
- * on it must NOT be read as "parked" (see waitForSessionToClaimOrPark's
- * three-valued result and reconcile()'s handling of "starting" in ACA mode),
- * otherwise a slow-but-healthy cold start would cap the burst at one session and
- * silently defeat maxConcurrency parallelism.
- */
-const SPAWN_CLAIM_WAIT_MS = 10000;
-
-/** Poll interval (ms) while waiting for a spawned session to claim a task. */
-const SPAWN_CLAIM_POLL_MS = 250;
-
-/**
- * Outcome of waiting on a freshly-spawned session:
- * - "claimed": it observably picked up a task (currentTaskId set). Safe to
- *   spawn the next sibling.
- * - "parked":  its loop body ran, found the queue empty, and parked (its
- *   currentActivity is the idle NO_TASKS_PARK_DETAIL signal). Spawning more
- *   siblings would just add to the thundering herd — halt the burst.
- * - "starting": the wait window elapsed without either signal — the session is
- *   still cold-starting (typical in ACA mode) and hasn't connected yet. This is
- *   NOT a park; treating it as one is the PR-review defect this distinction
- *   fixes.
- */
-type SpawnWaitOutcome = "claimed" | "parked" | "starting";
-
-/**
- * Wait for a just-spawned session to observably claim a task (currentTaskId
- * becomes non-null) or "park" (its loop body found an empty queue and set the
- * idle NO_TASKS_PARK_DETAIL activity). Returns:
- * - "claimed" if it claimed a task,
- * - "parked" if it genuinely parked on an empty queue,
- * - "starting" if the wait window elapsed with neither signal (still booting),
- *   or the session disappeared / was stopped / the autoscaler was aborted.
- *
- * Distinguishing "parked" from "starting" is what lets the serialized-spawn
- * gate prevent the thundering herd WITHOUT under-provisioning slow ACA
- * cold-starts: only a genuine park (loop body ran, saw nothing to do) halts the
- * burst; a session that merely hasn't connected yet does not.
- */
-async function waitForSessionToClaimOrPark(
-  managed: ManagedAutoScaler,
-  sessionId: number
-): Promise<SpawnWaitOutcome> {
-  const { autoScaler } = managed;
-  const deadline = Date.now() + SPAWN_CLAIM_WAIT_MS;
-
-  while (Date.now() < deadline) {
-    if (managed.abortController.signal.aborted) return "starting";
-
-    const session = getAllSessions(autoScaler.userId).find((s) => s.id === sessionId);
-    // Session gone or no longer running — treat as "starting" (not a park) so
-    // the burst isn't halted on its account; watchSessionCompletion handles its
-    // cleanup/re-reconcile.
-    if (!session || session.status !== "running") return "starting";
-    // Claimed a task — its loop set currentTaskId. Safe to spawn the next one.
-    if (session.currentTaskId != null) return "claimed";
-    // Ran its loop body, found nothing claimable, and parked. This is the
-    // genuine "empty queue" signal that should halt the burst.
-    if (
-      session.currentActivity?.type === "idle" &&
-      session.currentActivity.detail === NO_TASKS_PARK_DETAIL
-    ) {
-      return "parked";
-    }
-
-    await new Promise((r) => setTimeout(r, SPAWN_CLAIM_POLL_MS));
+/** Count how many of this autoscaler's tracked sessions are currently "running". */
+function countRunning(managed: ManagedAutoScaler): number {
+  let count = 0;
+  for (const sessionId of managed.sessionIds) {
+    if (getSession(sessionId)?.status === "running") count++;
   }
-
-  // Window elapsed without claiming or parking — the session is still starting
-  // up (hasn't run its loop body yet). Not a park.
-  return "starting";
+  return count;
 }
 
 /**
- * Spawn a loop session for the autoScaler.
+ * Trim the pool down when maxConcurrency has decreased below the current
+ * pool size. Trims READY (not-running) sessions first, oldest lastUsedAt
+ * first. Never kills an actively-claiming (running) session to satisfy a
+ * cap decrease — if trimming ready sessions alone isn't enough to get under
+ * the new cap, the excess running sessions are left alone; the cap is
+ * respected as running sessions naturally finish and go idle on a later
+ * reconcile pass. Clamps HWM down to the new cap.
  */
-async function spawnAutoScalerSession(managed: ManagedAutoScaler): Promise<Session | null> {
+async function trimPoolForCapDecrease(managed: ManagedAutoScaler, cap: number): Promise<void> {
+  if (cap === Infinity) return;
+  if (cap < managed.hwm) {
+    managed.hwm = cap;
+  }
+
+  const poolSize = managed.sessionIds.size;
+  if (poolSize <= cap) return;
+
+  const excess = poolSize - cap;
+
+  // Fetch lastUsedAt for ordering — best-effort; sessions without a recorded
+  // timestamp sort last (treated as most-recently-used, i.e. trimmed last).
+  let lastUsedById = new Map<number, string>();
+  try {
+    const { autoScaler } = managed;
+    const withLastUsed = await getPooledSessionsWithLastUsed(autoScaler.id);
+    lastUsedById = new Map(withLastUsed.map((r) => [r.sessionId, r.lastUsedAt]));
+  } catch {
+    // best-effort — fall back to no ordering info
+  }
+
+  const readyIds = [...managed.sessionIds]
+    .filter((id) => getSession(id)?.status !== "running")
+    .sort((a, b) => {
+      const aTime = lastUsedById.get(a) ? Date.parse(lastUsedById.get(a)!) : Infinity;
+      const bTime = lastUsedById.get(b) ? Date.parse(lastUsedById.get(b)!) : Infinity;
+      return aTime - bTime; // oldest first
+    });
+
+  const toDelete = readyIds.slice(0, excess);
+  for (const sessionId of toDelete) {
+    deleteSession(sessionId);
+    managed.sessionIds.delete(sessionId);
+    log.info("autoscaler-pool-trim", {
+      component: "autoscaler-manager",
+      autoScalerId: managed.autoScaler.id,
+      sessionId,
+      msg: `Trimmed ready session ${sessionId} from pool — maxConcurrency decreased`,
+    });
+  }
+}
+
+/**
+ * Idle-age reaper: delete any pooled (ready, non-running) session whose
+ * OWNS_SESSION edge lastUsedAt is older than POOL_MAX_IDLE_MS. Never reaps a
+ * currently-running session.
+ */
+async function reapIdlePoolSessions(managed: ManagedAutoScaler): Promise<void> {
+  if (managed.sessionIds.size === 0) return;
+
+  let withLastUsed: Array<{ sessionId: number; lastUsedAt: string }>;
+  try {
+    withLastUsed = await getPooledSessionsWithLastUsed(managed.autoScaler.id);
+  } catch {
+    return; // best-effort — skip this sweep on DB error
+  }
+
+  const now = Date.now();
+  for (const { sessionId, lastUsedAt } of withLastUsed) {
+    if (!managed.sessionIds.has(sessionId)) continue;
+    if (getSession(sessionId)?.status === "running") continue; // never reap a running session
+
+    const age = now - Date.parse(lastUsedAt);
+    if (Number.isFinite(age) && age > POOL_MAX_IDLE_MS) {
+      deleteSession(sessionId);
+      managed.sessionIds.delete(sessionId);
+      log.info("autoscaler-pool-reaped", {
+        component: "autoscaler-manager",
+        autoScalerId: managed.autoScaler.id,
+        sessionId,
+        ageDays: Math.floor(age / (24 * 60 * 60 * 1000)),
+        msg: `Reaped idle pooled session ${sessionId} (idle > ${POOL_MAX_IDLE_DAYS} day(s))`,
+      });
+    }
+  }
+}
+
+/**
+ * Create a new ready (not-started) pooled session: createSession(... loop:
+ * true) WITHOUT startSession — no container, status "stopped", linked via
+ * OWNS_SESSION. Used to grow the pool ahead of demand.
+ */
+async function createPooledSession(managed: ManagedAutoScaler): Promise<Session | null> {
   const { autoScaler } = managed;
 
   const session = await createSession({
@@ -521,24 +727,19 @@ async function spawnAutoScalerSession(managed: ManagedAutoScaler): Promise<Sessi
     timeoutSeconds: 0,
   });
 
-  // Start the session.
-  await startSession(session.id);
-
-  // Watch for this session to finish (non-blocking).
-  watchSessionCompletion(managed, session.id);
-
-  // Arm idle-death timer for this session if idleTimeoutSeconds > 0.
-  // idleTimeoutSeconds = 0 means "no idle timeout" — sessions run until the
-  // autoscaler is stopped. This is intentional but can catch operators by
-  // surprise, so we emit a warning to make it visible in the logs.
-  if (autoScaler.idleTimeoutSeconds > 0) {
-    watchSessionIdle(managed, session.id);
-  } else {
-    log.warn("autoscaler-no-idle-timeout", {
+  // Durably link the session as owned/pooled by this autoScaler so the pool
+  // survives a server restart (see db/autoscalers.ts's OWNS_SESSION edge).
+  // Also mark it in-memory immediately so it's hidden from getAllSessions()
+  // right away, without waiting for a server restart to pick up the DB fact.
+  markSessionPooled(session.id);
+  try {
+    await linkPooledSession(autoScaler.id, session.id);
+  } catch (err) {
+    log.warn("autoscaler-pool-link-error", {
       component: "autoscaler-manager",
       autoScalerId: autoScaler.id,
       sessionId: session.id,
-      msg: "idleTimeoutSeconds=0: session will run indefinitely until the autoscaler is stopped. Set idleTimeoutSeconds > 0 to enable automatic idle-death.",
+      msg: `Failed to persist pooled session link: ${err instanceof Error ? err.message : err}`,
     });
   }
 
@@ -546,62 +747,124 @@ async function spawnAutoScalerSession(managed: ManagedAutoScaler): Promise<Sessi
 }
 
 /**
- * Watch a autoScaler-owned session for completion. When it stops, trigger
- * reconciliation to potentially spawn a replacement.
+ * Activate a session for scale-up: prefer reusing an existing ready (stopped,
+ * pooled, not currently running) session over creating a new one. Falls back
+ * to creating a fresh pooled session (and starting it) only when the pool has
+ * no ready member available.
+ */
+async function startOrCreatePooledSession(managed: ManagedAutoScaler): Promise<Session | null> {
+  const { autoScaler } = managed;
+
+  // Find a ready (non-running) session already in the pool to reuse.
+  const readyId = [...managed.sessionIds].find((id) => {
+    const s = getSession(id);
+    return s && s.status !== "running";
+  });
+
+  if (readyId !== undefined) {
+    await startSession(readyId);
+    try {
+      await touchPooledSession(autoScaler.id, readyId);
+    } catch (err) {
+      log.warn("autoscaler-pool-touch-error", {
+        component: "autoscaler-manager",
+        autoScalerId: autoScaler.id,
+        sessionId: readyId,
+        msg: `Failed to update pooled session lastUsedAt: ${err instanceof Error ? err.message : err}`,
+      });
+    }
+    armSessionWatchers(managed, readyId);
+    return getSession(readyId) ?? null;
+  }
+
+  // No ready session available — create a new one and start it immediately.
+  const session = await createPooledSession(managed);
+  if (!session) return null;
+  await startSession(session.id);
+  try {
+    await touchPooledSession(autoScaler.id, session.id);
+  } catch {
+    // best-effort — linkPooledSession's ON CREATE already set lastUsedAt
+  }
+  armSessionWatchers(managed, session.id);
+  return session;
+}
+
+/**
+ * Arm the completion + idle watchers for a session that just started
+ * running. Shared by startOrCreatePooledSession so both the "reuse" and
+ * "create fresh" paths get the same watchers.
+ */
+function armSessionWatchers(managed: ManagedAutoScaler, sessionId: number): void {
+  const { autoScaler } = managed;
+
+  // Watch for this session to finish (non-blocking).
+  watchSessionCompletion(managed, sessionId);
+
+  // Arm idle-death (idle-to-ready) timer for this session if idleTimeoutSeconds > 0.
+  // idleTimeoutSeconds = 0 means "no idle timeout" — sessions run until the
+  // autoscaler is stopped. This is intentional but can catch operators by
+  // surprise, so we emit a warning to make it visible in the logs.
+  if (autoScaler.idleTimeoutSeconds > 0) {
+    watchSessionIdle(managed, sessionId);
+  } else {
+    log.warn("autoscaler-no-idle-timeout", {
+      component: "autoscaler-manager",
+      autoScalerId: autoScaler.id,
+      sessionId,
+      msg: "idleTimeoutSeconds=0: session will run indefinitely until the autoscaler is stopped. Set idleTimeoutSeconds > 0 to enable automatic idle-death.",
+    });
+  }
+}
+
+/**
+ * Watch a autoScaler-owned session for completion (i.e. it stopped running
+ * for a reason OTHER than the autoscaler's own idle-to-ready wind-down, e.g.
+ * an unexpected crash). Triggers reconciliation, which will notice the
+ * running count fell below target and start/create a replacement.
  *
- * Uses a short debounce (COMPLETION_RECONCILE_DEBOUNCE_MS) so that multiple
- * near-simultaneous session deaths (e.g. an entire spawned burst idle-timing out
- * within the same 5-second poll window) coalesce into a single reconcile pass
- * rather than each triggering an independent full pass. Without the debounce,
- * N dying sessions → N re-reconciles → N new bursts (thundering-herd amplification).
+ * Note: this watcher fires for ANY running->non-running transition, including
+ * the deliberate idle-to-ready wind-down triggered by watchSessionIdle — that
+ * is fine, since reconcile() is idempotent (targetRunning may legitimately be
+ * lower now, in which case the extra reconcile pass is a no-op).
  */
 function watchSessionCompletion(managed: ManagedAutoScaler, sessionId: number): void {
-  /** Debounce window: collapses simultaneous session deaths into one reconcile. */
-  const COMPLETION_RECONCILE_DEBOUNCE_MS = 1000;
-
   const pollInterval = setInterval(() => {
     if (managed.abortController.signal.aborted) {
       clearInterval(pollInterval);
       return;
     }
 
-    const allSessions = getAllSessions(managed.autoScaler.userId);
-    const session = allSessions.find((s) => s.id === sessionId);
+    const session = getSession(sessionId);
 
     if (!session || session.status !== "running") {
       clearInterval(pollInterval);
-      managed.sessionIds.delete(sessionId);
-      if (managed.floorSessionId === sessionId) {
-        managed.floorSessionId = null;
+
+      // Only untrack if the session is truly gone — a stopped/ready session
+      // remains a pool member.
+      if (!session) {
+        managed.sessionIds.delete(sessionId);
       }
 
-      // Trigger re-reconciliation via a debounced timer so that multiple
-      // simultaneous session deaths (all picked up within the same 5s poll window)
-      // coalesce into a single reconcile pass.
+      // Trigger re-reconciliation if the autoScaler is still active.
       if (!managed.abortController.signal.aborted) {
-        if (managed.completionReconcileTimer !== null) {
-          // Another death already set up a pending reconcile — reset the timer
-          // so we wait from the latest death rather than the earliest one.
-          clearTimeout(managed.completionReconcileTimer);
-        }
-        managed.completionReconcileTimer = setTimeout(() => {
-          managed.completionReconcileTimer = null;
-          if (!managed.abortController.signal.aborted) {
-            reconcile(managed).catch(() => {});
-          }
-        }, COMPLETION_RECONCILE_DEBOUNCE_MS);
+        reconcile(managed).catch(() => {});
       }
     }
   }, 5000); // Check every 5 seconds
 }
 
 /**
- * Arm an idle-death timer for a spawned session.
+ * Arm an idle-to-ready timer for a running session.
  *
  * Polls the session's currentTaskId every second. If the session has not
- * claimed a new task within idleTimeoutSeconds, it is stopped — UNLESS it
- * is the floor session (managed.floorSessionId) and a non-done task still
- * exists (checked by getNonDoneTaskCount).
+ * claimed a new task within idleTimeoutSeconds, reconcile() is invoked
+ * rather than unconditionally stopping the session — this makes idle-death
+ * respect the current running target instead of the old single-floor
+ * exemption: if targetRunning still needs this session (e.g. it's the sole
+ * eager standby and C > 0), reconcile() is a no-op for it; only genuine
+ * surplus gets wound down (stopSession — tears down the container, keeps
+ * the record as a ready pool member for reuse).
  *
  * Resets the timer on each new claim.
  */
@@ -612,11 +875,9 @@ function watchSessionIdle(managed: ManagedAutoScaler, sessionId: number): void {
   let lastSeenTaskId: number | null | undefined = undefined; // undefined = initial / not yet seen
   let idleMs = 0;
   // Guard against concurrent async ticks: Node.js setInterval does not wait for an async
-  // callback to finish before firing the next tick. If getNonDoneTaskCount (an async DB call)
-  // takes longer than POLL_MS to return (e.g. a Neo4j latency spike), multiple ticks could
-  // run simultaneously, leading to double stopSession calls or a dead idle watcher if one tick
-  // clears the interval while another is suspended at an await. This flag ensures only one tick
-  // is active at a time.
+  // callback to finish before firing the next tick. If reconcile() (an async DB-driven
+  // operation) takes longer than POLL_MS to return (e.g. a Neo4j latency spike), multiple
+  // ticks could run simultaneously. This flag ensures only one tick is active at a time.
   let checking = false;
 
   const pollInterval = setInterval(async () => {
@@ -629,11 +890,11 @@ function watchSessionIdle(managed: ManagedAutoScaler, sessionId: number): void {
         return;
       }
 
-      const allSessions = getAllSessions(autoScaler.userId);
-      const session = allSessions.find((s) => s.id === sessionId);
+      const session = getSession(sessionId);
 
       if (!session || session.status !== "running") {
-        // Session is gone — nothing to do, watchSessionCompletion handles cleanup.
+        // Session is no longer running (wound down by a reconcile pass, or
+        // gone entirely) — nothing left for this watcher to do.
         clearInterval(pollInterval);
         managed.idleIntervals.delete(pollInterval);
         return;
@@ -661,49 +922,38 @@ function watchSessionIdle(managed: ManagedAutoScaler, sessionId: number): void {
         return; // not yet timed out
       }
 
-      // Timed out. Check if this is the floor session and should be exempted.
-      const isFloorSession = managed.floorSessionId === sessionId;
-      if (isFloorSession && autoScaler.keepWarmWhileTasksExist) {
-        // Check whether any non-done task still exists — if so, keep it alive.
-        try {
-          const nonDoneCount = await getNonDoneTaskCount(autoScaler.tabIds);
-          if (nonDoneCount > 0) {
-            // Floor session is exempt — reset the idle clock and continue.
-            idleMs = 0;
-            return;
-          }
-          // No non-done tasks left — the floor is no longer needed; stop this session.
-        } catch {
-          // DB error — be conservative and keep the session alive.
-          idleMs = 0;
-          return;
-        }
-        // No non-done tasks left — check abort before proceeding, since stopAutoScaler
-        // may have been called concurrently during the DB await above.
-        if (managed.abortController.signal.aborted) {
-          clearInterval(pollInterval);
-          managed.idleIntervals.delete(pollInterval);
-          return;
-        }
-      }
-
-      // Stop this idle session.
-      clearInterval(pollInterval);
-      managed.idleIntervals.delete(pollInterval);
-      log.info("autoscaler-idle-stop", {
+      // Timed out — trigger a reconcile pass so the wind-down decision is
+      // made against the current targetRunning (not this watcher's own
+      // hardcoded assumption). Reset the idle clock: if reconcile() decides
+      // this session is still needed, the timer starts fresh instead of
+      // firing again on every subsequent poll.
+      idleMs = 0;
+      log.info("autoscaler-idle-check", {
         component: "autoscaler-manager",
         autoScalerId: autoScaler.id,
         sessionId,
-        isFloorSession,
-        msg: `Session idle for ${autoScaler.idleTimeoutSeconds}s — stopping`,
+        msg: `Session idle for ${autoScaler.idleTimeoutSeconds}s — reconciling to decide wind-down`,
       });
 
-      try {
-        await stopSession(sessionId);
-      } catch {
-        // best-effort
+      if (managed.abortController.signal.aborted) {
+        clearInterval(pollInterval);
+        managed.idleIntervals.delete(pollInterval);
+        return;
       }
-      // watchSessionCompletion will handle the cleanup and re-reconcile.
+
+      try {
+        await reconcile(managed);
+      } catch {
+        // best-effort — reconcile() has its own error handling/backoff via reconcileLoop
+      }
+
+      // If reconcile() wound this session down, stop polling it — a fresh
+      // watcher is armed the next time it's started (startOrCreatePooledSession).
+      const after = getSession(sessionId);
+      if (!after || after.status !== "running") {
+        clearInterval(pollInterval);
+        managed.idleIntervals.delete(pollInterval);
+      }
     } finally {
       checking = false;
     }
@@ -720,14 +970,6 @@ function watchSessionIdle(managed: ManagedAutoScaler, sessionId: number): void {
  * killing the loop permanently. Without this, any DB error would propagate
  * out of the while loop, the call-site `.catch()` would log a warning, and
  * the autoscaler would stop scaling forever until manually restarted.
- *
- * Note: when keepWarmWhileTasksExist=true, the floor session's death when
- * all tasks become "done" is handled by watchSessionIdle (which checks
- * getNonDoneTaskCount on each idle timeout), NOT by this reconcile loop.
- * We rely on FALLBACK_POLL_MS and notifyTaskAvailable() from state changes
- * for all other floor maintenance. No separate "task done" notification
- * is needed here — the idle timer is the documented mechanism for floor
- * session death once all tasks are complete.
  */
 async function reconcileLoop(managed: ManagedAutoScaler): Promise<void> {
   const { autoScaler } = managed;

@@ -31,6 +31,7 @@ import {
   reorderSessionsInDb,
   updateSessionPinInDb,
 } from "./db/sessions.js";
+import { getAllPooledSessionIds } from "./db/autoscalers.js";
 import { getUserKiroApiKey, getUserById } from "./db/users.js";
 import { getAllDecryptedCredentials, getDecryptedCredential } from "./db/credentials.js";
 import { isDbAvailable } from "./db/connection.js";
@@ -293,6 +294,26 @@ log.info("worker-mode", {
 
 const sessions = new Map<number, ManagedSession>();
 
+/**
+ * In-memory set of session IDs that are owned/pooled by an AutoScaler (an
+ * incoming (:AutoScaler)-[:OWNS_SESSION]->(:Session) edge in the DB — see
+ * db/autoscalers.ts). Mirrors that DB fact so getAllSessions() can hide these
+ * sessions from the user-facing list without a DB round-trip on every read.
+ * Populated from the DB on boot (initSessions) and kept in sync at runtime by
+ * markSessionPooled()/unmarkSessionPooled(), called by autoscaler-manager.ts.
+ */
+const pooledSessionIds = new Set<number>();
+
+/** Mark a session as owned/pooled by an AutoScaler (hides it from getAllSessions()). */
+export function markSessionPooled(sessionId: number): void {
+  pooledSessionIds.add(sessionId);
+}
+
+/** Unmark a session as pooled (e.g. once unlinked from its AutoScaler). */
+export function unmarkSessionPooled(sessionId: number): void {
+  pooledSessionIds.delete(sessionId);
+}
+
 export interface ManagedSession {
   meta: Session;
   runner: KiroRunner | null;
@@ -403,10 +424,11 @@ function persistSession(sessionId: number): void {
  */
 export async function initSessions(): Promise<void> {
   let persisted: Session[] = [];
+  let persistedPooledIds = new Set<number>();
 
   if (isDbAvailable()) {
     try {
-      const dbSessions = await getAllSessionsFromDb();
+      const dbSessions = await getAllSessionsFromDb(undefined, { includePooled: true });
       persisted = dbSessions.map((s) => {
         const wasRunning = s.status === "running";
         return {
@@ -418,6 +440,22 @@ export async function initSessions(): Promise<void> {
           __wasRunning: wasRunning,
         } as Session & { __wasRunning?: boolean };
       });
+
+      // Sessions owned/pooled by an AutoScaler (see db/autoscalers.ts's
+      // OWNS_SESSION edge) must be tracked in-memory (pooledSessionIds) so
+      // getAllSessions() hides them, and exempted from the auto-restart pass
+      // below — mirroring the existing cronExpression exemption. At this
+      // point in startup, autoscalers haven't been resumed yet (initAutoScalers
+      // runs later), so this is looked up globally rather than per-autoscaler.
+      try {
+        persistedPooledIds = new Set(await getAllPooledSessionIds());
+      } catch (err) {
+        log.warn("autoscaler-pool-lookup-failed", {
+          component: "session-manager",
+          msg: "Could not load pooled session IDs during startup",
+          ...toErrorFields(err),
+        });
+      }
     } catch (err) {
       log.warn("session-restore-failed", {
         component: "session-manager",
@@ -460,6 +498,10 @@ export async function initSessions(): Promise<void> {
       oneShotRejecter: null,
     });
 
+    if (persistedPooledIds.has(meta.id)) {
+      markSessionPooled(meta.id);
+    }
+
     // Check if this session should auto-restart.
     // We detect this by checking if sessions.json had it as "running" before loadSessions reset it.
     // Since loadSessions() already set it to "stopped", we need a different signal.
@@ -468,7 +510,12 @@ export async function initSessions(): Promise<void> {
     // Scheduled (cron) sessions are one-shot, not persistent-running — they
     // must never be auto-restarted here. Their schedule is (re)armed by the
     // scheduled-session-manager's initScheduledSessions() instead.
-    if ((meta as any).__wasRunning && !meta.cronExpression) {
+    //
+    // Sessions owned/pooled by an AutoScaler are likewise exempt: they load
+    // as "stopped" here and are resumed by initAutoScalers() -> startAutoScaler(),
+    // which adopts the persisted pool and runs its own reconcile — not by this
+    // generic auto-restart path.
+    if ((meta as any).__wasRunning && !meta.cronExpression && !persistedPooledIds.has(meta.id)) {
       toRestart.push(meta.id);
       delete (meta as any).__wasRunning;
     }
@@ -1052,9 +1099,17 @@ export async function runOneShotTurn(id: number): Promise<void> {
   }
 }
 
+/**
+ * Get all sessions for display purposes (the user-facing session list).
+ * Excludes sessions owned/pooled by an AutoScaler (see pooledSessionIds above)
+ * — those are hidden from this list but remain fully manageable internally
+ * (error recording, worker crash handling, etc. all still operate on them via
+ * getSession()/sessions.get() directly, which are not filtered).
+ */
 export function getAllSessions(userId?: number): Session[] {
   return Array.from(sessions.values())
     .filter((s) => userId === undefined || s.meta.userId === userId)
+    .filter((s) => !pooledSessionIds.has(s.meta.id))
     .sort((a, b) => {
       // pinned DESC, then sortOrder ASC
       if (a.meta.pinned !== b.meta.pinned) return a.meta.pinned ? -1 : 1;
@@ -1086,6 +1141,12 @@ export function deleteSession(id: number): boolean {
   }
 
   sessions.delete(id);
+  // Release any in-memory pooled bookkeeping for this id. DETACH DELETE below
+  // drops the OWNS_SESSION edge in the DB, but the pooledSessionIds set is
+  // mirrored in-memory and must be cleared here too — otherwise a deleted
+  // pooled session's id lingers in the set forever (a slow, unbounded leak for
+  // any autoscaler pool that churns sessions over the process lifetime).
+  unmarkSessionPooled(id);
   broadcastToUser(session.meta.userId, { type: "session-deleted", sessionId: id });
 
   // Also delete from DB if available
