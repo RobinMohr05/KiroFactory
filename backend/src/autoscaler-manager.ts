@@ -36,11 +36,15 @@
  *
  * HWM (high-water mark) = the largest target-total-pool size ever observed
  * while this autoscaler has been running. Monotonic non-decreasing, except
- * it is clamped down when maxConcurrency itself decreases. Sessions are
- * created up to the pool target on scale-up; they are never deleted merely
- * to shrink the pool back down toward a lower target — only maxConcurrency
- * decreasing below the current pool size, or the idle-age reaper, deletes a
- * pooled session (see trimPoolForCapDecrease / reapIdlePoolSessions below).
+ * it is clamped down when maxConcurrency itself decreases. The HWM acts as a
+ * floor for the pool: the effective pool target each reconcile is
+ * max(computedTargetPool, hwm) capped by cap, so once the pool has grown it
+ * stays at least that large (ready for reuse) rather than shrinking back
+ * toward a lower computed target. Sessions are created up to that floored
+ * target on scale-up; they are never deleted merely to shrink the pool back
+ * down — only maxConcurrency decreasing below the current pool size, or the
+ * idle-age reaper, deletes a pooled session (see trimPoolForCapDecrease /
+ * reapIdlePoolSessions below).
  *
  * Idle-age reaper: any pooled (ready, i.e. non-running) session whose
  * OWNS_SESSION edge lastUsedAt is older than AUTOSCALER_POOL_MAX_IDLE_DAYS
@@ -217,6 +221,19 @@ export async function updateAutoScalerRecord(
 ): Promise<AutoScaler | null> {
   const updated = await dbUpdateAutoScaler(id, fields);
   if (updated) {
+    // If this autoscaler is currently running, refresh its in-memory config
+    // snapshot so the change actually takes effect on the live instance. The
+    // reconcile loop reads managed.autoScaler.{maxConcurrency,agentName,tabIds,
+    // idleTimeoutSeconds} on every pass; without this, edits (e.g. a
+    // maxConcurrency decrease that should trigger trimPoolForCapDecrease) would
+    // only be picked up after a stop/restart. Kick a reconcile so the new
+    // config is applied immediately rather than waiting for the next
+    // task-available wake-up.
+    const managed = autoScalers.get(id);
+    if (managed) {
+      managed.autoScaler = updated;
+      reconcile(managed).catch(() => {});
+    }
     broadcastToUser(updated.userId, { type: "autoscaler-updated", autoScaler: updated });
   }
   return updated;
@@ -495,6 +512,20 @@ async function reconcile(managed: ManagedAutoScaler, stages?: { claimState: stri
       managed.hwm = targetPool;
     }
 
+    // The HWM acts as a floor for the pool WHILE WORK EXISTS: once the pool
+    // has grown to a given size, later reconciles keep it at least that large
+    // (capped by cap) rather than shrinking back toward a lower computed
+    // target as N tapers off. This is what makes "never delete sessions merely
+    // to shrink toward HWM" observable as a floor — the effective growth target
+    // is max(computedTargetPool, hwm). When N == 0 the pool is RETAINED as-is
+    // (no growth, no deletion): retention means "don't delete what's there",
+    // not "recreate pool members that were legitimately reaped/trimmed", so the
+    // HWM floor does not force new creations in the idle case.
+    const effectiveTargetPool =
+      targetPool === RETAIN_POOL
+        ? RETAIN_POOL
+        : Math.min(Math.max(targetPool, managed.hwm), cap);
+
     const poolSize = managed.sessionIds.size;
     const runningCount = countRunning(managed);
 
@@ -506,15 +537,16 @@ async function reconcile(managed: ManagedAutoScaler, stages?: { claimState: stri
       cap: cap === Infinity ? 0 : cap,
       targetRunning,
       targetPool,
+      effectiveTargetPool,
       poolSize,
       runningCount,
       hwm: managed.hwm,
-      msg: `Reconcile: running ${runningCount}->${targetRunning}, pool ${poolSize}->${targetPool === RETAIN_POOL ? "retained" : targetPool}`,
+      msg: `Reconcile: running ${runningCount}->${targetRunning}, pool ${poolSize}->${effectiveTargetPool === RETAIN_POOL ? "retained" : effectiveTargetPool} (target ${targetPool === RETAIN_POOL ? "retained" : targetPool}, hwm ${managed.hwm})`,
     });
 
-    // ─── Grow the pool (create ready sessions) up to targetPool ───────────
-    if (targetPool !== RETAIN_POOL && targetPool > poolSize) {
-      const toCreate = targetPool - poolSize;
+    // ─── Grow the pool (create ready sessions) up to the HWM-floored target ─
+    if (effectiveTargetPool !== RETAIN_POOL && effectiveTargetPool > poolSize) {
+      const toCreate = effectiveTargetPool - poolSize;
       for (let i = 0; i < toCreate; i++) {
         if (managed.abortController.signal.aborted) break;
         try {

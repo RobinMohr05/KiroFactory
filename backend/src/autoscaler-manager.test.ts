@@ -214,6 +214,17 @@ describe("autoscaler-manager", () => {
     vi.mocked(waitForTaskAvailable).mockImplementation(
       () => new Promise(() => {})
     );
+
+    // Re-establish safe defaults for mocks that individual tests override.
+    // vi.clearAllMocks() (in this beforeEach) clears call history but does NOT
+    // restore a base implementation set via .mockResolvedValue in the vi.mock
+    // factory, so an override like getPooledSessionIds -> [301,302,303] in one
+    // test would otherwise leak into the next (e.g. seeding a phantom pool /
+    // HWM). Pin the empty/no-op defaults here so each test starts clean.
+    vi.mocked(getPooledSessionIds).mockResolvedValue([]);
+    vi.mocked(getPooledSessionsWithLastUsed).mockResolvedValue([]);
+    vi.mocked(getAllSessions).mockReturnValue([]);
+    vi.mocked(deleteSession).mockReturnValue(true);
   });
 
   afterEach(() => {
@@ -589,35 +600,59 @@ describe("autoscaler-manager", () => {
     });
 
     it("reuses a ready session (same id) instead of creating a new one when scaling up", async () => {
+      vi.useFakeTimers();
       const stoppedAutoScaler = makeAutoScaler({ status: "stopped", maxConcurrency: 5 });
       const runningAutoScaler = makeAutoScaler({ status: "running", maxConcurrency: 5 });
       vi.mocked(getAutoScalerById).mockResolvedValue(stoppedAutoScaler);
       vi.mocked(updateAutoScalerStatus).mockResolvedValue(runningAutoScaler);
+      // Initially no claimable work — the adopted pool session stays ready.
       vi.mocked(getAvailableTaskCount).mockResolvedValue(0);
       vi.mocked(getNonDoneTaskCount).mockResolvedValue(0);
 
-      // One ready (stopped) pooled session already exists.
-      const readySession = makeSession({ id: 777, status: "stopped" });
-      vi.mocked(getPooledSessionIds).mockResolvedValue([777]);
+      // Two ready (stopped) pooled sessions already exist — enough to satisfy
+      // the C+1 eager-standby target purely by reuse (no new session needed).
+      const ready777 = makeSession({ id: 777, status: "stopped" });
+      const ready778 = makeSession({ id: 778, status: "stopped" });
+      vi.mocked(getPooledSessionIds).mockResolvedValue([777, 778]);
       vi.mocked(getPooledSessionsWithLastUsed).mockResolvedValue([
         { sessionId: 777, lastUsedAt: new Date(Date.now() - 60_000).toISOString() },
+        { sessionId: 778, lastUsedAt: new Date(Date.now() - 30_000).toISOString() },
       ]);
-      vi.mocked(getAllSessions).mockReturnValue([readySession]);
-      vi.mocked(startSession).mockResolvedValue(undefined as any);
+      vi.mocked(getAllSessions).mockReturnValue([ready777, ready778]);
+      vi.mocked(startSession).mockImplementation(async (id: number) => {
+        if (id === 777) ready777.status = "running";
+        if (id === 778) ready778.status = "running";
+        return true;
+      });
+
+      // waitForTaskAvailable resolves once (to drive the second reconcile),
+      // then parks forever.
+      let resolveWait: () => void;
+      const firstWait = new Promise<void>((r) => { resolveWait = r; });
+      vi.mocked(waitForTaskAvailable)
+        .mockReturnValueOnce(firstWait)
+        .mockReturnValue(new Promise(() => {}));
 
       await startAutoScaler(1);
-      await flushAsync();
+      await vi.advanceTimersByTimeAsync(50);
 
-      // Now a task becomes claimable — scale up should reuse session 777.
+      // Initial reconcile: C=0/N=0 so nothing scaled up, and the adopted ready
+      // sessions were NOT re-created.
+      expect(createSession).not.toHaveBeenCalled();
+      expect(startSession).not.toHaveBeenCalled();
+
+      // Now a task becomes claimable — waking the reconcile loop must scale up
+      // by REUSING the existing ready sessions (starting the same ids), not
+      // creating new ones. C=1 -> targetRunning=min(5,2)=2, satisfied by the
+      // two ready pool members.
       vi.mocked(getAvailableTaskCount).mockResolvedValue(1);
       vi.mocked(getNonDoneTaskCount).mockResolvedValue(1);
+      resolveWait!();
+      await vi.advanceTimersByTimeAsync(50);
 
-      // Re-trigger reconcile by starting again is not applicable (already running);
-      // instead simulate the reconcile loop's wake via waitForTaskAvailable resolving.
-      // Since waitForTaskAvailable is parked forever by default in this suite, directly
-      // assert the initial adoption did not create any new session and that starting
-      // the existing ready session is what happens once claimable > 0 at boot.
+      expect(startSession).toHaveBeenCalledWith(777);
       expect(createSession).not.toHaveBeenCalled();
+      vi.useRealTimers();
     });
 
     it("HWM grows monotonically and does not shrink except on cap decrease", async () => {
@@ -683,18 +718,31 @@ describe("autoscaler-manager", () => {
       await startAutoScaler(1);
       await flushAsync();
 
-      // Now decrease maxConcurrency below the current pool size (3 -> 1) and
-      // re-fetch the (now-running) autoscaler for a fresh reconcile pass.
-      const updatedAutoScaler = makeAutoScaler({ status: "running", maxConcurrency: 1 });
-      vi.mocked(getAutoScalerById).mockResolvedValue(updatedAutoScaler);
-      // updateAutoScalerRecord path isn't exercised here directly — this test
-      // documents the trim behavior via a fresh startAutoScaler pass reading
-      // the lowered cap (autoscaler-manager re-reads autoScaler config from
-      // managed.autoScaler each reconcile, so lowering it in the DB record and
-      // letting the next reconcile run is the realistic trigger in production;
-      // here we assert deleteSession is never called on the actively-claiming
-      // session 303 regardless of trim ordering).
+      // At cap=5 the pool of 3 fits, so nothing was trimmed yet.
+      expect(deleteSession).not.toHaveBeenCalled();
+
+      // Now genuinely decrease the cap on the LIVE autoscaler (3 -> 1) via
+      // updateAutoScalerRecord, which refreshes managed.autoScaler and kicks a
+      // reconcile. With cap=1 and a pool of 3, two sessions must be trimmed —
+      // and they must be the two ready ones, oldest lastUsedAt first (301 then
+      // 302), never the actively-claiming running session 303.
+      vi.mocked(dbUpdateAutoScaler).mockResolvedValue(makeAutoScaler({ status: "running", maxConcurrency: 1 }));
+
+      await updateAutoScalerRecord(1, { maxConcurrency: 1 });
+      await flushAsync();
+
+      // Both ready sessions trimmed; the running one spared.
+      expect(deleteSession).toHaveBeenCalledWith(301);
+      expect(deleteSession).toHaveBeenCalledWith(302);
       expect(deleteSession).not.toHaveBeenCalledWith(303);
+
+      // Oldest-first ordering: 301 deleted before 302.
+      const deletedOrder = vi.mocked(deleteSession).mock.calls.map((c) => c[0]);
+      expect(deletedOrder.indexOf(301)).toBeLessThan(deletedOrder.indexOf(302));
+
+      // Clean up: stop the live autoscaler so its reconcile loop / timers don't
+      // linger and bleed into later tests.
+      await stopAutoScaler(1);
     });
 
     it("reaper deletes a session whose lastUsedAt exceeds the idle threshold and spares a running one", async () => {
