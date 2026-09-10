@@ -6,7 +6,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { buildSpawnEnv } from "./spawn-env.js";
+import { buildSpawnEnv, BLOCKED_KEYS } from "./spawn-env.js";
 
 describe("buildSpawnEnv", () => {
   const FAKE_SOURCE_ENV = {
@@ -34,6 +34,7 @@ describe("buildSpawnEnv", () => {
     TASK_PR_URL: "https://github.com/example/repo/pull/42",
     PR_BRANCH: "feature/#42_some-task",
     AUTO_MERGE_ENABLED: "true",
+    TASK_CREATE_ENABLED: "true",
     ALL_GROUP_TASKS_DONE: "false",
     TASK_ID: "594",
     AGENT_NAME: "developer-agent",
@@ -85,6 +86,18 @@ describe("buildSpawnEnv", () => {
   it("does NOT forward AUTO_MERGE_ENABLED", () => {
     const env = buildSpawnEnv(FAKE_SOURCE_ENV, "explicit-key");
     assert.equal(env.AUTO_MERGE_ENABLED, undefined);
+  });
+
+  it("does NOT forward TASK_CREATE_ENABLED", () => {
+    const env = buildSpawnEnv(FAKE_SOURCE_ENV, "explicit-key");
+    assert.equal(env.TASK_CREATE_ENABLED, undefined);
+  });
+
+  it("lists TASK_CREATE_ENABLED among the always-blocked keys", () => {
+    // Defensive backstop: even if a future FORWARD_PREFIXES entry covered it,
+    // TASK_CREATE_ENABLED must never reach the agent shell, alongside its
+    // sibling worker-internal gating flags AUTO_MERGE_ENABLED / AGENT_KIND.
+    assert.ok(BLOCKED_KEYS.includes("TASK_CREATE_ENABLED"));
   });
 
   it("does NOT forward ALL_GROUP_TASKS_DONE", () => {
