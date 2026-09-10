@@ -94,6 +94,15 @@ interface ManagedAutoScaler {
   /** Session IDs currently owned by this autoScaler (both running and ready). */
   sessionIds: Set<number>;
   /**
+   * Monotonically increasing sequence used to name newly created pool
+   * sessions (`<name> #<n>`). Unlike `sessionIds.size + 1`, this never
+   * decreases when a pool member is trimmed/reaped, so it can't regenerate a
+   * name that still exists on a surviving pool member (see PR #119 review).
+   * Seeded from the adopted pool size on start so resumed pools keep counting
+   * up rather than colliding with already-named members.
+   */
+  nextSessionSeq: number;
+  /**
    * High-water mark: the largest target-total-pool size ever observed while
    * this autoscaler has been running. Monotonic non-decreasing except when
    * maxConcurrency itself decreases (see trimPoolForCapDecrease).
@@ -258,6 +267,7 @@ export async function startAutoScaler(autoScalerId: number): Promise<AutoScaler 
     autoScaler: updated,
     sessionIds: new Set(),
     hwm: 0,
+    nextSessionSeq: 0,
     abortController: new AbortController(),
     reconciling: false,
     pendingReconcile: false,
@@ -277,6 +287,10 @@ export async function startAutoScaler(autoScalerId: number): Promise<AutoScaler 
     // The adopted pool's size is itself a floor for the HWM — it was reached
     // by a prior run of this autoscaler and must not silently shrink on restart.
     managed.hwm = pooledSessionIds.length;
+    // Seed the naming sequence past the adopted pool so freshly created
+    // sessions continue the monotonic `#<n>` numbering rather than colliding
+    // with adopted members' names.
+    managed.nextSessionSeq = pooledSessionIds.length;
   } catch (err) {
     log.warn("autoscaler-pool-adopt-error", {
       component: "autoscaler-manager",
@@ -716,8 +730,13 @@ async function reapIdlePoolSessions(managed: ManagedAutoScaler): Promise<void> {
 async function createPooledSession(managed: ManagedAutoScaler): Promise<Session | null> {
   const { autoScaler } = managed;
 
+  // Use a monotonic per-autoscaler sequence for the name so trimming/reaping a
+  // pool member (which lowers sessionIds.size) can't regenerate a name that
+  // still exists on a surviving member. See PR #119 review.
+  const seq = ++managed.nextSessionSeq;
+
   const session = await createSession({
-    name: `${autoScaler.name} #${managed.sessionIds.size + 1}`,
+    name: `${autoScaler.name} #${seq}`,
     agent: autoScaler.agentName,
     loop: true,
     tabIds: autoScaler.tabIds,

@@ -29,7 +29,6 @@ export function AutoScalerPanel({
   const [model, setModel] = useState('');
   const [maxConcurrency, setMaxConcurrency] = useState(5);
   const [idleTimeoutSeconds, setIdleTimeoutSeconds] = useState(30);
-  const [keepWarmWhileTasksExist, setKeepWarmWhileTasksExist] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
   const handleCreate = async (e: React.FormEvent) => {
@@ -63,7 +62,6 @@ export function AutoScalerPanel({
           })(),
           maxConcurrency,
           idleTimeoutSeconds,
-          keepWarmWhileTasksExist,
         }),
       });
       if (!res.ok) {
@@ -78,7 +76,6 @@ export function AutoScalerPanel({
       setModel('');
       setMaxConcurrency(5);
       setIdleTimeoutSeconds(30);
-      setKeepWarmWhileTasksExist(false);
       await fetchAutoScalers();
     } catch (err) {
       setFormError('Network error');
@@ -187,16 +184,6 @@ export function AutoScalerPanel({
               value={idleTimeoutSeconds}
               onChange={e => setIdleTimeoutSeconds(Number(e.target.value))}
             />
-          </div>
-          <div className="form-group">
-            <label className="autoscaler-checkbox-label">
-              <input
-                type="checkbox"
-                checked={keepWarmWhileTasksExist}
-                onChange={e => setKeepWarmWhileTasksExist(e.target.checked)}
-              />
-              Keep warm while tasks exist (maintain 1 session even when nothing is claimable)
-            </label>
           </div>
           {formError && <div className="form-message error">{formError}</div>}
           <div className="form-actions">

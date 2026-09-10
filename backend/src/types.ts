@@ -346,6 +346,17 @@ export interface Activity {
   detail?: string;
 }
 
+/**
+ * The exact `Activity.detail` a loop-mode session sets when it has run its loop
+ * body, found no claimable tasks, and parked in `waitForTaskAvailable`. Shared
+ * between session-manager (which sets it) and autoscaler-manager (which reads it
+ * to distinguish a genuinely-parked session from one that is merely still
+ * starting up — see waitForSessionToClaimOrPark). Keeping it a single exported
+ * constant avoids a fragile duplicated string literal on both sides.
+ */
+export const NO_TASKS_PARK_DETAIL = "No tasks available. Waiting for new tasks...";
+
+
 export interface Session {
   id: number;
   name: string;
@@ -552,13 +563,6 @@ export interface AutoScaler {
   model?: string;
   maxConcurrency: number;
   idleTimeoutSeconds: number;
-  /**
-   * When true: maintain a floor of at least 1 running session whenever any
-   * non-done task exists in the autoscaler's tabs, even if nothing is currently
-   * claimable. Useful to keep an agent warm while blocked tasks are waiting.
-   * When false (default): only start sessions when tasks are actually claimable.
-   */
-  keepWarmWhileTasksExist: boolean;
   status: AutoScalerStatus;
   createdAt: string;
 }
@@ -571,8 +575,6 @@ export interface CreateAutoScalerInput {
   model?: string;
   maxConcurrency?: number;
   idleTimeoutSeconds?: number;
-  /** When true, maintain a warm session floor. Defaults to false. */
-  keepWarmWhileTasksExist?: boolean;
 }
 
 // ─── WebSocket Messages ──────────────────────────────────────────────────────

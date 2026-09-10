@@ -42,7 +42,7 @@ router.get("/", async (req: Request, res: Response) => {
 router.post("/", async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
-    const { name, agentName, tabIds, model, maxConcurrency, idleTimeoutSeconds, keepWarmWhileTasksExist } = req.body;
+    const { name, agentName, tabIds, model, maxConcurrency, idleTimeoutSeconds } = req.body;
 
     if (!name || typeof name !== "string") {
       res.status(400).json({ error: "name is required" });
@@ -65,7 +65,6 @@ router.post("/", async (req: Request, res: Response) => {
       model: model || undefined,
       maxConcurrency: typeof maxConcurrency === "number" ? maxConcurrency : undefined,
       idleTimeoutSeconds: typeof idleTimeoutSeconds === "number" ? idleTimeoutSeconds : undefined,
-      keepWarmWhileTasksExist: typeof keepWarmWhileTasksExist === "boolean" ? keepWarmWhileTasksExist : false,
     });
 
     res.status(201).json(autoScaler);

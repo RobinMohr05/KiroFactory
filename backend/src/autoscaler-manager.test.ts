@@ -88,7 +88,6 @@ function makeAutoScaler(overrides: Partial<AutoScaler> = {}): AutoScaler {
     tabIds: [1],
     maxConcurrency: 5,
     idleTimeoutSeconds: 30,
-    keepWarmWhileTasksExist: false,
     status: "stopped",
     createdAt: "2026-01-01T00:00:00.000Z",
     ...overrides,
@@ -742,6 +741,75 @@ describe("autoscaler-manager", () => {
 
       // Clean up: stop the live autoscaler so its reconcile loop / timers don't
       // linger and bleed into later tests.
+      await stopAutoScaler(1);
+    });
+
+    it("assigns unique, monotonically increasing session names even after a pool member is removed", async () => {
+      // Regression for PR #119 review: names were derived from
+      // `sessionIds.size + 1`, which is NOT monotonic — trimming/reaping a
+      // pool member lowers `size`, so a later create can regenerate a name
+      // that still exists on a surviving member (e.g. #1 #2 #3, reap #2 ->
+      // size=2 -> next create named #3, duplicating the surviving #3).
+      // A per-autoscaler monotonic counter must guarantee unique names.
+      const stoppedAutoScaler = makeAutoScaler({ status: "stopped", maxConcurrency: 10 });
+      const runningAutoScaler = makeAutoScaler({ status: "running", maxConcurrency: 10 });
+      vi.mocked(getAutoScalerById).mockResolvedValue(stoppedAutoScaler);
+      vi.mocked(updateAutoScalerStatus).mockResolvedValue(runningAutoScaler);
+      // C=0, N=6 -> targetPool = min(10, ceil(6/2)) = 3: create three sessions.
+      vi.mocked(getAvailableTaskCount).mockResolvedValue(0);
+      vi.mocked(getNonDoneTaskCount).mockResolvedValue(6);
+
+      const backing: ReturnType<typeof makeSession>[] = [];
+      vi.mocked(getAllSessions).mockImplementation(() => backing as any);
+
+      let sessionCounter = 100;
+      const createdNames: string[] = [];
+      vi.mocked(createSession).mockImplementation(async (input: any) => {
+        createdNames.push(input.name);
+        const s = makeSession({ id: sessionCounter++, status: "stopped", name: input.name });
+        backing.push(s);
+        return s;
+      });
+      vi.mocked(startSession).mockImplementation(async (id: number) => {
+        const s = backing.find((x) => x.id === id);
+        if (s) s.status = "running";
+        return true;
+      });
+
+      await startAutoScaler(1);
+      await flushAsync();
+
+      // First pass created #1 #2 #3 (three sessions for targetPool=3).
+      expect(createdNames).toEqual([
+        "Test AutoScaler #1",
+        "Test AutoScaler #2",
+        "Test AutoScaler #3",
+      ]);
+
+      // Simulate the middle pool member (#2, id 101) being reaped/trimmed:
+      // remove it from the backing store so getSession() no longer finds it.
+      // reconcile()'s prune step will then drop it from managed.sessionIds,
+      // lowering the tracked pool size to 2 — the exact condition that used to
+      // regenerate a duplicate "#3".
+      const idx = backing.findIndex((s) => s.name === "Test AutoScaler #2");
+      backing.splice(idx, 1);
+
+      // Grow the pool again (N larger -> targetPool grows), forcing a new create.
+      vi.mocked(getNonDoneTaskCount).mockResolvedValue(8); // targetPool = ceil(8/2) = 4
+      vi.mocked(dbUpdateAutoScaler).mockResolvedValue(makeAutoScaler({ status: "running", maxConcurrency: 10 }));
+      await updateAutoScalerRecord(1, { name: "Test AutoScaler" }); // kicks a reconcile
+      await flushAsync();
+
+      // The newly created name must NOT duplicate any surviving name, and must
+      // continue the monotonic sequence (i.e. "#4", not a reused "#3").
+      const newNames = createdNames.slice(3);
+      expect(newNames.length).toBeGreaterThan(0);
+      for (const n of newNames) {
+        expect(n).not.toBe("Test AutoScaler #3");
+      }
+      // All assigned names are unique overall.
+      expect(new Set(createdNames).size).toBe(createdNames.length);
+
       await stopAutoScaler(1);
     });
 

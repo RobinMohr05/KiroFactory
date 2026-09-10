@@ -19,7 +19,7 @@ import type { ClaimedTask } from "./agent/task-claimer.js";
 import { buildDevPrompt, buildReviewPrompt } from "./agent/prompt-builder.js";
 import { hasLocalGitChanges } from "./agent/local-git-check.js";
 import { buildPersistentBranchName, buildTaskBranchName, sanitizeBranchName } from "./agent/repo-url-parser.js";
-import { resolveGitProvider, type GitProvider } from "./types.js";
+import { resolveGitProvider, NO_TASKS_PARK_DETAIL, type GitProvider } from "./types.js";
 import {
   getAllSessionsFromDb,
   getRunningSessionsFromDb,
@@ -1938,7 +1938,7 @@ async function runLoopMode(
     if (todoCount === 0) {
       setActivity(managed, {
         type: "idle",
-        detail: "No tasks available. Waiting for new tasks...",
+        detail: NO_TASKS_PARK_DETAIL,
       });
 
       // Park here until a task is created/reset or the session is stopped.
@@ -3553,7 +3553,7 @@ async function runLoopModeAca(
     if (todoCount === 0) {
       setActivity(managed, {
         type: "idle",
-        detail: "No tasks available. Waiting for new tasks...",
+        detail: NO_TASKS_PARK_DETAIL,
       });
 
       // Park here until a task is created/reset or the session is stopped.

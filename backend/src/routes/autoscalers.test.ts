@@ -50,7 +50,6 @@ const AUTOSCALER_FIXTURE = {
   tabIds: [1],
   maxConcurrency: 5,
   idleTimeoutSeconds: 30,
-  keepWarmWhileTasksExist: false,
   status: "stopped" as const,
   createdAt: "2026-01-01T00:00:00.000Z",
 };
@@ -91,6 +90,20 @@ describe("AutoScaler routes", () => {
           userId: 1,
         })
       );
+    });
+
+    it("does not forward the retired keepWarmWhileTasksExist field to createAutoScalerRecord", async () => {
+      // PR #119 review: keepWarmWhileTasksExist is retired — the HWM pool model
+      // replaced its floor-of-1 behavior, so it must no longer be accepted or
+      // persisted (no silent dead config).
+      vi.mocked(createAutoScalerRecord).mockResolvedValue(AUTOSCALER_FIXTURE);
+
+      await request(createApp())
+        .post("/api/autoscalers")
+        .send({ name: "Test AutoScaler", agentName: "developer-agent", tabIds: [1], keepWarmWhileTasksExist: true });
+
+      const arg = vi.mocked(createAutoScalerRecord).mock.calls[0][0] as unknown as Record<string, unknown>;
+      expect(arg).not.toHaveProperty("keepWarmWhileTasksExist");
     });
 
     it("returns 400 when name is missing", async () => {

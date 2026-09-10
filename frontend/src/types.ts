@@ -226,11 +226,6 @@ export interface AutoScaler {
   model?: string;
   maxConcurrency: number;
   idleTimeoutSeconds: number;
-  /**
-   * When true, maintain a warm session floor while any non-done task exists.
-   * When false (default), only start sessions when tasks are claimable.
-   */
-  keepWarmWhileTasksExist: boolean;
   status: AutoScalerStatus;
   createdAt: string;
   /** Populated from GET /api/autoscalers — number of currently running sessions. */
