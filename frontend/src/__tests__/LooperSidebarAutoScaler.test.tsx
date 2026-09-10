@@ -56,7 +56,6 @@ const baseAutoScaler = {
   tabIds: [1],
   maxConcurrency: 5,
   idleTimeoutSeconds: 30,
-  keepWarmWhileTasksExist: false,
   status: 'stopped' as const,
   createdAt: '2026-01-01T00:00:00Z',
   runningSessionCount: 0,
