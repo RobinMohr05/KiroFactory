@@ -33,6 +33,7 @@ import { runMigration } from "./db/migrate.js";
 import { tryConnect, isDbAvailable, closePool } from "./db/connection.js";
 import { shutdownAllSessions, initSessions } from "./session-manager.js";
 import { initScheduledSessions, disarmAll as disarmAllScheduled } from "./scheduled-session-manager.js";
+import { initAutoScalers } from "./autoscaler-manager.js";
 import { apiErrorLogger, uncaughtErrorLogger } from "./middleware/error-logger.js";
 import { log } from "./logger.js";
 
@@ -219,6 +220,12 @@ async function start(): Promise<void> {
     // initSessions() so the in-memory session store is populated; scheduled
     // sessions were already excluded from initSessions()'s auto-restart path.
     await initScheduledSessions();
+
+    // Resume AutoScalers that were running before the restart. Runs after
+    // initSessions() (pooled sessions must already be in the in-memory
+    // session store) and adopts each AutoScaler's persisted pooled session
+    // pool — see autoscaler-manager.ts's initAutoScalers() doc comment.
+    await initAutoScalers();
   } else {
     log.warn("db-unavailable-at-startup", {
       component: "startup",

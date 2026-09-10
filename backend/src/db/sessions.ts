@@ -229,15 +229,32 @@ function buildRawMcpServerParams(rawMcpServers: unknown[] | undefined) {
 
 /**
  * Get all sessions for a given user. Returns session metadata without output buffers.
+ *
+ * Excludes sessions owned/pooled by an AutoScaler (an incoming
+ * (:AutoScaler)-[:OWNS_SESSION]->(:Session) edge — see db/autoscalers.ts) by
+ * default. Those sessions are hidden from the user-facing list; visibility is
+ * determined solely by the presence of that edge, not by any Session.status
+ * value.
+ *
+ * `includePooled: true` bypasses that exclusion — used only by
+ * session-manager.ts's initSessions() on server boot, which needs pooled
+ * sessions loaded into the in-memory session store too (so a restarted
+ * AutoScaler can adopt them via getSession()), just marked exempt from the
+ * generic auto-restart path rather than omitted entirely.
  */
-export async function getAllSessionsFromDb(userId?: number): Promise<Session[]> {
+export async function getAllSessionsFromDb(
+  userId?: number,
+  options?: { includePooled?: boolean }
+): Promise<Session[]> {
   return readQuery(async (tx: ManagedTransaction) => {
     const matchClause = userId
       ? `MATCH (u:User {id: $userId})-[:OWNS]->(s:Session)`
       : `MATCH (s:Session)`;
+    const poolGuard = options?.includePooled ? "" : "WHERE NOT (:AutoScaler)-[:OWNS_SESSION]->(s)";
     const result = await tx.run(
       `
         ${matchClause}
+        ${poolGuard}
         WITH s ORDER BY s.pinned DESC, s.sortOrder ASC
         ${RESOLVE_SESSION_RELATIONSHIPS}
       `,

@@ -6,6 +6,7 @@
  * Graph model:
  *   (:User)-[:OWNS]->(:AutoScaler)    ownership
  *   (:AutoScaler)-[:IN_TAB]->(:Tab)   tab assignments (list property mirror)
+ *   (:AutoScaler)-[:OWNS_SESSION {lastUsedAt}]->(:Session)   pooled worker sessions
  *
  * Follows the same patterns as db/agents.ts and db/sessions.ts.
  */
@@ -140,6 +141,27 @@ export async function getAllAutoScalers(userId: number): Promise<AutoScaler[]> {
 }
 
 /**
+ * Get every AutoScaler persisted with status "running", across all users.
+ * Used by autoscaler-manager.ts's initAutoScalers() on server boot to resume
+ * autoscalers that were running before the restart — mirrors
+ * db/sessions.ts's getRunningSessionsFromDb().
+ */
+export async function getRunningAutoScalers(): Promise<AutoScaler[]> {
+  return readQuery(async (tx: ManagedTransaction) => {
+    const result = await tx.run(
+      `MATCH (f:AutoScaler {status: 'running'})
+       OPTIONAL MATCH (f)-[:IN_TAB]->(t:Tab)
+       WITH f, collect(t.id) AS tabIds
+       OPTIONAL MATCH (owner:User)-[:OWNS]->(f)
+       RETURN f{.*} AS autoScaler, tabIds, owner.id AS userId`
+    );
+    return result.records.map((record) =>
+      mapToAutoScaler(record.get("autoScaler"), record.get("tabIds"), record.get("userId"))
+    );
+  });
+}
+
+/**
  * Update a AutoScaler's status.
  */
 export async function updateAutoScalerStatus(id: number, status: AutoScalerStatus): Promise<AutoScaler | null> {
@@ -261,5 +283,114 @@ export async function deleteAutoScaler(id: number): Promise<boolean> {
       { id }
     );
     return result.records[0].get("deletedCount") > 0;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Pooled session ownership — (:AutoScaler)-[:OWNS_SESSION]->(:Session)
+// ---------------------------------------------------------------------------
+//
+// Durable link between an AutoScaler and the worker sessions it owns, so the
+// pool survives a server restart (see autoscaler-manager.ts's ManagedAutoScaler
+// .sessionIds, which is otherwise in-memory only). The edge carries a
+// `lastUsedAt` datetime property, updated via touchPooledSession — this is
+// foundation for a later reuse-based scaling model and is not read/acted on
+// by any scaling logic in this task.
+
+/**
+ * Link a session as owned/pooled by an AutoScaler. Idempotent (MERGE).
+ * Sets lastUsedAt = datetime() on creation.
+ */
+export async function linkPooledSession(autoScalerId: number, sessionId: number): Promise<void> {
+  await writeQuery(async (tx: ManagedTransaction) => {
+    await tx.run(
+      `MATCH (f:AutoScaler {id: $autoScalerId})
+       MATCH (s:Session {id: $sessionId})
+       MERGE (f)-[r:OWNS_SESSION]->(s)
+       ON CREATE SET r.lastUsedAt = datetime()`,
+      { autoScalerId, sessionId }
+    );
+  });
+}
+
+/**
+ * Remove the OWNS_SESSION edge between an AutoScaler and a session.
+ * (DETACH DELETE of the session also removes this edge — this helper is for
+ * unlinking a session that is being returned to the pool or removed from
+ * ownership without deleting the underlying Session node.)
+ */
+export async function unlinkPooledSession(autoScalerId: number, sessionId: number): Promise<void> {
+  await writeQuery(async (tx: ManagedTransaction) => {
+    await tx.run(
+      `MATCH (f:AutoScaler {id: $autoScalerId})-[r:OWNS_SESSION]->(s:Session {id: $sessionId})
+       DELETE r`,
+      { autoScalerId, sessionId }
+    );
+  });
+}
+
+/**
+ * Update the lastUsedAt timestamp on an existing OWNS_SESSION edge.
+ * No-op if the edge does not exist.
+ */
+export async function touchPooledSession(autoScalerId: number, sessionId: number): Promise<void> {
+  await writeQuery(async (tx: ManagedTransaction) => {
+    await tx.run(
+      `MATCH (f:AutoScaler {id: $autoScalerId})-[r:OWNS_SESSION]->(s:Session {id: $sessionId})
+       SET r.lastUsedAt = datetime()`,
+      { autoScalerId, sessionId }
+    );
+  });
+}
+
+/**
+ * Get the IDs of all sessions currently pooled/owned by an AutoScaler.
+ */
+export async function getPooledSessionIds(autoScalerId: number): Promise<number[]> {
+  return readQuery(async (tx: ManagedTransaction) => {
+    const result = await tx.run(
+      `MATCH (f:AutoScaler {id: $autoScalerId})-[:OWNS_SESSION]->(s:Session)
+       RETURN s.id AS sessionId`,
+      { autoScalerId }
+    );
+    return result.records.map((record) => record.get("sessionId") as number);
+  });
+}
+
+/**
+ * Get the IDs of every session pooled/owned by ANY AutoScaler (not scoped to
+ * one). Used by session-manager.ts's initSessions() on server boot to exempt
+ * pooled sessions from the generic auto-restart path — at that point in
+ * startup, autoscalers haven't been resumed yet, so there is no single
+ * autoScalerId to scope the query to.
+ */
+export async function getAllPooledSessionIds(): Promise<number[]> {
+  return readQuery(async (tx: ManagedTransaction) => {
+    const result = await tx.run(
+      `MATCH (:AutoScaler)-[:OWNS_SESSION]->(s:Session)
+       RETURN DISTINCT s.id AS sessionId`
+    );
+    return result.records.map((record) => record.get("sessionId") as number);
+  });
+}
+
+/**
+ * Get the pooled session IDs for an AutoScaler along with each edge's
+ * lastUsedAt property (ISO string), for the reuse-based scaling model
+ * added in a follow-up task.
+ */
+export async function getPooledSessionsWithLastUsed(
+  autoScalerId: number
+): Promise<Array<{ sessionId: number; lastUsedAt: string }>> {
+  return readQuery(async (tx: ManagedTransaction) => {
+    const result = await tx.run(
+      `MATCH (f:AutoScaler {id: $autoScalerId})-[r:OWNS_SESSION]->(s:Session)
+       RETURN s.id AS sessionId, r.lastUsedAt AS lastUsedAt`,
+      { autoScalerId }
+    );
+    return result.records.map((record) => ({
+      sessionId: record.get("sessionId") as number,
+      lastUsedAt: (record.get("lastUsedAt") as { toString(): string }).toString(),
+    }));
   });
 }

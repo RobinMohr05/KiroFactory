@@ -39,10 +39,11 @@
  */
 
 import { broadcastToUser } from "./websocket-handler.js";
-import { createAutoScaler as dbCreateAutoScaler, getAutoScalerById, getAllAutoScalers as dbGetAllAutoScalers, updateAutoScalerStatus, updateAutoScaler as dbUpdateAutoScaler, deleteAutoScaler as dbDeleteAutoScaler } from "./db/autoscalers.js";
+import { createAutoScaler as dbCreateAutoScaler, getAutoScalerById, getAllAutoScalers as dbGetAllAutoScalers, getRunningAutoScalers, updateAutoScalerStatus, updateAutoScaler as dbUpdateAutoScaler, deleteAutoScaler as dbDeleteAutoScaler, linkPooledSession, getPooledSessionIds } from "./db/autoscalers.js";
 import { getAvailableTaskCount, getNonDoneTaskCount, waitForTaskAvailable } from "./agent/task-claimer.js";
-import { createSession, startSession, stopSession, getAllSessions } from "./session-manager.js";
+import { createSession, startSession, stopSession, getSession, markSessionPooled } from "./session-manager.js";
 import { getAgentStageStates } from "./session-manager.js";
+import { updateSessionStatus } from "./db/sessions.js";
 import { log } from "./logger.js";
 import type { AutoScaler, CreateAutoScalerInput, Session } from "./types.js";
 
@@ -103,6 +104,68 @@ export async function getAllAutoScalers(userId: number): Promise<AutoScaler[]> {
 }
 
 /**
+ * Resume AutoScalers that were running before a server restart.
+ *
+ * For every AutoScaler persisted with status "running": first reset any of
+ * its pooled sessions still marked "running" in the DB back to "stopped"
+ * (session-manager.ts's initSessions() already reset the in-memory copy —
+ * see its includePooled load — but the DB row itself is only rewritten via
+ * an explicit write, which this supplies), then call startAutoScaler(), which
+ * adopts the persisted pooled session IDs into managed.sessionIds (all as
+ * stopped/ready) and runs one reconcile pass.
+ *
+ * Must run after initSessions() (session-manager.ts) so the in-memory session
+ * store is already populated when reconcile inspects pooled sessions via
+ * getSession().
+ */
+export async function initAutoScalers(): Promise<void> {
+  let running: AutoScaler[] = [];
+  try {
+    running = await getRunningAutoScalers();
+  } catch (err) {
+    log.warn("autoscaler-restore-failed", {
+      component: "autoscaler-manager",
+      msg: `Failed to load running AutoScalers from DB: ${err instanceof Error ? err.message : err}`,
+    });
+    return;
+  }
+
+  if (running.length === 0) return;
+
+  log.info("autoscalers-resuming", {
+    component: "autoscaler-manager",
+    count: running.length,
+    msg: `Resuming ${running.length} AutoScaler(s) that were running before restart`,
+  });
+
+  for (const autoScaler of running) {
+    try {
+      const pooledSessionIds = await getPooledSessionIds(autoScaler.id);
+      for (const sessionId of pooledSessionIds) {
+        try {
+          await updateSessionStatus(sessionId, "stopped");
+        } catch (err) {
+          log.warn("autoscaler-pool-session-reset-error", {
+            component: "autoscaler-manager",
+            autoScalerId: autoScaler.id,
+            sessionId,
+            msg: `Failed to reset pooled session status: ${err instanceof Error ? err.message : err}`,
+          });
+        }
+      }
+
+      await startAutoScaler(autoScaler.id);
+    } catch (err) {
+      log.warn("autoscaler-resume-error", {
+        component: "autoscaler-manager",
+        autoScalerId: autoScaler.id,
+        msg: `Failed to resume AutoScaler: ${err instanceof Error ? err.message : err}`,
+      });
+    }
+  }
+}
+
+/**
  * Update an AutoScaler's editable configuration fields. Status is not changeable here.
  * Broadcasts an `autoscaler-updated` event on success.
  */
@@ -148,6 +211,24 @@ export async function startAutoScaler(autoScalerId: number): Promise<AutoScaler 
     pendingReconcile: false,
     idleIntervals: new Set(),
   };
+
+  // Adopt any persisted pooled sessions (from a previous run of this
+  // AutoScaler, e.g. before a server restart) so the restarted autoscaler
+  // continues managing them rather than losing track and orphaning them.
+  try {
+    const pooledSessionIds = await getPooledSessionIds(autoScalerId);
+    for (const sessionId of pooledSessionIds) {
+      managed.sessionIds.add(sessionId);
+      markSessionPooled(sessionId);
+    }
+  } catch (err) {
+    log.warn("autoscaler-pool-adopt-error", {
+      component: "autoscaler-manager",
+      autoScalerId,
+      msg: `Failed to load persisted pooled sessions: ${err instanceof Error ? err.message : err}`,
+    });
+  }
+
   autoScalers.set(autoScalerId, managed);
 
   broadcastToUser(updated.userId, { type: "autoscaler-updated", autoScaler: updated });
@@ -270,10 +351,12 @@ async function reconcile(managed: ManagedAutoScaler, stages?: { claimState: stri
   try {
     const { autoScaler } = managed;
 
-    // Prune sessions that are no longer running.
-    const allSessions = getAllSessions(autoScaler.userId);
+    // Prune sessions that are no longer running. Looked up by ID directly
+    // (getSession) rather than via getAllSessions — the latter is the
+    // user-facing list and excludes autoscaler-pooled sessions, which are
+    // exactly the sessions being tracked here.
     for (const sessionId of [...managed.sessionIds]) {
-      const session = allSessions.find((s) => s.id === sessionId);
+      const session = getSession(sessionId);
       if (!session || session.status !== "running") {
         managed.sessionIds.delete(sessionId);
         if (managed.floorSessionId === sessionId) {
@@ -366,6 +449,22 @@ async function spawnAutoScalerSession(managed: ManagedAutoScaler): Promise<Sessi
     timeoutSeconds: 0,
   });
 
+  // Durably link the session as owned/pooled by this autoScaler so the pool
+  // survives a server restart (see db/autoscalers.ts's OWNS_SESSION edge).
+  // Also mark it in-memory immediately so it's hidden from getAllSessions()
+  // right away, without waiting for a server restart to pick up the DB fact.
+  markSessionPooled(session.id);
+  try {
+    await linkPooledSession(autoScaler.id, session.id);
+  } catch (err) {
+    log.warn("autoscaler-pool-link-error", {
+      component: "autoscaler-manager",
+      autoScalerId: autoScaler.id,
+      sessionId: session.id,
+      msg: `Failed to persist pooled session link: ${err instanceof Error ? err.message : err}`,
+    });
+  }
+
   // Start the session.
   await startSession(session.id);
 
@@ -401,8 +500,7 @@ function watchSessionCompletion(managed: ManagedAutoScaler, sessionId: number): 
       return;
     }
 
-    const allSessions = getAllSessions(managed.autoScaler.userId);
-    const session = allSessions.find((s) => s.id === sessionId);
+    const session = getSession(sessionId);
 
     if (!session || session.status !== "running") {
       clearInterval(pollInterval);
@@ -453,8 +551,7 @@ function watchSessionIdle(managed: ManagedAutoScaler, sessionId: number): void {
         return;
       }
 
-      const allSessions = getAllSessions(autoScaler.userId);
-      const session = allSessions.find((s) => s.id === sessionId);
+      const session = getSession(sessionId);
 
       if (!session || session.status !== "running") {
         // Session is gone — nothing to do, watchSessionCompletion handles cleanup.
