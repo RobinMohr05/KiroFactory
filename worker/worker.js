@@ -3207,6 +3207,26 @@ process.on("SIGTERM", () => gracefulShutdown(0));
 process.on("SIGINT", () => gracefulShutdown(0));
 
 // ---------------------------------------------------------------------------
+// Test seam
+//
+// When WORKER_PRINT_MCP_SERVERS=1 is set, print the *real* buildMcpServers()
+// server list as JSON and exit before any WebSocket/kiro-cli I/O starts. This
+// lets a test spawn worker.js itself and assert on the actual gating logic
+// (e.g. the AGENT_KIND=inspector && TASK_CREATE_ENABLED=true condition for the
+// task-create server) instead of reimplementing that condition in the test.
+//
+// The env validation above still runs first (SESSION_ID/WORKER_SECRET/transport
+// must be present), so the test supplies those; nothing here starts a real
+// connection.
+// ---------------------------------------------------------------------------
+
+if (process.env.WORKER_PRINT_MCP_SERVERS === "1") {
+  const servers = buildMcpServers();
+  console.log(JSON.stringify({ __mcpServers: servers.map((s) => s.name) }));
+  process.exit(0);
+}
+
+// ---------------------------------------------------------------------------
 // Start
 // ---------------------------------------------------------------------------
 
