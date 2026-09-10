@@ -2236,21 +2236,20 @@ function buildMcpServers() {
     });
   }
 
-  // Include the task-create MCP server for inspector-kind sessions (e.g.
-  // code-reviewer-agent, qa-improvement-agent) only. Lets a review/QA pass
-  // turn findings into DB-backed tasks on the board. No external calls or
-  // credentials needed — see task-create-mcp-server.js's header comment for
-  // how its {"taskCreated":...} envelope is captured and turned into a real
-  // createTask() call by the orchestrator (session-manager.ts's
-  // handleWorkerTaskCreate()).
-  if (AGENT_KIND === "inspector") {
+  // Include the task-create MCP server for inspector-kind sessions only when
+  // the session's "create tasks on board" toggle is enabled
+  // (TASK_CREATE_ENABLED=true, injected by the spawner). This lets an
+  // autonomous review/QA session file the tasks it discovers into a specific
+  // tab the user chose at session-creation time. When the toggle is off, the
+  // tool is not injected at all — the agent simply doesn't have access to it.
+  if (AGENT_KIND === "inspector" && process.env.TASK_CREATE_ENABLED === "true") {
     servers.push({
       name: "task-create",
       command: "node",
       args: ["/app/task-create-mcp-server.js"],
       env: [],
     });
-    logInfo("Including task-create MCP server", { agentKind: AGENT_KIND });
+    logInfo("Including task-create MCP server", { agentKind: AGENT_KIND, taskCreateEnabled: true });
   }
 
   // Include the git-delivery MCP server for editor-kind, task-based sessions

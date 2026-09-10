@@ -230,7 +230,13 @@ export async function startWorkerJob(
    * "claude-sonnet-4-5"). When unset/empty, kiro-cli picks its own default
    * (currently "Auto") — the worker never applies a model flag on its own.
    */
-  model?: string | null
+  model?: string | null,
+  /**
+   * Whether the create_task MCP tool should be injected into the worker.
+   * Maps to the session's `createTasksEnabled` field. When false/undefined,
+   * the tool is omitted regardless of AGENT_KIND.
+   */
+  createTasksEnabled?: boolean
 ): Promise<AcaJobExecution> {
   // Decrypt the user's Kiro API key
   const kiroApiKey = await getUserKiroApiKey(userId);
@@ -265,6 +271,10 @@ export async function startWorkerJob(
 
   if (model) {
     envVars.push({ name: "MODEL", value: model });
+  }
+
+  if (createTasksEnabled) {
+    envVars.push({ name: "TASK_CREATE_ENABLED", value: "true" });
   }
 
   // MCP proxy sidecar: tell the worker where to connect (localhost because same pod)

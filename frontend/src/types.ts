@@ -62,6 +62,13 @@ export interface Session {
   cronTimezone?: string;
   /** Retry count for a failed scheduled run (default 0). */
   retries?: number;
+  /**
+   * When true, the inspector/QA agent is allowed to file tasks via the
+   * create_task MCP tool.
+   */
+  createTasksEnabled?: boolean;
+  /** Tab ID where tasks created by the agent should be filed. */
+  taskCreationTabId?: number | null;
 }
 
 export interface SessionActivity {

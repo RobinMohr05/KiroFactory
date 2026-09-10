@@ -428,6 +428,19 @@ export interface Session {
    * Defaults to 0. Only meaningful alongside `cronExpression`.
    */
   retries?: number;
+  /**
+   * When true, the inspector/QA agent is allowed to file new tasks on the board
+   * using the create_task MCP tool. The specific tab to file into is set by
+   * `taskCreationTabId`. When false, the task-create MCP tool is not injected
+   * into the worker container at all.
+   */
+  createTasksEnabled?: boolean;
+  /**
+   * The tab ID where tasks created by the create_task MCP tool should be filed.
+   * Required (and validated against the session owner) when `createTasksEnabled`
+   * is true; always null when `createTasksEnabled` is false.
+   */
+  taskCreationTabId?: number | null;
 }
 
 export interface CreateSessionInput {
@@ -477,6 +490,16 @@ export interface CreateSessionInput {
   cronTimezone?: string;
   /** Retry count for a failed scheduled run (default 0). */
   retries?: number;
+  /**
+   * When true, the inspector/QA agent is allowed to file tasks via the
+   * create_task MCP tool. Requires `taskCreationTabId` to be set.
+   */
+  createTasksEnabled?: boolean;
+  /**
+   * Tab ID where tasks created by the agent should be filed.
+   * Required when `createTasksEnabled` is true; forced null otherwise.
+   */
+  taskCreationTabId?: number | null;
 }
 
 /**
@@ -504,6 +527,16 @@ export interface UpdateSessionInput {
   cronTimezone?: string | null;
   /** Retry count for a failed scheduled run (default 0). */
   retries?: number;
+  /**
+   * When true, the inspector/QA agent is allowed to file tasks via the
+   * create_task MCP tool. Requires `taskCreationTabId` to be set.
+   */
+  createTasksEnabled?: boolean;
+  /**
+   * Tab ID where tasks created by the agent should be filed.
+   * Required when `createTasksEnabled` is true; forced null otherwise.
+   */
+  taskCreationTabId?: number | null;
 }
 
 // ─── Auto-Scalers (auto-scaling session pools) ───────────────────────────────

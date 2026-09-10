@@ -21,6 +21,7 @@ import { sanitizeSessionForClient } from "../session-sanitize.js";
 import { getTurnsBySession } from "../db/turns.js";
 import { isValidCronExpression, isValidTimezone } from "../cron-schedule.js";
 import { armSession, disarmSession, triggerRunNow } from "../scheduled-session-manager.js";
+import { getTabById } from "../db/tabs.js";
 
 const router = Router();
 
@@ -78,7 +79,36 @@ function validateRetries(retries: unknown): string | null {
   return null;
 }
 
-// GET /api/sessions — list all sessions for the authenticated user (without full output)
+/**
+ * Validate the `createTasksEnabled` / `taskCreationTabId` pair.
+ *
+ * Rules:
+ * - When `createTasksEnabled` is true, `taskCreationTabId` must be present
+ *   AND must refer to a tab owned by `userId`.
+ * - When `createTasksEnabled` is false (or absent), `taskCreationTabId` is
+ *   ignored — the caller is responsible for forcing it to null before persisting.
+ *
+ * Returns an error message string (for a 400 response) on failure, or null
+ * on success / when the toggle is off.
+ */
+async function validateCreateTasksFields(
+  createTasksEnabled: unknown,
+  taskCreationTabId: unknown,
+  userId: number
+): Promise<string | null> {
+  if (!createTasksEnabled) return null;
+
+  if (taskCreationTabId == null || typeof taskCreationTabId !== "number") {
+    return "taskCreationTabId is required when createTasksEnabled is true";
+  }
+
+  const tab = await getTabById(taskCreationTabId);
+  if (!tab || tab.userId !== userId) {
+    return `taskCreationTabId ${taskCreationTabId} not found or not owned by this user`;
+  }
+
+  return null;
+}
 router.get("/", (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
@@ -119,6 +149,22 @@ router.post("/", async (req: Request, res: Response) => {
     if (retriesError) {
       res.status(400).json({ error: retriesError });
       return;
+    }
+
+    // Validate createTasksEnabled/taskCreationTabId pairing.
+    const createTasksError = await validateCreateTasksFields(
+      input.createTasksEnabled,
+      input.taskCreationTabId,
+      userId
+    );
+    if (createTasksError) {
+      res.status(400).json({ error: createTasksError });
+      return;
+    }
+
+    // Force taskCreationTabId to null when the toggle is off.
+    if (!input.createTasksEnabled) {
+      input.taskCreationTabId = null;
     }
 
     // Force userId from auth context (ignore any userId in the body).
@@ -464,7 +510,7 @@ router.patch("/:id/pin", (req: Request, res: Response) => {
 });
 
 // PATCH /api/sessions/:id — update editable session fields (must belong to authenticated user, must not be running)
-router.patch("/:id", (req: Request, res: Response) => {
+router.patch("/:id", async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
     const id = paramId(req);
@@ -496,6 +542,8 @@ router.patch("/:id", (req: Request, res: Response) => {
     if (rest.cronExpression !== undefined) updates.cronExpression = rest.cronExpression;
     if (rest.cronTimezone !== undefined) updates.cronTimezone = rest.cronTimezone;
     if (rest.retries !== undefined) updates.retries = rest.retries;
+    if (rest.createTasksEnabled !== undefined) updates.createTasksEnabled = rest.createTasksEnabled;
+    if (rest.taskCreationTabId !== undefined) updates.taskCreationTabId = rest.taskCreationTabId;
 
     // Validate `retries` at the boundary before it's persisted (see
     // validateRetries) so a direct API call can't store a non-numeric/NaN/
@@ -505,6 +553,30 @@ router.patch("/:id", (req: Request, res: Response) => {
       if (retriesError) {
         res.status(400).json({ error: retriesError });
         return;
+      }
+    }
+
+    // Validate createTasksEnabled/taskCreationTabId pairing.
+    if (updates.createTasksEnabled !== undefined || updates.taskCreationTabId !== undefined) {
+      // Determine the effective toggle state: incoming value wins, else session's current value.
+      const effectiveEnabled =
+        updates.createTasksEnabled !== undefined
+          ? updates.createTasksEnabled
+          : session.createTasksEnabled;
+      const effectiveTabId =
+        updates.taskCreationTabId !== undefined
+          ? updates.taskCreationTabId
+          : session.taskCreationTabId;
+
+      const createTasksError = await validateCreateTasksFields(effectiveEnabled, effectiveTabId, userId);
+      if (createTasksError) {
+        res.status(400).json({ error: createTasksError });
+        return;
+      }
+
+      // Force taskCreationTabId to null when the toggle is off.
+      if (!effectiveEnabled) {
+        updates.taskCreationTabId = null;
       }
     }
 
