@@ -1132,6 +1132,12 @@ export function deleteSession(id: number): boolean {
   }
 
   sessions.delete(id);
+  // Release any in-memory pooled bookkeeping for this id. DETACH DELETE below
+  // drops the OWNS_SESSION edge in the DB, but the pooledSessionIds set is
+  // mirrored in-memory and must be cleared here too — otherwise a deleted
+  // pooled session's id lingers in the set forever (a slow, unbounded leak for
+  // any autoscaler pool that churns sessions over the process lifetime).
+  unmarkSessionPooled(id);
   broadcastToUser(session.meta.userId, { type: "session-deleted", sessionId: id });
 
   // Also delete from DB if available

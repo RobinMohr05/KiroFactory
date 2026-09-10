@@ -171,7 +171,10 @@ describe("session-manager initSessions — autoscaler pool exemption", () => {
   let initSessions: typeof import("./session-manager.js")["initSessions"];
   let getAllSessions: typeof import("./session-manager.js")["getAllSessions"];
   let getSession: typeof import("./session-manager.js")["getSession"];
+  let deleteSession: typeof import("./session-manager.js")["deleteSession"];
+  let createSession: typeof import("./session-manager.js")["createSession"];
   let getAllSessionsFromDb: typeof import("./db/sessions.js")["getAllSessionsFromDb"];
+  let insertSession: typeof import("./db/sessions.js")["insertSession"];
   let getAllPooledSessionIds: typeof import("./db/autoscalers.js")["getAllPooledSessionIds"];
 
   beforeEach(async () => {
@@ -183,9 +186,12 @@ describe("session-manager initSessions — autoscaler pool exemption", () => {
     initSessions = sm.initSessions;
     getAllSessions = sm.getAllSessions;
     getSession = sm.getSession;
+    deleteSession = sm.deleteSession;
+    createSession = sm.createSession;
 
     const dbSessions = await import("./db/sessions.js");
     getAllSessionsFromDb = dbSessions.getAllSessionsFromDb;
+    insertSession = dbSessions.insertSession;
 
     const dbAutoScalers = await import("./db/autoscalers.js");
     getAllPooledSessionIds = dbAutoScalers.getAllPooledSessionIds;
@@ -270,5 +276,32 @@ describe("session-manager initSessions — autoscaler pool exemption", () => {
     // erroring — only status/error visibility (via getSession) changes were
     // in scope for this task, not error-store visibility.
     expect(getAllSessions(1).find((s) => s.id === 42)).toBeUndefined();
+  });
+
+  it("releases a deleted pooled session's id from the in-memory pooled set (no leak)", async () => {
+    // Boot with a pooled session (id 42) — it's tracked in pooledSessionIds
+    // and hidden from getAllSessions.
+    const pooledSession = makeDbSession({ id: 42, status: "running" });
+    vi.mocked(getAllSessionsFromDb).mockResolvedValue([pooledSession]);
+    vi.mocked(getAllPooledSessionIds).mockResolvedValue([42]);
+
+    await initSessions();
+    expect(getSession(42)).toBeDefined();
+    expect(getAllSessions(1).find((s) => s.id === 42)).toBeUndefined();
+
+    // Delete the pooled session. DETACH DELETE drops the OWNS_SESSION edge in
+    // the DB, and deleteSession() must also release the id from the in-memory
+    // pooledSessionIds set — otherwise the id lingers forever (leak).
+    expect(deleteSession(42)).toBe(true);
+    expect(getSession(42)).toBeUndefined();
+
+    // Prove the id was released: create a brand-new, non-pooled session that
+    // the DB happens to (re)assign id 42. If deleteSession() had left 42 in
+    // pooledSessionIds, this fresh session would be wrongly hidden from the
+    // user-facing list.
+    vi.mocked(insertSession).mockResolvedValueOnce(42);
+    const fresh = await createSession({ name: "Fresh", agent: "developer-agent", userId: 1 });
+    expect(fresh.id).toBe(42);
+    expect(getAllSessions(1).find((s) => s.id === 42)).toBeDefined();
   });
 });
