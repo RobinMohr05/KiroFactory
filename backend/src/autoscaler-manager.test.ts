@@ -246,11 +246,19 @@ describe("autoscaler-manager", () => {
       vi.mocked(getAutoScalerById).mockResolvedValue(stoppedAutoScaler);
       vi.mocked(updateAutoScalerStatus).mockResolvedValue(runningAutoScaler);
       vi.mocked(getAvailableTaskCount).mockResolvedValue(8);
-      vi.mocked(getAllSessions).mockReturnValue([]);
 
       let sessionCounter = 100;
-      vi.mocked(createSession).mockImplementation(async () =>
-        makeSession({ id: sessionCounter++ })
+      let taskCounter = 500;
+      const sessions: ReturnType<typeof makeSession>[] = [];
+      // Each spawned session claims a task (currentTaskId set) so the
+      // serialized-spawn gate lets the burst proceed up to the cap.
+      vi.mocked(createSession).mockImplementation(async () => {
+        const s = makeSession({ id: sessionCounter++, status: "running", currentTaskId: taskCounter++ });
+        sessions.push(s);
+        return s;
+      });
+      vi.mocked(getAllSessions).mockImplementation(() =>
+        sessions.map((s) => ({ ...s, status: "running" as const }))
       );
       vi.mocked(startSession).mockResolvedValue(undefined as any);
 
@@ -268,11 +276,19 @@ describe("autoscaler-manager", () => {
       vi.mocked(getAutoScalerById).mockResolvedValue(stoppedAutoScaler);
       vi.mocked(updateAutoScalerStatus).mockResolvedValue(runningAutoScaler);
       vi.mocked(getAvailableTaskCount).mockResolvedValue(4);
-      vi.mocked(getAllSessions).mockReturnValue([]);
 
       let sessionCounter = 100;
-      vi.mocked(createSession).mockImplementation(async () =>
-        makeSession({ id: sessionCounter++ })
+      let taskCounter = 500;
+      const sessions: ReturnType<typeof makeSession>[] = [];
+      // Each spawned session claims a task (currentTaskId set) so the
+      // serialized-spawn gate lets the full burst through.
+      vi.mocked(createSession).mockImplementation(async () => {
+        const s = makeSession({ id: sessionCounter++, status: "running", currentTaskId: taskCounter++ });
+        sessions.push(s);
+        return s;
+      });
+      vi.mocked(getAllSessions).mockImplementation(() =>
+        sessions.map((s) => ({ ...s, status: "running" as const }))
       );
       vi.mocked(startSession).mockResolvedValue(undefined as any);
 
@@ -402,11 +418,19 @@ describe("autoscaler-manager", () => {
       vi.mocked(getAutoScalerById).mockResolvedValue(stoppedAutoScaler);
       vi.mocked(updateAutoScalerStatus).mockResolvedValue(runningAutoScaler);
       vi.mocked(getAvailableTaskCount).mockResolvedValue(10);
-      vi.mocked(getAllSessions).mockReturnValue([]);
 
       let sessionCounter = 100;
-      vi.mocked(createSession).mockImplementation(async () =>
-        makeSession({ id: sessionCounter++ })
+      let taskCounter = 500;
+      const sessions: ReturnType<typeof makeSession>[] = [];
+      // Each spawned session claims a task (currentTaskId set) so the
+      // serialized-spawn gate lets the burst proceed up to the cap.
+      vi.mocked(createSession).mockImplementation(async () => {
+        const s = makeSession({ id: sessionCounter++, status: "running", currentTaskId: taskCounter++ });
+        sessions.push(s);
+        return s;
+      });
+      vi.mocked(getAllSessions).mockImplementation(() =>
+        sessions.map((s) => ({ ...s, status: "running" as const }))
       );
       vi.mocked(startSession).mockResolvedValue(undefined as any);
 
@@ -458,11 +482,19 @@ describe("autoscaler-manager", () => {
       // 5 claimable tasks, but maxConcurrency=3
       vi.mocked(getAvailableTaskCount).mockResolvedValue(5);
       vi.mocked(getNonDoneTaskCount).mockResolvedValue(5);
-      vi.mocked(getAllSessions).mockReturnValue([]);
 
       let sessionCounter = 100;
-      vi.mocked(createSession).mockImplementation(async () =>
-        makeSession({ id: sessionCounter++ })
+      let taskCounter = 500;
+      const sessions: ReturnType<typeof makeSession>[] = [];
+      // Each spawned session claims a task (currentTaskId set) so the
+      // serialized-spawn gate lets the burst proceed up to the cap.
+      vi.mocked(createSession).mockImplementation(async () => {
+        const s = makeSession({ id: sessionCounter++, status: "running", currentTaskId: taskCounter++ });
+        sessions.push(s);
+        return s;
+      });
+      vi.mocked(getAllSessions).mockImplementation(() =>
+        sessions.map((s) => ({ ...s, status: "running" as const }))
       );
       vi.mocked(startSession).mockResolvedValue(undefined as any);
 
@@ -483,15 +515,22 @@ describe("autoscaler-manager", () => {
       vi.mocked(updateAutoScalerStatus).mockResolvedValue(runningAutoScaler);
       vi.mocked(getAvailableTaskCount).mockResolvedValue(3);
       vi.mocked(getNonDoneTaskCount).mockResolvedValue(3);
-      vi.mocked(getAllSessions).mockReturnValue([]);
 
       let sessionCounter = 100;
+      let taskCounter = 500;
       const sessions: ReturnType<typeof makeSession>[] = [];
+      // Each spawned session claims a task (currentTaskId set) so the
+      // serialized-spawn gate lets the full burst of 3 through. The
+      // currentTaskId then stays fixed, so watchSessionIdle sees "no new claim"
+      // and idle-times-out the non-floor sessions after idleTimeoutSeconds.
       vi.mocked(createSession).mockImplementation(async () => {
-        const session = makeSession({ id: sessionCounter++, status: "running" });
+        const session = makeSession({ id: sessionCounter++, status: "running", currentTaskId: taskCounter++ });
         sessions.push(session);
         return session;
       });
+      vi.mocked(getAllSessions).mockImplementation(() =>
+        sessions.map((s) => ({ ...s, status: "running" as const }))
+      );
       vi.mocked(startSession).mockResolvedValue(undefined as any);
       vi.mocked(stopSession).mockResolvedValue(true);
 
@@ -501,10 +540,10 @@ describe("autoscaler-manager", () => {
       // Should have spawned 3 sessions
       expect(createSession).toHaveBeenCalledTimes(3);
 
-      // Make sessions appear as still running for getAllSessions
-      vi.mocked(getAllSessions).mockReturnValue(sessions.map(s => ({ ...s, status: "running" as const })));
+      // Sessions continue to appear running with the same claimed task
+      // (already reflected by the getAllSessions implementation above).
 
-      // Advance time past idleTimeoutSeconds (no task claims happened)
+      // Advance time past idleTimeoutSeconds (no NEW task claims happened)
       await vi.advanceTimersByTimeAsync((idleTimeoutSeconds + 5) * 1000);
 
       // The 2 extra (non-floor) sessions should have been stopped
@@ -620,9 +659,22 @@ describe("autoscaler-manager", () => {
 
   // ───────────────────────────────────────────────────────────────────────────
   // THUNDERING-HERD FIX (task #1682):
-  //   1. reconcile() re-fetches claimableCount between spawns so it doesn't
-  //      over-spawn when some tasks were claimed by already-running sessions
-  //      between the initial snapshot and each successive spawn.
+  //   1. reconcile() serializes spawns: after spawning a session it waits for
+  //      that session to OBSERVABLY claim a task (its currentTaskId becomes
+  //      non-null) before spawning the next one. If a spawned session parks
+  //      without claiming (loses the race for the last task, sees an empty
+  //      queue), reconcile stops the burst instead of spawning more sessions
+  //      that would immediately idle out.
+  //
+  //      This deliberately does NOT re-read getAvailableTaskCount between
+  //      spawns: that count is cached for COUNT_CACHE_TTL_MS (5s) keyed on
+  //      tabIds/claimState/workingState and is only invalidated on
+  //      notifyTaskAvailable() (task creation/reset), never on a successful
+  //      claim. A whole reconcile pass completes well under 5s, so every
+  //      re-read within one pass returns the identical cached value — the
+  //      re-check was a no-op that never trimmed the burst. Waiting on the
+  //      session's actual claim signal is the only thing that reflects a
+  //      sibling winning the race.
   //   2. watchSessionCompletion debounces its re-reconcile call so that
   //      multiple near-simultaneous session deaths (a burst of idle-timeouts
   //      all firing within ~30s of each other) coalesce into a single reconcile
@@ -630,63 +682,84 @@ describe("autoscaler-manager", () => {
   // ───────────────────────────────────────────────────────────────────────────
 
   describe("thundering-herd prevention", () => {
-    it("stops spawning mid-loop when re-fetched claimableCount drops to zero", async () => {
+    it("stops spawning after a spawned session parks without claiming a task", async () => {
+      vi.useFakeTimers();
       // Scenario: reconcile sees claimableCount=3 and plans to spawn 3 sessions.
-      // After the first session is spawned, claimableCount drops to 0 (e.g. all
-      // tasks were claimed by existing sessions). The loop should stop after 1 spawn.
+      // The first spawned session never claims a task (its currentTaskId stays
+      // undefined — it lost the race / the queue emptied). reconcile must NOT
+      // spawn the remaining 2; it should stop the burst after the first parks.
       const stoppedAutoScaler = makeAutoScaler({ status: "stopped", maxConcurrency: 5 });
       const runningAutoScaler = makeAutoScaler({ status: "running", maxConcurrency: 5 });
       vi.mocked(getAutoScalerById).mockResolvedValue(stoppedAutoScaler);
       vi.mocked(updateAutoScalerStatus).mockResolvedValue(runningAutoScaler);
-      vi.mocked(getAllSessions).mockReturnValue([]);
 
-      // First call (initial snapshot): 3 claimable. Second call (re-check after
-      // first spawn): 0 claimable. Should stop spawning after 1.
-      vi.mocked(getAvailableTaskCount)
-        .mockResolvedValueOnce(3)  // initial snapshot → plan to spawn 3
-        .mockResolvedValue(0);     // re-check after first spawn → 0 left → stop
+      // Count stays 3 the entire time — mirroring production where the 5s
+      // cache makes every re-read return the same value within one pass. The
+      // ONLY thing that should stop the burst is the spawned session parking.
+      vi.mocked(getAvailableTaskCount).mockResolvedValue(3);
 
       let sessionCounter = 100;
-      vi.mocked(createSession).mockImplementation(async () =>
-        makeSession({ id: sessionCounter++ })
-      );
+      const sessions: ReturnType<typeof makeSession>[] = [];
+      vi.mocked(createSession).mockImplementation(async () => {
+        // Spawned session is running but has NOT claimed a task (no currentTaskId).
+        const s = makeSession({ id: sessionCounter++, status: "running" });
+        sessions.push(s);
+        return s;
+      });
       vi.mocked(startSession).mockResolvedValue(undefined as any);
+      // getAllSessions reports the spawned sessions as running-but-idle
+      // (currentTaskId undefined) — i.e. they parked without claiming.
+      vi.mocked(getAllSessions).mockImplementation(() =>
+        sessions.map((s) => ({ ...s, status: "running" as const }))
+      );
 
       await startAutoScaler(1);
-      await flushAsync();
+      // Advance well past the claim-wait window so the "did it claim?" poll
+      // resolves as "parked" for the first spawned session.
+      await vi.advanceTimersByTimeAsync(20000);
 
-      // Should have spawned only 1 session despite the initial snapshot of 3
+      // Only the first session should have been spawned; once it parked the
+      // burst stopped.
       expect(createSession).toHaveBeenCalledTimes(1);
+      vi.useRealTimers();
     });
 
-    it("spawns up to claimableCount when re-fetched count decrements one-by-one", async () => {
-      // Scenario: 5 tasks initially claimable; after each spawn the re-fetched
-      // count decrements by 1. Should spawn exactly 3 (capped by maxConcurrency=3).
+    it("keeps spawning while each spawned session claims a task (currentTaskId set)", async () => {
+      vi.useFakeTimers();
+      // Scenario: 5 tasks claimable, maxConcurrency=3 → plan to spawn 3. Each
+      // spawned session promptly claims a task (currentTaskId set), so the
+      // burst proceeds to the full planned count of 3.
       const stoppedAutoScaler = makeAutoScaler({ status: "stopped", maxConcurrency: 3 });
       const runningAutoScaler = makeAutoScaler({ status: "running", maxConcurrency: 3 });
       vi.mocked(getAutoScalerById).mockResolvedValue(stoppedAutoScaler);
       vi.mocked(updateAutoScalerStatus).mockResolvedValue(runningAutoScaler);
-      vi.mocked(getAllSessions).mockReturnValue([]);
-
-      // Initial: 5, after 1st spawn: 4, after 2nd spawn: 3, after 3rd spawn: 2.
-      // But cap is 3, so we only ever planned to spawn 3 — all 3 happen.
-      vi.mocked(getAvailableTaskCount)
-        .mockResolvedValueOnce(5)  // initial snapshot → desired=3 (capped)
-        .mockResolvedValueOnce(4)  // re-check after 1st spawn → still ≥1 needed
-        .mockResolvedValueOnce(3)  // re-check after 2nd spawn → still ≥1 needed
-        .mockResolvedValue(2);     // re-check after 3rd spawn (not reached, loop done)
+      vi.mocked(getAvailableTaskCount).mockResolvedValue(5);
 
       let sessionCounter = 100;
-      vi.mocked(createSession).mockImplementation(async () =>
-        makeSession({ id: sessionCounter++ })
-      );
+      let taskCounter = 500;
+      const sessions: ReturnType<typeof makeSession>[] = [];
+      vi.mocked(createSession).mockImplementation(async () => {
+        // Each spawned session immediately "claims" a task: currentTaskId set.
+        const s = makeSession({
+          id: sessionCounter++,
+          status: "running",
+          currentTaskId: taskCounter++,
+        });
+        sessions.push(s);
+        return s;
+      });
       vi.mocked(startSession).mockResolvedValue(undefined as any);
+      vi.mocked(getAllSessions).mockImplementation(() =>
+        sessions.map((s) => ({ ...s, status: "running" as const }))
+      );
 
       await startAutoScaler(1);
-      await flushAsync();
+      await vi.advanceTimersByTimeAsync(20000);
 
-      // All 3 should be spawned — count never dropped to 0 mid-loop
+      // All 3 planned sessions spawned — each claimed a task so the burst
+      // proceeded to the cap.
       expect(createSession).toHaveBeenCalledTimes(3);
+      vi.useRealTimers();
     });
 
     it("debounces watchSessionCompletion re-reconcile: multiple simultaneous session deaths trigger only one reconcile pass", async () => {
@@ -696,18 +769,25 @@ describe("autoscaler-manager", () => {
       const runningAutoScaler = makeAutoScaler({ status: "running", maxConcurrency: 3 });
       vi.mocked(getAutoScalerById).mockResolvedValue(stoppedAutoScaler);
       vi.mocked(updateAutoScalerStatus).mockResolvedValue(runningAutoScaler);
-      vi.mocked(getAllSessions).mockReturnValue([]);
 
       // Initial reconcile: 3 tasks → spawn 3 sessions
       vi.mocked(getAvailableTaskCount).mockResolvedValue(3);
 
       let sessionCounter = 100;
+      let taskCounter = 500;
       const sessions: ReturnType<typeof makeSession>[] = [];
+      // Each spawned session promptly claims a task (currentTaskId set) so the
+      // serialized-spawn gate lets the full burst of 3 through.
       vi.mocked(createSession).mockImplementation(async () => {
-        const s = makeSession({ id: sessionCounter++, status: "running" });
+        const s = makeSession({ id: sessionCounter++, status: "running", currentTaskId: taskCounter++ });
         sessions.push(s);
         return s;
       });
+      // While spawning, getAllSessions reports the running sessions with their
+      // claimed task so waitForSessionToClaimOrPark sees each one claim.
+      vi.mocked(getAllSessions).mockImplementation(() =>
+        sessions.map(s => ({ ...s, status: "running" as const }))
+      );
       vi.mocked(startSession).mockResolvedValue(undefined as any);
       vi.mocked(stopSession).mockResolvedValue(true);
 

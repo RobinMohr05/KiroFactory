@@ -335,12 +335,14 @@ async function reconcile(managed: ManagedAutoScaler, stages?: { claimState: stri
 
     for (let i = 0; i < toSpawn; i++) {
       if (managed.abortController.signal.aborted) break;
+      let spawnedSessionId: number | null = null;
       try {
         // Is this the floor/warm session? Mark it if we need a floor and
         // don't already have one.
         const isFloorSession = floor > 0 && managed.floorSessionId === null;
         const session = await spawnAutoScalerSession(managed);
         if (session) {
+          spawnedSessionId = session.id;
           managed.sessionIds.add(session.id);
           if (isFloorSession) {
             managed.floorSessionId = session.id;
@@ -355,27 +357,34 @@ async function reconcile(managed: ManagedAutoScaler, stages?: { claimState: stri
         break;
       }
 
-      // Re-check claimable count after each spawn to avoid over-spawning.
-      // Sessions already running (including sibling sessions spawned in earlier
-      // passes or earlier in this loop) may claim tasks between spawns.  If the
-      // freshly-fetched count no longer warrants an additional session, stop here
-      // rather than spawning more sessions that would immediately idle out.
-      // Skip the re-check on the last planned spawn (no next iteration anyway).
-      if (i < toSpawn - 1 && !managed.abortController.signal.aborted) {
-        try {
-          const freshClaimable = await getAvailableTaskCount(
-            autoScaler.tabIds,
-            resolvedStages.claimState,
-            resolvedStages.workingState
-          );
-          const freshDesired = Math.max(floor, Math.min(cap, freshClaimable));
-          if (managed.sessionIds.size >= freshDesired) {
-            // Already at or above the fresh target — no more spawns needed.
-            break;
-          }
-        } catch {
-          // Re-check failed — be conservative and stop spawning this pass.
-          // The pending-reconcile or reconcileLoop will retry shortly.
+      // Serialize spawns to prevent the thundering-herd (task #1682): before
+      // spawning the NEXT session, wait for the one just spawned to OBSERVABLY
+      // claim a task (its currentTaskId becomes non-null once its loop body
+      // runs getAvailableTaskCount/claimTask). If it never claims within
+      // SPAWN_CLAIM_WAIT_MS — because it lost the race for the last task or
+      // the queue is already empty — it has parked in waitForTaskAvailable and
+      // will idle-die; spawning more siblings would just add to the burst of
+      // short-lived sessions the bug describes, so stop here.
+      //
+      // We deliberately do NOT re-read getAvailableTaskCount between spawns:
+      // that count is cached for COUNT_CACHE_TTL_MS (5s) keyed on
+      // tabIds/claimState/workingState and is only invalidated by
+      // notifyTaskAvailable() (task creation/reset), never by a successful
+      // claim. A whole reconcile pass finishes well under 5s, so every re-read
+      // returns the identical cached value and can never trim the burst — it
+      // was a no-op. The spawned session's actual claim signal is the only
+      // thing that reflects a sibling winning the race for a task.
+      //
+      // Skip the wait on the last planned spawn (no next iteration to gate).
+      if (spawnedSessionId !== null && i < toSpawn - 1 && !managed.abortController.signal.aborted) {
+        const claimed = await waitForSessionToClaimOrPark(managed, spawnedSessionId);
+        if (!claimed) {
+          log.info("autoscaler-spawn-halt", {
+            component: "autoscaler-manager",
+            autoScalerId: autoScaler.id,
+            sessionId: spawnedSessionId,
+            msg: "Spawned session parked without claiming a task — halting this reconcile's spawn burst to avoid a thundering herd",
+          });
           break;
         }
       }
@@ -389,6 +398,58 @@ async function reconcile(managed: ManagedAutoScaler, stages?: { claimState: stri
       reconcile(managed).catch(() => {});
     }
   }
+}
+
+/**
+ * How long (ms) reconcile() waits for a freshly-spawned session to claim a
+ * task before treating it as "parked" and halting the rest of the spawn burst.
+ *
+ * A spawned session's loop body (session-manager.ts runLoopMode/runLoopModeAca)
+ * runs getAvailableTaskCount then claimTask on start and sets currentTaskId on
+ * success. For a local session this happens within a few hundred ms; the ACA
+ * path is slower (container/WS startup) but this gate only needs to catch the
+ * common local case and cap how long a slow ACA start blocks the loop. If the
+ * session is genuinely still starting up when this elapses, we simply stop
+ * spawning this pass — a subsequent reconcile (task arrival or the pending/
+ * completion path) will scale up again if there's still work.
+ */
+const SPAWN_CLAIM_WAIT_MS = 10000;
+
+/** Poll interval (ms) while waiting for a spawned session to claim a task. */
+const SPAWN_CLAIM_POLL_MS = 250;
+
+/**
+ * Wait for a just-spawned session to observably claim a task (its
+ * currentTaskId becomes non-null) or "park" (never claims within
+ * SPAWN_CLAIM_WAIT_MS). Returns true if it claimed, false if it parked, was
+ * stopped, disappeared, or the autoscaler was aborted while waiting.
+ *
+ * This is the mechanism that actually prevents the thundering herd: it gates
+ * each successive spawn on the previous session having genuinely picked up
+ * work, so a batch of N sessions is never spawned for a queue smaller than N.
+ */
+async function waitForSessionToClaimOrPark(
+  managed: ManagedAutoScaler,
+  sessionId: number
+): Promise<boolean> {
+  const { autoScaler } = managed;
+  const deadline = Date.now() + SPAWN_CLAIM_WAIT_MS;
+
+  while (Date.now() < deadline) {
+    if (managed.abortController.signal.aborted) return false;
+
+    const session = getAllSessions(autoScaler.userId).find((s) => s.id === sessionId);
+    // Session gone or no longer running — treat as "not claimed" so we stop
+    // spawning; watchSessionCompletion handles its cleanup/re-reconcile.
+    if (!session || session.status !== "running") return false;
+    // Claimed a task — its loop set currentTaskId. Safe to spawn the next one.
+    if (session.currentTaskId != null) return true;
+
+    await new Promise((r) => setTimeout(r, SPAWN_CLAIM_POLL_MS));
+  }
+
+  // Timed out without claiming — the session parked in waitForTaskAvailable.
+  return false;
 }
 
 /**
