@@ -78,6 +78,16 @@ interface ManagedAutoScaler {
    * removes it when the interval is cleared.
    */
   idleIntervals: Set<ReturnType<typeof setInterval>>;
+  /**
+   * Debounce timer for reconcile calls triggered by watchSessionCompletion. Multiple
+   * near-simultaneous session deaths (e.g. an entire burst idle-timing out within the
+   * same 5s poll window) each call reconcile — without a debounce each death triggers
+   * its own full reconcile pass, compounding the thundering-herd. This timer collapses
+   * those into a single deferred reconcile call.
+   *
+   * Null when no deferred reconcile is pending.
+   */
+  completionReconcileTimer: ReturnType<typeof setTimeout> | null;
 }
 
 const autoScalers = new Map<number, ManagedAutoScaler>();
@@ -147,6 +157,7 @@ export async function startAutoScaler(autoScalerId: number): Promise<AutoScaler 
     reconciling: false,
     pendingReconcile: false,
     idleIntervals: new Set(),
+    completionReconcileTimer: null,
   };
   autoScalers.set(autoScalerId, managed);
 
@@ -182,6 +193,12 @@ export async function stopAutoScaler(autoScalerId: number): Promise<AutoScaler |
       clearInterval(handle);
     }
     managed.idleIntervals.clear();
+
+    // Cancel any pending debounced reconcile so it doesn't fire after teardown.
+    if (managed.completionReconcileTimer !== null) {
+      clearTimeout(managed.completionReconcileTimer);
+      managed.completionReconcileTimer = null;
+    }
 
     // Stop all owned sessions.
     for (const sessionId of managed.sessionIds) {
@@ -337,6 +354,31 @@ async function reconcile(managed: ManagedAutoScaler, stages?: { claimState: stri
         });
         break;
       }
+
+      // Re-check claimable count after each spawn to avoid over-spawning.
+      // Sessions already running (including sibling sessions spawned in earlier
+      // passes or earlier in this loop) may claim tasks between spawns.  If the
+      // freshly-fetched count no longer warrants an additional session, stop here
+      // rather than spawning more sessions that would immediately idle out.
+      // Skip the re-check on the last planned spawn (no next iteration anyway).
+      if (i < toSpawn - 1 && !managed.abortController.signal.aborted) {
+        try {
+          const freshClaimable = await getAvailableTaskCount(
+            autoScaler.tabIds,
+            resolvedStages.claimState,
+            resolvedStages.workingState
+          );
+          const freshDesired = Math.max(floor, Math.min(cap, freshClaimable));
+          if (managed.sessionIds.size >= freshDesired) {
+            // Already at or above the fresh target — no more spawns needed.
+            break;
+          }
+        } catch {
+          // Re-check failed — be conservative and stop spawning this pass.
+          // The pending-reconcile or reconcileLoop will retry shortly.
+          break;
+        }
+      }
     }
   } finally {
     managed.reconciling = false;
@@ -393,8 +435,17 @@ async function spawnAutoScalerSession(managed: ManagedAutoScaler): Promise<Sessi
 /**
  * Watch a autoScaler-owned session for completion. When it stops, trigger
  * reconciliation to potentially spawn a replacement.
+ *
+ * Uses a short debounce (COMPLETION_RECONCILE_DEBOUNCE_MS) so that multiple
+ * near-simultaneous session deaths (e.g. an entire spawned burst idle-timing out
+ * within the same 5-second poll window) coalesce into a single reconcile pass
+ * rather than each triggering an independent full pass. Without the debounce,
+ * N dying sessions → N re-reconciles → N new bursts (thundering-herd amplification).
  */
 function watchSessionCompletion(managed: ManagedAutoScaler, sessionId: number): void {
+  /** Debounce window: collapses simultaneous session deaths into one reconcile. */
+  const COMPLETION_RECONCILE_DEBOUNCE_MS = 1000;
+
   const pollInterval = setInterval(() => {
     if (managed.abortController.signal.aborted) {
       clearInterval(pollInterval);
@@ -411,9 +462,21 @@ function watchSessionCompletion(managed: ManagedAutoScaler, sessionId: number): 
         managed.floorSessionId = null;
       }
 
-      // Trigger re-reconciliation if the autoScaler is still active.
+      // Trigger re-reconciliation via a debounced timer so that multiple
+      // simultaneous session deaths (all picked up within the same 5s poll window)
+      // coalesce into a single reconcile pass.
       if (!managed.abortController.signal.aborted) {
-        reconcile(managed).catch(() => {});
+        if (managed.completionReconcileTimer !== null) {
+          // Another death already set up a pending reconcile — reset the timer
+          // so we wait from the latest death rather than the earliest one.
+          clearTimeout(managed.completionReconcileTimer);
+        }
+        managed.completionReconcileTimer = setTimeout(() => {
+          managed.completionReconcileTimer = null;
+          if (!managed.abortController.signal.aborted) {
+            reconcile(managed).catch(() => {});
+          }
+        }, COMPLETION_RECONCILE_DEBOUNCE_MS);
       }
     }
   }, 5000); // Check every 5 seconds

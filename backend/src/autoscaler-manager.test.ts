@@ -619,6 +619,127 @@ describe("autoscaler-manager", () => {
   });
 
   // ───────────────────────────────────────────────────────────────────────────
+  // THUNDERING-HERD FIX (task #1682):
+  //   1. reconcile() re-fetches claimableCount between spawns so it doesn't
+  //      over-spawn when some tasks were claimed by already-running sessions
+  //      between the initial snapshot and each successive spawn.
+  //   2. watchSessionCompletion debounces its re-reconcile call so that
+  //      multiple near-simultaneous session deaths (a burst of idle-timeouts
+  //      all firing within ~30s of each other) coalesce into a single reconcile
+  //      pass rather than each triggering an independent full pass.
+  // ───────────────────────────────────────────────────────────────────────────
+
+  describe("thundering-herd prevention", () => {
+    it("stops spawning mid-loop when re-fetched claimableCount drops to zero", async () => {
+      // Scenario: reconcile sees claimableCount=3 and plans to spawn 3 sessions.
+      // After the first session is spawned, claimableCount drops to 0 (e.g. all
+      // tasks were claimed by existing sessions). The loop should stop after 1 spawn.
+      const stoppedAutoScaler = makeAutoScaler({ status: "stopped", maxConcurrency: 5 });
+      const runningAutoScaler = makeAutoScaler({ status: "running", maxConcurrency: 5 });
+      vi.mocked(getAutoScalerById).mockResolvedValue(stoppedAutoScaler);
+      vi.mocked(updateAutoScalerStatus).mockResolvedValue(runningAutoScaler);
+      vi.mocked(getAllSessions).mockReturnValue([]);
+
+      // First call (initial snapshot): 3 claimable. Second call (re-check after
+      // first spawn): 0 claimable. Should stop spawning after 1.
+      vi.mocked(getAvailableTaskCount)
+        .mockResolvedValueOnce(3)  // initial snapshot → plan to spawn 3
+        .mockResolvedValue(0);     // re-check after first spawn → 0 left → stop
+
+      let sessionCounter = 100;
+      vi.mocked(createSession).mockImplementation(async () =>
+        makeSession({ id: sessionCounter++ })
+      );
+      vi.mocked(startSession).mockResolvedValue(undefined as any);
+
+      await startAutoScaler(1);
+      await flushAsync();
+
+      // Should have spawned only 1 session despite the initial snapshot of 3
+      expect(createSession).toHaveBeenCalledTimes(1);
+    });
+
+    it("spawns up to claimableCount when re-fetched count decrements one-by-one", async () => {
+      // Scenario: 5 tasks initially claimable; after each spawn the re-fetched
+      // count decrements by 1. Should spawn exactly 3 (capped by maxConcurrency=3).
+      const stoppedAutoScaler = makeAutoScaler({ status: "stopped", maxConcurrency: 3 });
+      const runningAutoScaler = makeAutoScaler({ status: "running", maxConcurrency: 3 });
+      vi.mocked(getAutoScalerById).mockResolvedValue(stoppedAutoScaler);
+      vi.mocked(updateAutoScalerStatus).mockResolvedValue(runningAutoScaler);
+      vi.mocked(getAllSessions).mockReturnValue([]);
+
+      // Initial: 5, after 1st spawn: 4, after 2nd spawn: 3, after 3rd spawn: 2.
+      // But cap is 3, so we only ever planned to spawn 3 — all 3 happen.
+      vi.mocked(getAvailableTaskCount)
+        .mockResolvedValueOnce(5)  // initial snapshot → desired=3 (capped)
+        .mockResolvedValueOnce(4)  // re-check after 1st spawn → still ≥1 needed
+        .mockResolvedValueOnce(3)  // re-check after 2nd spawn → still ≥1 needed
+        .mockResolvedValue(2);     // re-check after 3rd spawn (not reached, loop done)
+
+      let sessionCounter = 100;
+      vi.mocked(createSession).mockImplementation(async () =>
+        makeSession({ id: sessionCounter++ })
+      );
+      vi.mocked(startSession).mockResolvedValue(undefined as any);
+
+      await startAutoScaler(1);
+      await flushAsync();
+
+      // All 3 should be spawned — count never dropped to 0 mid-loop
+      expect(createSession).toHaveBeenCalledTimes(3);
+    });
+
+    it("debounces watchSessionCompletion re-reconcile: multiple simultaneous session deaths trigger only one reconcile pass", async () => {
+      vi.useFakeTimers();
+
+      const stoppedAutoScaler = makeAutoScaler({ status: "stopped", maxConcurrency: 3 });
+      const runningAutoScaler = makeAutoScaler({ status: "running", maxConcurrency: 3 });
+      vi.mocked(getAutoScalerById).mockResolvedValue(stoppedAutoScaler);
+      vi.mocked(updateAutoScalerStatus).mockResolvedValue(runningAutoScaler);
+      vi.mocked(getAllSessions).mockReturnValue([]);
+
+      // Initial reconcile: 3 tasks → spawn 3 sessions
+      vi.mocked(getAvailableTaskCount).mockResolvedValue(3);
+
+      let sessionCounter = 100;
+      const sessions: ReturnType<typeof makeSession>[] = [];
+      vi.mocked(createSession).mockImplementation(async () => {
+        const s = makeSession({ id: sessionCounter++, status: "running" });
+        sessions.push(s);
+        return s;
+      });
+      vi.mocked(startSession).mockResolvedValue(undefined as any);
+      vi.mocked(stopSession).mockResolvedValue(true);
+
+      await startAutoScaler(1);
+      await vi.advanceTimersByTimeAsync(50);
+
+      expect(createSession).toHaveBeenCalledTimes(3);
+
+      // Now all 3 sessions die "simultaneously" (within a short window):
+      // make them appear as stopped
+      vi.mocked(getAllSessions).mockReturnValue(
+        sessions.map(s => ({ ...s, status: "stopped" as const }))
+      );
+
+      // Reset so we can count only re-reconcile-triggered getAgentStageStates calls.
+      // getAgentStageStates is called once per reconcile pass (not per spawn), so
+      // it's a reliable proxy for "how many separate reconcile passes ran".
+      vi.mocked(getAgentStageStates).mockClear();
+
+      // Advance by just past watchSessionCompletion's 5s poll interval — all 3
+      // watchers fire "simultaneously", then the 1s debounce expires
+      await vi.advanceTimersByTimeAsync(7000);
+
+      // With debouncing, only ONE reconcile pass should have been triggered
+      // (not 3 separate ones). getAgentStageStates is called once per reconcile pass.
+      expect(getAgentStageStates).toHaveBeenCalledTimes(1);
+
+      vi.useRealTimers();
+    });
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
   // PR REVIEW FIXES:
   //   1. reconcileLoop survives transient errors (no permanent kill)
   //   2. idleTimeoutSeconds=0 logs a warning when session is spawned
