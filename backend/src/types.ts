@@ -346,6 +346,17 @@ export interface Activity {
   detail?: string;
 }
 
+/**
+ * The exact `Activity.detail` a loop-mode session sets when it has run its loop
+ * body, found no claimable tasks, and parked in `waitForTaskAvailable`. Shared
+ * between session-manager (which sets it) and autoscaler-manager (which reads it
+ * to distinguish a genuinely-parked session from one that is merely still
+ * starting up — see waitForSessionToClaimOrPark). Keeping it a single exported
+ * constant avoids a fragile duplicated string literal on both sides.
+ */
+export const NO_TASKS_PARK_DETAIL = "No tasks available. Waiting for new tasks...";
+
+
 export interface Session {
   id: number;
   name: string;

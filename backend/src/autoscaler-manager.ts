@@ -44,6 +44,8 @@ import { getAvailableTaskCount, getNonDoneTaskCount, waitForTaskAvailable } from
 import { createSession, startSession, stopSession, getAllSessions } from "./session-manager.js";
 import { getAgentStageStates } from "./session-manager.js";
 import { log } from "./logger.js";
+import { isAcaModeEnabled } from "./aca-worker-spawner.js";
+import { NO_TASKS_PARK_DETAIL } from "./types.js";
 import type { AutoScaler, CreateAutoScalerInput, Session } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -358,13 +360,17 @@ async function reconcile(managed: ManagedAutoScaler, stages?: { claimState: stri
       }
 
       // Serialize spawns to prevent the thundering-herd (task #1682): before
-      // spawning the NEXT session, wait for the one just spawned to OBSERVABLY
-      // claim a task (its currentTaskId becomes non-null once its loop body
-      // runs getAvailableTaskCount/claimTask). If it never claims within
-      // SPAWN_CLAIM_WAIT_MS — because it lost the race for the last task or
-      // the queue is already empty — it has parked in waitForTaskAvailable and
-      // will idle-die; spawning more siblings would just add to the burst of
-      // short-lived sessions the bug describes, so stop here.
+      // spawning the NEXT session, wait for the one just spawned to reach an
+      // OBSERVABLE state. Its loop body runs getAvailableTaskCount/claimTask on
+      // start: on success currentTaskId becomes non-null ("claimed"); on an
+      // empty queue it sets the idle NO_TASKS_PARK_DETAIL activity ("parked").
+      // If neither is observed within SPAWN_CLAIM_WAIT_MS the session is still
+      // cold-starting ("starting") — common and healthy in ACA mode.
+      //
+      // Only a genuine "parked" (or, in local mode, an anomalous "starting")
+      // halts the burst: that means a sibling won the race for the last task or
+      // the queue is already empty, so spawning more siblings would just add to
+      // the burst of short-lived sessions the bug describes.
       //
       // We deliberately do NOT re-read getAvailableTaskCount between spawns:
       // that count is cached for COUNT_CACHE_TTL_MS (5s) keyed on
@@ -372,18 +378,28 @@ async function reconcile(managed: ManagedAutoScaler, stages?: { claimState: stri
       // notifyTaskAvailable() (task creation/reset), never by a successful
       // claim. A whole reconcile pass finishes well under 5s, so every re-read
       // returns the identical cached value and can never trim the burst — it
-      // was a no-op. The spawned session's actual claim signal is the only
+      // was a no-op. The spawned session's actual claim/park signal is the only
       // thing that reflects a sibling winning the race for a task.
       //
       // Skip the wait on the last planned spawn (no next iteration to gate).
       if (spawnedSessionId !== null && i < toSpawn - 1 && !managed.abortController.signal.aborted) {
-        const claimed = await waitForSessionToClaimOrPark(managed, spawnedSessionId);
-        if (!claimed) {
+        const outcome = await waitForSessionToClaimOrPark(managed, spawnedSessionId);
+        // A genuine empty-queue park always halts the burst. A "starting"
+        // (not-yet-connected) session only halts in local mode — in ACA mode a
+        // slow-but-healthy cold-start routinely exceeds the wait window and must
+        // NOT be misread as a park (that would cap concurrency at 1 and defeat
+        // maxConcurrency — the PR-review defect). "claimed" continues the burst.
+        const shouldHalt = outcome === "parked" || (outcome === "starting" && !isAcaModeEnabled());
+        if (shouldHalt) {
           log.info("autoscaler-spawn-halt", {
             component: "autoscaler-manager",
             autoScalerId: autoScaler.id,
             sessionId: spawnedSessionId,
-            msg: "Spawned session parked without claiming a task — halting this reconcile's spawn burst to avoid a thundering herd",
+            outcome,
+            msg:
+              outcome === "parked"
+                ? "Spawned session parked without claiming a task — halting this reconcile's spawn burst to avoid a thundering herd"
+                : "Spawned session did not claim or park within the wait window (local mode) — halting this reconcile's spawn burst",
           });
           break;
         }
@@ -401,17 +417,25 @@ async function reconcile(managed: ManagedAutoScaler, stages?: { claimState: stri
 }
 
 /**
- * How long (ms) reconcile() waits for a freshly-spawned session to claim a
- * task before treating it as "parked" and halting the rest of the spawn burst.
+ * How long (ms) reconcile() waits for a freshly-spawned session to reach an
+ * OBSERVABLE state (claimed a task, or parked on an empty queue) before giving
+ * up on the wait.
  *
  * A spawned session's loop body (session-manager.ts runLoopMode/runLoopModeAca)
- * runs getAvailableTaskCount then claimTask on start and sets currentTaskId on
- * success. For a local session this happens within a few hundred ms; the ACA
- * path is slower (container/WS startup) but this gate only needs to catch the
- * common local case and cap how long a slow ACA start blocks the loop. If the
- * session is genuinely still starting up when this elapses, we simply stop
- * spawning this pass — a subsequent reconcile (task arrival or the pending/
- * completion path) will scale up again if there's still work.
+ * runs getAvailableTaskCount then claimTask on start; on success it sets
+ * currentTaskId, and on an empty queue it sets its currentActivity to the idle
+ * NO_TASKS_PARK_DETAIL signal before suspending in waitForTaskAvailable. For a
+ * local session either happens within a few hundred ms.
+ *
+ * The ACA path is much slower: the worker is launched async and un-awaited, and
+ * before the loop body can run at all the container must cold-start (image
+ * start, Node boot, WebSocket handshake back to the orchestrator, ACP session
+ * init). That routinely takes well over this window. Critically, such a session
+ * has NEITHER claimed NOR parked yet — it simply hasn't connected. Timing out
+ * on it must NOT be read as "parked" (see waitForSessionToClaimOrPark's
+ * three-valued result and reconcile()'s handling of "starting" in ACA mode),
+ * otherwise a slow-but-healthy cold start would cap the burst at one session and
+ * silently defeat maxConcurrency parallelism.
  */
 const SPAWN_CLAIM_WAIT_MS = 10000;
 
@@ -419,37 +443,65 @@ const SPAWN_CLAIM_WAIT_MS = 10000;
 const SPAWN_CLAIM_POLL_MS = 250;
 
 /**
- * Wait for a just-spawned session to observably claim a task (its
- * currentTaskId becomes non-null) or "park" (never claims within
- * SPAWN_CLAIM_WAIT_MS). Returns true if it claimed, false if it parked, was
- * stopped, disappeared, or the autoscaler was aborted while waiting.
+ * Outcome of waiting on a freshly-spawned session:
+ * - "claimed": it observably picked up a task (currentTaskId set). Safe to
+ *   spawn the next sibling.
+ * - "parked":  its loop body ran, found the queue empty, and parked (its
+ *   currentActivity is the idle NO_TASKS_PARK_DETAIL signal). Spawning more
+ *   siblings would just add to the thundering herd — halt the burst.
+ * - "starting": the wait window elapsed without either signal — the session is
+ *   still cold-starting (typical in ACA mode) and hasn't connected yet. This is
+ *   NOT a park; treating it as one is the PR-review defect this distinction
+ *   fixes.
+ */
+type SpawnWaitOutcome = "claimed" | "parked" | "starting";
+
+/**
+ * Wait for a just-spawned session to observably claim a task (currentTaskId
+ * becomes non-null) or "park" (its loop body found an empty queue and set the
+ * idle NO_TASKS_PARK_DETAIL activity). Returns:
+ * - "claimed" if it claimed a task,
+ * - "parked" if it genuinely parked on an empty queue,
+ * - "starting" if the wait window elapsed with neither signal (still booting),
+ *   or the session disappeared / was stopped / the autoscaler was aborted.
  *
- * This is the mechanism that actually prevents the thundering herd: it gates
- * each successive spawn on the previous session having genuinely picked up
- * work, so a batch of N sessions is never spawned for a queue smaller than N.
+ * Distinguishing "parked" from "starting" is what lets the serialized-spawn
+ * gate prevent the thundering herd WITHOUT under-provisioning slow ACA
+ * cold-starts: only a genuine park (loop body ran, saw nothing to do) halts the
+ * burst; a session that merely hasn't connected yet does not.
  */
 async function waitForSessionToClaimOrPark(
   managed: ManagedAutoScaler,
   sessionId: number
-): Promise<boolean> {
+): Promise<SpawnWaitOutcome> {
   const { autoScaler } = managed;
   const deadline = Date.now() + SPAWN_CLAIM_WAIT_MS;
 
   while (Date.now() < deadline) {
-    if (managed.abortController.signal.aborted) return false;
+    if (managed.abortController.signal.aborted) return "starting";
 
     const session = getAllSessions(autoScaler.userId).find((s) => s.id === sessionId);
-    // Session gone or no longer running — treat as "not claimed" so we stop
-    // spawning; watchSessionCompletion handles its cleanup/re-reconcile.
-    if (!session || session.status !== "running") return false;
+    // Session gone or no longer running — treat as "starting" (not a park) so
+    // the burst isn't halted on its account; watchSessionCompletion handles its
+    // cleanup/re-reconcile.
+    if (!session || session.status !== "running") return "starting";
     // Claimed a task — its loop set currentTaskId. Safe to spawn the next one.
-    if (session.currentTaskId != null) return true;
+    if (session.currentTaskId != null) return "claimed";
+    // Ran its loop body, found nothing claimable, and parked. This is the
+    // genuine "empty queue" signal that should halt the burst.
+    if (
+      session.currentActivity?.type === "idle" &&
+      session.currentActivity.detail === NO_TASKS_PARK_DETAIL
+    ) {
+      return "parked";
+    }
 
     await new Promise((r) => setTimeout(r, SPAWN_CLAIM_POLL_MS));
   }
 
-  // Timed out without claiming — the session parked in waitForTaskAvailable.
-  return false;
+  // Window elapsed without claiming or parking — the session is still starting
+  // up (hasn't run its loop body yet). Not a park.
+  return "starting";
 }
 
 /**

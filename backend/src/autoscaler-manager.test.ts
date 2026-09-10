@@ -48,11 +48,18 @@ vi.mock("./logger.js", () => ({
   toErrorFields: vi.fn().mockReturnValue({}),
 }));
 
+// Default to local (non-ACA) mode; individual tests override to true to
+// exercise the slow ACA cold-start path in the serialized-spawn gate.
+vi.mock("./aca-worker-spawner.js", () => ({
+  isAcaModeEnabled: vi.fn().mockReturnValue(false),
+}));
+
 // Re-import the module fresh for each test — the module holds in-memory
 // state (the `autoScalers` Map), so we need to ensure clean state between tests.
 // Unfortunately vi.resetModules() + dynamic import is needed here.
 
 import type { AutoScaler, Session } from "./types.js";
+import { NO_TASKS_PARK_DETAIL } from "./types.js";
 
 function makeAutoScaler(overrides: Partial<AutoScaler> = {}): AutoScaler {
   return {
@@ -122,6 +129,7 @@ describe("autoscaler-manager", () => {
   let stopSession: typeof import("./session-manager.js")["stopSession"];
   let getAllSessions: typeof import("./session-manager.js")["getAllSessions"];
   let getAgentStageStates: typeof import("./session-manager.js")["getAgentStageStates"];
+  let isAcaModeEnabled: typeof import("./aca-worker-spawner.js")["isAcaModeEnabled"];
 
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -159,6 +167,11 @@ describe("autoscaler-manager", () => {
     stopSession = sm.stopSession;
     getAllSessions = sm.getAllSessions;
     getAgentStageStates = sm.getAgentStageStates;
+
+    const aca = await import("./aca-worker-spawner.js");
+    isAcaModeEnabled = aca.isAcaModeEnabled;
+    // Default to local mode; ACA-specific tests opt in explicitly.
+    vi.mocked(isAcaModeEnabled).mockReturnValue(false);
 
     // Default: waitForTaskAvailable never resolves (parks forever).
     vi.mocked(waitForTaskAvailable).mockImplementation(
@@ -685,9 +698,10 @@ describe("autoscaler-manager", () => {
     it("stops spawning after a spawned session parks without claiming a task", async () => {
       vi.useFakeTimers();
       // Scenario: reconcile sees claimableCount=3 and plans to spawn 3 sessions.
-      // The first spawned session never claims a task (its currentTaskId stays
-      // undefined — it lost the race / the queue emptied). reconcile must NOT
-      // spawn the remaining 2; it should stop the burst after the first parks.
+      // The first spawned session never claims a task — it ran its loop body,
+      // found the queue empty, and PARKED (currentActivity is the idle
+      // "no tasks available" signal). reconcile must NOT spawn the remaining 2;
+      // it should stop the burst after the first genuinely parks.
       const stoppedAutoScaler = makeAutoScaler({ status: "stopped", maxConcurrency: 5 });
       const runningAutoScaler = makeAutoScaler({ status: "running", maxConcurrency: 5 });
       vi.mocked(getAutoScalerById).mockResolvedValue(stoppedAutoScaler);
@@ -701,14 +715,19 @@ describe("autoscaler-manager", () => {
       let sessionCounter = 100;
       const sessions: ReturnType<typeof makeSession>[] = [];
       vi.mocked(createSession).mockImplementation(async () => {
-        // Spawned session is running but has NOT claimed a task (no currentTaskId).
-        const s = makeSession({ id: sessionCounter++, status: "running" });
+        // Spawned session is running, has NOT claimed a task, and its loop body
+        // has run + parked (idle "no tasks available" activity).
+        const s = makeSession({
+          id: sessionCounter++,
+          status: "running",
+          currentActivity: { type: "idle", detail: NO_TASKS_PARK_DETAIL },
+        });
         sessions.push(s);
         return s;
       });
       vi.mocked(startSession).mockResolvedValue(undefined as any);
-      // getAllSessions reports the spawned sessions as running-but-idle
-      // (currentTaskId undefined) — i.e. they parked without claiming.
+      // getAllSessions reports the spawned sessions as running-but-parked
+      // (currentTaskId undefined, idle park activity set).
       vi.mocked(getAllSessions).mockImplementation(() =>
         sessions.map((s) => ({ ...s, status: "running" as const }))
       );
@@ -721,6 +740,45 @@ describe("autoscaler-manager", () => {
       // Only the first session should have been spawned; once it parked the
       // burst stopped.
       expect(createSession).toHaveBeenCalledTimes(1);
+      vi.useRealTimers();
+    });
+
+    it("keeps spawning in ACA mode when a spawned session is still cold-starting (not yet parked) past the claim-wait window", async () => {
+      vi.useFakeTimers();
+      // Regression for the PR-review defect: in ACA mode a healthy session can
+      // take well over SPAWN_CLAIM_WAIT_MS to cold-start (container boot + WS
+      // handshake + ACP init) before its loop body runs. Such a session has
+      // NOT parked — it just hasn't connected yet (no currentTaskId AND no idle
+      // park activity). The gate must NOT misclassify it as parked and cap the
+      // burst at 1; it should keep spawning up to maxConcurrency.
+      vi.mocked(isAcaModeEnabled).mockReturnValue(true);
+
+      const stoppedAutoScaler = makeAutoScaler({ status: "stopped", maxConcurrency: 3 });
+      const runningAutoScaler = makeAutoScaler({ status: "running", maxConcurrency: 3 });
+      vi.mocked(getAutoScalerById).mockResolvedValue(stoppedAutoScaler);
+      vi.mocked(updateAutoScalerStatus).mockResolvedValue(runningAutoScaler);
+      vi.mocked(getAvailableTaskCount).mockResolvedValue(3);
+
+      let sessionCounter = 100;
+      const sessions: ReturnType<typeof makeSession>[] = [];
+      vi.mocked(createSession).mockImplementation(async () => {
+        // Still cold-starting: running, but no claim and no park activity yet.
+        const s = makeSession({ id: sessionCounter++, status: "running" });
+        sessions.push(s);
+        return s;
+      });
+      vi.mocked(startSession).mockResolvedValue(undefined as any);
+      vi.mocked(getAllSessions).mockImplementation(() =>
+        sessions.map((s) => ({ ...s, status: "running" as const }))
+      );
+
+      await startAutoScaler(1);
+      // Advance past the claim-wait window; sessions never park (still booting).
+      await vi.advanceTimersByTimeAsync(60000);
+
+      // All 3 planned sessions should be spawned — a slow ACA start must not
+      // cap concurrency at 1.
+      expect(createSession).toHaveBeenCalledTimes(3);
       vi.useRealTimers();
     });
 
