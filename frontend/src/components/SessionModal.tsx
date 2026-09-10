@@ -54,6 +54,15 @@ export function SessionModal({ session, scheduled: scheduledProp, onClose }: Ses
   );
   const [agents, setAgentsList] = useState<Agent[]>([]);
 
+  // Create-tasks toggle
+  const [createTasksEnabled, setCreateTasksEnabled] = useState<boolean>(
+    session?.createTasksEnabled === true
+  );
+  const [taskCreationTabId, setTaskCreationTabId] = useState<number | null>(
+    session?.taskCreationTabId ?? (currentTabId ?? null)
+  );
+  const [createTasksError, setCreateTasksError] = useState<string | null>(null);
+
   // Agent MCP servers exclusions
   const [excludedNames, setExcludedNames] = useState<string[]>(
     session?.excludedMcpServerNames ?? []
@@ -123,6 +132,13 @@ export function SessionModal({ session, scheduled: scheduledProp, onClose }: Ses
       }
     }
 
+    // Validate createTasksEnabled: when checked, a tab must be selected.
+    if (createTasksEnabled && !taskCreationTabId) {
+      setCreateTasksError('Please select a tab to file tasks into.');
+      return;
+    }
+    setCreateTasksError(null);
+
     const boardIds = [...selectedBoardIds];
     if (currentTabId && !boardIds.includes(currentTabId)) {
       boardIds.push(currentTabId);
@@ -149,6 +165,8 @@ export function SessionModal({ session, scheduled: scheduledProp, onClose }: Ses
           tabIds: boardIds.length > 0 ? boardIds : [],
           mcpServers: mcpServers.length > 0 ? mcpServers : null,
           excludedMcpServerNames: excludedNames,
+          createTasksEnabled,
+          taskCreationTabId: createTasksEnabled ? taskCreationTabId : null,
         };
         if (agent) body.agent = agent;
         if (scheduled) {
@@ -168,7 +186,13 @@ export function SessionModal({ session, scheduled: scheduledProp, onClose }: Ses
         }
         if (res.status === 400) {
           const data = await res.json().catch(() => ({}));
-          setCronError(data.error || 'Invalid schedule.');
+          const errMsg = data.error || 'Invalid input.';
+          // Route the error to the right field
+          if (errMsg.toLowerCase().includes('taskcreationtabid') || errMsg.toLowerCase().includes('not owned') || errMsg.toLowerCase().includes('not found')) {
+            setCreateTasksError(errMsg);
+          } else {
+            setCronError(errMsg);
+          }
           return;
         }
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -190,6 +214,8 @@ export function SessionModal({ session, scheduled: scheduledProp, onClose }: Ses
           tabIds: boardIds.length > 0 ? boardIds : undefined,
           mcpServers: mcpServers.length > 0 ? mcpServers : undefined,
           excludedMcpServerNames: excludedNames.length > 0 ? excludedNames : undefined,
+          createTasksEnabled,
+          taskCreationTabId: createTasksEnabled ? taskCreationTabId : null,
         };
         if (agent) body.agent = agent;
         if (scheduled) {
@@ -205,7 +231,13 @@ export function SessionModal({ session, scheduled: scheduledProp, onClose }: Ses
         });
         if (res.status === 400) {
           const data = await res.json().catch(() => ({}));
-          setCronError(data.error || 'Invalid schedule.');
+          const errMsg = data.error || 'Invalid input.';
+          // Route the error to the right field
+          if (errMsg.toLowerCase().includes('taskcreationtabid') || errMsg.toLowerCase().includes('not owned') || errMsg.toLowerCase().includes('not found')) {
+            setCreateTasksError(errMsg);
+          } else {
+            setCronError(errMsg);
+          }
           return;
         }
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -344,6 +376,46 @@ export function SessionModal({ session, scheduled: scheduledProp, onClose }: Ses
               ))}
             </select>
             <small className="form-hint">Hold Ctrl/Cmd to select multiple. In loop mode, claims tasks from these tabs.</small>
+          </div>
+          <div className="form-group">
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={createTasksEnabled}
+                onChange={(e) => {
+                  setCreateTasksEnabled(e.target.checked);
+                  setCreateTasksError(null);
+                  // Default the tab to currentTabId when enabling, if not already set
+                  if (e.target.checked && !taskCreationTabId && currentTabId) {
+                    setTaskCreationTabId(currentTabId);
+                  }
+                }}
+              />
+              <span>Create tasks on the board</span>
+            </label>
+            {createTasksEnabled && (
+              <div className="form-subgroup" style={{ marginTop: '0.5rem' }}>
+                <label htmlFor="taskCreationTab">Target tab <small>(required)</small></label>
+                <select
+                  id="taskCreationTab"
+                  required
+                  value={taskCreationTabId ?? ''}
+                  onChange={(e) => {
+                    setTaskCreationTabId(e.target.value ? Number(e.target.value) : null);
+                    setCreateTasksError(null);
+                  }}
+                >
+                  <option value="">— select a tab —</option>
+                  {tabs.map(tab => (
+                    <option key={tab.id} value={tab.id}>{tab.name}</option>
+                  ))}
+                </select>
+                {createTasksError && (
+                  <small className="form-error" role="alert">{createTasksError}</small>
+                )}
+              </div>
+            )}
+            <small className="form-hint">When checked, inspector/QA agents can file discovered issues as tasks into the selected tab.</small>
           </div>
 
           {/* Agent MCP Servers section */}

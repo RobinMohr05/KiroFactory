@@ -182,7 +182,8 @@ interface ContainerWorkerSpawner {
     gitOptions: unknown,
     agentKind: "editor" | "inspector" | undefined,
     agentConfigBase64: string | undefined,
-    model: string | null | undefined
+    model: string | null | undefined,
+    createTasksEnabled?: boolean
   ): Promise<ContainerWorkerExecution>;
   stop(executionName: string): Promise<void>;
   status(executionName: string): Promise<ContainerWorkerStatus>;
@@ -193,7 +194,7 @@ interface ContainerWorkerSpawner {
 function makeAcaSpawner(config: AcaWorkerConfig): ContainerWorkerSpawner {
   return {
     kind: "aca",
-    start: (sessionId, agentName, userId, timeoutSeconds, mcpSidecar, gitOptions, agentKind, agentConfigBase64, model) =>
+    start: (sessionId, agentName, userId, timeoutSeconds, mcpSidecar, gitOptions, agentKind, agentConfigBase64, model, createTasksEnabled) =>
       startAcaWorkerJob(
         config,
         sessionId,
@@ -204,7 +205,8 @@ function makeAcaSpawner(config: AcaWorkerConfig): ContainerWorkerSpawner {
         gitOptions as Parameters<typeof startAcaWorkerJob>[6],
         agentKind,
         agentConfigBase64,
-        model
+        model,
+        createTasksEnabled
       ),
     stop: (executionName) => stopAcaWorkerJob(config, executionName),
     status: (executionName) => getAcaWorkerJobStatus(config, executionName),
@@ -215,7 +217,7 @@ function makeAcaSpawner(config: AcaWorkerConfig): ContainerWorkerSpawner {
 function makeWslSpawner(config: WslWorkerConfig): ContainerWorkerSpawner {
   return {
     kind: "wsl",
-    start: async (sessionId, agentName, userId, timeoutSeconds, mcpSidecar, gitOptions, agentKind, agentConfigBase64, model) => {
+    start: async (sessionId, agentName, userId, timeoutSeconds, mcpSidecar, gitOptions, agentKind, agentConfigBase64, model, createTasksEnabled) => {
       const execution = await startWslWorkerJob(
         config,
         sessionId,
@@ -226,7 +228,8 @@ function makeWslSpawner(config: WslWorkerConfig): ContainerWorkerSpawner {
         gitOptions as Parameters<typeof startWslWorkerJob>[6],
         agentKind,
         agentConfigBase64,
-        model
+        model,
+        createTasksEnabled
       );
 
       // Reversed connection direction (see wsl-worker-spawner.ts's module doc
@@ -720,7 +723,11 @@ export async function handleWorkerTaskCreate(
       priority: spec.priority,
       files: spec.files,
       origin: "ai",
-      tabIds: session.meta.tabIds,
+      // Use the explicitly chosen target tab when set; otherwise fall back to
+      // the session's own tab set (original behavior).
+      tabIds: session.meta.taskCreationTabId != null
+        ? [session.meta.taskCreationTabId]
+        : session.meta.tabIds,
     });
     broadcastToUser(session.meta.userId, { type: "task-created", task });
     appendOutput(session, {
@@ -864,6 +871,8 @@ export async function createSession(input: CreateSessionInput): Promise<Session>
     cronExpression: input.cronExpression || undefined,
     cronTimezone: input.cronTimezone || undefined,
     retries: input.retries != null ? input.retries : undefined,
+    createTasksEnabled: input.createTasksEnabled === true ? true : undefined,
+    taskCreationTabId: input.createTasksEnabled === true ? (input.taskCreationTabId ?? null) : null,
   };
 
   // Calculate sortOrder: place new session at end of appropriate group
@@ -1299,6 +1308,16 @@ export function updateSessionFields(
   if (updates.cronExpression !== undefined) session.meta.cronExpression = updates.cronExpression || undefined;
   if (updates.cronTimezone !== undefined) session.meta.cronTimezone = updates.cronTimezone || undefined;
   if (updates.retries !== undefined) session.meta.retries = updates.retries != null ? updates.retries : undefined;
+  if (updates.createTasksEnabled !== undefined) {
+    session.meta.createTasksEnabled = updates.createTasksEnabled === true ? true : undefined;
+    // When the toggle is off, always clear the tab so it's never stale
+    if (!updates.createTasksEnabled) {
+      session.meta.taskCreationTabId = null;
+    }
+  }
+  if (updates.taskCreationTabId !== undefined && session.meta.createTasksEnabled) {
+    session.meta.taskCreationTabId = updates.taskCreationTabId;
+  }
 
   broadcastToUser(session.meta.userId, { type: "session-updated", session: sanitizeSessionForClient(session.meta) });
   persistSession(id);
@@ -2994,7 +3013,8 @@ async function runSessionAca(managed: ManagedSession): Promise<void> {
       gitOptions,
       agentKind,
       agentConfigBase64,
-      meta.model
+      meta.model,
+      meta.createTasksEnabled === true
     );
 
     managed.acaExecutionName = execution.executionName;

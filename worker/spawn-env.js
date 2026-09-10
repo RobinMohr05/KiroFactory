@@ -61,7 +61,7 @@ const FORWARD_PREFIXES = [];
  * net — even if a future change accidentally adds a prefix that covers these,
  * they'll be excluded.
  */
-const BLOCKED_KEYS = [
+export const BLOCKED_KEYS = [
   "GITHUB_PAT",
   "AZURE_DEVOPS_PAT",
   "WORKER_SECRET",
@@ -74,6 +74,7 @@ const BLOCKED_KEYS = [
   "TASK_PR_URL",
   "PR_BRANCH",
   "AUTO_MERGE_ENABLED",
+  "TASK_CREATE_ENABLED",
   "ALL_GROUP_TASKS_DONE",
   "TASK_ID",
   "AGENT_NAME",
