@@ -1,71 +1,55 @@
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 
+type ViewOption = { value: string; label: string };
+
+// Maps each view to the route it navigates to. `value` is the route path so the
+// <select> can drive navigation directly on change, and the current selection
+// mirrors the active route.
+const VIEW_OPTIONS: ViewOption[] = [
+  { value: '/tasks', label: 'Tasks' },
+  { value: '/sessions', label: 'Sessions' },
+  { value: '/agents', label: 'Agents' },
+  { value: '/errors', label: 'Logs' },
+  { value: '/usage', label: 'Usage' },
+];
+
+// Maps the AppContext activeView key to its route path, so the dropdown's
+// current value reflects which view is active.
+const VIEW_TO_PATH: Record<string, string> = {
+  boards: '/tasks',
+  sessions: '/sessions',
+  agents: '/agents',
+  errors: '/errors',
+  usage: '/usage',
+};
+
 export function ViewTabs() {
   const { errors, activeView } = useApp();
   const navigate = useNavigate();
 
   const unreadErrorCount = errors.filter(e => !e.taskCreated).length;
+  const badgeCount = unreadErrorCount > 99 ? '99+' : String(unreadErrorCount);
 
-  const handleTabClick = (path: string) => {
-    navigate(path);
-  };
+  const currentPath = VIEW_TO_PATH[activeView] ?? '/tasks';
 
   return (
-    <nav className="tabs" role="tablist" aria-label="Views">
-      <button
-        className={`tab${activeView === 'boards' ? ' active' : ''}`}
-        role="tab"
-        id="tab-boards"
-        aria-selected={activeView === 'boards'}
-        aria-controls="panel-boards"
-        onClick={() => handleTabClick('/tasks')}
+    <nav className="tabs" aria-label="Views">
+      <select
+        className="tab-select"
+        aria-label="Select view"
+        value={currentPath}
+        onChange={(e) => navigate(e.target.value)}
       >
-        Tasks
-      </button>
-      <button
-        className={`tab${activeView === 'sessions' ? ' active' : ''}`}
-        role="tab"
-        id="tab-sessions"
-        aria-selected={activeView === 'sessions'}
-        aria-controls="panel-sessions"
-        onClick={() => handleTabClick('/sessions')}
-      >
-        Sessions
-      </button>
-      <button
-        className={`tab${activeView === 'agents' ? ' active' : ''}`}
-        role="tab"
-        id="tab-agents"
-        aria-selected={activeView === 'agents'}
-        aria-controls="panel-agents"
-        onClick={() => handleTabClick('/agents')}
-      >
-        Agents
-      </button>
-      <button
-        className={`tab${activeView === 'errors' ? ' active' : ''}`}
-        role="tab"
-        id="tab-errors"
-        aria-selected={activeView === 'errors'}
-        aria-controls="panel-errors"
-        onClick={() => handleTabClick('/errors')}
-      >
-        Logs{' '}
-        {unreadErrorCount > 0 && (
-          <span className="error-badge">{unreadErrorCount > 99 ? '99+' : unreadErrorCount}</span>
-        )}
-      </button>
-      <button
-        className={`tab${activeView === 'usage' ? ' active' : ''}`}
-        role="tab"
-        id="tab-usage"
-        aria-selected={activeView === 'usage'}
-        aria-controls="panel-usage"
-        onClick={() => handleTabClick('/usage')}
-      >
-        Usage
-      </button>
+        {VIEW_OPTIONS.map(({ value, label }) => (
+          <option key={value} value={value}>
+            {value === '/errors' && unreadErrorCount > 0 ? `${label} (${badgeCount})` : label}
+          </option>
+        ))}
+      </select>
+      {unreadErrorCount > 0 && (
+        <span className="error-badge">{badgeCount}</span>
+      )}
     </nav>
   );
 }

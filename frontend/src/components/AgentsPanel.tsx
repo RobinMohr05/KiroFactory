@@ -99,7 +99,7 @@ export function AgentsPanel() {
   const detailHidden = isMobile && !mobileShowDetail;
 
   return (
-    <section id="panel-agents" role="tabpanel" aria-labelledby="tab-agents">
+    <section id="panel-agents" role="tabpanel" aria-label="Agents">
       <div className="agents-layout">
         <aside className={`agent-list-panel${listHidden ? ' mobile-hidden' : ''}`} ref={listPanelRef}>
           <div className="toolbar" role="toolbar" aria-label="Agent actions">

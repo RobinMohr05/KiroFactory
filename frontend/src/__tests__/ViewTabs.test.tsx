@@ -37,8 +37,10 @@ describe('ViewTabs', () => {
     } as any);
 
     render(<MemoryRouter><ViewTabs /></MemoryRouter>);
-    // Only 1 error has taskCreated=false
+    // Only 1 error has taskCreated=false — badge shown next to the dropdown
     expect(screen.getByText('1')).toBeInTheDocument();
+    // …and the Logs option label carries the count too
+    expect(screen.getByRole('option', { name: /Logs \(1\)/ })).toBeInTheDocument();
   });
 
   it('does not show error badge when all errors are dismissed', () => {
@@ -52,9 +54,11 @@ describe('ViewTabs', () => {
 
     render(<MemoryRouter><ViewTabs /></MemoryRouter>);
     expect(screen.queryByText('1')).not.toBeInTheDocument();
+    // The Logs option label has no count suffix
+    expect(screen.getByRole('option', { name: 'Logs' })).toBeInTheDocument();
   });
 
-  it('navigates when a tab is clicked', () => {
+  it('navigates when a different view is selected', () => {
     vi.mocked(AppContext.useApp).mockReturnValue({
       errors: [],
       activeView: 'boards',
@@ -62,11 +66,12 @@ describe('ViewTabs', () => {
     } as any);
 
     render(<MemoryRouter><ViewTabs /></MemoryRouter>);
-    fireEvent.click(screen.getByRole('tab', { name: /sessions/i }));
+    const select = screen.getByRole('combobox', { name: /select view/i });
+    fireEvent.change(select, { target: { value: '/sessions' } });
     expect(mockNavigate).toHaveBeenCalledWith('/sessions');
   });
 
-  it('marks the active tab with the active class', () => {
+  it('reflects the active view as the selected option', () => {
     vi.mocked(AppContext.useApp).mockReturnValue({
       errors: [],
       activeView: 'agents',
@@ -74,7 +79,7 @@ describe('ViewTabs', () => {
     } as any);
 
     render(<MemoryRouter><ViewTabs /></MemoryRouter>);
-    const agentsTab = screen.getByRole('tab', { name: /agents/i });
-    expect(agentsTab.classList.contains('active')).toBe(true);
+    const select = screen.getByRole('combobox', { name: /select view/i }) as HTMLSelectElement;
+    expect(select.value).toBe('/agents');
   });
 });

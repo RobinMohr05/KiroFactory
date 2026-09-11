@@ -225,7 +225,7 @@ export function UsagePanel() {
 
   if (loading && months.length === 0) {
     return (
-      <section id="panel-usage" role="tabpanel" aria-labelledby="tab-usage">
+      <section id="panel-usage" role="tabpanel" aria-label="Usage">
         <div className="usage-layout">
           <div className="usage-loading">Loading usage data…</div>
         </div>
@@ -235,7 +235,7 @@ export function UsagePanel() {
 
   if (error && months.length === 0) {
     return (
-      <section id="panel-usage" role="tabpanel" aria-labelledby="tab-usage">
+      <section id="panel-usage" role="tabpanel" aria-label="Usage">
         <div className="usage-layout">
           <div className="usage-error">{error}</div>
         </div>
@@ -248,7 +248,7 @@ export function UsagePanel() {
   const monthLabel = selectedMonth?.monthLabel ?? '';
 
   return (
-    <section id="panel-usage" role="tabpanel" aria-labelledby="tab-usage">
+    <section id="panel-usage" role="tabpanel" aria-label="Usage">
       <div className="usage-layout">
         {/* Summary Header */}
         <div className="usage-header">

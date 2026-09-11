@@ -80,23 +80,16 @@ export function SessionDetailTabs({ sessionId, sessionStatus, output }: SessionD
 
   return (
     <div className="session-detail-tabs-wrapper">
-      <div className="session-detail-tabs" role="tablist" aria-label="Session detail views">
-        <button
-          role="tab"
-          aria-selected={activeTab === 'timeline'}
-          className={`session-detail-tab${activeTab === 'timeline' ? ' active' : ''}`}
-          onClick={() => setActiveTab('timeline')}
+      <div className="session-detail-tabs" aria-label="Session detail views">
+        <select
+          className="tab-select"
+          aria-label="Session detail view"
+          value={activeTab}
+          onChange={(e) => setActiveTab(e.target.value as DetailTab)}
         >
-          Timeline
-        </button>
-        <button
-          role="tab"
-          aria-selected={activeTab === 'rawlog'}
-          className={`session-detail-tab${activeTab === 'rawlog' ? ' active' : ''}`}
-          onClick={() => setActiveTab('rawlog')}
-        >
-          Raw Log
-        </button>
+          <option value="timeline">Timeline</option>
+          <option value="rawlog">Raw Log</option>
+        </select>
         {activeTab === 'rawlog' && (
           <button
             type="button"

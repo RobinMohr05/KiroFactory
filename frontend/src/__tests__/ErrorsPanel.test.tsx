@@ -163,7 +163,7 @@ describe('ErrorsPanel - sub-tab switcher', () => {
     mockUseApp({ errors: [] });
     render(<ErrorsPanel />);
 
-    fireEvent.click(screen.getByRole('tab', { name: 'WSL/Docker Logs' }));
+    fireEvent.change(screen.getByRole('combobox', { name: /errors view/i }), { target: { value: 'wsl-docker-logs' } });
 
     expect(screen.getByRole('heading', { name: 'WSL/Docker Logs' })).toBeInTheDocument();
     await waitFor(() => {
@@ -176,7 +176,7 @@ describe('ErrorsPanel - sub-tab switcher', () => {
     render(<ErrorsPanel />);
 
     expect(screen.getByText('Clear All')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('tab', { name: 'WSL/Docker Logs' }));
+    fireEvent.change(screen.getByRole('combobox', { name: /errors view/i }), { target: { value: 'wsl-docker-logs' } });
     expect(screen.queryByText('Clear All')).not.toBeInTheDocument();
   });
 
@@ -195,7 +195,7 @@ describe('ErrorsPanel - sub-tab switcher', () => {
     });
 
     render(<ErrorsPanel />);
-    fireEvent.click(screen.getByRole('tab', { name: 'WSL/Docker Logs' }));
+    fireEvent.change(screen.getByRole('combobox', { name: /errors view/i }), { target: { value: 'wsl-docker-logs' } });
 
     await waitFor(() => {
       expect(screen.getByText(/container kirofactory-worker-1 killed \(signal: 15\)/)).toBeInTheDocument();
@@ -206,7 +206,7 @@ describe('ErrorsPanel - sub-tab switcher', () => {
   it('appends a new line received over the ws-wsl-diagnostic-line custom event', async () => {
     mockUseApp({ errors: [] });
     render(<ErrorsPanel />);
-    fireEvent.click(screen.getByRole('tab', { name: 'WSL/Docker Logs' }));
+    fireEvent.change(screen.getByRole('combobox', { name: /errors view/i }), { target: { value: 'wsl-docker-logs' } });
 
     await waitFor(() => {
       expect(apiFetchMock).toHaveBeenCalledWith('/api/errors/wsl-diagnostics');
@@ -239,7 +239,7 @@ describe('ErrorsPanel - sub-tab switcher', () => {
     });
 
     render(<ErrorsPanel />);
-    fireEvent.click(screen.getByRole('tab', { name: 'WSL/Docker Logs' }));
+    fireEvent.change(screen.getByRole('combobox', { name: /errors view/i }), { target: { value: 'wsl-docker-logs' } });
 
     await waitFor(() => {
       expect(screen.getByText(/container kirofactory-worker-1 killed/)).toBeInTheDocument();
@@ -268,7 +268,7 @@ describe('ErrorsPanel - sub-tab switcher', () => {
     });
 
     render(<ErrorsPanel />);
-    fireEvent.click(screen.getByRole('tab', { name: 'WSL/Docker Logs' }));
+    fireEvent.change(screen.getByRole('combobox', { name: /errors view/i }), { target: { value: 'wsl-docker-logs' } });
 
     await waitFor(() => {
       expect(screen.getByText('something happened')).toBeInTheDocument();
@@ -298,7 +298,7 @@ describe('ErrorsPanel - sub-tab switcher', () => {
     });
 
     render(<ErrorsPanel />);
-    fireEvent.click(screen.getByRole('tab', { name: 'WSL/Docker Logs' }));
+    fireEvent.change(screen.getByRole('combobox', { name: /errors view/i }), { target: { value: 'wsl-docker-logs' } });
 
     await waitFor(() => {
       expect(screen.getByText('OOM killed process 42')).toBeInTheDocument();
@@ -353,38 +353,38 @@ describe('ErrorsPanel - WSL/Docker Logs subtab localhost gating', () => {
     mockHostname('localhost');
     mockUseApp({ errors: [] });
     render(<ErrorsPanel />);
-    expect(screen.getByRole('tab', { name: 'WSL/Docker Logs' })).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: 'Agent Errors' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'WSL/Docker Logs' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Agent Errors' })).toBeInTheDocument();
   });
 
   it('shows the WSL/Docker Logs subtab when hostname is "127.0.0.1"', () => {
     mockHostname('127.0.0.1');
     mockUseApp({ errors: [] });
     render(<ErrorsPanel />);
-    expect(screen.getByRole('tab', { name: 'WSL/Docker Logs' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'WSL/Docker Logs' })).toBeInTheDocument();
   });
 
   it('shows the WSL/Docker Logs subtab when hostname is "::1"', () => {
     mockHostname('::1');
     mockUseApp({ errors: [] });
     render(<ErrorsPanel />);
-    expect(screen.getByRole('tab', { name: 'WSL/Docker Logs' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'WSL/Docker Logs' })).toBeInTheDocument();
   });
 
   it('hides the WSL/Docker Logs subtab when hostname is a non-localhost value', () => {
     mockHostname('app.example.com');
     mockUseApp({ errors: [] });
     render(<ErrorsPanel />);
-    expect(screen.queryByRole('tab', { name: 'WSL/Docker Logs' })).not.toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: 'Agent Errors' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'WSL/Docker Logs' })).not.toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Agent Errors' })).toBeInTheDocument();
   });
 
   it('still renders the errors-subtabs tablist strip when not on localhost', () => {
     mockHostname('app.example.com');
     mockUseApp({ errors: [] });
     render(<ErrorsPanel />);
-    // The tablist container is still rendered even when it only has the Agent Errors tab
-    expect(screen.getByRole('tablist', { name: 'Errors view' })).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: 'Agent Errors' })).toBeInTheDocument();
+    // The dropdown control is still rendered even when it only has the Agent Errors option
+    expect(screen.getByRole('combobox', { name: /errors view/i })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Agent Errors' })).toBeInTheDocument();
   });
 });
