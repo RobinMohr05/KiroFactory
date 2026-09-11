@@ -35,6 +35,29 @@ jobs:
           resourceGroup: SandboxForRM
           imageToBuild: kirofactory.azurecr.io/kirofactory-api:${{ github.sha }}
 
+      # The action above only updates the image on the existing Container App
+      # (an image-only `az containerapp update`) — it does NOT apply
+      # infra/main.bicep or infra/modules/container-app.bicep. Any change made
+      # only in the .bicep files (new secret, new env var, scale rule, probe,
+      # etc.) would otherwise silently never reach the live resource, no matter
+      # how many times this workflow runs. See KiroFactory task #1691 — this is
+      # exactly how the KIRO_API_KEY fix (task #1686) failed to take effect.
+      # Re-applying the bicep template here, right after every image build,
+      # closes that gap: every push to main both ships the new image AND
+      # reconciles the live resource to the current template/params.
+      - name: Apply container-app.bicep (env vars, secrets, scaling, probes)
+        run: ./infra/deploy-app.sh --tag "${{ github.sha }}"
+        env:
+          NEO4J_URI: ${{ secrets.KIROFACTORYAPI_NEO4J_URI }}
+          NEO4J_USERNAME: ${{ secrets.KIROFACTORYAPI_NEO4J_USERNAME }}
+          NEO4J_PASSWORD: ${{ secrets.KIROFACTORYAPI_NEO4J_PASSWORD }}
+          NEO4J_DATABASE: ${{ secrets.KIROFACTORYAPI_NEO4J_DATABASE }}
+          JWT_SECRET: ${{ secrets.KIROFACTORYAPI_JWT_SECRET }}
+          ENCRYPTION_KEY: ${{ secrets.KIROFACTORYAPI_ENCRYPTION_KEY }}
+          ACA_WORKER_SECRET: ${{ secrets.KIROFACTORYAPI_ACA_WORKER_SECRET }}
+          KIRO_API_KEY: ${{ secrets.KIROFACTORYAPI_KIRO_API_KEY }}
+          AZURE_DEVOPS_EXT_PAT: ${{ secrets.KIROFACTORYAPI_AZURE_DEVOPS_EXT_PAT }}
+
   build-and-push-worker:
     runs-on: ubuntu-latest
     permissions:
