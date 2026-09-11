@@ -435,6 +435,18 @@ h1, h2, h3, h4, h5, h6 {
   box-shadow: 0 0 0 2px rgba(255, 135, 0, 0.25);
 }
 
+/* In dark mode, the global `[data-theme="dark"] select` rule uses the
+   `background` shorthand, which resets `background-image` (our custom caret)
+   to `none` and outranks `.tab-select` on specificity. Re-declare the caret
+   here (matching specificity, later in the cascade) and keep a themed
+   background color so the dropdown arrow stays visible. */
+[data-theme="dark"] .tab-select {
+  background-color: var(--bg-tertiary);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%239CA3AF' d='M6 8.5 1.5 4h9z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.6rem center;
+}
+
 .tabs {
   align-items: center;
   padding-top: 0.5rem;
