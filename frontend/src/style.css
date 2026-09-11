@@ -3699,11 +3699,16 @@ textarea:focus {
   border-radius: var(--radius-sm);
   padding: 0.6rem;
   margin: 0.5rem 0;
-  /* Contain long unbroken tokens (inline code, URLs) so a card wraps/clips
-     instead of overflowing the chat bubble horizontally. */
+  /* min-width: 0 is required so the card can shrink inside a flex container
+     (e.g. the .planner-message bubble). Without it the card's intrinsic width
+     prevents the bubble from constraining the card, and long text overflows.
+     overflow-wrap + word-break ensure long unbroken tokens wrap rather than
+     being clipped. overflow: visible (the default) is intentional — hidden was
+     the original bug: it silently clipped text that didn't fit in one line. */
   min-width: 0;
-  overflow: hidden;
+  overflow: visible;
   overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .planner-message.assistant .planner-question + .planner-question {
@@ -3713,6 +3718,10 @@ textarea:focus {
 .planner-question-header {
   color: var(--ta-mango);
   font-weight: 600;
+  /* Long question titles must wrap fully — never clip or overflow horizontally. */
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  min-width: 0;
 }
 
 .planner-question-header p {
@@ -3721,6 +3730,11 @@ textarea:focus {
 
 .planner-question-body {
   margin-top: 0.35rem;
+  /* Allow body content (option lines, prose) to wrap at any character boundary
+     so no content overflows the card horizontally. */
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  min-width: 0;
 }
 
 .planner-question-body p {
@@ -3732,6 +3746,13 @@ textarea:focus {
   padding-left: 0.75rem;
   color: var(--text-muted);
   font-size: 0.82rem;
+  /* Long Rec: lines must wrap fully — never clip at the container edge.
+     overflow-wrap: anywhere + word-break: break-word ensure even a very long
+     unbroken recommendation string wraps onto multiple lines instead of being
+     cut off mid-word by the parent's width constraint. */
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  min-width: 0;
 }
 
 /* Task card preview area */

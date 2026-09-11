@@ -395,4 +395,92 @@ describe('renderPlannerMarkdown', () => {
       expect(result).not.toContain('**');
     });
   });
+
+  describe('long-text non-truncation (task #1687)', () => {
+    // A very long question title must appear in full inside .planner-question-header —
+    // no truncation or omission of any word.
+    it('renders a very long question title fully in .planner-question-header', () => {
+      const longTitle =
+        'This is a very long question title that contains many words and should wrap rather than be clipped at any viewport width or container boundary';
+      const input = `**Q1 — ${longTitle}**: What is your answer?\nRec: Option A`;
+      const result = renderPlannerMarkdown(input);
+
+      const headerMatch = result.match(
+        /<div class="planner-question-header">([\s\S]*?)<\/div>/,
+      );
+      expect(headerMatch).not.toBeNull();
+      const header = headerMatch![1];
+      // Every word of the long title must be present — not truncated mid-string
+      expect(header).toContain('very long question title');
+      expect(header).toContain('container boundary');
+    });
+
+    // A very long Rec: line must appear in full inside .planner-question-rec —
+    // the recommendation text must not be cut off mid-word.
+    it('renders a very long Rec: line fully in .planner-question-rec', () => {
+      const longRec =
+        'Option A is the strongly recommended choice because it aligns with the project timeline, stays within budget, reduces operational risk, and has been validated by stakeholder review across all relevant departments';
+      const input = `**Q1 — Budget**: How much?\n(A) Low\nRec: ${longRec}`;
+      const result = renderPlannerMarkdown(input);
+
+      const recMatch = result.match(
+        /<div class="planner-question-rec">([\s\S]*?)<\/div>/,
+      );
+      expect(recMatch).not.toBeNull();
+      const rec = recMatch![1];
+      // The Rec: label must be bolded
+      expect(rec).toContain('<strong>Rec:</strong>');
+      // The full recommendation text must be present — beginning AND end
+      expect(rec).toContain('Option A is the strongly recommended choice');
+      expect(rec).toContain('across all relevant departments');
+    });
+
+    // A card with both a long title and a long Rec: line must render both fully.
+    it('renders a card with both long title and long Rec: line fully', () => {
+      const longTitle =
+        'What is the preferred deployment strategy for the production environment given all operational and compliance requirements';
+      const longRec =
+        'Blue-green deployment with automated rollback is recommended because it guarantees zero-downtime releases, enables instant rollback on failure, and satisfies all compliance audit requirements without manual intervention';
+      const input = [
+        `**Q1 — ${longTitle}**: Please select one.`,
+        '(A) Rolling update',
+        '(B) Blue-green deployment',
+        `Rec: ${longRec}`,
+      ].join('\n');
+      const result = renderPlannerMarkdown(input);
+
+      // Header check
+      const headerMatch = result.match(
+        /<div class="planner-question-header">([\s\S]*?)<\/div>/,
+      );
+      expect(headerMatch).not.toBeNull();
+      expect(headerMatch![1]).toContain('production environment');
+      expect(headerMatch![1]).toContain('compliance requirements');
+
+      // Rec check
+      const recMatch = result.match(
+        /<div class="planner-question-rec">([\s\S]*?)<\/div>/,
+      );
+      expect(recMatch).not.toBeNull();
+      expect(recMatch![1]).toContain('Blue-green deployment with automated rollback');
+      expect(recMatch![1]).toContain('without manual intervention');
+    });
+
+    // The .planner-question wrapper div must be present and contain both the
+    // header and rec sub-elements (structural check for the wrapping classes).
+    it('wraps long-content card in .planner-question with header and rec sub-elements', () => {
+      const input = [
+        '**Q1 — A very long title that should not be clipped by any container overflow rule**: Body.',
+        'Rec: A very long recommendation that must also not be clipped by overflow hidden or any similar CSS rule that would cut text',
+      ].join('\n');
+      const result = renderPlannerMarkdown(input);
+
+      expect(result).toContain('class="planner-question"');
+      expect(result).toContain('class="planner-question-header"');
+      expect(result).toContain('class="planner-question-rec"');
+      // Verify the last words of each long string are present (not truncated)
+      expect(result).toContain('overflow rule');
+      expect(result).toContain('cut text');
+    });
+  });
 });
