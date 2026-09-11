@@ -396,6 +396,46 @@ describe("GET /api/models/diagnostics", () => {
   });
 });
 
+describe("warmModelsCache() — startup eager warm-up", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("triggers detection once and populates the cache in the background", async () => {
+    const runner = makeRunner([{ modelId: "m1", name: "Model One" }]);
+    createMock.mockResolvedValue(runner);
+
+    vi.resetModules();
+    const mod = await import("./models.js");
+
+    // Warm-up kicks off detection and resolves without throwing.
+    await mod.warmModelsCache();
+    expect(createMock).toHaveBeenCalledTimes(1);
+
+    // The subsequent GET /api/models serves the already-populated cache
+    // instead of re-detecting.
+    const app = express();
+    app.use("/api/models", mod.default);
+    const res = await request(app).get("/api/models");
+    expect(res.status).toBe(200);
+    expect(res.body.models).toEqual([{ id: "m1", name: "Model One", description: null }]);
+    // Still only one detection — the request hit the warmed cache.
+    expect(createMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("never throws when detection fails (safe to fire-and-forget at startup)", async () => {
+    createMock.mockRejectedValue(new Error("kiro-cli not found on PATH"));
+
+    vi.resetModules();
+    const mod = await import("./models.js");
+
+    // Must resolve (not reject) even though detection failed, so the caller
+    // can .catch()-guard it exactly like the ACA preflight check.
+    await expect(mod.warmModelsCache()).resolves.toBeUndefined();
+    expect(createMock).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("Logging safety — KIRO_API_KEY / AWS_* values never logged", () => {
   beforeEach(() => {
     vi.clearAllMocks();
