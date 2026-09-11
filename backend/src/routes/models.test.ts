@@ -1,13 +1,16 @@
 /**
- * Tests for the models API route (GET /api/models).
+ * Tests for the models API route (GET /api/models and GET /api/models/diagnostics).
  *
  * Verifies:
- * - Successful detection maps ACP ModelInfo -> { id, name, description }
+ * - Successful detection maps ACP ModelInfo -> { id, name, description } with no detectionError
  * - The successfully detected list is cached for the process lifetime
  *   (a second request does not re-run detection)
- * - Detection failure (missing binary / ACP error / timeout) returns the
+ * - Detection failure (missing binary / ACP error / timeout / no-models-field) returns the
  *   auto-only fallback ({ default: "auto", models: [] }) with a 200, and does
  *   NOT populate the cache (a later request can recover)
+ * - detectionError.code correctly identifies the four failure cases
+ * - GET /api/models/diagnostics returns presence booleans (not values) for secrets
+ * - KIRO_API_KEY / AWS_* values are never passed to any log call
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -48,6 +51,7 @@ async function freshApp() {
 function makeRunner(availableModels: Array<{ modelId: string; name: string; description?: string | null }>) {
   return {
     availableModels,
+    detectionFailureDetail: null as null | { code: string; message: string; hasModelsField: boolean; modelsCount: number },
     close: vi.fn().mockResolvedValue(undefined),
   };
 }
@@ -57,7 +61,7 @@ describe("GET /api/models", () => {
     vi.clearAllMocks();
   });
 
-  it("maps ACP ModelInfo -> { id, name, description } on successful detection", async () => {
+  it("maps ACP ModelInfo -> { id, name, description } on successful detection, with no detectionError", async () => {
     createMock.mockResolvedValue(
       makeRunner([
         { modelId: "claude-sonnet-4", name: "Claude Sonnet 4", description: "Balanced" },
@@ -74,6 +78,8 @@ describe("GET /api/models", () => {
       { id: "claude-sonnet-4", name: "Claude Sonnet 4", description: "Balanced" },
       { id: "claude-opus-5", name: "Claude Opus 5", description: null },
     ]);
+    // No detectionError on successful detection
+    expect(res.body.detectionError).toBeUndefined();
   });
 
   it("caches a successful detection for the process lifetime", async () => {
@@ -102,7 +108,8 @@ describe("GET /api/models", () => {
     const first = await request(app).get("/api/models");
 
     expect(first.status).toBe(200);
-    expect(first.body).toEqual({ default: "auto", models: [] });
+    expect(first.body.default).toBe("auto");
+    expect(first.body.models).toEqual([]);
     expect(log.error).toHaveBeenCalled();
 
     // A later request must retry detection (nothing cached). Make it succeed
@@ -135,7 +142,8 @@ describe("GET /api/models", () => {
 
       // The timeout won: auto-only fallback, not cached, error logged.
       expect(res.status).toBe(200);
-      expect(res.body).toEqual({ default: "auto", models: [] });
+      expect(res.body.default).toBe("auto");
+      expect(res.body.models).toEqual([]);
       expect(log.error).toHaveBeenCalled();
 
       // The orphaned subprocess finally comes up: it must be reaped, not leaked.
@@ -148,6 +156,194 @@ describe("GET /api/models", () => {
     } finally {
       if (prev === undefined) delete process.env.MODEL_DETECTION_TIMEOUT_MS;
       else process.env.MODEL_DETECTION_TIMEOUT_MS = prev;
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // detectionError.code cases (four distinguished failure codes)
+  // -------------------------------------------------------------------------
+
+  it("returns detectionError.code='binary-not-found' when kiro-cli ENOENT spawn fails", async () => {
+    const enoentErr = Object.assign(new Error("kiro-cli not found on PATH"), { code: "ENOENT" });
+    createMock.mockRejectedValue(enoentErr);
+
+    const app = await freshApp();
+    const res = await request(app).get("/api/models");
+
+    expect(res.status).toBe(200);
+    expect(res.body.models).toEqual([]);
+    expect(res.body.detectionError).toMatchObject({
+      code: "binary-not-found",
+      message: expect.any(String),
+    });
+  });
+
+  it("returns detectionError.code='timeout' when detection times out", async () => {
+    const prev = process.env.MODEL_DETECTION_TIMEOUT_MS;
+    process.env.MODEL_DETECTION_TIMEOUT_MS = "10";
+    try {
+      // Never resolves — simulates a kiro-cli that hangs
+      createMock.mockReturnValue(new Promise(() => {}));
+
+      const app = await freshApp();
+      const res = await request(app).get("/api/models");
+
+      expect(res.status).toBe(200);
+      expect(res.body.models).toEqual([]);
+      expect(res.body.detectionError).toMatchObject({
+        code: "timeout",
+        message: expect.any(String),
+      });
+    } finally {
+      if (prev === undefined) delete process.env.MODEL_DETECTION_TIMEOUT_MS;
+      else process.env.MODEL_DETECTION_TIMEOUT_MS = prev;
+    }
+  });
+
+  it("returns detectionError.code='acp-error' when KiroRunner.create throws a non-ENOENT error", async () => {
+    createMock.mockRejectedValue(new Error("ACP handshake failed: protocol error"));
+
+    const app = await freshApp();
+    const res = await request(app).get("/api/models");
+
+    expect(res.status).toBe(200);
+    expect(res.body.models).toEqual([]);
+    expect(res.body.detectionError).toMatchObject({
+      code: "acp-error",
+      message: expect.any(String),
+    });
+  });
+
+  it("returns detectionError.code='no-models-field' when session/new returns no/empty availableModels", async () => {
+    // Runner created successfully but advertises no models
+    const runner = makeRunner([]);
+    createMock.mockResolvedValue(runner);
+
+    const app = await freshApp();
+    const res = await request(app).get("/api/models");
+
+    expect(res.status).toBe(200);
+    expect(res.body.models).toEqual([]);
+    expect(res.body.detectionError).toMatchObject({
+      code: "no-models-field",
+      message: expect.any(String),
+    });
+  });
+});
+
+describe("GET /api/models/diagnostics", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns 200 with presence booleans for secrets (never the values)", async () => {
+    const prevKiroKey = process.env.KIRO_API_KEY;
+    const prevAwsKey = process.env.AWS_ACCESS_KEY_ID;
+    process.env.KIRO_API_KEY = "super-secret-key";
+    process.env.AWS_ACCESS_KEY_ID = "also-secret";
+    try {
+      // Detection succeeds — gives us a baseline
+      createMock.mockResolvedValue(makeRunner([{ modelId: "m1", name: "Model One" }]));
+
+      const app = await freshApp();
+      const res = await request(app).get("/api/models/diagnostics");
+
+      expect(res.status).toBe(200);
+      // Presence booleans — true because env vars are set
+      expect(res.body.hasKiroApiKey).toBe(true);
+      expect(res.body.hasAwsCreds).toBe(true);
+      // NEVER the actual values
+      expect(JSON.stringify(res.body)).not.toContain("super-secret-key");
+      expect(JSON.stringify(res.body)).not.toContain("also-secret");
+      // PATH info
+      expect(typeof res.body.binaryFoundOnPath).toBe("boolean");
+      expect(Array.isArray(res.body.pathEntries)).toBe(true);
+      // resolvedKiroPath is either a string or null
+      expect(
+        res.body.resolvedKiroPath === null || typeof res.body.resolvedKiroPath === "string"
+      ).toBe(true);
+    } finally {
+      if (prevKiroKey === undefined) delete process.env.KIRO_API_KEY;
+      else process.env.KIRO_API_KEY = prevKiroKey;
+      if (prevAwsKey === undefined) delete process.env.AWS_ACCESS_KEY_ID;
+      else process.env.AWS_ACCESS_KEY_ID = prevAwsKey;
+    }
+  });
+
+  it("returns hasKiroApiKey=false and hasAwsCreds=false when env vars are unset", async () => {
+    const prevKiroKey = process.env.KIRO_API_KEY;
+    const prevAwsKey = process.env.AWS_ACCESS_KEY_ID;
+    const prevAwsSecret = process.env.AWS_SECRET_ACCESS_KEY;
+    const prevAwsSession = process.env.AWS_SESSION_TOKEN;
+    delete process.env.KIRO_API_KEY;
+    delete process.env.AWS_ACCESS_KEY_ID;
+    delete process.env.AWS_SECRET_ACCESS_KEY;
+    delete process.env.AWS_SESSION_TOKEN;
+    try {
+      createMock.mockResolvedValue(makeRunner([{ modelId: "m1", name: "Model One" }]));
+
+      const app = await freshApp();
+      const res = await request(app).get("/api/models/diagnostics");
+
+      expect(res.status).toBe(200);
+      expect(res.body.hasKiroApiKey).toBe(false);
+      expect(res.body.hasAwsCreds).toBe(false);
+    } finally {
+      if (prevKiroKey !== undefined) process.env.KIRO_API_KEY = prevKiroKey;
+      if (prevAwsKey !== undefined) process.env.AWS_ACCESS_KEY_ID = prevAwsKey;
+      if (prevAwsSecret !== undefined) process.env.AWS_SECRET_ACCESS_KEY = prevAwsSecret;
+      if (prevAwsSession !== undefined) process.env.AWS_SESSION_TOKEN = prevAwsSession;
+    }
+  });
+
+  it("includes detectionCode and modelsCount from the last detection attempt", async () => {
+    // Detection fails with binary-not-found
+    const enoentErr = Object.assign(new Error("kiro-cli not found on PATH"), { code: "ENOENT" });
+    createMock.mockRejectedValue(enoentErr);
+
+    const app = await freshApp();
+    // First trigger a detection to populate last attempt
+    await request(app).get("/api/models");
+    const res = await request(app).get("/api/models/diagnostics");
+
+    expect(res.status).toBe(200);
+    expect(res.body.lastDetectionCode).toBe("binary-not-found");
+    expect(typeof res.body.lastDetectionMessage).toBe("string");
+    expect(typeof res.body.modelsCount).toBe("number");
+  });
+});
+
+describe("Logging safety — KIRO_API_KEY / AWS_* values never logged", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("never passes KIRO_API_KEY or AWS_* values to any log call on detection failure", async () => {
+    const prevKiroKey = process.env.KIRO_API_KEY;
+    const prevAwsKey = process.env.AWS_ACCESS_KEY_ID;
+    process.env.KIRO_API_KEY = "secret-api-key-12345";
+    process.env.AWS_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE";
+    try {
+      const enoentErr = Object.assign(new Error("kiro-cli not found on PATH"), { code: "ENOENT" });
+      createMock.mockRejectedValue(enoentErr);
+
+      const app = await freshApp();
+      await request(app).get("/api/models");
+
+      // Inspect every log call — none should contain the secret values
+      const allLogCalls = [
+        ...(log.error as ReturnType<typeof vi.fn>).mock.calls,
+        ...(log.warn as ReturnType<typeof vi.fn>).mock.calls,
+        ...(log.info as ReturnType<typeof vi.fn>).mock.calls,
+      ];
+      const allLoggedText = JSON.stringify(allLogCalls);
+      expect(allLoggedText).not.toContain("secret-api-key-12345");
+      expect(allLoggedText).not.toContain("AKIAIOSFODNN7EXAMPLE");
+    } finally {
+      if (prevKiroKey === undefined) delete process.env.KIRO_API_KEY;
+      else process.env.KIRO_API_KEY = prevKiroKey;
+      if (prevAwsKey === undefined) delete process.env.AWS_ACCESS_KEY_ID;
+      else process.env.AWS_ACCESS_KEY_ID = prevAwsKey;
     }
   });
 });

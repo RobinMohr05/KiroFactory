@@ -162,6 +162,16 @@ export class KiroRunner {
    */
   private _availableModels: ModelInfo[] = [];
 
+  /**
+   * Detail about why model detection produced no models from the `session/new`
+   * response — set when the runner was created successfully but the response
+   * contained no `models.availableModels`. Null when models were detected or
+   * when the runner creation itself failed (those cases surface via thrown errors
+   * rather than via this field). Used by the /api/models route to distinguish
+   * the "no-models-field" case from other failure codes.
+   */
+  private _detectionFailureDetail: { hasModelsField: boolean; modelsCount: number } | null = null;
+
   private constructor(proc: ChildProcess) {
     this.proc = proc;
   }
@@ -406,6 +416,12 @@ export class KiroRunner {
     const models = (result as { models?: { availableModels?: ModelInfo[] } | null }).models;
     if (models?.availableModels?.length) {
       client._availableModels = models.availableModels;
+    } else {
+      // Record whether the field was present at all vs. present but empty,
+      // for the "no-models-field" diagnostics code in the models route.
+      const hasModelsField = models !== null && models !== undefined;
+      const modelsCount = models?.availableModels?.length ?? 0;
+      client._detectionFailureDetail = { hasModelsField, modelsCount };
     }
 
     return client;
@@ -601,5 +617,17 @@ export class KiroRunner {
    */
   get availableModels(): ModelInfo[] {
     return this._availableModels;
+  }
+
+  /**
+   * Detail about why model detection produced no models from the `session/new`
+   * response. Non-null only when the runner was created successfully but
+   * `session/new` returned no/empty `models.availableModels`. Null when models
+   * were detected (success) or when `create()` itself threw (the caller sees
+   * a thrown error instead). Used by the /api/models route to distinguish the
+   * "no-models-field" detection code from other failure codes.
+   */
+  get detectionFailureDetail(): { hasModelsField: boolean; modelsCount: number } | null {
+    return this._detectionFailureDetail;
   }
 }
