@@ -364,7 +364,7 @@ export function SessionsPanel() {
   const detailHidden = isMobile && !mobileShowDetail;
 
   return (
-    <section id="panel-sessions" role="tabpanel" aria-labelledby="tab-sessions">
+    <section id="panel-sessions" role="tabpanel" aria-label="Sessions">
       <div className="sessions-layout">
         <aside className={`session-list-panel${listHidden ? ' mobile-hidden' : ''}`} ref={listPanelRef}>
           {user?.uiViewMode === 'looper' && (

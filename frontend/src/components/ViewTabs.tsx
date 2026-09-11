@@ -14,17 +14,6 @@ const VIEW_OPTIONS: ViewOption[] = [
   { value: '/usage', label: 'Usage' },
 ];
 
-// The panels (TasksPanel, SessionsPanel, …) label themselves via
-// aria-labelledby pointing at these ids, so keep them on the options that
-// replaced the old tab buttons to preserve each panel's accessible name.
-const VIEW_OPTION_IDS: Record<string, string> = {
-  '/tasks': 'tab-boards',
-  '/sessions': 'tab-sessions',
-  '/agents': 'tab-agents',
-  '/errors': 'tab-errors',
-  '/usage': 'tab-usage',
-};
-
 // Maps the AppContext activeView key to its route path, so the dropdown's
 // current value reflects which view is active.
 const VIEW_TO_PATH: Record<string, string> = {
@@ -53,7 +42,7 @@ export function ViewTabs() {
         onChange={(e) => navigate(e.target.value)}
       >
         {VIEW_OPTIONS.map(({ value, label }) => (
-          <option key={value} id={VIEW_OPTION_IDS[value]} value={value}>
+          <option key={value} value={value}>
             {value === '/errors' && unreadErrorCount > 0 ? `${label} (${badgeCount})` : label}
           </option>
         ))}

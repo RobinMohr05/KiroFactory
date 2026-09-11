@@ -78,7 +78,7 @@ export function ErrorsPanel() {
   };
 
   return (
-    <section id="panel-errors" role="tabpanel" aria-labelledby="tab-errors">
+    <section id="panel-errors" role="tabpanel" aria-label="Logs">
       <div className="errors-layout">
         <div className="errors-toolbar">
           <h2 className="errors-heading">
