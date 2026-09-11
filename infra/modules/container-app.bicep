@@ -93,6 +93,9 @@ param workerJobName string = 'kirofactory-worker'
 @description('Max seconds a single worker execution may run')
 param workerReplicaTimeout int = 3600
 
+@description('kiro-cli model detection timeout in milliseconds (GET /api/models). Defaults to 45000 (45s) — headroom above the ~27s cold-start latency of a fresh kiro-cli session/new. The container filesystem is ephemeral (no persistent kiro-cli cache volume), so every deploy/restart starts cold.')
+param modelDetectionTimeoutMs int = 45000
+
 @description('Tags applied to resources')
 param tags object = {
   project: 'KiroFactory'
@@ -167,6 +170,10 @@ var baseEnv = [
   { name: 'ACA_WORKER_SECRET', secretRef: 'aca-worker-secret' }
   { name: 'GIT_USER_NAME', value: gitUserName }
   { name: 'GIT_USER_EMAIL', value: gitUserEmail }
+  // kiro-cli model detection timeout (ms). The container filesystem is ephemeral
+  // (no persistent kiro-cli cache volume), so every deploy/restart is a cold start
+  // where session/new can take ~27s — this timeout has headroom above that.
+  { name: 'MODEL_DETECTION_TIMEOUT_MS', value: string(modelDetectionTimeoutMs) }
 ]
 var patEnv = empty(azureDevOpsPat) ? [] : [
   { name: 'AZURE_DEVOPS_EXT_PAT', secretRef: 'azure-devops-pat' }

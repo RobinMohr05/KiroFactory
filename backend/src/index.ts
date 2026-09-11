@@ -19,7 +19,7 @@ import authRouter from "./routes/auth.js";
 import tasksRouter from "./routes/tasks.js";
 import tabsRouter from "./routes/tabs.js";
 import sessionsRouter from "./routes/sessions.js";
-import modelsRouter from "./routes/models.js";
+import modelsRouter, { warmModelsCache } from "./routes/models.js";
 import agentsRouter from "./routes/agents.js";
 import errorsRouter from "./routes/errors.js";
 import credentialsRouter from "./routes/credentials.js";
@@ -203,6 +203,15 @@ async function start(): Promise<void> {
         msg: "frontend/dist/index.html not found — serving legacy frontend/public/index.html as fallback. Run 'npm run build -w frontend' to build the React frontend.",
       });
     }
+
+    // Eagerly warm the kiro-cli models cache in the background. On a cold
+    // kiro-cli, `session/new` detection can take ~27s — doing it now (right
+    // after the port opens) means the first real GET /api/models request very
+    // likely hits an already-populated cache instead of paying that cost
+    // inline and risking a detection timeout. Fire-and-forget: warmModelsCache
+    // never throws and is never awaited into the startup critical path (same
+    // pattern as the ACA preflight check below).
+    void warmModelsCache();
   });
 
   // Database connect + migration + session restore now run in the background,

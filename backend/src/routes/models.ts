@@ -59,8 +59,14 @@ export interface ModelsResponse {
   detectionError?: DetectionError;
 }
 
-/** How long to wait for kiro-cli detection before giving up (ms). */
-const DETECTION_TIMEOUT_MS = Number(process.env.MODEL_DETECTION_TIMEOUT_MS) || 20_000;
+/**
+ * How long to wait for kiro-cli detection before giving up (ms).
+ *
+ * Defaults to 45s, with headroom above the measured ~27s cold-start latency
+ * of `session/new` on a fresh kiro-cli (before its local cache/auth state is
+ * warm). Overridable via MODEL_DETECTION_TIMEOUT_MS.
+ */
+const DETECTION_TIMEOUT_MS = Number(process.env.MODEL_DETECTION_TIMEOUT_MS) || 45_000;
 
 /**
  * Successful-detection cache, held for the process lifetime. `null` means
@@ -366,3 +372,25 @@ export async function getDetectedModelIds(): Promise<string[]> {
 }
 
 export default router;
+
+/**
+ * Eagerly warm the process-lifetime models cache at server startup.
+ *
+ * Kicks off the same detection path as `GET /api/models` / `getDetectedModelIds()`
+ * once, so the first real user request is very likely to hit an
+ * already-populated `cachedModels` instead of paying the cold-start
+ * (~27s `session/new`) latency inline and risking a detection timeout.
+ *
+ * Designed to be fire-and-forget from `start()`: it never throws — a failed
+ * detection is swallowed here (already logged inside `getDetectedModelIds()`)
+ * and simply leaves the cache unpopulated so the first request retries, exactly
+ * like the existing ACA preflight check. Safe to call without awaiting into the
+ * startup critical path.
+ */
+export async function warmModelsCache(): Promise<void> {
+  try {
+    await getDetectedModelIds();
+  } catch {
+    /* getDetectedModelIds never throws; this is a safety net only. */
+  }
+}
