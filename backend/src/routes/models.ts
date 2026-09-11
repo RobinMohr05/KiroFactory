@@ -189,6 +189,33 @@ async function detectModels(timeoutMs: number = DETECTION_TIMEOUT_MS): Promise<D
 }
 
 /**
+ * Detect available models, retrying exactly once if the first attempt times
+ * out. A first-run/cold kiro-cli can be slow to start (auth/telemetry latency
+ * on the very first spawn), so a single timeout is treated as potentially
+ * transient: we spawn once more before giving up. Only a `DetectionTimeoutError`
+ * triggers the retry — every other failure (missing binary, ACP error,
+ * no-models-field) is non-transient and propagates immediately without a
+ * second spawn.
+ */
+async function detectModelsWithRetry(
+  timeoutMs: number = DETECTION_TIMEOUT_MS
+): Promise<DetectedModel[]> {
+  try {
+    return await detectModels(timeoutMs);
+  } catch (err) {
+    if (err instanceof DetectionTimeoutError) {
+      log.warn("model-detection-timeout-retry", {
+        component: "models",
+        timeoutMs,
+        msg: "Model detection timed out — retrying once before falling back",
+      });
+      return detectModels(timeoutMs);
+    }
+    throw err;
+  }
+}
+
+/**
  * Resolve the absolute path of `kiro-cli` by searching PATH entries.
  * Returns `null` if not found or if the lookup fails.
  * Never throws.
@@ -216,7 +243,7 @@ router.get("/", async (_req: Request, res: Response) => {
   lastSessionNewModelsInfo = null;
 
   try {
-    const models = await detectModels();
+    const models = await detectModelsWithRetry();
     cachedModels = models;
     res.json({ default: "auto", models } satisfies ModelsResponse);
   } catch (err) {
@@ -281,7 +308,7 @@ router.get("/diagnostics", async (_req: Request, res: Response) => {
     // Reset last detection state before this attempt
     lastSessionNewModelsInfo = null;
     try {
-      const models = await detectModels();
+      const models = await detectModelsWithRetry();
       cachedModels = models;
     } catch (err) {
       if (err instanceof Error && "_detectionCode" in err) {
@@ -325,7 +352,7 @@ router.get("/diagnostics", async (_req: Request, res: Response) => {
 export async function getDetectedModelIds(): Promise<string[]> {
   if (cachedModels) return cachedModels.map((m) => m.id);
   try {
-    const models = await detectModels();
+    const models = await detectModelsWithRetry();
     cachedModels = models;
     return models.map((m) => m.id);
   } catch (err) {

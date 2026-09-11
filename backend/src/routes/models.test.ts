@@ -131,31 +131,43 @@ describe("GET /api/models", () => {
     const prev = process.env.MODEL_DETECTION_TIMEOUT_MS;
     process.env.MODEL_DETECTION_TIMEOUT_MS = "10";
     try {
-      // A runner whose create() settles only after the timeout has fired,
-      // simulating a kiro-cli subprocess that comes up too late.
-      const runner = makeRunner([{ modelId: "late", name: "Late Model" }]);
-      let resolveRunner: (r: typeof runner) => void = () => {};
-      const runnerReady = new Promise<typeof runner>((resolve) => {
-        resolveRunner = resolve;
-      });
-      createMock.mockReturnValue(runnerReady);
+      // Detection retries once on timeout, so a timed-out request spawns twice.
+      // In production each spawn creates its own kiro-cli subprocess, so give
+      // one distinct late-arriving runner per attempt — each must be reaped
+      // (closed) exactly once, never leaked and never double-closed.
+      const makeLateRunner = () => {
+        const runner = makeRunner([{ modelId: "late", name: "Late Model" }]);
+        let resolveRunner: (r: typeof runner) => void = () => {};
+        const ready = new Promise<typeof runner>((resolve) => {
+          resolveRunner = resolve;
+        });
+        return { runner, ready, resolve: () => resolveRunner(runner) };
+      };
+      const first = makeLateRunner();
+      const second = makeLateRunner();
+      createMock.mockReturnValueOnce(first.ready).mockReturnValueOnce(second.ready);
 
       const app = await freshApp();
       const res = await request(app).get("/api/models");
 
-      // The timeout won: auto-only fallback, not cached, error logged.
+      // Both attempts timed out: auto-only fallback, not cached, error logged.
       expect(res.status).toBe(200);
       expect(res.body.default).toBe("auto");
       expect(res.body.models).toEqual([]);
+      expect(res.body.detectionError).toMatchObject({ code: "timeout" });
       expect(log.error).toHaveBeenCalled();
+      // Initial attempt + one retry = two spawns.
+      expect(createMock).toHaveBeenCalledTimes(2);
 
-      // The orphaned subprocess finally comes up: it must be reaped, not leaked.
-      resolveRunner(runner);
-      await runnerReady;
-      // Flush the cleanup promise chain attached to the runner promise.
+      // The orphaned subprocesses finally come up: each must be reaped, not leaked.
+      first.resolve();
+      second.resolve();
+      await Promise.all([first.ready, second.ready]);
+      // Flush the cleanup promise chain attached to each runner promise.
       await new Promise((r) => setImmediate(r));
 
-      expect(runner.close).toHaveBeenCalledTimes(1);
+      expect(first.runner.close).toHaveBeenCalledTimes(1);
+      expect(second.runner.close).toHaveBeenCalledTimes(1);
     } finally {
       if (prev === undefined) delete process.env.MODEL_DETECTION_TIMEOUT_MS;
       else process.env.MODEL_DETECTION_TIMEOUT_MS = prev;
@@ -201,6 +213,64 @@ describe("GET /api/models", () => {
       if (prev === undefined) delete process.env.MODEL_DETECTION_TIMEOUT_MS;
       else process.env.MODEL_DETECTION_TIMEOUT_MS = prev;
     }
+  });
+
+  it("retries detection once on timeout before falling back to auto-only", async () => {
+    const prev = process.env.MODEL_DETECTION_TIMEOUT_MS;
+    process.env.MODEL_DETECTION_TIMEOUT_MS = "10";
+    try {
+      // Both the first attempt and the retry hang past the timeout — the
+      // endpoint must attempt detection twice (initial + one retry) before
+      // giving up with the timeout fallback.
+      createMock.mockReturnValue(new Promise(() => {}));
+
+      const app = await freshApp();
+      const res = await request(app).get("/api/models");
+
+      expect(res.status).toBe(200);
+      expect(res.body.models).toEqual([]);
+      expect(res.body.detectionError).toMatchObject({ code: "timeout" });
+      // Initial attempt + exactly one retry = 2 spawns.
+      expect(createMock).toHaveBeenCalledTimes(2);
+    } finally {
+      if (prev === undefined) delete process.env.MODEL_DETECTION_TIMEOUT_MS;
+      else process.env.MODEL_DETECTION_TIMEOUT_MS = prev;
+    }
+  });
+
+  it("recovers when the retry after a timeout succeeds", async () => {
+    const prev = process.env.MODEL_DETECTION_TIMEOUT_MS;
+    process.env.MODEL_DETECTION_TIMEOUT_MS = "10";
+    try {
+      // First attempt hangs (times out); the retry resolves with real models.
+      createMock
+        .mockReturnValueOnce(new Promise(() => {}))
+        .mockResolvedValueOnce(makeRunner([{ modelId: "m1", name: "Model One" }]));
+
+      const app = await freshApp();
+      const res = await request(app).get("/api/models");
+
+      expect(res.status).toBe(200);
+      expect(res.body.detectionError).toBeUndefined();
+      expect(res.body.models).toEqual([{ id: "m1", name: "Model One", description: null }]);
+      expect(createMock).toHaveBeenCalledTimes(2);
+    } finally {
+      if (prev === undefined) delete process.env.MODEL_DETECTION_TIMEOUT_MS;
+      else process.env.MODEL_DETECTION_TIMEOUT_MS = prev;
+    }
+  });
+
+  it("does NOT retry on a non-timeout failure (e.g. binary-not-found)", async () => {
+    const enoentErr = Object.assign(new Error("kiro-cli not found on PATH"), { code: "ENOENT" });
+    createMock.mockRejectedValue(enoentErr);
+
+    const app = await freshApp();
+    const res = await request(app).get("/api/models");
+
+    expect(res.status).toBe(200);
+    expect(res.body.detectionError).toMatchObject({ code: "binary-not-found" });
+    // A binary-not-found failure is not transient — detection must not retry.
+    expect(createMock).toHaveBeenCalledTimes(1);
   });
 
   it("returns detectionError.code='acp-error' when KiroRunner.create throws a non-ENOENT error", async () => {

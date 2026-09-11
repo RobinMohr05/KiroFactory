@@ -218,8 +218,9 @@ describe('ModelSelect', () => {
     const options = Array.from(container.querySelectorAll('option'));
     const values = options.map((o) => o.value);
     expect(values).toContain('claude-sonnet-4.6');
-    // "Auto (default)" is always shown (filterOption returns true for value='')
-    expect(values).toContain('');
+    // With a non-empty detected list, no synthetic empty-value "Auto (default)"
+    // option exists to be shown.
+    expect(values).not.toContain('');
     expect(values).not.toContain('claude-opus-4.5');
     expect(values).not.toContain('gpt-4o');
   });
@@ -352,5 +353,101 @@ describe('ModelSelect', () => {
       expect(container.querySelector('.ant-select-loading')).not.toBeInTheDocument();
     });
     expect(container.querySelector('.ant-select-selection-item')?.textContent).not.toContain('(not detected)');
+  });
+
+  it('with a non-empty models list, does NOT prepend a synthetic "Auto (default)" and shows the returned auto entry as-is', async () => {
+    // The agent returns its own auto entry (modelId: "auto"); it must be the
+    // only Auto shown, with NO synthetic empty-value "Auto (default)" prepended
+    // and NO duplicate.
+    mockModels([
+      { id: 'auto', name: 'Auto', description: null },
+      { id: 'claude-sonnet-4.6', name: 'Claude Sonnet', description: null },
+    ]);
+
+    const { container } = render(<ModelSelect value="" onChange={vi.fn()} />);
+    await waitFor(() => expect(apiFetch).toHaveBeenCalled());
+
+    await waitFor(() => {
+      expect(container.querySelector('.ant-select-loading')).not.toBeInTheDocument();
+    });
+
+    const options = Array.from(container.querySelectorAll('option'));
+    const values = options.map((o) => o.value);
+
+    // No synthetic empty-value "Auto (default)" entry.
+    expect(values).not.toContain('');
+    // Exactly the returned models are rendered.
+    expect(values).toEqual(['auto', 'claude-sonnet-4.6']);
+
+    // Only one Auto-labelled option — the agent's own `auto` entry, shown as-is
+    // (its label is its id, "auto", not "Auto (default)").
+    const autoLabelled = options.filter((o) =>
+      (o.title ?? o.textContent ?? '').toLowerCase().includes('auto')
+    );
+    expect(autoLabelled).toHaveLength(1);
+    expect(autoLabelled[0].value).toBe('auto');
+    expect(autoLabelled[0].title).toBe('auto');
+    // No option carries the synthetic "Auto (default)" label.
+    expect(options.some((o) => (o.title ?? '') === 'Auto (default)')).toBe(false);
+  });
+
+  it('with an empty models list, the synthetic "Auto (default)" IS injected', async () => {
+    mockModels([]);
+
+    const { container } = render(<ModelSelect value="" onChange={vi.fn()} />);
+    await waitFor(() => expect(apiFetch).toHaveBeenCalled());
+
+    await waitFor(() => {
+      expect(container.querySelector('.ant-select-loading')).not.toBeInTheDocument();
+    });
+
+    const options = Array.from(container.querySelectorAll('option'));
+    expect(options).toHaveLength(1);
+    expect(options[0].value).toBe('');
+    expect(options[0].textContent).toMatch(/Auto \(default\)/i);
+  });
+
+  it('does not render "(not detected)" for a value present in the returned list', async () => {
+    mockModels([
+      { id: 'auto', name: 'Auto', description: null },
+      { id: 'claude-sonnet-4.6', name: 'Claude Sonnet', description: null },
+    ]);
+
+    const { container } = render(
+      <ModelSelect value="claude-sonnet-4.6" onChange={vi.fn()} />
+    );
+    await waitFor(() => expect(apiFetch).toHaveBeenCalled());
+
+    await waitFor(() => {
+      expect(container.querySelector('.ant-select-loading')).not.toBeInTheDocument();
+    });
+
+    const selectionItem = container.querySelector('.ant-select-selection-item');
+    expect(selectionItem?.textContent).toContain('claude-sonnet-4.6');
+    expect(selectionItem?.textContent).not.toContain('(not detected)');
+  });
+
+  it('stays usable (Auto-only) and does not crash when the response includes a detectionError', async () => {
+    (apiFetch as any).mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        default: 'auto',
+        models: [],
+        detectionError: { code: 'binary-not-found', message: 'kiro-cli not found on PATH' },
+      }),
+    });
+
+    const { container } = render(<ModelSelect value="" onChange={vi.fn()} />);
+    await waitFor(() => expect(apiFetch).toHaveBeenCalled());
+
+    await waitFor(() => {
+      expect(container.querySelector('.ant-select-loading')).not.toBeInTheDocument();
+    });
+
+    // Empty list + detectionError → synthetic Auto is the only option, usable.
+    const options = Array.from(container.querySelectorAll('option'));
+    expect(options).toHaveLength(1);
+    expect(options[0].value).toBe('');
+    expect(options[0].textContent).toMatch(/Auto \(default\)/i);
   });
 });
