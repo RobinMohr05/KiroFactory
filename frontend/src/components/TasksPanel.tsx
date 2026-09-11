@@ -128,7 +128,7 @@ export function TasksPanel() {
   }, []);
 
   return (
-    <section id="panel-boards" role="tabpanel" aria-labelledby="tab-boards">
+    <section id="panel-boards" role="tabpanel" aria-label="Tasks">
       <div className="toolbar">
         <button className="btn btn-primary" id="newTaskBtn" onClick={openPlanner}>+ Task</button>
         <div className="toolbar-right">

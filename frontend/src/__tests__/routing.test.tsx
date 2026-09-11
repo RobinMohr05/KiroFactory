@@ -194,6 +194,57 @@ describe('Routing', () => {
       expect(screen.getByRole('tabpanel', { name: /usage/i })).toBeInTheDocument();
     });
 
+    // The ViewTabs control is now a <select> whose options are not reliably exposed
+    // as independent accessibility-tree nodes when the dropdown is collapsed. So each
+    // panel must carry its own accessible name via aria-label, rather than pointing
+    // aria-labelledby at an <option> id inside the collapsed combobox.
+    describe('panels are self-labeled (not via option ids in a collapsed <select>)', () => {
+      it('the agents tabpanel has a self-contained aria-label', async () => {
+        await act(async () => {
+          renderWithRouter(['/agents']);
+        });
+        const panel = screen.getByRole('tabpanel', { name: /agents/i });
+        expect(panel).toHaveAttribute('aria-label', 'Agents');
+        expect(panel).not.toHaveAttribute('aria-labelledby');
+      });
+
+      it('the errors tabpanel has a self-contained aria-label', async () => {
+        await act(async () => {
+          renderWithRouter(['/errors']);
+        });
+        const panel = screen.getByRole('tabpanel', { name: /logs/i });
+        expect(panel).toHaveAttribute('aria-label', 'Logs');
+        expect(panel).not.toHaveAttribute('aria-labelledby');
+      });
+
+      it('the usage tabpanel has a self-contained aria-label', async () => {
+        await act(async () => {
+          renderWithRouter(['/usage']);
+        });
+        const panel = screen.getByRole('tabpanel', { name: /usage/i });
+        expect(panel).toHaveAttribute('aria-label', 'Usage');
+        expect(panel).not.toHaveAttribute('aria-labelledby');
+      });
+
+      it('the tasks tabpanel has a self-contained aria-label', async () => {
+        await act(async () => {
+          renderWithRouter(['/tasks']);
+        });
+        const panel = screen.getByRole('tabpanel', { name: /tasks/i });
+        expect(panel).toHaveAttribute('aria-label', 'Tasks');
+        expect(panel).not.toHaveAttribute('aria-labelledby');
+      });
+
+      it('the sessions tabpanel has a self-contained aria-label', async () => {
+        await act(async () => {
+          renderWithRouter(['/sessions']);
+        });
+        const panel = screen.getByRole('tabpanel', { name: /sessions/i });
+        expect(panel).toHaveAttribute('aria-label', 'Sessions');
+        expect(panel).not.toHaveAttribute('aria-labelledby');
+      });
+    });
+
     it('looper mode renders the full Advanced-style layout', async () => {
       vi.stubGlobal('fetch', vi.fn().mockImplementation((url: string) => {
         if (url === '/api/auth/me') {
@@ -243,8 +294,8 @@ describe('Routing', () => {
       await act(async () => {
         renderWithRouter(['/sessions']);
       });
-      const sessionsTab = screen.getByRole('tab', { name: /sessions/i });
-      expect(sessionsTab.classList.contains('active')).toBe(true);
+      const viewSelect = screen.getByRole('combobox', { name: /select view/i }) as HTMLSelectElement;
+      expect(viewSelect.value).toBe('/sessions');
     });
   });
 

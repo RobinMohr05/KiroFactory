@@ -78,7 +78,7 @@ export function ErrorsPanel() {
   };
 
   return (
-    <section id="panel-errors" role="tabpanel" aria-labelledby="tab-errors">
+    <section id="panel-errors" role="tabpanel" aria-label="Logs">
       <div className="errors-layout">
         <div className="errors-toolbar">
           <h2 className="errors-heading">
@@ -88,25 +88,18 @@ export function ErrorsPanel() {
             <button className="btn btn-danger btn-sm" onClick={handleClearAll}>Clear All</button>
           )}
         </div>
-        <div className="errors-subtabs" role="tablist" aria-label="Errors view">
-          <button
-            className={`errors-subtab-btn ${subTab === 'agent-errors' ? 'active' : ''}`}
-            role="tab"
-            aria-selected={subTab === 'agent-errors'}
-            onClick={() => setSubTab('agent-errors')}
+        <div className="errors-subtabs">
+          <select
+            className="tab-select"
+            aria-label="Errors view"
+            value={subTab}
+            onChange={(e) => setSubTab(e.target.value as ErrorsSubTab)}
           >
-            Agent Errors
-          </button>
-          {isLocalhost() && (
-            <button
-              className={`errors-subtab-btn ${subTab === 'wsl-docker-logs' ? 'active' : ''}`}
-              role="tab"
-              aria-selected={subTab === 'wsl-docker-logs'}
-              onClick={() => setSubTab('wsl-docker-logs')}
-            >
-              WSL/Docker Logs
-            </button>
-          )}
+            <option value="agent-errors">Agent Errors</option>
+            {isLocalhost() && (
+              <option value="wsl-docker-logs">WSL/Docker Logs</option>
+            )}
+          </select>
         </div>
         {subTab === 'agent-errors' ? (
           <div className="errors-list" id="errorsList">

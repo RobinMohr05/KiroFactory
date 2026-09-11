@@ -14,7 +14,7 @@ import type { OutputEntry, SessionActivity } from '../types';
  * sensible defaults — see handleCreate below.
  */
 export function EasySessionsView() {
-  const { sessions, setSessions, activeSessionId, setActiveSessionId } = useApp();
+  const { sessions, setSessions, activeSessionId, setActiveSessionId, tabs, currentTabId, setCurrentTabId, fetchTabTasks } = useApp();
   const [output, setOutput] = useState<OutputEntry[]>([]);
   const [activity, setActivity] = useState<SessionActivity | null>(null);
 
@@ -25,7 +25,19 @@ export function EasySessionsView() {
   const [createError, setCreateError] = useState<string | null>(null);
 
   const pinnedSession = sessions.find(s => s.isPermanent) || sessions.find(s => s.pinned);
-  const otherSessions = sessions.filter(s => s.id !== pinnedSession?.id);
+  // Filter non-pinned sessions to the selected tab where a tab association
+  // exists (consistent with SessionsPanel). Sessions without any tabIds stay
+  // visible regardless of the selected tab. The pinned chat session is always
+  // shown separately below and is never filtered out.
+  const otherSessions = sessions
+    .filter(s => s.id !== pinnedSession?.id)
+    .filter(s => !currentTabId || !s.tabIds || s.tabIds.includes(Number(currentTabId)));
+
+  const handleTabChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const id = Number(e.target.value);
+    setCurrentTabId(id);
+    fetchTabTasks(id);
+  };
 
   // Default to the pinned chat session so it's what greets the user.
   useEffect(() => {
@@ -108,7 +120,7 @@ export function EasySessionsView() {
       // Auto-generated name — Easy mode has no name field. Loop is enabled
       // whenever a run count is given (matches "amount of loops" framing);
       // no agent, no tab assignment, no other SessionModal knobs exposed.
-      const body = {
+      const body: Record<string, unknown> = {
         name: `Session ${new Date().toLocaleString()}`,
         prompt: prompt.trim(),
         interactive: true,
@@ -116,6 +128,12 @@ export function EasySessionsView() {
         runs,
         intervalSeconds: 10,
       };
+      // Associate the new session with the selected tab/repository so the
+      // agent has repo context. Omit entirely when no tab is selected so we
+      // don't send an invalid/empty tab id.
+      if (currentTabId) {
+        body.tabIds = [Number(currentTabId)];
+      }
       const res = await apiFetch('/api/sessions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -141,6 +159,18 @@ export function EasySessionsView() {
   return (
     <section id="panel-easy-sessions" className="easy-sessions-view" aria-label="Sessions">
       <aside className="easy-sessions-list">
+        {tabs.length > 0 && (
+          <select
+            className="tab-select"
+            aria-label="Select repository"
+            value={currentTabId ?? ''}
+            onChange={handleTabChange}
+          >
+            {tabs.map(tab => (
+              <option key={tab.id} value={tab.id}>{tab.name}</option>
+            ))}
+          </select>
+        )}
         <div className="toolbar">
           <button className="btn btn-primary" onClick={() => setShowNewForm(v => !v)}>
             {showNewForm ? 'Cancel' : '+ New Session'}
