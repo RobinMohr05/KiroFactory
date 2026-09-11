@@ -99,6 +99,14 @@ if [ -z "${ACA_WORKER_SECRET:-}" ]; then
   echo "  export ACA_WORKER_SECRET=\$(openssl rand -hex 32)"
   exit 1
 fi
+if [ -z "${KIRO_API_KEY:-}" ]; then
+  echo "ERROR: KIRO_API_KEY environment variable is required."
+  echo "  Without it the orchestrator container has no credentials for kiro-cli acp,"
+  echo "  GET /api/models always fails with 'ACP connection closed', and the model"
+  echo "  dropdown in the hosted app shows only 'Auto'."
+  echo "  export KIRO_API_KEY=<your-kiro-api-key>"
+  exit 1
+fi
 
 # ─── Resolve Infrastructure References ───────────────────────────────────────
 
@@ -155,6 +163,7 @@ if [ "$WHAT_IF" = true ]; then
                  jwtSecret="$JWT_SECRET" \
                  encryptionKey="$ENCRYPTION_KEY" \
                  workerSecret="$ACA_WORKER_SECRET" \
+                 kiroApiKey="$KIRO_API_KEY" \
                  azureDevOpsPat="${AZURE_DEVOPS_EXT_PAT:-}"
 else
   log "Deploying Vibecode Heaven Orchestrator Container App..."
@@ -177,6 +186,7 @@ else
                  jwtSecret="$JWT_SECRET" \
                  encryptionKey="$ENCRYPTION_KEY" \
                  workerSecret="$ACA_WORKER_SECRET" \
+                 kiroApiKey="$KIRO_API_KEY" \
                  azureDevOpsPat="${AZURE_DEVOPS_EXT_PAT:-}" \
     --output json)
 
