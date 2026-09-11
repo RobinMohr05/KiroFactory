@@ -8,9 +8,21 @@ interface DetectedModel {
   description?: string | null;
 }
 
+interface DetectionError {
+  code: 'binary-not-found' | 'timeout' | 'acp-error' | 'no-models-field';
+  message: string;
+}
+
 interface ModelsResponse {
   default: string;
   models: DetectedModel[];
+  /**
+   * Present only when detection failed server-side. The component stays usable
+   * either way — an empty `models` list yields the synthetic Auto-only option —
+   * so this is currently informational (surfaced by the backend for
+   * diagnostics/UI messaging) and must never cause a crash when present.
+   */
+  detectionError?: DetectionError;
 }
 
 interface ModelSelectProps {
@@ -36,9 +48,12 @@ const AUTO_OPTION = { label: 'Auto (default)', value: '' };
  * text is never committed (typing only filters the dropdown; blurring without
  * selecting discards the search text and restores the prior value).
  *
- * The first option is always "Auto (default)" whose value is the empty string
- * (meaning: omit the model). While the fetch is loading or if it fails, the
- * component renders with just that Auto option and stays fully usable.
+ * When detection fails or returns nothing, the sole option is the synthetic
+ * "Auto (default)" whose value is the empty string (meaning: omit the model),
+ * so the component stays fully usable. When detection returns a non-empty list,
+ * exactly those models are offered — the agent's own auto entry (modelId:
+ * "auto") is already in that list, so no synthetic "Auto (default)" is
+ * prepended. While the fetch is loading it renders the Auto-only fallback.
  *
  * If the incoming `value` is a non-empty string that does not match any
  * fetched option, a `labelInValue` shape is passed so antd displays a
@@ -80,8 +95,15 @@ export function ModelSelect({ value, onChange, id, placeholder, disabled }: Mode
 
   // Build the list of options from fetched models. Only real, selectable
   // options live here — no synthetic entries.
+  //
+  // Product decision: the synthetic "Auto (default)" option (empty-string
+  // value) is injected ONLY when the detected models list is empty (detection
+  // failed or returned nothing) so the component stays usable. When the backend
+  // returns a non-empty list, render exactly the returned models — the agent
+  // already returns its own auto entry (modelId: "auto") in that list, so
+  // prepending a synthetic "Auto (default)" would duplicate it.
   const modelOptions = models.map((m) => ({ label: m.id, value: m.id }));
-  const options = [AUTO_OPTION, ...modelOptions];
+  const options = modelOptions.length > 0 ? modelOptions : [AUTO_OPTION];
 
   // Determine if the current value is "unknown" — a non-empty value not in
   // the fetched list.
