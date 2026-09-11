@@ -58,10 +58,12 @@ describe('App', () => {
 
   it('renders the view tabs (Tasks, Sessions, Agents, Logs)', async () => {
     await act(async () => { renderApp(); });
-    expect(screen.getByRole('tab', { name: /tasks/i })).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: /sessions/i })).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: /agents/i })).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: /logs/i })).toBeInTheDocument();
+    const viewSelect = screen.getByRole('combobox', { name: /select view/i });
+    expect(viewSelect).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: /tasks/i })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: /sessions/i })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: /agents/i })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: /logs/i })).toBeInTheDocument();
   });
 
   it('renders the kanban columns', async () => {
@@ -86,7 +88,7 @@ describe('App', () => {
 describe('App — Easy/Advanced view mode gating', () => {
   it('shows the full Advanced layout (tabs, kanban) when uiViewMode is "advanced"', async () => {
     await act(async () => { renderApp(); });
-    expect(screen.getByRole('tab', { name: /tasks/i })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: /select view/i })).toBeInTheDocument();
     expect(screen.getByText('To Do')).toBeInTheDocument();
   });
 

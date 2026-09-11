@@ -26,7 +26,7 @@ describe('SessionDetailTabs', () => {
     } as any);
   });
 
-  it('renders Timeline tab as default active view', async () => {
+  it('renders Timeline as the default selected view', async () => {
     await act(async () => {
       render(
         <SessionDetailTabs
@@ -37,11 +37,11 @@ describe('SessionDetailTabs', () => {
       );
     });
 
-    const timelineTab = screen.getByRole('tab', { name: /timeline/i });
-    expect(timelineTab.classList.contains('active')).toBe(true);
+    const select = screen.getByRole('combobox', { name: /session detail view/i }) as HTMLSelectElement;
+    expect(select.value).toBe('timeline');
   });
 
-  it('switches to Raw Log tab on click', async () => {
+  it('switches to Raw Log on select change', async () => {
     await act(async () => {
       render(
         <SessionDetailTabs
@@ -52,16 +52,16 @@ describe('SessionDetailTabs', () => {
       );
     });
 
-    const rawLogTab = screen.getByRole('tab', { name: /raw log/i });
-    fireEvent.click(rawLogTab);
+    const select = screen.getByRole('combobox', { name: /session detail view/i }) as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: 'rawlog' } });
 
-    expect(rawLogTab.classList.contains('active')).toBe(true);
+    expect(select.value).toBe('rawlog');
     // Raw log should show output text
     expect(screen.getByText(/Hello world/)).toBeInTheDocument();
     expect(screen.getByText(/Error line/)).toBeInTheDocument();
   });
 
-  it('shows the timeline view when Timeline tab is active', async () => {
+  it('shows the timeline view when Timeline is selected', async () => {
     await act(async () => {
       render(
         <SessionDetailTabs
@@ -89,15 +89,15 @@ describe('SessionDetailTabs', () => {
     });
 
     // Switch to Raw Log
-    const rawLogTab = screen.getByRole('tab', { name: /raw log/i });
-    fireEvent.click(rawLogTab);
+    const select = screen.getByRole('combobox', { name: /session detail view/i });
+    fireEvent.change(select, { target: { value: 'rawlog' } });
 
     // Check output entries are rendered
     expect(screen.getByText(/Hello world/)).toBeInTheDocument();
     expect(screen.getByText(/Error line/)).toBeInTheDocument();
   });
 
-  it('shows a Copy log button only when the Raw Log tab is active', async () => {
+  it('shows a Copy log button only when the Raw Log view is active', async () => {
     await act(async () => {
       render(
         <SessionDetailTabs
@@ -111,8 +111,8 @@ describe('SessionDetailTabs', () => {
     // Timeline is active by default — no copy button
     expect(screen.queryByRole('button', { name: /copy log/i })).not.toBeInTheDocument();
 
-    const rawLogTab = screen.getByRole('tab', { name: /raw log/i });
-    fireEvent.click(rawLogTab);
+    const select = screen.getByRole('combobox', { name: /session detail view/i });
+    fireEvent.change(select, { target: { value: 'rawlog' } });
 
     expect(screen.getByRole('button', { name: /copy log/i })).toBeInTheDocument();
   });
@@ -131,7 +131,7 @@ describe('SessionDetailTabs', () => {
       );
     });
 
-    fireEvent.click(screen.getByRole('tab', { name: /raw log/i }));
+    fireEvent.change(screen.getByRole('combobox', { name: /session detail view/i }), { target: { value: 'rawlog' } });
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: /copy log/i }));
     });
@@ -153,7 +153,7 @@ describe('SessionDetailTabs', () => {
       );
     });
 
-    fireEvent.click(screen.getByRole('tab', { name: /raw log/i }));
+    fireEvent.change(screen.getByRole('combobox', { name: /session detail view/i }), { target: { value: 'rawlog' } });
     expect(screen.getByRole('button', { name: /copy log/i })).toBeDisabled();
   });
 
@@ -168,7 +168,7 @@ describe('SessionDetailTabs', () => {
       );
     });
 
-    fireEvent.click(screen.getByRole('tab', { name: /raw log/i }));
+    fireEvent.change(screen.getByRole('combobox', { name: /session detail view/i }), { target: { value: 'rawlog' } });
     const logEl = screen.getByRole('log', { name: /agent output/i });
 
     const removeAllRanges = vi.fn();

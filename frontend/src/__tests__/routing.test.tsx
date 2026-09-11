@@ -243,8 +243,8 @@ describe('Routing', () => {
       await act(async () => {
         renderWithRouter(['/sessions']);
       });
-      const sessionsTab = screen.getByRole('tab', { name: /sessions/i });
-      expect(sessionsTab.classList.contains('active')).toBe(true);
+      const viewSelect = screen.getByRole('combobox', { name: /select view/i }) as HTMLSelectElement;
+      expect(viewSelect.value).toBe('/sessions');
     });
   });
 
