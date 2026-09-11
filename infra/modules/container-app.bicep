@@ -63,6 +63,10 @@ param encryptionKey string
 @secure()
 param workerSecret string
 
+@description('Kiro API key for the orchestrator container (KIRO_API_KEY). Required for GET /api/models detection — without it kiro-cli acp exits immediately and the model dropdown stays empty.')
+@secure()
+param kiroApiKey string = ''
+
 @description('Optional org-level Azure DevOps PAT for worker git clone fallback (AZURE_DEVOPS_EXT_PAT). Leave empty to omit.')
 @secure()
 param azureDevOpsPat string = ''
@@ -142,6 +146,12 @@ var baseSecrets = [
     value: workerSecret
   }
 ]
+var kiroApiKeySecret = empty(kiroApiKey) ? [] : [
+  {
+    name: 'kiro-api-key'
+    value: kiroApiKey
+  }
+]
 var patSecret = empty(azureDevOpsPat) ? [] : [
   {
     name: 'azure-devops-pat'
@@ -177,6 +187,14 @@ var baseEnv = [
 ]
 var patEnv = empty(azureDevOpsPat) ? [] : [
   { name: 'AZURE_DEVOPS_EXT_PAT', secretRef: 'azure-devops-pat' }
+]
+// KIRO_API_KEY is required for the orchestrator's GET /api/models detection —
+// without it, kiro-cli acp exits immediately (no credentials) and the model
+// dropdown stays empty. Injected as a secret-ref so the value is never stored
+// in plaintext in the revision spec. Omitted when the param is empty so the
+// env var is simply absent (which kiro-runner.ts handles gracefully).
+var kiroApiKeyEnv = empty(kiroApiKey) ? [] : [
+  { name: 'KIRO_API_KEY', secretRef: 'kiro-api-key' }
 ]
 
 // ─── ACR Credential Reference ────────────────────────────────────────────────
@@ -223,7 +241,7 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
         }
       ]
       // Secrets (referenced by env vars)
-      secrets: concat(baseSecrets, patSecret)
+      secrets: concat(baseSecrets, kiroApiKeySecret, patSecret)
     }
     template: {
       containers: [
@@ -234,7 +252,7 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
             cpu: json(cpu)
             memory: memory
           }
-          env: concat(baseEnv, patEnv)
+          env: concat(baseEnv, kiroApiKeyEnv, patEnv)
           // Probes aligned with the Dockerfile HEALTHCHECK
           probes: [
             {
