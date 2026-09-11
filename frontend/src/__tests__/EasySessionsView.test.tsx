@@ -21,6 +21,10 @@ function mockUseApp(overrides: Partial<ReturnType<typeof AppContext.useApp>> = {
     setSessions: vi.fn(),
     activeSessionId: null,
     setActiveSessionId: vi.fn(),
+    tabs: [],
+    currentTabId: null,
+    setCurrentTabId: vi.fn(),
+    fetchTabTasks: vi.fn(),
     ...overrides,
   };
   vi.mocked(AppContext.useApp).mockReturnValue(base as any);
@@ -141,5 +145,103 @@ describe('EasySessionsView', () => {
     expect(body.cwd).toBeUndefined();
 
     expect(apiFetchMock).toHaveBeenCalledWith('/api/sessions/42/start', { method: 'POST' });
+  });
+
+  describe('repository (tab) dropdown', () => {
+    it('renders nothing for the dropdown when there are no tabs', () => {
+      mockUseApp({ activeSessionId: 1, tabs: [] });
+      render(<EasySessionsView />);
+      expect(screen.queryByLabelText(/select repository/i)).not.toBeInTheDocument();
+    });
+
+    it('renders the repository dropdown with an option per tab when tabs exist', () => {
+      mockUseApp({
+        activeSessionId: 1,
+        tabs: [
+          { id: 2, name: 'VCH' },
+          { id: 3, name: 'Other' },
+        ],
+        currentTabId: 2,
+      });
+      render(<EasySessionsView />);
+      const select = screen.getByLabelText(/select repository/i);
+      expect(select).toBeInTheDocument();
+      expect(select).toHaveClass('tab-select');
+      expect(screen.getByRole('option', { name: 'VCH' })).toBeInTheDocument();
+      expect(screen.getByRole('option', { name: 'Other' })).toBeInTheDocument();
+    });
+
+    it('selecting a tab sets currentTabId and fetches that tab\'s tasks', () => {
+      const setCurrentTabId = vi.fn();
+      const fetchTabTasks = vi.fn();
+      mockUseApp({
+        activeSessionId: 1,
+        tabs: [
+          { id: 2, name: 'VCH' },
+          { id: 3, name: 'Other' },
+        ],
+        currentTabId: 2,
+        setCurrentTabId,
+        fetchTabTasks,
+      });
+      render(<EasySessionsView />);
+      fireEvent.change(screen.getByLabelText(/select repository/i), { target: { value: '3' } });
+      expect(setCurrentTabId).toHaveBeenCalledWith(3);
+      expect(fetchTabTasks).toHaveBeenCalledWith(3);
+    });
+
+    it('filters the session list to the selected tab, always showing the pinned chat session', () => {
+      mockUseApp({
+        activeSessionId: 1,
+        tabs: [
+          { id: 2, name: 'VCH' },
+          { id: 3, name: 'Other' },
+        ],
+        currentTabId: 2,
+        sessions: [
+          { id: 1, name: 'Chat', status: 'running', isPermanent: true, pinned: true },
+          { id: 2, name: 'In tab 2', status: 'stopped', tabIds: [2] },
+          { id: 3, name: 'In tab 3', status: 'stopped', tabIds: [3] },
+        ],
+      });
+      render(<EasySessionsView />);
+      expect(screen.getByText(/💬 Chat/)).toBeInTheDocument();
+      expect(screen.getByText('In tab 2')).toBeInTheDocument();
+      expect(screen.queryByText('In tab 3')).not.toBeInTheDocument();
+    });
+
+    it('sends tabIds with the selected tab when creating a session', async () => {
+      const setSessions = vi.fn();
+      const setActiveSessionId = vi.fn();
+      apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+        if (url === '/api/sessions' && opts?.method === 'POST') {
+          return { ok: true, json: async () => ({ id: 42, name: 'Session x', status: 'stopped' }) };
+        }
+        if (url.includes('/output')) {
+          return { ok: true, json: async () => [] };
+        }
+        return { ok: true, json: async () => ({}) };
+      });
+      mockUseApp({
+        activeSessionId: 1,
+        setSessions,
+        setActiveSessionId,
+        tabs: [{ id: 2, name: 'VCH' }],
+        currentTabId: 2,
+      });
+      render(<EasySessionsView />);
+
+      fireEvent.click(screen.getByText('+ New Session'));
+      fireEvent.change(screen.getByLabelText(/what should it do/i), { target: { value: 'Do the thing' } });
+      fireEvent.click(screen.getByRole('button', { name: /start session/i }));
+
+      await waitFor(() => {
+        expect(setActiveSessionId).toHaveBeenCalledWith(42);
+      });
+
+      const createCall = apiFetchMock.mock.calls.find(([url, opts]) => url === '/api/sessions' && opts?.method === 'POST');
+      const body = JSON.parse((createCall![1] as RequestInit).body as string);
+      expect(body.tabIds).toEqual([2]);
+    });
   });
 });
