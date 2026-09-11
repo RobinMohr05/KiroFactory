@@ -3718,9 +3718,11 @@ textarea:focus {
 .planner-question-header {
   color: var(--ta-mango);
   font-weight: 600;
-  /* Long question titles must wrap fully — never clip or overflow horizontally. */
-  overflow-wrap: anywhere;
-  word-break: break-word;
+  /* Long question titles must wrap fully — never clip or overflow horizontally.
+     overflow-wrap: break-word allows wrapping only at spaces/word boundaries,
+     preventing mid-word breaks. word-break: break-word is intentionally absent
+     so titles never split in the middle of a word. */
+  overflow-wrap: break-word;
   min-width: 0;
 }
 
@@ -3747,11 +3749,10 @@ textarea:focus {
   color: var(--text-muted);
   font-size: 0.82rem;
   /* Long Rec: lines must wrap fully — never clip at the container edge.
-     overflow-wrap: anywhere + word-break: break-word ensure even a very long
-     unbroken recommendation string wraps onto multiple lines instead of being
-     cut off mid-word by the parent's width constraint. */
-  overflow-wrap: anywhere;
-  word-break: break-word;
+     overflow-wrap: break-word wraps at word boundaries only, preventing
+     mid-word breaks in the recommendation text. word-break: break-word is
+     intentionally absent to avoid splitting words mid-character. */
+  overflow-wrap: break-word;
   min-width: 0;
 }
 
