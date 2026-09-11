@@ -48,10 +48,13 @@ async function freshApp() {
   return app;
 }
 
-function makeRunner(availableModels: Array<{ modelId: string; name: string; description?: string | null }>) {
+function makeRunner(
+  availableModels: Array<{ modelId: string; name: string; description?: string | null }>,
+  detectionFailureDetail: null | { hasModelsField: boolean; modelsCount: number } = null
+) {
   return {
     availableModels,
-    detectionFailureDetail: null as null | { code: string; message: string; hasModelsField: boolean; modelsCount: number },
+    detectionFailureDetail,
     close: vi.fn().mockResolvedValue(undefined),
   };
 }
@@ -215,8 +218,11 @@ describe("GET /api/models", () => {
   });
 
   it("returns detectionError.code='no-models-field' when session/new returns no/empty availableModels", async () => {
-    // Runner created successfully but advertises no models
-    const runner = makeRunner([]);
+    // Runner created successfully but advertises no models. In the real
+    // KiroRunner, this always sets detectionFailureDetail to a non-null value,
+    // so mirror that here to exercise the actual runner-provided detail path
+    // (not the fallback).
+    const runner = makeRunner([], { hasModelsField: true, modelsCount: 0 });
     createMock.mockResolvedValue(runner);
 
     const app = await freshApp();
@@ -228,6 +234,13 @@ describe("GET /api/models", () => {
       code: "no-models-field",
       message: expect.any(String),
     });
+
+    // The runner-provided detail must flow through to diagnostics.
+    const diag = await request(app).get("/api/models/diagnostics");
+    expect(diag.status).toBe(200);
+    expect(diag.body.lastDetectionCode).toBe("no-models-field");
+    expect(diag.body.sessionNewHasModelsField).toBe(true);
+    expect(diag.body.modelsCount).toBe(0);
   });
 });
 

@@ -211,8 +211,9 @@ router.get("/", async (_req: Request, res: Response) => {
     return;
   }
 
-  // Reset last detection error before each attempt
+  // Reset last detection state before each attempt
   lastDetectionError = null;
+  lastSessionNewModelsInfo = null;
 
   try {
     const models = await detectModels();
@@ -277,6 +278,8 @@ router.get("/diagnostics", async (_req: Request, res: Response) => {
   // If we haven't attempted detection yet (no lastDetectionError and no cache),
   // trigger a detection attempt so the diagnostics include fresh data.
   if (!cachedModels && !lastDetectionError) {
+    // Reset last detection state before this attempt
+    lastSessionNewModelsInfo = null;
     try {
       const models = await detectModels();
       cachedModels = models;
@@ -302,7 +305,7 @@ router.get("/diagnostics", async (_req: Request, res: Response) => {
     pathEntries,
     hasKiroApiKey,
     hasAwsCreds,
-    lastDetectionCode: lastDetectionError?.code ?? (cachedModels ? null : null),
+    lastDetectionCode: lastDetectionError?.code ?? null,
     lastDetectionMessage: lastDetectionError?.message ?? null,
     modelsCount,
     sessionNewHasModelsField: lastSessionNewModelsInfo?.hasModelsField ?? null,
