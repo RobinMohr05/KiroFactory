@@ -396,6 +396,124 @@ describe('renderPlannerMarkdown', () => {
     });
   });
 
+  describe('header title-only bold with colon split (task #1690)', () => {
+    // FIX 1: For a header like "**Q1 — Domestic vs wild scope**: Should this be about...",
+    // only the title (up to and including the first colon) should be bold/orange in
+    // .planner-question-header. The rest must appear in .planner-question-body.
+    it('renders only the title (up to first colon) bold in .planner-question-header', () => {
+      const input =
+        '**Q1 — Domestic vs wild scope**: Should this be about domestic house cats only?\nRec: Yes';
+      const result = renderPlannerMarkdown(input);
+
+      const headerMatch = result.match(
+        /<div class="planner-question-header">([\s\S]*?)<\/div>/,
+      );
+      expect(headerMatch).not.toBeNull();
+      const header = headerMatch![1];
+
+      // The bold element must contain only the title through the colon
+      expect(header).toContain('<strong>');
+      expect(header).toContain('Q1');
+      expect(header).toContain('Domestic vs wild scope');
+      // The trailing question must NOT appear in the header
+      expect(header).not.toContain('Should this be about domestic house cats only');
+    });
+
+    it('puts the post-colon text from header line into .planner-question-body', () => {
+      const input =
+        '**Q1 — Domestic vs wild scope**: Should this be about domestic house cats only?\nRec: Yes';
+      const result = renderPlannerMarkdown(input);
+
+      const bodyMatch = result.match(
+        /<div class="planner-question-body">([\s\S]*?)<\/div>/,
+      );
+      expect(bodyMatch).not.toBeNull();
+      const body = bodyMatch![1];
+      expect(body).toContain('Should this be about domestic house cats only');
+    });
+
+    it('does not leak literal * or ** into the rendered header', () => {
+      const input =
+        '**Q1 — Domestic vs wild scope**: Should this be about domestic house cats only?\nRec: Yes';
+      const result = renderPlannerMarkdown(input);
+
+      const headerMatch = result.match(
+        /<div class="planner-question-header">([\s\S]*?)<\/div>/,
+      );
+      expect(headerMatch).not.toBeNull();
+      expect(headerMatch![1]).not.toContain('*');
+    });
+
+    // FALLBACK: a colon-less header still renders fully bold (existing behavior)
+    it('renders a colon-less header fully bold with no body split (fallback)', () => {
+      const input = '**Q3 — Budget**\n(A) Low\nRec: (A) Low';
+      const result = renderPlannerMarkdown(input);
+
+      const headerMatch = result.match(
+        /<div class="planner-question-header">([\s\S]*?)<\/div>/,
+      );
+      expect(headerMatch).not.toBeNull();
+      const header = headerMatch![1];
+      expect(header).toContain('<strong>');
+      expect(header).toContain('Q3');
+      expect(header).toContain('Budget');
+      // The body should NOT contain Budget (it belongs only in header)
+      // but it may contain the option line
+      const bodyMatch = result.match(
+        /<div class="planner-question-body">([\s\S]*?)<\/div>/,
+      );
+      // body should contain the option line, not Budget
+      if (bodyMatch) {
+        expect(bodyMatch![1]).not.toContain('Budget');
+      }
+    });
+
+    // A bare (non-bold) header with a colon should also split at the colon
+    it('splits a bare (non-bold) header at the first colon', () => {
+      const input = 'Q2 — Rec scope: Which categories?\nRec: All';
+      const result = renderPlannerMarkdown(input);
+
+      const headerMatch = result.match(
+        /<div class="planner-question-header">([\s\S]*?)<\/div>/,
+      );
+      expect(headerMatch).not.toBeNull();
+      const header = headerMatch![1];
+      expect(header).toContain('Q2');
+      expect(header).toContain('Rec scope');
+      expect(header).not.toContain('Which categories');
+
+      const bodyMatch = result.match(
+        /<div class="planner-question-body">([\s\S]*?)<\/div>/,
+      );
+      expect(bodyMatch).not.toBeNull();
+      expect(bodyMatch![1]).toContain('Which categories');
+    });
+
+    // Ensure post-colon body text is prepended before any existing body lines
+    it('prepends post-colon text before existing body lines in .planner-question-body', () => {
+      const input = [
+        '**Q1 — Scope**: What is the scope?',
+        '(A) Small',
+        '(B) Large',
+        'Rec: (A) Small',
+      ].join('\n');
+      const result = renderPlannerMarkdown(input);
+
+      const bodyMatch = result.match(
+        /<div class="planner-question-body">([\s\S]*?)<\/div>/,
+      );
+      expect(bodyMatch).not.toBeNull();
+      const body = bodyMatch![1];
+      // The post-colon question text must appear before the option lines
+      expect(body).toContain('What is the scope');
+      expect(body).toContain('(A) Small');
+      expect(body).toContain('(B) Large');
+      const questionIdx = body.indexOf('What is the scope');
+      const optionIdx = body.indexOf('(A) Small');
+      expect(questionIdx).toBeLessThan(optionIdx);
+    });
+  });
+
   describe('long-text non-truncation (task #1687)', () => {
     // A very long question title must appear in full inside .planner-question-header —
     // no truncation or omission of any word.

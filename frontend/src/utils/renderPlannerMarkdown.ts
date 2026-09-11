@@ -282,6 +282,34 @@ function renderWithQuestionCards(text: string): string {
 }
 
 /**
+ * Given a raw header line (the Q<n> line), split it into the "title" portion
+ * (from the start through and including the first `:`) and the "body tail"
+ * (everything after that first `:`).
+ *
+ * The split point is the first colon that appears on the line, accounting for
+ * the fact that the line may start with `**...**` bold markers. Any `**` / `*`
+ * markers are stripped from both parts before they are returned.
+ *
+ * Returns [titleText, bodyTailText]:
+ * - `titleText` is the substring from the start through the first colon
+ *   (inclusive), with `*` characters stripped.
+ * - `bodyTailText` is everything after the first colon, trimmed, with `*`
+ *   characters stripped. Empty string if the header has no colon.
+ *
+ * FALLBACK: if the header has no colon, returns [stripped headerLine, ""].
+ */
+function splitHeaderAtColon(headerLine: string): [string, string] {
+  const stripped = headerLine.replace(/\*/g, '').trim();
+  const colonIdx = stripped.indexOf(':');
+  if (colonIdx < 0) {
+    return [stripped, ''];
+  }
+  const title = stripped.slice(0, colonIdx + 1).trim();
+  const tail = stripped.slice(colonIdx + 1).trim();
+  return [title, tail];
+}
+
+/**
  * Render a single question block (array of lines) as a .planner-question card.
  * The first line is the header (**Qn - ...**), Rec: lines get special treatment,
  * remaining lines are the body.
@@ -298,17 +326,39 @@ function renderQuestionCard(lines: string[]): string {
   const headerLine = trimmedLines[0];
   const bodyLines = trimmedLines.slice(1);
 
-  // Normalize the header to a single, consistent bold form. This guarantees the
-  // header always renders bold with no leaked `*` characters, regardless of
-  // whether the original line used well-formed bold, malformed bold (stray
-  // space before the closing **), or no bold at all (a bare `Q3 — …`).
-  const headerHtml = renderQuestionHeader(headerLine);
+  // Split the header line at the first colon: bold only the title portion
+  // (everything up to and including the first colon), and treat any text after
+  // the colon on the same line as the start of the body. If there is no colon,
+  // fall back to bolding the entire header line (existing behavior).
+  const [titleText, bodyTail] = splitHeaderAtColon(headerLine);
 
-  // Separate body lines from Rec: lines
+  let headerHtml: string;
+  if (bodyTail) {
+    // Colon found: bold only the title, body tail goes into body section.
+    // Re-use renderQuestionHeader normalization by passing just the title text.
+    // Since we already stripped *, wrap in ** so renderQuestionHeader's bold
+    // path handles it cleanly.
+    const inline = (s: string): string =>
+      s ? (marked.parseInline(s) as string).trim() : '';
+    headerHtml = titleText ? `<strong>${inline(titleText)}</strong>` : '';
+  } else {
+    // No colon: bold the entire header line (fallback).
+    headerHtml = renderQuestionHeader(headerLine);
+  }
+
+  // The body consists of:
+  //   1. `bodyTail` — any text from after the first colon on the header line
+  //      (only present when a colon split happened above)
+  //   2. The remaining lines of the question block
+  // Prepend bodyTail as the first line of body content so it renders before
+  // the option lines etc.
+  const allBodyLines = bodyTail ? [bodyTail, ...bodyLines] : bodyLines;
+
+  // Separate all body lines from Rec: lines
   const recLines: string[] = [];
   const regularBodyLines: string[] = [];
 
-  for (const line of bodyLines) {
+  for (const line of allBodyLines) {
     if (REC_LINE_RE.test(line)) {
       recLines.push(line);
     } else {
