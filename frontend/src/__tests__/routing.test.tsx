@@ -194,10 +194,8 @@ describe('Routing', () => {
       expect(screen.getByRole('tabpanel', { name: /usage/i })).toBeInTheDocument();
     });
 
-    // The ViewTabs control is now a <select> whose options are not reliably exposed
-    // as independent accessibility-tree nodes when the dropdown is collapsed. So each
-    // panel must carry its own accessible name via aria-label, rather than pointing
-    // aria-labelledby at an <option> id inside the collapsed combobox.
+    // Each panel carries its own accessible name via aria-label, independent of
+    // the ViewTabs bar, so panels remain self-labeled regardless of navigation UI.
     describe('panels are self-labeled (not via option ids in a collapsed <select>)', () => {
       it('the agents tabpanel has a self-contained aria-label', async () => {
         await act(async () => {
@@ -294,8 +292,7 @@ describe('Routing', () => {
       await act(async () => {
         renderWithRouter(['/sessions']);
       });
-      const viewSelect = screen.getByRole('combobox', { name: /select view/i }) as HTMLSelectElement;
-      expect(viewSelect.value).toBe('/sessions');
+      expect(screen.getByRole('tab', { name: 'Sessions' })).toHaveAttribute('aria-selected', 'true');
     });
   });
 

@@ -3,9 +3,7 @@ import { useApp } from '../context/AppContext';
 
 type ViewOption = { value: string; label: string };
 
-// Maps each view to the route it navigates to. `value` is the route path so the
-// <select> can drive navigation directly on change, and the current selection
-// mirrors the active route.
+// Maps each view to the route it navigates to.
 const VIEW_OPTIONS: ViewOption[] = [
   { value: '/tasks', label: 'Tasks' },
   { value: '/sessions', label: 'Sessions' },
@@ -14,8 +12,8 @@ const VIEW_OPTIONS: ViewOption[] = [
   { value: '/usage', label: 'Usage' },
 ];
 
-// Maps the AppContext activeView key to its route path, so the dropdown's
-// current value reflects which view is active.
+// Maps the AppContext activeView key to its route path, so the active tab
+// reflects which view is currently selected.
 const VIEW_TO_PATH: Record<string, string> = {
   boards: '/tasks',
   sessions: '/sessions',
@@ -34,22 +32,24 @@ export function ViewTabs() {
   const currentPath = VIEW_TO_PATH[activeView] ?? '/tasks';
 
   return (
-    <nav className="tabs" aria-label="Views">
-      <select
-        className="tab-select"
-        aria-label="Select view"
-        value={currentPath}
-        onChange={(e) => navigate(e.target.value)}
-      >
-        {VIEW_OPTIONS.map(({ value, label }) => (
-          <option key={value} value={value}>
-            {value === '/errors' && unreadErrorCount > 0 ? `${label} (${badgeCount})` : label}
-          </option>
-        ))}
-      </select>
-      {unreadErrorCount > 0 && (
-        <span className="error-badge">{badgeCount}</span>
-      )}
+    <nav className="tabs" aria-label="Views" role="tablist">
+      {VIEW_OPTIONS.map(({ value, label }) => {
+        const isActive = value === currentPath;
+        const showBadge = value === '/errors' && unreadErrorCount > 0;
+        return (
+          <button
+            key={value}
+            type="button"
+            className={`tab${isActive ? ' active' : ''}`}
+            role="tab"
+            aria-selected={isActive}
+            onClick={() => navigate(value)}
+          >
+            {label}
+            {showBadge && <span className="error-badge">{badgeCount}</span>}
+          </button>
+        );
+      })}
     </nav>
   );
 }

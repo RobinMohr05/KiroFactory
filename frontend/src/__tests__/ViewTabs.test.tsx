@@ -37,10 +37,8 @@ describe('ViewTabs', () => {
     } as any);
 
     render(<MemoryRouter><ViewTabs /></MemoryRouter>);
-    // Only 1 error has taskCreated=false — badge shown next to the dropdown
+    // Only 1 error has taskCreated=false — badge shown inside the Logs tab
     expect(screen.getByText('1')).toBeInTheDocument();
-    // …and the Logs option label carries the count too
-    expect(screen.getByRole('option', { name: /Logs \(1\)/ })).toBeInTheDocument();
   });
 
   it('does not show error badge when all errors are dismissed', () => {
@@ -54,11 +52,9 @@ describe('ViewTabs', () => {
 
     render(<MemoryRouter><ViewTabs /></MemoryRouter>);
     expect(screen.queryByText('1')).not.toBeInTheDocument();
-    // The Logs option label has no count suffix
-    expect(screen.getByRole('option', { name: 'Logs' })).toBeInTheDocument();
   });
 
-  it('navigates when a different view is selected', () => {
+  it('navigates when a different tab is clicked', () => {
     vi.mocked(AppContext.useApp).mockReturnValue({
       errors: [],
       activeView: 'boards',
@@ -66,12 +62,11 @@ describe('ViewTabs', () => {
     } as any);
 
     render(<MemoryRouter><ViewTabs /></MemoryRouter>);
-    const select = screen.getByRole('combobox', { name: /select view/i });
-    fireEvent.change(select, { target: { value: '/sessions' } });
+    fireEvent.click(screen.getByRole('tab', { name: 'Sessions' }));
     expect(mockNavigate).toHaveBeenCalledWith('/sessions');
   });
 
-  it('reflects the active view as the selected option', () => {
+  it('reflects the active view as the selected tab', () => {
     vi.mocked(AppContext.useApp).mockReturnValue({
       errors: [],
       activeView: 'agents',
@@ -79,7 +74,7 @@ describe('ViewTabs', () => {
     } as any);
 
     render(<MemoryRouter><ViewTabs /></MemoryRouter>);
-    const select = screen.getByRole('combobox', { name: /select view/i }) as HTMLSelectElement;
-    expect(select.value).toBe('/agents');
+    expect(screen.getByRole('tab', { name: 'Agents' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tab', { name: 'Tasks' })).toHaveAttribute('aria-selected', 'false');
   });
 });
