@@ -133,6 +133,27 @@ export function SessionsPanel() {
     await apiFetch(`/api/sessions/${activeSessionId}/stop`, { method: 'POST' });
   };
 
+  // Per-card start/stop, reusing the exact same endpoints the detail view uses.
+  // Resolves to true on success so the card can decide whether to revert its
+  // pending state on failure (a non-ok response or a thrown network error).
+  const startSessionById = async (id: number): Promise<boolean> => {
+    try {
+      const res = await apiFetch(`/api/sessions/${id}/start`, { method: 'POST' });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  };
+
+  const stopSessionById = async (id: number): Promise<boolean> => {
+    try {
+      const res = await apiFetch(`/api/sessions/${id}/stop`, { method: 'POST' });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  };
+
   const handleRunNow = async () => {
     if (!activeSessionId) return;
     await apiFetch(`/api/sessions/${activeSessionId}/run-now`, { method: 'POST' });
@@ -407,6 +428,8 @@ export function SessionsPanel() {
                 onDragOver={handleDragOver}
                 onDrop={(e) => handleDrop(e, session)}
                 onContextMenu={(e) => handleContextMenu(e, session)}
+                onStart={() => startSessionById(session.id)}
+                onStop={() => stopSessionById(session.id)}
               />
             ))}
           </ul>
@@ -424,6 +447,8 @@ export function SessionsPanel() {
                 onDragOver={handleDragOver}
                 onDrop={(e) => handleDrop(e, session)}
                 onContextMenu={(e) => handleContextMenu(e, session)}
+                onStart={() => startSessionById(session.id)}
+                onStop={() => stopSessionById(session.id)}
               />
             ))}
             {sortedSessions.length === 0 && (
@@ -449,6 +474,8 @@ export function SessionsPanel() {
                     onDragOver={handleDragOver}
                     onDrop={(e) => handleDrop(e, session)}
                     onContextMenu={(e) => handleContextMenu(e, session)}
+                    onStart={() => startSessionById(session.id)}
+                    onStop={() => stopSessionById(session.id)}
                   />
                 ))}
                 {sortedSessions.filter(s => !s.pinned && s.cronExpression).length === 0 && (
@@ -616,7 +643,7 @@ export function SessionsPanel() {
   );
 }
 
-function SessionListItem({ session, active, hasErrors, onClick, onDragStart, onDragEnd, onDragOver, onDrop, onContextMenu }: {
+function SessionListItem({ session, active, hasErrors, onClick, onDragStart, onDragEnd, onDragOver, onDrop, onContextMenu, onStart, onStop }: {
   session: Session;
   active: boolean;
   hasErrors: boolean;
@@ -626,10 +653,49 @@ function SessionListItem({ session, active, hasErrors, onClick, onDragStart, onD
   onDragOver: (e: React.DragEvent) => void;
   onDrop: (e: React.DragEvent) => void;
   onContextMenu: (e: React.MouseEvent) => void;
+  onStart: () => Promise<boolean>;
+  onStop: () => Promise<boolean>;
 }) {
   const statusClass = `status-dot-sm status-${session.status}`;
   const activityDetail = session.currentActivity?.detail || session.currentActivity?.type || '';
   const credits = session.totalCreditsUsed ?? 0;
+  const isRunning = session.status === 'running';
+
+  // Track an in-flight start/stop for this card so the button can show a
+  // pending label and stay disabled until the action resolves. On failure we
+  // clear it (revert) so a card is never left stuck pending; on success the
+  // session status flips via the WS `session-updated` event, which swaps the
+  // Start button for Stop (or vice-versa) on its own.
+  const [pending, setPending] = useState<'starting' | 'stopping' | null>(null);
+
+  // Once the session status reflects the requested transition (via the WS
+  // `session-updated` event that flips status), clear the pending flag so the
+  // button settles into the new contextually-valid action instead of staying
+  // stuck on "Starting…"/"Stopping…".
+  useEffect(() => {
+    if (pending === 'starting' && isRunning) setPending(null);
+    else if (pending === 'stopping' && !isRunning) setPending(null);
+  }, [pending, isRunning]);
+
+  const handleActionClick = async (e: React.MouseEvent) => {
+    // Keep the click from also selecting/navigating the card.
+    e.stopPropagation();
+    if (pending) return;
+    if (isRunning) {
+      setPending('stopping');
+      const ok = await onStop();
+      if (!ok) setPending(null);
+    } else {
+      setPending('starting');
+      const ok = await onStart();
+      if (!ok) setPending(null);
+    }
+  };
+
+  let actionLabel: string;
+  if (pending === 'starting') actionLabel = 'Starting…';
+  else if (pending === 'stopping') actionLabel = 'Stopping…';
+  else actionLabel = isRunning ? 'Stop' : 'Start';
 
   return (
     <li
@@ -665,6 +731,16 @@ function SessionListItem({ session, active, hasErrors, onClick, onDragStart, onD
             💰 {formatCreditsWithEur(credits).creditsStr} credits (€{formatCreditsWithEur(credits).eurStr})
           </span>
         )}
+      </div>
+      <div className="session-item-actions">
+        <button
+          type="button"
+          className={`btn btn-sm ${isRunning ? 'btn-danger' : 'btn-success'}`}
+          disabled={pending !== null}
+          onClick={handleActionClick}
+        >
+          {actionLabel}
+        </button>
       </div>
     </li>
   );

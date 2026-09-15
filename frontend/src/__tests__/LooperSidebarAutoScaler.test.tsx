@@ -593,13 +593,9 @@ describe('PR Review Comment fixes — round 2', () => {
     // Select the autoScaler
     fireEvent.click(document.querySelector('[data-autoscaler-id="10"]')!);
 
-    // Toggle tab 2 on (user edits tabIds)
-    const tab2Checkbox = screen.getAllByRole('checkbox').find(
-      (cb) => (cb as HTMLInputElement).closest('label')?.textContent?.includes('Other')
-    ) as HTMLInputElement;
-    expect(tab2Checkbox).toBeTruthy();
-    fireEvent.click(tab2Checkbox);
-    expect(tab2Checkbox.checked).toBe(true);
+    // Toggle tab 2 on (user edits tabId via the select)
+    fireEvent.change(document.getElementById('editAutoScalerTab')!, { target: { value: '2' } });
+    expect((document.getElementById('editAutoScalerTab') as HTMLSelectElement).value).toBe('2');
 
     // Simulate a WS update arriving with the SAME tabIds (new array reference, same contents)
     const updatedScaler = { ...baseAutoScaler, tabIds: [1] }; // new array object but same values
@@ -609,13 +605,8 @@ describe('PR Review Comment fixes — round 2', () => {
     });
     rerender(<MemoryRouter><SessionsPanel /></MemoryRouter>);
 
-    // The user's unsaved edit (tab 2 checked) should NOT have been reset
-    // Find the tab 2 checkbox again after rerender
-    const tab2CheckboxAfter = screen.getAllByRole('checkbox').find(
-      (cb) => (cb as HTMLInputElement).closest('label')?.textContent?.includes('Other')
-    ) as HTMLInputElement;
-    expect(tab2CheckboxAfter).toBeTruthy();
-    expect(tab2CheckboxAfter.checked).toBe(true);
+    // The user's unsaved edit (tab 2 selected) should NOT have been reset
+    expect((document.getElementById('editAutoScalerTab') as HTMLSelectElement).value).toBe('2');
   });
 
   // Issue 3: detail view must have Start/Stop buttons to act on the "stop it first" hint
@@ -894,12 +885,8 @@ describe('PR Review Comment fixes — round 3', () => {
     render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
     fireEvent.click(document.querySelector('[data-autoscaler-id="10"]')!);
 
-    // Uncheck tab 1 (the only checked tab)
-    const tab1Checkbox = screen.getAllByRole('checkbox').find(
-      (cb) => (cb as HTMLInputElement).closest('label')?.textContent?.includes('VCH')
-    ) as HTMLInputElement;
-    expect(tab1Checkbox).toBeTruthy();
-    fireEvent.click(tab1Checkbox); // uncheck it
+    // Deselect the tab (select the placeholder option)
+    fireEvent.change(document.getElementById('editAutoScalerTab')!, { target: { value: '' } });
 
     const saveBtn = screen.getByRole('button', { name: /save/i });
     fireEvent.click(saveBtn);

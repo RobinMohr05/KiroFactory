@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import * as AppContext from '../context/AppContext';
+import * as api from '../utils/api';
 
 vi.mock('../context/AppContext', () => ({
   useApp: vi.fn(),
@@ -453,5 +454,158 @@ describe('SessionsPanel - Advanced mode regression', () => {
     expect(screen.getAllByText('Unpinned Session').length).toBeGreaterThanOrEqual(1);
     // Unpinned session list should be rendered
     expect(document.getElementById('sessionList')).toBeInTheDocument();
+  });
+});
+
+describe('SessionsPanel - Card Start/Stop buttons', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.apiFetch).mockResolvedValue({ ok: true, json: async () => [] } as any);
+  });
+
+  it('shows a Start button (not Stop) on a stopped session card', () => {
+    mockUseApp({
+      sessions: [{ id: 5, name: 'Idle Session', agent: 'developer-agent', status: 'stopped', tabIds: [1] }],
+      activeSessionId: 5,
+    });
+
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
+
+    const item = document.querySelector('.session-item[data-session-id="5"]') as HTMLElement;
+    expect(item).toBeInTheDocument();
+    expect(within(item).getByRole('button', { name: /^start$/i })).toBeInTheDocument();
+    expect(within(item).queryByRole('button', { name: /^stop$/i })).not.toBeInTheDocument();
+  });
+
+  it('shows a Stop button (not Start) on a running session card', () => {
+    mockUseApp({
+      sessions: [{ id: 6, name: 'Live Session', agent: 'developer-agent', status: 'running', tabIds: [1] }],
+      activeSessionId: 6,
+    });
+
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
+
+    const item = document.querySelector('.session-item[data-session-id="6"]') as HTMLElement;
+    expect(within(item).getByRole('button', { name: /^stop$/i })).toBeInTheDocument();
+    expect(within(item).queryByRole('button', { name: /^start$/i })).not.toBeInTheDocument();
+  });
+
+  it('clicking Start calls the existing start endpoint for that session without selecting the card', async () => {
+    const setActiveSessionId = vi.fn();
+    mockUseApp({
+      sessions: [{ id: 7, name: 'Idle Session', agent: 'developer-agent', status: 'stopped', tabIds: [1] }],
+      activeSessionId: 99,
+      setActiveSessionId,
+    });
+
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
+
+    const item = document.querySelector('.session-item[data-session-id="7"]') as HTMLElement;
+    fireEvent.click(within(item).getByRole('button', { name: /^start$/i }));
+
+    await waitFor(() => {
+      expect(api.apiFetch).toHaveBeenCalledWith('/api/sessions/7/start', { method: 'POST' });
+    });
+    // Clicking the button must not trigger card selection/navigation.
+    expect(setActiveSessionId).not.toHaveBeenCalledWith(7);
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  it('clicking Stop calls the existing stop endpoint for that session', async () => {
+    mockUseApp({
+      sessions: [{ id: 8, name: 'Live Session', agent: 'developer-agent', status: 'running', tabIds: [1] }],
+      activeSessionId: 8,
+    });
+
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
+
+    const item = document.querySelector('.session-item[data-session-id="8"]') as HTMLElement;
+    fireEvent.click(within(item).getByRole('button', { name: /^stop$/i }));
+
+    await waitFor(() => {
+      expect(api.apiFetch).toHaveBeenCalledWith('/api/sessions/8/stop', { method: 'POST' });
+    });
+  });
+
+  it('shows a pending label and disables the button while a start is in flight', async () => {
+    let resolveFetch: (v: unknown) => void = () => {};
+    vi.mocked(api.apiFetch).mockImplementation((url: string) => {
+      if (url.endsWith('/start')) {
+        return new Promise((resolve) => { resolveFetch = resolve; }) as any;
+      }
+      return Promise.resolve({ ok: true, json: async () => [] }) as any;
+    });
+
+    mockUseApp({
+      sessions: [{ id: 9, name: 'Idle Session', agent: 'developer-agent', status: 'stopped', tabIds: [1] }],
+      activeSessionId: 9,
+    });
+
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
+
+    const item = document.querySelector('.session-item[data-session-id="9"]') as HTMLElement;
+    const startBtn = within(item).getByRole('button', { name: /^start$/i });
+    fireEvent.click(startBtn);
+
+    await waitFor(() => {
+      const pendingBtn = within(item).getByRole('button', { name: /starting/i });
+      expect(pendingBtn).toBeDisabled();
+    });
+
+    resolveFetch({ ok: true, json: async () => [] });
+  });
+
+  it('clears the pending label after a successful start once the session status updates to running', async () => {
+    mockUseApp({
+      sessions: [{ id: 11, name: 'Idle Session', agent: 'developer-agent', status: 'stopped', tabIds: [1] }],
+      activeSessionId: 11,
+    });
+    const { rerender } = render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
+
+    const item = () => document.querySelector('.session-item[data-session-id="11"]') as HTMLElement;
+    fireEvent.click(within(item()).getByRole('button', { name: /^start$/i }));
+
+    await waitFor(() => {
+      expect(within(item()).getByRole('button', { name: /starting/i })).toBeInTheDocument();
+    });
+
+    // Simulate the WS `session-updated` event flipping the session to running.
+    mockUseApp({
+      sessions: [{ id: 11, name: 'Idle Session', agent: 'developer-agent', status: 'running', tabIds: [1] }],
+      activeSessionId: 11,
+    });
+    rerender(<MemoryRouter><SessionsPanel /></MemoryRouter>);
+
+    await waitFor(() => {
+      expect(within(item()).getByRole('button', { name: /^stop$/i })).toBeInTheDocument();
+    });
+    expect(within(item()).queryByRole('button', { name: /starting/i })).not.toBeInTheDocument();
+  });
+
+  it('reverts the button to its prior state when the action fails', async () => {
+    vi.mocked(api.apiFetch).mockImplementation((url: string) => {
+      if (url.endsWith('/start')) {
+        return Promise.resolve({ ok: false, status: 500, json: async () => ({}) }) as any;
+      }
+      return Promise.resolve({ ok: true, json: async () => [] }) as any;
+    });
+
+    mockUseApp({
+      sessions: [{ id: 10, name: 'Idle Session', agent: 'developer-agent', status: 'stopped', tabIds: [1] }],
+      activeSessionId: 10,
+    });
+
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
+
+    const item = document.querySelector('.session-item[data-session-id="10"]') as HTMLElement;
+    fireEvent.click(within(item).getByRole('button', { name: /^start$/i }));
+
+    // After the failed request resolves, the button must not be stuck in a
+    // pending state — it reverts to the plain Start button.
+    await waitFor(() => {
+      expect(within(item).getByRole('button', { name: /^start$/i })).toBeInTheDocument();
+      expect(within(item).getByRole('button', { name: /^start$/i })).not.toBeDisabled();
+    });
+    expect(within(item).queryByRole('button', { name: /starting/i })).not.toBeInTheDocument();
   });
 });
