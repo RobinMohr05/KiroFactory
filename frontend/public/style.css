@@ -4877,6 +4877,19 @@ textarea:focus {
     height: 140px;
   }
 
+  .usage-chart-bars {
+    overflow-x: auto;
+  }
+
+  .usage-chart-bar-wrapper {
+    min-width: 10px;
+    flex: none;
+  }
+
+  .usage-chart-y-axis {
+    width: 36px;
+  }
+
   .usage-chart-label {
     display: none;
   }
