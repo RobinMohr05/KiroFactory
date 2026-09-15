@@ -1542,6 +1542,11 @@ textarea:focus {
   overflow: hidden;
 }
 
+.session-item-actions {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
 .session-item-name {
   font-size: 0.85rem;
   font-weight: 500;
