@@ -5087,6 +5087,8 @@ textarea:focus {
 
   /* Main panel fills remaining height properly */
   section[role="tabpanel"] {
+    display: flex;
+    flex-direction: column;
     flex: 1;
     min-height: 0;
     overflow-y: auto;
@@ -5233,7 +5235,7 @@ textarea:focus {
   flex-direction: column;
   flex: 1;
   min-height: 0;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .mobile-task-list-controls {
@@ -5242,6 +5244,7 @@ textarea:focus {
   gap: 0.5rem;
   padding: 0.5rem 0.75rem;
   border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
 }
 
 .mobile-filter-chips {
