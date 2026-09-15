@@ -46,9 +46,12 @@ describe('Mobile responsive styles (≤480px)', () => {
       expect(block).toMatch(/\.usage-heading\s*\{[^}]*font-size:\s*1\.1rem/);
     });
 
-    it('should ensure .usage-chart-section does not overflow', () => {
+    it('should not clip the .usage-chart-section overflow (keeps horizontal scroll of the bars working)', () => {
       const block = get480Block();
-      expect(block).toMatch(/\.usage-chart-section\s*\{[^}]*overflow:\s*hidden/);
+      // overflow: hidden on the section would clip the horizontal scroll added
+      // to .usage-chart-bars in the 768px block. It must stay visible so phones
+      // (which hit both media queries) can still scroll the daily bars.
+      expect(block).toMatch(/\.usage-chart-section\s*\{[^}]*overflow:\s*visible/);
     });
 
     it('should ensure .usage-table-wrapper scrolls horizontally', () => {

@@ -5175,7 +5175,10 @@ textarea:focus {
   }
 
   .usage-chart-section {
-    overflow: hidden;
+    /* Must stay visible: overflow: hidden here would clip the horizontal
+       scroll added to .usage-chart-bars in the 768px block, breaking the
+       daily-bar swipe on phones (which hit both this and the 768px query). */
+    overflow: visible;
   }
 
   .usage-table-wrapper {
