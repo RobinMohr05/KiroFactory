@@ -1853,3 +1853,167 @@ describe('TaskPlannerModal - mode dropdown', () => {
     expect(labelEl).toBeTruthy();
   });
 });
+
+describe('TaskPlannerModal - Enter key behavior by pointer type', () => {
+  let apiFetchMock: ReturnType<typeof vi.fn>;
+  let originalMatchMedia: typeof window.matchMedia | undefined;
+  let originalMaxTouchPoints: PropertyDescriptor | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiFetchMock = vi.mocked(api.apiFetch);
+    apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (url === '/api/task-planner/start' && opts?.method === 'POST') {
+        return { ok: true, json: async () => ({ sessionId: 42 }) };
+      }
+      if (opts?.method === 'DELETE') {
+        return { ok: true, json: async () => ({}) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    mockUseApp({ currentTabId: 1 });
+    originalMatchMedia = window.matchMedia;
+    originalMaxTouchPoints = Object.getOwnPropertyDescriptor(window.navigator, 'maxTouchPoints');
+  });
+
+  afterEach(() => {
+    cleanup();
+    // Restore matchMedia
+    if (originalMatchMedia) {
+      window.matchMedia = originalMatchMedia;
+    } else {
+      // @ts-expect-error allow deletion in test cleanup
+      delete window.matchMedia;
+    }
+    // Restore maxTouchPoints
+    if (originalMaxTouchPoints) {
+      Object.defineProperty(window.navigator, 'maxTouchPoints', originalMaxTouchPoints);
+    }
+  });
+
+  /** Set up window.matchMedia to report the given coarse-pointer result. */
+  function mockPointer(coarse: boolean, maxTouchPoints = coarse ? 5 : 0) {
+    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+      matches: query === '(pointer: coarse)' ? coarse : false,
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })) as unknown as typeof window.matchMedia;
+    Object.defineProperty(window.navigator, 'maxTouchPoints', {
+      value: maxTouchPoints,
+      configurable: true,
+    });
+  }
+
+  /** Render, wait for /start, then flip the session to ready via the WS idle event. */
+  async function renderReady() {
+    const utils = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('ws-session-activity', {
+        detail: { sessionId: 42, activity: { type: 'idle' } },
+      }));
+      await new Promise(r => setTimeout(r, 10));
+    });
+    return utils;
+  }
+
+  function typeInto(input: HTMLTextAreaElement, value: string) {
+    const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')!.set!;
+    nativeInputValueSetter.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  function messagePostCount() {
+    return apiFetchMock.mock.calls.filter(
+      ([url, opts]) => typeof url === 'string' && url.includes('/message') && opts?.method === 'POST'
+    ).length;
+  }
+
+  it('coarse pointer (mobile): plain Enter does NOT send — text is retained, no message posted', async () => {
+    mockPointer(true);
+    const { getByPlaceholderText, getByText } = await renderReady();
+    expect(getByText('Ready')).toBeTruthy();
+
+    const input = getByPlaceholderText('Describe the task you want to create...') as HTMLTextAreaElement;
+    await act(async () => { typeInto(input, 'a line'); });
+
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    });
+
+    // On touch devices Enter is a newline: text preserved, nothing sent.
+    expect(input.value).toBe('a line');
+    expect(messagePostCount()).toBe(0);
+  });
+
+  it('coarse pointer (mobile): plain Enter keydown is not preventDefault-ed (falls through to newline)', async () => {
+    mockPointer(true);
+    const { getByPlaceholderText } = await renderReady();
+    const input = getByPlaceholderText('Describe the task you want to create...') as HTMLTextAreaElement;
+    await act(async () => { typeInto(input, 'a line'); });
+
+    const evt = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    await act(async () => { input.dispatchEvent(evt); });
+
+    expect(evt.defaultPrevented).toBe(false);
+  });
+
+  it('fine pointer (desktop): plain Enter DOES send — text cleared and a message posted', async () => {
+    mockPointer(false);
+    const { getByPlaceholderText, getByText } = await renderReady();
+    expect(getByText('Ready')).toBeTruthy();
+
+    const input = getByPlaceholderText('Describe the task you want to create...') as HTMLTextAreaElement;
+    await act(async () => { typeInto(input, 'send me'); });
+
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    // Desktop unchanged: Enter sends, input cleared, one message POST fired.
+    expect(input.value).toBe('');
+    expect(messagePostCount()).toBe(1);
+  });
+
+  it('fine pointer (desktop): Shift+Enter does NOT send', async () => {
+    mockPointer(false);
+    const { getByPlaceholderText } = await renderReady();
+    const input = getByPlaceholderText('Describe the task you want to create...') as HTMLTextAreaElement;
+    await act(async () => { typeInto(input, 'multi'); });
+
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true, cancelable: true }));
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    // Shift+Enter never sends on desktop; input retains its text.
+    expect(input.value).toBe('multi');
+    expect(messagePostCount()).toBe(0);
+  });
+
+  it('falls back to navigator.maxTouchPoints when matchMedia is unavailable (treats touch as newline)', async () => {
+    // Simulate an environment with no matchMedia but a touch-capable device.
+    // @ts-expect-error intentionally removing for the fallback path
+    delete window.matchMedia;
+    Object.defineProperty(window.navigator, 'maxTouchPoints', { value: 5, configurable: true });
+
+    const { getByPlaceholderText } = await renderReady();
+    const input = getByPlaceholderText('Describe the task you want to create...') as HTMLTextAreaElement;
+    await act(async () => { typeInto(input, 'no matchmedia'); });
+
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    // maxTouchPoints > 0 → treated as touch → Enter is a newline, not send.
+    expect(input.value).toBe('no matchmedia');
+    expect(messagePostCount()).toBe(0);
+  });
+});

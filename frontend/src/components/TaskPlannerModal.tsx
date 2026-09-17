@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
 import { apiFetch } from '../utils/api';
 import { renderPlannerMarkdown } from '../utils/renderPlannerMarkdown';
@@ -50,8 +50,32 @@ const ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'
 const MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB
 const MAX_ATTACHMENTS = 3;
 
+/**
+ * Detect a coarse-pointer/touch device (phones, tablets) via feature
+ * detection — never user-agent sniffing. On such devices the on-screen
+ * keyboard's return key emits a plain Enter with no way to hold Shift, so the
+ * composer must treat Enter as a newline and rely on the Send button instead.
+ *
+ * Guards `window.matchMedia` so it doesn't throw where it's unavailable
+ * (older browsers, jsdom): a missing `matchMedia` is treated as "not coarse"
+ * and we fall back to `navigator.maxTouchPoints > 0`.
+ */
+function isTouchDevice(): boolean {
+  if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
+    try {
+      if (window.matchMedia('(pointer: coarse)').matches) return true;
+    } catch {
+      /* fall through to maxTouchPoints */
+    }
+  }
+  return typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0;
+}
+
 export function TaskPlannerModal({ onClose, onSwitchToManual, hidden = false, onDismiss, onExpire }: TaskPlannerModalProps) {
   const { currentTabId, setTasks } = useApp();
+  // Coarse-pointer/touch devices have no Shift+Enter, so Enter must insert a
+  // newline (send is via the Send button only). Computed once per mount.
+  const touchDevice = useMemo(() => isTouchDevice(), []);
   const [messages, setMessages] = useState<PlannerMessage[]>([]);
   const [inputText, setInputText] = useState('');
   const [sessionId, setSessionId] = useState<number | null>(null);
@@ -795,7 +819,9 @@ export function TaskPlannerModal({ onClose, onSwitchToManual, hidden = false, on
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
+                // On touch devices, let Enter fall through to the browser's
+                // default (newline) — those users send via the Send button.
+                if (!touchDevice && e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault();
                   handleSend();
                 }

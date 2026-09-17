@@ -25,7 +25,7 @@ export function AutoScalerPanel({
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState('');
   const [agentName, setAgentName] = useState('');
-  const [selectedTabIds, setSelectedTabIds] = useState<number[]>([]);
+  const [selectedTabId, setSelectedTabId] = useState<number | null>(null);
   const [model, setModel] = useState('');
   const [maxConcurrency, setMaxConcurrency] = useState(5);
   const [idleTimeoutSeconds, setIdleTimeoutSeconds] = useState(30);
@@ -43,7 +43,7 @@ export function AutoScalerPanel({
       setFormError('Agent is required');
       return;
     }
-    if (selectedTabIds.length === 0) {
+    if (!selectedTabId) {
       setFormError('At least one tab is required');
       return;
     }
@@ -55,7 +55,7 @@ export function AutoScalerPanel({
         body: JSON.stringify({
           name: name.trim(),
           agentName,
-          tabIds: selectedTabIds,
+          tabIds: [selectedTabId],
           model: (() => {
             const trimmed = model.trim();
             return trimmed && trimmed !== 'auto' ? trimmed : undefined;
@@ -72,7 +72,7 @@ export function AutoScalerPanel({
       setShowForm(false);
       setName('');
       setAgentName('');
-      setSelectedTabIds([]);
+      setSelectedTabId(null);
       setModel('');
       setMaxConcurrency(5);
       setIdleTimeoutSeconds(30);
@@ -104,12 +104,6 @@ export function AutoScalerPanel({
     } catch (err) {
       console.error('[AutoScaler] Stop error:', err);
     }
-  };
-
-  const handleTabToggle = (tabId: number) => {
-    setSelectedTabIds(prev =>
-      prev.includes(tabId) ? prev.filter(id => id !== tabId) : [...prev, tabId]
-    );
   };
 
   return (
@@ -147,19 +141,17 @@ export function AutoScalerPanel({
             </select>
           </div>
           <div className="form-group">
-            <label>Tabs</label>
-            <div className="autoscaler-tab-checkboxes">
+            <label htmlFor="autoScalerTab">Tabs</label>
+            <select
+              id="autoScalerTab"
+              value={selectedTabId ?? ''}
+              onChange={e => setSelectedTabId(e.target.value ? Number(e.target.value) : null)}
+            >
+              <option value="">Select tab...</option>
               {tabs.map(t => (
-                <label key={t.id} className="autoscaler-tab-checkbox">
-                  <input
-                    type="checkbox"
-                    checked={selectedTabIds.includes(t.id)}
-                    onChange={() => handleTabToggle(t.id)}
-                  />
-                  {t.name}
-                </label>
+                <option key={t.id} value={t.id}>{t.name}</option>
               ))}
-            </div>
+            </select>
           </div>
           <div className="form-group">
             <label htmlFor="autoScalerModel">Model (optional)</label>
@@ -282,7 +274,7 @@ export function AutoScalerDetailView({
   // Edit form state — initialised from the auto-scaler
   const [editName, setEditName] = useState(autoScaler.name);
   const [editAgentName, setEditAgentName] = useState(autoScaler.agentName);
-  const [editTabIds, setEditTabIds] = useState<number[]>(autoScaler.tabIds);
+  const [editTabId, setEditTabId] = useState<number | null>(autoScaler.tabIds[0] ?? null);
   const [editModel, setEditModel] = useState(autoScaler.model ?? '');
   const [editMaxConcurrency, setEditMaxConcurrency] = useState(autoScaler.maxConcurrency);
   const [editIdleTimeoutSeconds, setEditIdleTimeoutSeconds] = useState(autoScaler.idleTimeoutSeconds);
@@ -300,26 +292,13 @@ export function AutoScalerDetailView({
   // values are primitive-equal. The overwrite only occurs when another actor (e.g. a second
   // admin) changes that specific field server-side and a WS event carries the new value through.
   // In that case, losing unsaved edits is the accepted tradeoff: WS updates keep the view
-  // consistent with the actual server state. The tabIds field below uses a stable string key
-  // to avoid spurious fires on reference-identity changes (arrays are never reference-equal
-  // after a state rebuild), but the overwrite behaviour on actual value changes is the same.
+  // consistent with the actual server state.
   useEffect(() => { setEditName(autoScaler.name); }, [autoScaler.name]);
   useEffect(() => { setEditAgentName(autoScaler.agentName); }, [autoScaler.agentName]);
-  // Use a stable string key for tabIds: arrays are never reference-equal after a state rebuild,
-  // so using [autoScaler.tabIds] directly would fire on every WS update and overwrite unsaved
-  // edits. Serialising to a sorted string means the effect only fires when values actually change.
-  const tabIdsKey = autoScaler.tabIds.slice().sort((a, b) => a - b).join(',');
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { setEditTabIds(autoScaler.tabIds); }, [tabIdsKey]);
+  useEffect(() => { setEditTabId(autoScaler.tabIds[0] ?? null); }, [autoScaler.tabIds[0]]);
   useEffect(() => { setEditModel(autoScaler.model ?? ''); }, [autoScaler.model]);
   useEffect(() => { setEditMaxConcurrency(autoScaler.maxConcurrency); }, [autoScaler.maxConcurrency]);
   useEffect(() => { setEditIdleTimeoutSeconds(autoScaler.idleTimeoutSeconds); }, [autoScaler.idleTimeoutSeconds]);
-
-  const handleTabToggle = (tabId: number) => {
-    setEditTabIds(prev =>
-      prev.includes(tabId) ? prev.filter(id => id !== tabId) : [...prev, tabId]
-    );
-  };
 
   const handleDetailStart = async () => {
     setStartStopError(null);
@@ -351,7 +330,7 @@ export function AutoScalerDetailView({
   const hasChanges =
     editName.trim() !== autoScaler.name ||
     editAgentName !== autoScaler.agentName ||
-    JSON.stringify([...editTabIds].sort((a, b) => a - b)) !== JSON.stringify([...autoScaler.tabIds].sort((a, b) => a - b)) ||
+    editTabId !== (autoScaler.tabIds[0] ?? null) ||
     normalizedEditModel !== (autoScaler.model ?? null) ||
     editMaxConcurrency !== autoScaler.maxConcurrency ||
     editIdleTimeoutSeconds !== autoScaler.idleTimeoutSeconds;
@@ -367,7 +346,7 @@ export function AutoScalerDetailView({
       setSaveError('Agent is required');
       return;
     }
-    if (editTabIds.length === 0) {
+    if (!editTabId) {
       setSaveError('At least one tab is required');
       return;
     }
@@ -377,10 +356,8 @@ export function AutoScalerDetailView({
     const patch: Record<string, unknown> = {};
     if (editName.trim() !== autoScaler.name) patch.name = editName.trim();
     if (editAgentName !== autoScaler.agentName) patch.agentName = editAgentName;
-    // Compare tabIds (order-insensitive)
-    const sortedEdit = [...editTabIds].sort((a, b) => a - b);
-    const sortedOrig = [...autoScaler.tabIds].sort((a, b) => a - b);
-    if (JSON.stringify(sortedEdit) !== JSON.stringify(sortedOrig)) patch.tabIds = editTabIds;
+    // Compare tabId (single selection)
+    if (editTabId !== (autoScaler.tabIds[0] ?? null)) patch.tabIds = [editTabId];
     if (normalizedEditModel !== (autoScaler.model ?? null)) patch.model = normalizedEditModel;
     if (editMaxConcurrency !== autoScaler.maxConcurrency) patch.maxConcurrency = editMaxConcurrency;
     if (editIdleTimeoutSeconds !== autoScaler.idleTimeoutSeconds) patch.idleTimeoutSeconds = editIdleTimeoutSeconds;
@@ -506,20 +483,18 @@ export function AutoScalerDetailView({
           </select>
         </div>
         <div className="form-group">
-          <label>Tabs</label>
-          <div className="autoscaler-tab-checkboxes">
+          <label htmlFor="editAutoScalerTab">Tabs</label>
+          <select
+            id="editAutoScalerTab"
+            value={editTabId ?? ''}
+            disabled={isRunning}
+            onChange={e => setEditTabId(e.target.value ? Number(e.target.value) : null)}
+          >
+            <option value="">Select tab...</option>
             {tabs.map(t => (
-              <label key={t.id} className="autoscaler-tab-checkbox">
-                <input
-                  type="checkbox"
-                  checked={editTabIds.includes(t.id)}
-                  disabled={isRunning}
-                  onChange={() => handleTabToggle(t.id)}
-                />
-                {t.name}
-              </label>
+              <option key={t.id} value={t.id}>{t.name}</option>
             ))}
-          </div>
+          </select>
         </div>
         <div className="form-group">
           <label htmlFor="editAutoScalerModel">Model</label>

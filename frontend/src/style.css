@@ -1542,6 +1542,11 @@ textarea:focus {
   overflow: hidden;
 }
 
+.session-item-actions {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
 .session-item-name {
   font-size: 0.85rem;
   font-weight: 500;
@@ -4872,6 +4877,19 @@ textarea:focus {
     height: 140px;
   }
 
+  .usage-chart-bars {
+    overflow-x: auto;
+  }
+
+  .usage-chart-bar-wrapper {
+    min-width: 10px;
+    flex: none;
+  }
+
+  .usage-chart-y-axis {
+    width: 36px;
+  }
+
   .usage-chart-label {
     display: none;
   }
@@ -5069,6 +5087,8 @@ textarea:focus {
 
   /* Main panel fills remaining height properly */
   section[role="tabpanel"] {
+    display: flex;
+    flex-direction: column;
     flex: 1;
     min-height: 0;
     overflow-y: auto;
@@ -5157,7 +5177,10 @@ textarea:focus {
   }
 
   .usage-chart-section {
-    overflow: hidden;
+    /* Must stay visible: overflow: hidden here would clip the horizontal
+       scroll added to .usage-chart-bars in the 768px block, breaking the
+       daily-bar swipe on phones (which hit both this and the 768px query). */
+    overflow: visible;
   }
 
   .usage-table-wrapper {
@@ -5212,7 +5235,7 @@ textarea:focus {
   flex-direction: column;
   flex: 1;
   min-height: 0;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .mobile-task-list-controls {
@@ -5221,6 +5244,7 @@ textarea:focus {
   gap: 0.5rem;
   padding: 0.5rem 0.75rem;
   border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
 }
 
 .mobile-filter-chips {
