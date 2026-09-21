@@ -2152,7 +2152,7 @@ describe('TaskPlannerModal - conversation-history selector', () => {
     expect(getByText('Great, how many per page?')).toBeTruthy();
   });
 
-  it('deleting a history entry (after confirmation) calls DELETE and refreshes the list', async () => {
+  it('deleting a history entry (after confirmation) calls DELETE and refreshes the list — WITHOUT resuming/tearing down the current session', async () => {
     let listCallCount = 0;
     apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
       if (url === '/api/task-planner/conversations' && (!opts || opts.method === undefined || opts.method === 'GET')) {
@@ -2176,20 +2176,26 @@ describe('TaskPlannerModal - conversation-history selector', () => {
     const { container } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
     await act(async () => { await new Promise(r => setTimeout(r, 10)); });
 
-    // Select conversation 20 so the delete control targets it.
-    const select = container.querySelector('.planner-history-select') as HTMLSelectElement;
-    await act(async () => {
-      fireEvent.change(select, { target: { value: '20' } });
-      await new Promise(r => setTimeout(r, 10));
-    });
+    // A per-entry delete control is rendered for conversation 20 WITHOUT having
+    // to select/resume it first — decoupled from the resume dropdown.
+    const deleteBtn = container.querySelector('[data-conversation-id="20"] .planner-history-delete') as HTMLButtonElement;
+    expect(deleteBtn).toBeTruthy();
+
+    // Baseline: only the initial-mount /start POST has fired so far.
+    const startsBefore = apiFetchMock.mock.calls.filter(
+      ([url, opts]) => url === '/api/task-planner/start' && opts?.method === 'POST'
+    ).length;
+    // ...and the transcript endpoint was never hit (no resume/replay triggered).
+    const transcriptCallsBefore = apiFetchMock.mock.calls.filter(
+      ([url]) => url === '/api/task-planner/conversations/20' && true
+    ).filter(([, opts]) => !opts || opts.method === undefined || opts.method === 'GET').length;
+    expect(transcriptCallsBefore).toBe(0);
 
     // Click the delete control — this asks for confirmation first (two-click).
-    const deleteBtn = container.querySelector('.planner-history-delete') as HTMLButtonElement;
-    expect(deleteBtn).toBeTruthy();
     await act(async () => { deleteBtn.click(); });
 
     // The button swaps to a confirm state; a second click confirms the delete.
-    const confirmBtn = container.querySelector('.planner-history-delete') as HTMLButtonElement;
+    const confirmBtn = container.querySelector('[data-conversation-id="20"] .planner-history-delete') as HTMLButtonElement;
     expect(confirmBtn.textContent).toContain('Confirm?');
     await act(async () => {
       confirmBtn.click();
@@ -2204,5 +2210,16 @@ describe('TaskPlannerModal - conversation-history selector', () => {
 
     // The list was refreshed (fetched again) after the delete.
     expect(listCallCount).toBeGreaterThanOrEqual(2);
+
+    // Crucially: deleting must NOT have resumed the conversation. No extra
+    // /start POST (beyond the initial mount) and no transcript GET happened.
+    const startsAfter = apiFetchMock.mock.calls.filter(
+      ([url, opts]) => url === '/api/task-planner/start' && opts?.method === 'POST'
+    ).length;
+    expect(startsAfter).toBe(startsBefore);
+    const transcriptGets = apiFetchMock.mock.calls.filter(
+      ([url, opts]) => url === '/api/task-planner/conversations/20' && (!opts || opts.method === undefined || opts.method === 'GET')
+    ).length;
+    expect(transcriptGets).toBe(0);
   });
 });

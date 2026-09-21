@@ -929,32 +929,48 @@ export function TaskPlannerModal({ onClose, onSwitchToManual, hidden = false, on
           </div>
         </div>
         <div className="task-planner-history">
-          <label className="planner-history-label" htmlFor="plannerHistorySelect">History</label>
-          <select
-            id="plannerHistorySelect"
-            className="planner-history-select"
-            aria-label="Resume a past conversation"
-            value={selectedConversationId ?? ''}
-            onChange={(e) => {
-              const val = e.target.value;
-              if (val === '') return;
-              void handleSelectConversation(Number(val));
-            }}
-          >
-            <option value="">
-              {conversations.length === 0 ? 'No past conversations' : 'Resume a past conversation…'}
-            </option>
-            {conversations.map((c) => (
-              <option key={c.id} value={c.id}>
-                {formatConversationDate(c.createdAt)} — {c.shortDescription}
+          <div className="task-planner-history-resume">
+            <label className="planner-history-label" htmlFor="plannerHistorySelect">History</label>
+            <select
+              id="plannerHistorySelect"
+              className="planner-history-select"
+              aria-label="Resume a past conversation"
+              value={selectedConversationId ?? ''}
+              onChange={(e) => {
+                const val = e.target.value;
+                if (val === '') return;
+                void handleSelectConversation(Number(val));
+              }}
+            >
+              <option value="">
+                {conversations.length === 0 ? 'No past conversations' : 'Resume a past conversation…'}
               </option>
-            ))}
-          </select>
-          {selectedConversationId !== null && (
-            <HistoryDeleteButton
-              conversationId={selectedConversationId}
-              onDelete={handleDeleteConversation}
-            />
+              {conversations.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {formatConversationDate(c.createdAt)} — {c.shortDescription}
+                </option>
+              ))}
+            </select>
+          </div>
+          {/* Per-entry delete list. Kept separate from the resume <select> above
+              because a native <option> can't hold a button — and, more
+              importantly, so deleting an entry never has to go through the
+              resume/teardown flow. Each row's delete targets exactly that
+              conversation id with no side effect on the live session. */}
+          {conversations.length > 0 && (
+            <ul className="planner-history-list" aria-label="Manage saved conversations">
+              {conversations.map((c) => (
+                <li key={c.id} className="planner-history-item" data-conversation-id={c.id}>
+                  <span className="planner-history-item-label" title={c.shortDescription}>
+                    {formatConversationDate(c.createdAt)} — {c.shortDescription}
+                  </span>
+                  <HistoryDeleteButton
+                    conversationId={c.id}
+                    onDelete={handleDeleteConversation}
+                  />
+                </li>
+              ))}
+            </ul>
           )}
         </div>
         {/* Wrapper spans ONLY the messages area (flex: 1). The read-only
