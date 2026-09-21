@@ -2484,6 +2484,40 @@ textarea:focus {
   min-width: 100px;
 }
 
+/* ===== Agent Import Modal ===== */
+.agent-import-drop-zone {
+  border: 2px dashed var(--border-color);
+  border-radius: var(--radius);
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  background: var(--bg-secondary);
+  transition: border-color 0.15s, background 0.15s;
+  cursor: default;
+}
+
+.agent-import-drop-zone.drag-over {
+  border-color: var(--ta-mango);
+  background: rgba(255, 135, 0, 0.06);
+}
+
+.agent-import-drop-label {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.agent-import-error {
+  color: var(--ta-rapid-red);
+  font-size: 0.82rem;
+  margin-bottom: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  background: rgba(210, 38, 48, 0.07);
+  border: 1px solid rgba(210, 38, 48, 0.2);
+  border-radius: var(--radius-sm);
+}
+
 /* ===== Agent Modal (wider) ===== */
 .modal-wide {
   width: min(92vw, 1000px);
