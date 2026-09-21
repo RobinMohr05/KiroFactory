@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
 import { apiFetch } from '../utils/api';
+import { useConfirmAction } from '../hooks/useConfirmAction';
 import { renderPlannerMarkdown } from '../utils/renderPlannerMarkdown';
 import { TaskCard } from './TaskCard';
 import { TaskPlannerPreviewDetail } from './TaskPlannerPreviewDetail';
@@ -27,6 +28,41 @@ interface TaskPlannerModalProps {
 interface PlannerMessage {
   role: 'user' | 'assistant' | 'system';
   text: string;
+}
+
+/** Summary of a persisted planner conversation (from GET /conversations). */
+interface PlannerConversationSummary {
+  id: number;
+  shortDescription: string;
+  createdAt: string;
+  lastMessageAt: string;
+}
+
+/** A single stored message in a persisted conversation transcript. */
+interface StoredPlannerMessage {
+  role: 'user' | 'assistant';
+  text: string;
+  position: number;
+  createdAt: string;
+}
+
+/** Full transcript of a persisted planner conversation (from GET /conversations/:id). */
+interface PlannerConversationRecord extends PlannerConversationSummary {
+  messages: StoredPlannerMessage[];
+}
+
+/**
+ * Format a conversation's ISO timestamp into a short "Sep 21, 15:34" label for
+ * the history selector. Falls back to the raw string if it can't be parsed.
+ */
+function formatConversationDate(iso: string): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  const month = d.toLocaleString('en-US', { month: 'short' });
+  const day = d.getDate();
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${month} ${day}, ${hh}:${mm}`;
 }
 
 export interface ParsedTask {
@@ -71,6 +107,32 @@ function isTouchDevice(): boolean {
   return typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0;
 }
 
+/**
+ * Delete control for a selected history entry. Uses the shared two-click
+ * confirm pattern (useConfirmAction): the first click swaps the label to
+ * "Confirm?"; a second click within the timeout runs the delete.
+ */
+function HistoryDeleteButton({
+  conversationId,
+  onDelete,
+}: {
+  conversationId: number;
+  onDelete: (id: number) => void | Promise<void>;
+}) {
+  const { isPending, handleClick } = useConfirmAction(() => { void onDelete(conversationId); });
+  return (
+    <button
+      type="button"
+      className={`btn btn-secondary btn-sm planner-history-delete${isPending ? ' btn-confirm-pending' : ''}`}
+      title={isPending ? 'Confirm delete?' : 'Delete this conversation'}
+      aria-label={isPending ? 'Confirm delete?' : 'Delete this conversation'}
+      onClick={handleClick}
+    >
+      {isPending ? 'Confirm?' : '🗑'}
+    </button>
+  );
+}
+
 export function TaskPlannerModal({ onClose, onSwitchToManual, hidden = false, onDismiss, onExpire }: TaskPlannerModalProps) {
   const { currentTabId, setTasks } = useApp();
   // Coarse-pointer/touch devices have no Shift+Enter, so Enter must insert a
@@ -88,6 +150,13 @@ export function TaskPlannerModal({ onClose, onSwitchToManual, hidden = false, on
   // Bumped by "Start Over" to re-run the session-start effect on the same
   // mounted instance (no unmount/remount, no flicker).
   const [restartNonce, setRestartNonce] = useState(0);
+  // Persisted conversation history for the resume selector.
+  const [conversations, setConversations] = useState<PlannerConversationSummary[]>([]);
+  const [selectedConversationId, setSelectedConversationId] = useState<number | null>(null);
+  // Carries the conversation id to resume into the NEXT session-start effect
+  // run (read once, then cleared). A ref rather than state so the async start
+  // effect reads the current value without needing it as a dependency.
+  const resumeConversationIdRef = useRef<number | null>(null);
   const attachmentsRef = useRef<Attachment[]>([]);
   const messagesRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -169,10 +238,20 @@ export function TaskPlannerModal({ onClose, onSwitchToManual, hidden = false, on
       startingMessageAdded = true;
       setMessages(prev => [...prev, startingMessageRef as PlannerMessage]);
       try {
+        const resumeConversationId = resumeConversationIdRef.current;
+        // Consume the resume id so a later Start Over / effect re-run doesn't
+        // accidentally resume the same conversation again.
+        resumeConversationIdRef.current = null;
+        const startBody: Record<string, unknown> = {
+          tabId: currentTabId ? Number(currentTabId) : undefined,
+        };
+        if (resumeConversationId !== null) {
+          startBody.resumeConversationId = resumeConversationId;
+        }
         const res = await apiFetch('/api/task-planner/start', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ tabId: currentTabId ? Number(currentTabId) : undefined }),
+          body: JSON.stringify(startBody),
         });
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
@@ -301,6 +380,98 @@ export function TaskPlannerModal({ onClose, onSwitchToManual, hidden = false, on
 
   const addMessage = (role: PlannerMessage['role'], text: string) => {
     setMessages(prev => [...prev, { role, text }]);
+  };
+
+  /**
+   * Fetch the current user's saved planner conversations for the history
+   * selector. Best-effort — a failure just surfaces a system message and
+   * leaves the list empty; it must never break the live planner.
+   */
+  const fetchConversations = useCallback(async () => {
+    try {
+      const res = await apiFetch('/api/task-planner/conversations');
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      setConversations(Array.isArray(data.conversations) ? data.conversations : []);
+    } catch (e: any) {
+      addMessage('system', 'Failed to load conversation history: ' + e.message);
+    }
+  }, []);
+
+  // Load the conversation history once on mount.
+  useEffect(() => {
+    void fetchConversations();
+  }, [fetchConversations]);
+
+  /**
+   * Resume a past conversation: fetch its full transcript, replay it read-only
+   * in the chat area so the user sees the prior history, then tear down the
+   * current session and start a fresh one seeded (server-side) with that
+   * conversation's context via resumeConversationId.
+   */
+  const handleSelectConversation = async (conversationId: number) => {
+    setSelectedConversationId(conversationId);
+
+    let transcript: PlannerConversationRecord | null = null;
+    try {
+      const res = await apiFetch(`/api/task-planner/conversations/${conversationId}`);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      transcript = data.conversation as PlannerConversationRecord;
+    } catch (e: any) {
+      addMessage('system', 'Failed to load conversation: ' + e.message);
+      return;
+    }
+
+    // Tear down the current live session before resuming into a new one.
+    const previousSessionId = sessionId;
+    if (previousSessionId && !cleanedUpSessionRef.current.has(previousSessionId)) {
+      cleanedUpSessionRef.current.add(previousSessionId);
+      try {
+        await apiFetch(`/api/task-planner/${previousSessionId}`, { method: 'DELETE' });
+      } catch { /* ignore cleanup errors */ }
+    }
+
+    // Replay the stored transcript read-only so the user sees prior history.
+    const replayed: PlannerMessage[] = (transcript?.messages ?? []).map(m => ({
+      role: m.role,
+      text: m.text,
+    }));
+    partialMessageRef.current = '';
+    setMessages(replayed);
+    setParsedTasks(null);
+    setPreviewDetailIndex(null);
+    setAttachments([]);
+    setInputText('');
+    setReady(false);
+    setStatus('connecting');
+    setSessionId(null);
+
+    // Signal the session-start effect to resume this conversation, then re-run it.
+    resumeConversationIdRef.current = conversationId;
+    setRestartNonce(n => n + 1);
+  };
+
+  /** Delete a saved conversation after inline confirmation, then refresh the list. */
+  const handleDeleteConversation = async (conversationId: number) => {
+    try {
+      const res = await apiFetch(`/api/task-planner/conversations/${conversationId}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${res.status}`);
+      }
+    } catch (e: any) {
+      addMessage('system', 'Failed to delete conversation: ' + e.message);
+      return;
+    }
+    if (selectedConversationId === conversationId) setSelectedConversationId(null);
+    await fetchConversations();
   };
 
   /**
@@ -756,6 +927,35 @@ export function TaskPlannerModal({ onClose, onSwitchToManual, hidden = false, on
               {status === 'connecting' ? 'Connecting...' : status === 'ready' ? 'Ready' : status === 'thinking' ? 'Thinking...' : 'Error'}
             </span>
           </div>
+        </div>
+        <div className="task-planner-history">
+          <label className="planner-history-label" htmlFor="plannerHistorySelect">History</label>
+          <select
+            id="plannerHistorySelect"
+            className="planner-history-select"
+            aria-label="Resume a past conversation"
+            value={selectedConversationId ?? ''}
+            onChange={(e) => {
+              const val = e.target.value;
+              if (val === '') return;
+              void handleSelectConversation(Number(val));
+            }}
+          >
+            <option value="">
+              {conversations.length === 0 ? 'No past conversations' : 'Resume a past conversation…'}
+            </option>
+            {conversations.map((c) => (
+              <option key={c.id} value={c.id}>
+                {formatConversationDate(c.createdAt)} — {c.shortDescription}
+              </option>
+            ))}
+          </select>
+          {selectedConversationId !== null && (
+            <HistoryDeleteButton
+              conversationId={selectedConversationId}
+              onDelete={handleDeleteConversation}
+            />
+          )}
         </div>
         {/* Wrapper spans ONLY the messages area (flex: 1). The read-only
             detail panel is absolutely positioned to fill this wrapper, so its

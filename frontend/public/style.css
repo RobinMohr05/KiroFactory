@@ -3625,6 +3625,44 @@ textarea:focus {
   outline-offset: 2px;
 }
 
+.task-planner-history {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1.5rem;
+  border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
+}
+
+.planner-history-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.planner-history-select {
+  flex: 1;
+  min-width: 0;
+  font-family: 'Barlow', sans-serif;
+  font-size: 0.85rem;
+  color: var(--text-primary);
+  background: var(--bg-input, transparent);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 0.25rem 0.4rem;
+  cursor: pointer;
+}
+
+.planner-history-select:focus-visible {
+  outline: 2px solid var(--accent-color, #6366f1);
+  outline-offset: 2px;
+}
+
+.planner-history-delete {
+  flex-shrink: 0;
+}
+
 .task-planner-status {
   font-size: 0.75rem;
   color: var(--text-muted);
