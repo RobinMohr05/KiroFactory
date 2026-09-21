@@ -314,6 +314,33 @@ export function unmarkSessionPooled(sessionId: number): void {
   pooledSessionIds.delete(sessionId);
 }
 
+/**
+ * Optional hook invoked when a session's prompt turn completes successfully,
+ * with the full assistant reply text accumulated during that turn. Used by the
+ * AI Task Planner (routes/task-planner.ts) to persist assistant messages into
+ * a PlannerConversation transcript, without coupling session-manager to the
+ * planner-persistence layer directly. A single hook is supported (the planner
+ * route registers it once at module load); the hook must never throw
+ * (invocation is wrapped in try/catch and fire-and-forget).
+ */
+type TurnCompletionHook = (session: Session, assistantText: string) => void;
+let turnCompletionHook: TurnCompletionHook | null = null;
+
+/** Register the turn-completion hook (see TurnCompletionHook). */
+export function registerTurnCompletionHook(hook: TurnCompletionHook): void {
+  turnCompletionHook = hook;
+}
+
+/** Invoke the registered turn-completion hook, swallowing any error. */
+function fireTurnCompletionHook(managed: ManagedSession, assistantText: string): void {
+  if (!turnCompletionHook) return;
+  try {
+    turnCompletionHook(managed.meta, assistantText);
+  } catch {
+    /* hook errors are non-fatal — never let persistence break a live turn */
+  }
+}
+
 export interface ManagedSession {
   meta: Session;
   runner: KiroRunner | null;
@@ -354,6 +381,12 @@ export interface ManagedSession {
   turnStartedAt: string | null;
   /** Tool call count in the current turn (for turn-end summary). */
   turnToolCallCount: number;
+  /**
+   * Accumulated assistant message text produced during the current turn.
+   * Reset at turn start, appended to on each agent_message_chunk, and read at
+   * turn end by the planner-persistence hook (see registerTurnCompletionHook).
+   */
+  turnAssistantText: string;
   /** Active tool calls with their start times, keyed by toolCallId. */
   turnActiveToolCalls: Map<string, number>;
   /**
@@ -491,6 +524,7 @@ export async function initSessions(): Promise<void> {
       turnCountThisRun: 0,
       turnStartedAt: null,
       turnToolCallCount: 0,
+      turnAssistantText: "",
       turnActiveToolCalls: new Map(),
       lastGeneratedToolCallId: null,
       oneShot: false,
@@ -920,6 +954,7 @@ export async function createSession(input: CreateSessionInput): Promise<Session>
     turnCountThisRun: 0,
     turnStartedAt: null,
     turnToolCallCount: 0,
+    turnAssistantText: "",
     turnActiveToolCalls: new Map(),
     lastGeneratedToolCallId: null,
     oneShot: false,
@@ -2373,6 +2408,7 @@ async function streamPrompt(managed: ManagedSession, text: string, images?: { da
   managed.turnCountThisRun++;
   managed.turnStartedAt = now();
   managed.turnToolCallCount = 0;
+  managed.turnAssistantText = "";
   managed.turnActiveToolCalls.clear();
   managed.turnVerdict = null;
   managed.verdictToolCallId = null;
@@ -2408,6 +2444,10 @@ async function streamPrompt(managed: ManagedSession, text: string, images?: { da
     }
     // Flush any remaining buffered agent message text
     flushMessageBuffer(managed);
+
+    // Notify any registered turn-completion hook (e.g. AI Task Planner
+    // transcript persistence) with the assistant reply for this turn.
+    fireTurnCompletionHook(managed, managed.turnAssistantText);
 
     // Capture credit usage from the completed turn
     const turnCredits = managed.runner.lastTurnCredits;
@@ -2639,6 +2679,7 @@ function processUpdate(managed: ManagedSession, update: SessionUpdateChunk): voi
     switch (update.sessionUpdate) {
       case "agent_message_chunk":
         if (update.content && typeof update.content.text === "string") {
+          managed.turnAssistantText += update.content.text;
           bufferAgentMessage(managed, update.content.text);
         }
         break;
@@ -3302,6 +3343,7 @@ async function streamPromptAca(managed: ManagedSession, text: string, taskMeta?:
   managed.turnCountThisRun++;
   managed.turnStartedAt = now();
   managed.turnToolCallCount = 0;
+  managed.turnAssistantText = "";
   managed.turnActiveToolCalls.clear();
 
   const turnNumber = managed.turnNumber;

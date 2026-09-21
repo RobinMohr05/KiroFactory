@@ -2017,3 +2017,209 @@ describe('TaskPlannerModal - Enter key behavior by pointer type', () => {
     expect(messagePostCount()).toBe(0);
   });
 });
+
+describe('TaskPlannerModal - conversation-history selector', () => {
+  let apiFetchMock: ReturnType<typeof vi.fn>;
+
+  const CONVERSATIONS = [
+    { id: 20, shortDescription: 'Add pagination to users API', createdAt: '2026-09-21T15:34:00.000Z', lastMessageAt: '2026-09-21T15:40:00.000Z' },
+    { id: 11, shortDescription: 'Fix login redirect bug', createdAt: '2026-09-20T09:00:00.000Z', lastMessageAt: '2026-09-20T09:05:00.000Z' },
+  ];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiFetchMock = vi.mocked(api.apiFetch);
+    apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (url === '/api/task-planner/conversations' && (!opts || opts.method === undefined || opts.method === 'GET')) {
+        return { ok: true, json: async () => ({ conversations: CONVERSATIONS }) };
+      }
+      if (url === '/api/task-planner/start' && opts?.method === 'POST') {
+        return { ok: true, json: async () => ({ sessionId: 900 }) };
+      }
+      if (opts?.method === 'DELETE') {
+        return { ok: true, status: 204, json: async () => ({}) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    mockUseApp({ currentTabId: 1 });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('fetches conversations on mount and renders one option per conversation (newest-first order preserved)', async () => {
+    const { container } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    // The list was fetched from the conversations endpoint.
+    const listCalls = apiFetchMock.mock.calls.filter(
+      ([url]) => url === '/api/task-planner/conversations'
+    );
+    expect(listCalls.length).toBeGreaterThanOrEqual(1);
+
+    // A dedicated history selector exists.
+    const select = container.querySelector('.planner-history-select') as HTMLSelectElement;
+    expect(select).toBeTruthy();
+
+    // Each conversation shows up as an option in the same (newest-first) order
+    // the endpoint returned, with the date + shortDescription in the label.
+    const optionLabels = Array.from(select.options).map(o => o.textContent || '');
+    const convLabels = optionLabels.filter(l => l.includes('Add pagination') || l.includes('Fix login'));
+    expect(convLabels.length).toBe(2);
+    expect(convLabels[0]).toContain('Add pagination to users API');
+    expect(convLabels[1]).toContain('Fix login redirect bug');
+    // Date is formatted into the label (month abbreviation present).
+    expect(convLabels[0]).toMatch(/Sep/);
+  });
+
+  it('shows an empty-state option when there are no past conversations', async () => {
+    apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (url === '/api/task-planner/conversations' && (!opts || opts.method === undefined || opts.method === 'GET')) {
+        return { ok: true, json: async () => ({ conversations: [] }) };
+      }
+      if (url === '/api/task-planner/start' && opts?.method === 'POST') {
+        return { ok: true, json: async () => ({ sessionId: 900 }) };
+      }
+      if (opts?.method === 'DELETE') {
+        return { ok: true, status: 204, json: async () => ({}) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+
+    const { container, getByText } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    const select = container.querySelector('.planner-history-select') as HTMLSelectElement;
+    expect(select).toBeTruthy();
+    expect(getByText('No past conversations')).toBeTruthy();
+  });
+
+  it('selecting a past conversation fetches its transcript, replays it read-only, and starts a fresh planner with resumeConversationId', async () => {
+    const TRANSCRIPT = {
+      id: 20,
+      shortDescription: 'Add pagination to users API',
+      createdAt: '2026-09-21T15:34:00.000Z',
+      lastMessageAt: '2026-09-21T15:40:00.000Z',
+      messages: [
+        { role: 'user', text: 'I want to add pagination', position: 0, createdAt: '2026-09-21T15:34:00.000Z' },
+        { role: 'assistant', text: 'Great, how many per page?', position: 1, createdAt: '2026-09-21T15:35:00.000Z' },
+      ],
+    };
+    apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (url === '/api/task-planner/conversations' && (!opts || opts.method === undefined || opts.method === 'GET')) {
+        return { ok: true, json: async () => ({ conversations: CONVERSATIONS }) };
+      }
+      if (url === '/api/task-planner/conversations/20' && (!opts || opts.method === undefined || opts.method === 'GET')) {
+        return { ok: true, json: async () => ({ conversation: TRANSCRIPT }) };
+      }
+      if (url === '/api/task-planner/start' && opts?.method === 'POST') {
+        return { ok: true, json: async () => ({ sessionId: 901 }) };
+      }
+      if (opts?.method === 'DELETE') {
+        return { ok: true, status: 204, json: async () => ({}) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+
+    const { container, getByText } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    const select = container.querySelector('.planner-history-select') as HTMLSelectElement;
+    await act(async () => {
+      fireEvent.change(select, { target: { value: '20' } });
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    // The transcript endpoint was called for the selected conversation.
+    const transcriptCalls = apiFetchMock.mock.calls.filter(
+      ([url]) => url === '/api/task-planner/conversations/20'
+    );
+    expect(transcriptCalls.length).toBe(1);
+
+    // A fresh /start POST was fired carrying resumeConversationId (and tabId).
+    const startCalls = apiFetchMock.mock.calls.filter(
+      ([url, opts]) => url === '/api/task-planner/start' && opts?.method === 'POST'
+    );
+    // First start is the initial mount; the last one must carry the resume id.
+    const resumeStart = startCalls[startCalls.length - 1];
+    const startBody = JSON.parse(resumeStart[1].body as string);
+    expect(startBody.resumeConversationId).toBe(20);
+    expect(startBody.tabId).toBe(1);
+
+    // The prior transcript is re-displayed read-only in the chat area.
+    expect(getByText('I want to add pagination')).toBeTruthy();
+    expect(getByText('Great, how many per page?')).toBeTruthy();
+  });
+
+  it('deleting a history entry (after confirmation) calls DELETE and refreshes the list — WITHOUT resuming/tearing down the current session', async () => {
+    let listCallCount = 0;
+    apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (url === '/api/task-planner/conversations' && (!opts || opts.method === undefined || opts.method === 'GET')) {
+        listCallCount++;
+        // After the delete, the list no longer contains conversation 20.
+        const list = listCallCount === 1 ? CONVERSATIONS : CONVERSATIONS.filter(c => c.id !== 20);
+        return { ok: true, json: async () => ({ conversations: list }) };
+      }
+      if (url === '/api/task-planner/conversations/20' && opts?.method === 'DELETE') {
+        return { ok: true, status: 204, json: async () => ({}) };
+      }
+      if (url === '/api/task-planner/start' && opts?.method === 'POST') {
+        return { ok: true, json: async () => ({ sessionId: 902 }) };
+      }
+      if (opts?.method === 'DELETE') {
+        return { ok: true, status: 204, json: async () => ({}) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+
+    const { container } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    // A per-entry delete control is rendered for conversation 20 WITHOUT having
+    // to select/resume it first — decoupled from the resume dropdown.
+    const deleteBtn = container.querySelector('[data-conversation-id="20"] .planner-history-delete') as HTMLButtonElement;
+    expect(deleteBtn).toBeTruthy();
+
+    // Baseline: only the initial-mount /start POST has fired so far.
+    const startsBefore = apiFetchMock.mock.calls.filter(
+      ([url, opts]) => url === '/api/task-planner/start' && opts?.method === 'POST'
+    ).length;
+    // ...and the transcript endpoint was never hit (no resume/replay triggered).
+    const transcriptCallsBefore = apiFetchMock.mock.calls.filter(
+      ([url]) => url === '/api/task-planner/conversations/20' && true
+    ).filter(([, opts]) => !opts || opts.method === undefined || opts.method === 'GET').length;
+    expect(transcriptCallsBefore).toBe(0);
+
+    // Click the delete control — this asks for confirmation first (two-click).
+    await act(async () => { deleteBtn.click(); });
+
+    // The button swaps to a confirm state; a second click confirms the delete.
+    const confirmBtn = container.querySelector('[data-conversation-id="20"] .planner-history-delete') as HTMLButtonElement;
+    expect(confirmBtn.textContent).toContain('Confirm?');
+    await act(async () => {
+      confirmBtn.click();
+      await new Promise(r => setTimeout(r, 10));
+    });
+
+    // DELETE was called for conversation 20.
+    const deleteCalls = apiFetchMock.mock.calls.filter(
+      ([url, opts]) => url === '/api/task-planner/conversations/20' && opts?.method === 'DELETE'
+    );
+    expect(deleteCalls.length).toBe(1);
+
+    // The list was refreshed (fetched again) after the delete.
+    expect(listCallCount).toBeGreaterThanOrEqual(2);
+
+    // Crucially: deleting must NOT have resumed the conversation. No extra
+    // /start POST (beyond the initial mount) and no transcript GET happened.
+    const startsAfter = apiFetchMock.mock.calls.filter(
+      ([url, opts]) => url === '/api/task-planner/start' && opts?.method === 'POST'
+    ).length;
+    expect(startsAfter).toBe(startsBefore);
+    const transcriptGets = apiFetchMock.mock.calls.filter(
+      ([url, opts]) => url === '/api/task-planner/conversations/20' && (!opts || opts.method === undefined || opts.method === 'GET')
+    ).length;
+    expect(transcriptGets).toBe(0);
+  });
+});

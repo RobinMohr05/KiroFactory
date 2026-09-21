@@ -39,6 +39,11 @@ const SCHEMA_STATEMENTS: string[] = [
   "CREATE CONSTRAINT autoscaler_id_key IF NOT EXISTS FOR (a:AutoScaler) REQUIRE a.id IS NODE KEY",
   "CREATE CONSTRAINT turn_id_key IF NOT EXISTS FOR (t:Turn) REQUIRE t.id IS NODE KEY",
 
+  // ── AI Task Planner conversation persistence ──
+  // Node key constraint ensures no duplicate PlannerConversation nodes for the
+  // same id (allocated by the PlannerConversation counter in id-counter.ts).
+  "CREATE CONSTRAINT planner_conversation_id_key IF NOT EXISTS FOR (c:PlannerConversation) REQUIRE c.id IS NODE KEY",
+
   // ── Infrastructure node keys (Counter, Settings — not domain entities) ──
   "CREATE CONSTRAINT counter_name_key IF NOT EXISTS FOR (c:Counter) REQUIRE c.name IS NODE KEY",
   "CREATE CONSTRAINT settings_key_key IF NOT EXISTS FOR (s:Settings) REQUIRE s.key IS NODE KEY",
