@@ -2161,6 +2161,25 @@ function logSessionUpdate(update) {
       // capture above, including the ACP items-envelope unwrapping.
       const isTaskCreatedUpdate =
         update.status === "completed" && outputText && outputText.includes('"taskCreated"');
+      // Diagnostic: also detect create_task calls by title/kind alone (same
+      // substring-match pattern used for report_verdict above), independent
+      // of whether the "taskCreated" shape was found in outputText. If a
+      // create_task call completes but this diagnostic fires while
+      // isTaskCreatedUpdate does NOT, that pins the failure to output-shape
+      // parsing rather than the tool never being called/registered at all —
+      // added after a run silently produced zero DB writes with no trace of
+      // why (2026-09-22).
+      const looksLikeCreateTaskCall =
+        (typeof update.title === "string" && update.title.includes("create_task")) ||
+        (typeof update.kind === "string" && update.kind.includes("create_task"));
+      if (looksLikeCreateTaskCall && update.status === "completed" && !isTaskCreatedUpdate) {
+        logInfo("task-create-detection-miss", {
+          toolCallId: update.toolCallId ?? null,
+          title: update.title ?? null,
+          kind: update.kind ?? null,
+          outputTextPreview: typeof outputText === "string" ? truncate(outputText) : outputText,
+        });
+      }
       if (isTaskCreatedUpdate && outputText) {
         function tryParseTaskCreated(str) {
           if (!str || typeof str !== "string") return null;

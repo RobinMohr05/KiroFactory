@@ -749,7 +749,20 @@ export async function handleWorkerTaskCreate(
   spec: { title: string; description: string; type: "improvement" | "bug" | "feature"; priority: 1 | 2 | 3 | 4; files: string[] }
 ): Promise<void> {
   const session = sessions.get(sessionId);
-  if (!session) return;
+  if (!session) {
+    // Diagnostic: a create_task report arrived for a session the orchestrator
+    // no longer has in its in-memory map (already deleted/stopped, or a
+    // sessionId mismatch). Previously a silent no-op — added after a run
+    // reported success in its own log with zero corresponding DB writes and
+    // no trace of why (2026-09-22).
+    log.warn("task-create-report-unknown-session", {
+      component: "session-manager",
+      sessionId,
+      taskTitle: spec.title,
+      msg: `Received create_task report for session ${sessionId}, but it is not in the active sessions map — task NOT created`,
+    });
+    return;
+  }
 
   try {
     const task = await createTask({
