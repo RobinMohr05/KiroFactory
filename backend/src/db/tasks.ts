@@ -316,6 +316,22 @@ export async function getTaskById(id: number): Promise<Task | null> {
 }
 
 export async function createTask(input: CreateTaskInput): Promise<Task> {
+  // Guard against orphaned tasks: createTask's Cypher UNWINDs $tabIds to
+  // create the task's IN_TAB edge(s). An empty/missing tabIds means the
+  // UNWIND runs zero times — the Task node is still created, but with no
+  // IN_TAB edge, making it invisible on every board/tab view (ownership is
+  // derived entirely from the tab's OWNS relationship, never a task
+  // property — see .kiro/steering/task-origin-convention.md). This has
+  // silently produced orphaned Task nodes before (confirmed via a Neo4j
+  // query — 7 pre-existing orphans found 2026-09-22), so fail loudly here
+  // instead of creating another one.
+  if (!input.tabIds || input.tabIds.length === 0) {
+    throw new Error(
+      `createTask: tabIds must be a non-empty array (got ${JSON.stringify(input.tabIds)}) — ` +
+        `a task with no tab would be created with no IN_TAB edge and be invisible on every board view.`
+    );
+  }
+
   const id = await getNextId("Task");
   const origin = input.origin ?? "user";
   const originRank = computeOriginRank(origin);

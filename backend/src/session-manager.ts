@@ -778,6 +778,23 @@ export async function handleWorkerTaskCreate(
       stream: "stderr",
       text: `Warning: Failed to create task from agent report: ${msg}`,
     });
+    // Also surface to the Errors panel — a task creation failure here means
+    // the agent believed a task was created (its create_task tool call
+    // "succeeded" from its own perspective) while nothing actually landed on
+    // the board. Session output alone is easy to miss in a long log stream;
+    // this is exactly the kind of silent failure the Errors tab exists to
+    // catch. Mirrors handleWorkerAgentError's recordSessionError call.
+    recordSessionError({
+      sessionId: session.meta.id,
+      sessionName: session.meta.name,
+      agent: session.meta.agent,
+      message: msg,
+      context: `Failed to create task "${spec.title}" reported by create_task tool`,
+      userId: session.meta.userId,
+      source: "automatic",
+      err,
+      managed: session,
+    });
   }
 }
 
