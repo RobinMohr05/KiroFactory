@@ -175,7 +175,7 @@ export function TaskModal({ task, onClose }: TaskModalProps) {
         }
         const created = await res.json();
         pendingOps.current.add(`task-created-${created.id}`);
-        setTasks(prev => [...prev, created]);
+        setTasks(prev => prev.find(t => t.id === created.id) ? prev : [...prev, created]);
       }
       onClose();
     } catch (err: any) {

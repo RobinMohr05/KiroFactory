@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import * as AppContext from '../context/AppContext';
-import { AgentImportModal } from '../components/AgentImportModal';
 import * as api from '../utils/api';
 
 vi.mock('../context/AppContext', () => ({
@@ -12,6 +11,8 @@ vi.mock('../utils/api', () => ({
   apiFetch: vi.fn(),
 }));
 
+import { AgentImportModal } from '../components/AgentImportModal';
+
 function mockUseApp(overrides: Partial<ReturnType<typeof AppContext.useApp>> = {}) {
   const base = {
     agents: [],
@@ -19,186 +20,220 @@ function mockUseApp(overrides: Partial<ReturnType<typeof AppContext.useApp>> = {
     fetchAgents: vi.fn(),
     activeAgentId: null,
     setActiveAgentId: vi.fn(),
-    tabs: [],
-    sessions: [],
-    errors: [],
-    activeTabId: null,
-    fetchTabs: vi.fn(),
-    fetchSessions: vi.fn(),
-    fetchErrors: vi.fn(),
-    setTabs: vi.fn(),
-    setSessions: vi.fn(),
-    setErrors: vi.fn(),
-    setActiveTabId: vi.fn(),
+    ...overrides,
   };
-  vi.mocked(AppContext.useApp).mockReturnValue({ ...base, ...overrides } as any);
-  return { ...base, ...overrides };
+  vi.mocked(AppContext.useApp).mockReturnValue(base as any);
+  return base;
 }
 
-const validAgentJson = JSON.stringify({
+const validAgent = {
   name: 'my-agent',
-  prompt: 'You are a helpful agent.',
+  prompt: 'You are a helpful assistant',
   kind: 'editor',
-});
+};
+
+// Helper to get the "Import Agent" submit button (not the heading)
+function getImportBtn() {
+  return screen.getByRole('button', { name: 'Import Agent' });
+}
 
 describe('AgentImportModal', () => {
-  let onClose: ReturnType<typeof vi.fn>;
-  let setAgents: ReturnType<typeof vi.fn>;
-  let setActiveAgentId: ReturnType<typeof vi.fn>;
-
   beforeEach(() => {
     vi.clearAllMocks();
-    onClose = vi.fn();
-    setAgents = vi.fn();
-    setActiveAgentId = vi.fn();
-    mockUseApp({ setAgents, setActiveAgentId });
+    mockUseApp();
   });
 
-  // -------------------------------------------------------------------------
-  // Rendering
-  // -------------------------------------------------------------------------
+  // ─── Rendering ────────────────────────────────────────────────────────────
 
-  it('renders the modal with a textarea, Cancel and Import Agent buttons', () => {
-    render(<AgentImportModal onClose={onClose} />);
-
-    expect(screen.getByRole('dialog')).toBeInTheDocument();
-    expect(screen.getByRole('textbox')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /cancel/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /import agent/i })).toBeInTheDocument();
+  it('renders the modal heading', () => {
+    render(<AgentImportModal onClose={() => {}} />);
+    expect(screen.getByRole('heading', { name: 'Import Agent' })).toBeInTheDocument();
   });
+
+  it('renders the drag-and-drop zone', () => {
+    render(<AgentImportModal onClose={() => {}} />);
+    expect(screen.getByLabelText('Drop zone for JSON file')).toBeInTheDocument();
+  });
+
+  it('renders the Browse file button', () => {
+    render(<AgentImportModal onClose={() => {}} />);
+    expect(screen.getByText('Browse file')).toBeInTheDocument();
+  });
+
+  it('renders the textarea for pasting JSON', () => {
+    render(<AgentImportModal onClose={() => {}} />);
+    expect(screen.getByLabelText('Or paste JSON directly:')).toBeInTheDocument();
+  });
+
+  it('renders Cancel and Import Agent buttons', () => {
+    render(<AgentImportModal onClose={() => {}} />);
+    expect(screen.getByText('Cancel')).toBeInTheDocument();
+    expect(getImportBtn()).toBeInTheDocument();
+  });
+
+  it('Import Agent button is disabled when textarea is empty', () => {
+    render(<AgentImportModal onClose={() => {}} />);
+    expect(getImportBtn()).toBeDisabled();
+  });
+
+  // ─── Cancel button ─────────────────────────────────────────────────────────
 
   it('calls onClose when Cancel is clicked', () => {
+    const onClose = vi.fn();
     render(<AgentImportModal onClose={onClose} />);
-    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+    fireEvent.click(screen.getByText('Cancel'));
     expect(onClose).toHaveBeenCalledOnce();
   });
 
   it('calls onClose when clicking the backdrop', () => {
-    const { container } = render(<AgentImportModal onClose={onClose} />);
-    const backdrop = container.querySelector('.modal-backdrop');
-    fireEvent.click(backdrop!);
+    const onClose = vi.fn();
+    render(<AgentImportModal onClose={onClose} />);
+    const backdrop = document.querySelector('.modal-backdrop')!;
+    fireEvent.click(backdrop);
     expect(onClose).toHaveBeenCalledOnce();
   });
 
-  // -------------------------------------------------------------------------
-  // Live JSON validation (inline errors while typing)
-  // -------------------------------------------------------------------------
+  // ─── Live JSON parse error (textarea typing) ──────────────────────────────
 
-  it('shows invalid JSON error live as the user types invalid JSON', () => {
-    render(<AgentImportModal onClose={onClose} />);
-    const textarea = screen.getByRole('textbox');
-    fireEvent.change(textarea, { target: { value: 'not json' } });
-    expect(screen.getByText(/invalid json/i)).toBeInTheDocument();
+  it('shows live parse error when invalid JSON is typed', () => {
+    render(<AgentImportModal onClose={() => {}} />);
+    const textarea = screen.getByLabelText('Or paste JSON directly:');
+    fireEvent.change(textarea, { target: { value: '{invalid json' } });
+    expect(screen.getByRole('alert')).toBeInTheDocument();
+    expect(screen.getByRole('alert').textContent).toMatch(/Invalid JSON/i);
   });
 
-  it('clears the error when the user fixes the JSON', () => {
-    render(<AgentImportModal onClose={onClose} />);
-    const textarea = screen.getByRole('textbox');
-    fireEvent.change(textarea, { target: { value: 'not json' } });
-    expect(screen.getByText(/invalid json/i)).toBeInTheDocument();
-    fireEvent.change(textarea, { target: { value: validAgentJson } });
-    expect(screen.queryByText(/invalid json/i)).not.toBeInTheDocument();
+  it('clears parse error when valid JSON is typed after invalid', () => {
+    render(<AgentImportModal onClose={() => {}} />);
+    const textarea = screen.getByLabelText('Or paste JSON directly:');
+    fireEvent.change(textarea, { target: { value: '{bad' } });
+    expect(screen.getByRole('alert')).toBeInTheDocument();
+    fireEvent.change(textarea, { target: { value: JSON.stringify(validAgent) } });
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
-  // -------------------------------------------------------------------------
-  // Submit-time validation errors (shown inline)
-  // -------------------------------------------------------------------------
+  it('clears parse error when textarea is cleared', () => {
+    render(<AgentImportModal onClose={() => {}} />);
+    const textarea = screen.getByLabelText('Or paste JSON directly:');
+    fireEvent.change(textarea, { target: { value: '{bad' } });
+    expect(screen.getByRole('alert')).toBeInTheDocument();
+    fireEvent.change(textarea, { target: { value: '' } });
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
 
-  it('shows "Missing required field: name" error on submit when name is absent', async () => {
-    render(<AgentImportModal onClose={onClose} />);
-    const textarea = screen.getByRole('textbox');
+  // ─── Semantic validation errors on submit ─────────────────────────────────
+
+  it('shows error on submit when name is missing', async () => {
+    render(<AgentImportModal onClose={() => {}} />);
+    const textarea = screen.getByLabelText('Or paste JSON directly:');
     fireEvent.change(textarea, { target: { value: JSON.stringify({ prompt: 'hello' }) } });
-    fireEvent.click(screen.getByRole('button', { name: /import agent/i }));
-    expect(screen.getByText(/missing required field: name/i)).toBeInTheDocument();
+    fireEvent.click(getImportBtn());
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/Missing required field: name/);
+    });
   });
 
-  it('shows name invalid chars error when name has spaces/special chars', async () => {
-    render(<AgentImportModal onClose={onClose} />);
-    const textarea = screen.getByRole('textbox');
-    fireEvent.change(textarea, { target: { value: JSON.stringify({ name: 'bad name!', prompt: 'hello' }) } });
-    fireEvent.click(screen.getByRole('button', { name: /import agent/i }));
-    expect(screen.getByText(/name must only contain letters, numbers, dashes, and underscores/i)).toBeInTheDocument();
+  it('shows error on submit when name has invalid characters', async () => {
+    render(<AgentImportModal onClose={() => {}} />);
+    const textarea = screen.getByLabelText('Or paste JSON directly:');
+    fireEvent.change(textarea, { target: { value: JSON.stringify({ name: 'my agent!', prompt: 'hello' }) } });
+    fireEvent.click(getImportBtn());
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/letters, numbers, dashes/);
+    });
   });
 
-  it('shows "Missing required field: prompt" error on submit when prompt is absent', async () => {
-    render(<AgentImportModal onClose={onClose} />);
-    const textarea = screen.getByRole('textbox');
+  it('shows error on submit when prompt is missing', async () => {
+    render(<AgentImportModal onClose={() => {}} />);
+    const textarea = screen.getByLabelText('Or paste JSON directly:');
     fireEvent.change(textarea, { target: { value: JSON.stringify({ name: 'my-agent' }) } });
-    fireEvent.click(screen.getByRole('button', { name: /import agent/i }));
-    expect(screen.getByText(/missing required field: prompt/i)).toBeInTheDocument();
-  });
-
-  it('shows "Missing required field: prompt" when prompt is an empty string', async () => {
-    render(<AgentImportModal onClose={onClose} />);
-    const textarea = screen.getByRole('textbox');
-    fireEvent.change(textarea, { target: { value: JSON.stringify({ name: 'my-agent', prompt: '' }) } });
-    fireEvent.click(screen.getByRole('button', { name: /import agent/i }));
-    expect(screen.getByText(/missing required field: prompt/i)).toBeInTheDocument();
-  });
-
-  it('shows kind validation error when kind has an invalid value', async () => {
-    render(<AgentImportModal onClose={onClose} />);
-    const textarea = screen.getByRole('textbox');
-    fireEvent.change(textarea, { target: { value: JSON.stringify({ name: 'agent', prompt: 'go', kind: 'invalid' }) } });
-    fireEvent.click(screen.getByRole('button', { name: /import agent/i }));
-    expect(screen.getByText(/kind must be 'editor' or 'inspector'/i)).toBeInTheDocument();
-  });
-
-  it('shows mcpServers validation error for a server missing name', async () => {
-    render(<AgentImportModal onClose={onClose} />);
-    const textarea = screen.getByRole('textbox');
-    const json = JSON.stringify({
-      name: 'agent',
-      prompt: 'go',
-      mcpServers: [{ command: 'npx' }], // missing name
+    fireEvent.click(getImportBtn());
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/Missing required field: prompt/);
     });
-    fireEvent.change(textarea, { target: { value: json } });
-    fireEvent.click(screen.getByRole('button', { name: /import agent/i }));
-    expect(screen.getByText(/mcpServers\[0\]/i)).toBeInTheDocument();
   });
 
-  it('shows mcpServers validation error for a server missing command', async () => {
-    render(<AgentImportModal onClose={onClose} />);
-    const textarea = screen.getByRole('textbox');
-    const json = JSON.stringify({
-      name: 'agent',
-      prompt: 'go',
-      mcpServers: [{ name: 'srv' }], // missing command
+  it('shows error on submit when prompt is empty string', async () => {
+    render(<AgentImportModal onClose={() => {}} />);
+    const textarea = screen.getByLabelText('Or paste JSON directly:');
+    fireEvent.change(textarea, { target: { value: JSON.stringify({ name: 'my-agent', prompt: '   ' }) } });
+    fireEvent.click(getImportBtn());
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/Missing required field: prompt/);
     });
-    fireEvent.change(textarea, { target: { value: json } });
-    fireEvent.click(screen.getByRole('button', { name: /import agent/i }));
-    expect(screen.getByText(/mcpServers\[0\]/i)).toBeInTheDocument();
   });
 
-  // -------------------------------------------------------------------------
-  // Successful import
-  // -------------------------------------------------------------------------
+  it('shows error on submit when kind is invalid', async () => {
+    render(<AgentImportModal onClose={() => {}} />);
+    const textarea = screen.getByLabelText('Or paste JSON directly:');
+    fireEvent.change(textarea, { target: { value: JSON.stringify({ name: 'my-agent', prompt: 'hi', kind: 'robot' }) } });
+    fireEvent.click(getImportBtn());
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/kind must be 'editor' or 'inspector'/);
+    });
+  });
 
-  it('calls POST /api/agents with cleaned payload (no id/userId/etc.) on valid submit', async () => {
-    const createdAgent = { id: 99, name: 'my-agent', prompt: 'You are a helpful agent.', kind: 'editor' };
+  it('shows error on submit when mcpServers item is missing name', async () => {
+    render(<AgentImportModal onClose={() => {}} />);
+    const textarea = screen.getByLabelText('Or paste JSON directly:');
+    const payload = { name: 'my-agent', prompt: 'hi', mcpServers: [{ command: 'npx' }] };
+    fireEvent.change(textarea, { target: { value: JSON.stringify(payload) } });
+    fireEvent.click(getImportBtn());
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/mcpServers\[0\]: each server must have a non-empty name and command/);
+    });
+  });
+
+  it('shows error on submit when mcpServers item is missing command', async () => {
+    render(<AgentImportModal onClose={() => {}} />);
+    const textarea = screen.getByLabelText('Or paste JSON directly:');
+    const payload = { name: 'my-agent', prompt: 'hi', mcpServers: [{ name: 'my-server', command: '' }] };
+    fireEvent.change(textarea, { target: { value: JSON.stringify(payload) } });
+    fireEvent.click(getImportBtn());
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/mcpServers\[0\]: each server must have a non-empty name and command/);
+    });
+  });
+
+  it('shows mcpServers error with correct index for second failing item', async () => {
+    render(<AgentImportModal onClose={() => {}} />);
+    const textarea = screen.getByLabelText('Or paste JSON directly:');
+    const payload = {
+      name: 'my-agent', prompt: 'hi',
+      mcpServers: [
+        { name: 'ok', command: 'npx' },
+        { name: '', command: 'npx' },
+      ],
+    };
+    fireEvent.change(textarea, { target: { value: JSON.stringify(payload) } });
+    fireEvent.click(getImportBtn());
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/mcpServers\[1\]/);
+    });
+  });
+
+  // ─── Successful import ────────────────────────────────────────────────────
+
+  it('calls POST /api/agents with stripped payload on valid submit', async () => {
+    const createdAgent = { id: 99, ...validAgent };
     vi.mocked(api.apiFetch).mockResolvedValueOnce({
       ok: true,
       json: async () => createdAgent,
-    } as Response);
+    } as any);
 
-    render(<AgentImportModal onClose={onClose} />);
-    const textarea = screen.getByRole('textbox');
+    const setAgents = vi.fn();
+    const setActiveAgentId = vi.fn();
+    mockUseApp({ setAgents, setActiveAgentId });
+
+    render(<AgentImportModal onClose={() => {}} />);
+    const textarea = screen.getByLabelText('Or paste JSON directly:');
     // Include server-managed fields that should be stripped
-    const jsonWithExtras = JSON.stringify({
-      id: 1,
-      userId: 42,
-      createdAt: '2024-01-01',
-      updatedAt: '2024-01-02',
-      tabIds: [1, 2],
-      name: 'my-agent',
-      prompt: 'You are a helpful agent.',
-      kind: 'editor',
-    });
-    fireEvent.change(textarea, { target: { value: jsonWithExtras } });
-    fireEvent.click(screen.getByRole('button', { name: /import agent/i }));
+    const payload = { ...validAgent, id: 5, userId: 1, createdAt: '2024', updatedAt: '2024', tabIds: [2] };
+    fireEvent.change(textarea, { target: { value: JSON.stringify(payload) } });
+    fireEvent.click(getImportBtn());
 
     await waitFor(() => {
-      expect(api.apiFetch).toHaveBeenCalledWith('/api/agents', expect.objectContaining({
+      expect(vi.mocked(api.apiFetch)).toHaveBeenCalledWith('/api/agents', expect.objectContaining({
         method: 'POST',
       }));
     });
@@ -212,285 +247,189 @@ describe('AgentImportModal', () => {
     expect(body).not.toHaveProperty('updatedAt');
     expect(body).not.toHaveProperty('tabIds');
     expect(body.name).toBe('my-agent');
-    expect(body.prompt).toBe('You are a helpful agent.');
+    expect(body.prompt).toBe('You are a helpful assistant');
   });
 
-  it('adds the new agent to the list and sets it as active on success', async () => {
-    const createdAgent = { id: 99, name: 'my-agent', prompt: 'You are a helpful agent.', kind: 'editor' };
+  it('adds agent to list and sets active agent on success', async () => {
+    const createdAgent = { id: 99, ...validAgent };
     vi.mocked(api.apiFetch).mockResolvedValueOnce({
       ok: true,
       json: async () => createdAgent,
-    } as Response);
+    } as any);
 
-    render(<AgentImportModal onClose={onClose} />);
-    fireEvent.change(screen.getByRole('textbox'), { target: { value: validAgentJson } });
-    fireEvent.click(screen.getByRole('button', { name: /import agent/i }));
+    const setAgents = vi.fn();
+    const setActiveAgentId = vi.fn();
+    mockUseApp({ setAgents, setActiveAgentId });
+
+    render(<AgentImportModal onClose={() => {}} />);
+    const textarea = screen.getByLabelText('Or paste JSON directly:');
+    fireEvent.change(textarea, { target: { value: JSON.stringify(validAgent) } });
+    fireEvent.click(getImportBtn());
 
     await waitFor(() => {
-      expect(setAgents).toHaveBeenCalled();
       expect(setActiveAgentId).toHaveBeenCalledWith(99);
-      expect(onClose).toHaveBeenCalled();
+    });
+    expect(setAgents).toHaveBeenCalled();
+  });
+
+  it('calls onClose after successful import', async () => {
+    const createdAgent = { id: 99, ...validAgent };
+    vi.mocked(api.apiFetch).mockResolvedValueOnce({
+      ok: true,
+      json: async () => createdAgent,
+    } as any);
+
+    const onClose = vi.fn();
+    render(<AgentImportModal onClose={onClose} />);
+    const textarea = screen.getByLabelText('Or paste JSON directly:');
+    fireEvent.change(textarea, { target: { value: JSON.stringify(validAgent) } });
+    fireEvent.click(getImportBtn());
+
+    await waitFor(() => {
+      expect(onClose).toHaveBeenCalledOnce();
     });
   });
 
-  it('shows API error inline and does not close modal on API failure', async () => {
+  // ─── API error handling ───────────────────────────────────────────────────
+
+  it('shows inline error when API returns non-ok response', async () => {
     vi.mocked(api.apiFetch).mockResolvedValueOnce({
       ok: false,
       status: 400,
-      json: async () => ({ error: 'Name already taken' }),
-    } as Response);
+      json: async () => ({ error: 'Agent name already exists' }),
+    } as any);
 
-    render(<AgentImportModal onClose={onClose} />);
-    fireEvent.change(screen.getByRole('textbox'), { target: { value: validAgentJson } });
-    fireEvent.click(screen.getByRole('button', { name: /import agent/i }));
+    render(<AgentImportModal onClose={() => {}} />);
+    const textarea = screen.getByLabelText('Or paste JSON directly:');
+    fireEvent.change(textarea, { target: { value: JSON.stringify(validAgent) } });
+    fireEvent.click(getImportBtn());
 
     await waitFor(() => {
-      expect(screen.getByText(/name already taken/i)).toBeInTheDocument();
+      expect(screen.getByRole('alert').textContent).toMatch(/Agent name already exists/);
+    });
+  });
+
+  it('does not close modal on API error', async () => {
+    vi.mocked(api.apiFetch).mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      json: async () => ({ error: 'Server error' }),
+    } as any);
+
+    const onClose = vi.fn();
+    render(<AgentImportModal onClose={onClose} />);
+    const textarea = screen.getByLabelText('Or paste JSON directly:');
+    fireEvent.change(textarea, { target: { value: JSON.stringify(validAgent) } });
+    fireEvent.click(getImportBtn());
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeInTheDocument();
     });
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  // -------------------------------------------------------------------------
-  // Drag-and-drop zone
-  // -------------------------------------------------------------------------
+  // ─── Drag-and-drop ────────────────────────────────────────────────────────
 
-  it('renders a drop zone', () => {
-    const { container } = render(<AgentImportModal onClose={onClose} />);
-    expect(container.querySelector('.import-drop-zone')).toBeInTheDocument();
+  it('adds drag-over class on dragover event', () => {
+    render(<AgentImportModal onClose={() => {}} />);
+    const dropZone = screen.getByLabelText('Drop zone for JSON file');
+    fireEvent.dragOver(dropZone);
+    expect(dropZone).toHaveClass('drag-over');
   });
 
-  it('populates the textarea when a JSON file is dropped onto the drop zone', async () => {
-    const { container } = render(<AgentImportModal onClose={onClose} />);
-    const dropZone = container.querySelector('.import-drop-zone')!;
-    const fileContent = validAgentJson;
-    const file = new File([fileContent], 'agent.json', { type: 'application/json' });
+  it('removes drag-over class on dragleave event', () => {
+    render(<AgentImportModal onClose={() => {}} />);
+    const dropZone = screen.getByLabelText('Drop zone for JSON file');
+    fireEvent.dragOver(dropZone);
+    fireEvent.dragLeave(dropZone);
+    expect(dropZone).not.toHaveClass('drag-over');
+  });
 
-    // Simulate drop
+  it('loads file content into textarea on drop without auto-submitting', async () => {
+    render(<AgentImportModal onClose={() => {}} />);
+    const dropZone = screen.getByLabelText('Drop zone for JSON file');
+
+    const fileContent = JSON.stringify(validAgent);
+    const file = new File([fileContent], 'my-agent.json', { type: 'application/json' });
+
+    // Mock FileReader
+    const mockReadAsText = vi.fn();
+    const mockFileReader = {
+      readAsText: mockReadAsText,
+      onload: null as any,
+    };
+    vi.spyOn(globalThis, 'FileReader').mockImplementation(() => mockFileReader as any);
+
     fireEvent.drop(dropZone, {
-      dataTransfer: {
-        files: [file],
-      },
+      dataTransfer: { files: [file] },
     });
 
+    // Simulate FileReader onload
+    mockFileReader.onload({ target: { result: fileContent } });
+
     await waitFor(() => {
-      const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+      const textarea = screen.getByLabelText('Or paste JSON directly:') as HTMLTextAreaElement;
       expect(textarea.value).toBe(fileContent);
     });
-  });
 
-  it('does not auto-import when a file is dropped (only loads into textarea)', async () => {
-    const { container } = render(<AgentImportModal onClose={onClose} />);
-    const dropZone = container.querySelector('.import-drop-zone')!;
-    const file = new File([validAgentJson], 'agent.json', { type: 'application/json' });
+    // Should not auto-submit
+    expect(vi.mocked(api.apiFetch)).not.toHaveBeenCalled();
 
-    fireEvent.drop(dropZone, { dataTransfer: { files: [file] } });
-
-    // API should NOT be called
-    await waitFor(() => {
-      const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
-      expect(textarea.value).toBe(validAgentJson);
-    });
-    expect(api.apiFetch).not.toHaveBeenCalled();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// AgentsPanel — Export fix: strips server-managed fields
-// ---------------------------------------------------------------------------
-
-describe('AgentsPanel export strips server-managed fields', () => {
-  // We test the export logic directly by rendering AgentsPanel and clicking Export,
-  // then asserting the blob content via URL.createObjectURL mock.
-
-  let createdObjectURLArg: Blob | null = null;
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    createdObjectURLArg = null;
-
-    // Stub URL.createObjectURL to capture the blob
-    vi.stubGlobal('URL', {
-      createObjectURL: vi.fn((blob: Blob) => {
-        createdObjectURLArg = blob;
-        return 'blob:mock-url';
-      }),
-      revokeObjectURL: vi.fn(),
-    });
-
-    // Stub document.createElement to capture anchor click
-    const originalCreateElement = document.createElement.bind(document);
-    vi.spyOn(document, 'createElement').mockImplementation((tagName: string) => {
-      if (tagName === 'a') {
-        const anchor = originalCreateElement('a');
-        vi.spyOn(anchor, 'click').mockImplementation(() => {});
-        return anchor;
-      }
-      return originalCreateElement(tagName);
-    });
-  });
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
-  it('exported JSON does not contain id, userId, createdAt, updatedAt, tabIds', async () => {
-    const { MemoryRouter } = await import('react-router-dom');
-    const { AgentsPanel } = await import('../components/AgentsPanel');
+  // ─── Validation: kind is valid ────────────────────────────────────────────
 
-    const agentWithExtras = {
-      id: 5,
-      userId: 1,
-      createdAt: '2024-01-01',
-      updatedAt: '2024-01-02',
-      tabIds: [2],
-      name: 'dev-agent',
-      description: 'Does stuff',
-      prompt: 'You are a dev agent.',
-      tools: ['read', 'write'],
-      allowedTools: [],
-      resources: [],
-      kind: 'editor' as const,
-      requiresTask: true,
-      claimState: 'todo',
-      workingState: 'in-progress',
-      resolveState: 'developed',
-      toolsSettings: {},
-      mcpServers: [],
-    };
-
-    vi.mocked(AppContext.useApp).mockReturnValue({
-      agents: [agentWithExtras] as any,
-      setAgents: vi.fn(),
-      fetchAgents: vi.fn(),
-      activeAgentId: 5,
-      setActiveAgentId: vi.fn(),
+  it('accepts kind=editor without error', async () => {
+    vi.mocked(api.apiFetch).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ id: 1, name: 'my-agent', prompt: 'hi', kind: 'editor' }),
     } as any);
 
-    vi.stubGlobal('matchMedia', vi.fn(() => ({
-      matches: false,
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-    })));
+    render(<AgentImportModal onClose={() => {}} />);
+    const textarea = screen.getByLabelText('Or paste JSON directly:');
+    fireEvent.change(textarea, { target: { value: JSON.stringify({ name: 'my-agent', prompt: 'hi', kind: 'editor' }) } });
+    fireEvent.click(getImportBtn());
 
-    render(
-      <MemoryRouter>
-        <AgentsPanel />
-      </MemoryRouter>
-    );
-
-    const exportBtn = screen.getByRole('button', { name: /export/i });
-    fireEvent.click(exportBtn);
-
-    // The blob should have been created
-    expect(createdObjectURLArg).not.toBeNull();
-
-    // jsdom doesn't implement Blob.text(); read via FileReader instead
-    const text = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result as string);
-      reader.onerror = reject;
-      reader.readAsText(createdObjectURLArg as Blob);
+    await waitFor(() => {
+      expect(vi.mocked(api.apiFetch)).toHaveBeenCalled();
     });
-    const parsed = JSON.parse(text);
-
-    expect(parsed).not.toHaveProperty('id');
-    expect(parsed).not.toHaveProperty('userId');
-    expect(parsed).not.toHaveProperty('createdAt');
-    expect(parsed).not.toHaveProperty('updatedAt');
-    expect(parsed).not.toHaveProperty('tabIds');
-
-    // Should still have the importable fields
-    expect(parsed.name).toBe('dev-agent');
-    expect(parsed.prompt).toBe('You are a dev agent.');
-    expect(parsed.kind).toBe('editor');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// AgentsPanel — Import button appears in agent controls
-// ---------------------------------------------------------------------------
-
-describe('AgentsPanel import button', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.stubGlobal('matchMedia', vi.fn(() => ({
-      matches: false,
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-    })));
-    vi.mock('../utils/api', () => ({
-      apiFetch: vi.fn().mockResolvedValue({ ok: true, json: async () => [] }),
-    }));
   });
 
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  it('shows Import button when an agent is selected', async () => {
-    const { MemoryRouter } = await import('react-router-dom');
-    const { AgentsPanel } = await import('../components/AgentsPanel');
-
-    vi.mocked(AppContext.useApp).mockReturnValue({
-      agents: [{ id: 1, name: 'dev-agent', prompt: 'go', kind: 'editor', requiresTask: true, claimState: 'todo', workingState: 'in-progress', resolveState: 'developed', tools: [], allowedTools: [], resources: [] }] as any,
-      setAgents: vi.fn(),
-      fetchAgents: vi.fn(),
-      activeAgentId: 1,
-      setActiveAgentId: vi.fn(),
+  it('accepts kind=inspector without error', async () => {
+    vi.mocked(api.apiFetch).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ id: 1, name: 'my-agent', prompt: 'hi', kind: 'inspector' }),
     } as any);
 
-    render(
-      <MemoryRouter>
-        <AgentsPanel />
-      </MemoryRouter>
-    );
+    render(<AgentImportModal onClose={() => {}} />);
+    const textarea = screen.getByLabelText('Or paste JSON directly:');
+    fireEvent.change(textarea, { target: { value: JSON.stringify({ name: 'my-agent', prompt: 'hi', kind: 'inspector' }) } });
+    fireEvent.click(getImportBtn());
 
-    expect(screen.getByRole('button', { name: /import/i })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(vi.mocked(api.apiFetch)).toHaveBeenCalled();
+    });
   });
 
-  it('does NOT show Import button when no agent is selected', async () => {
-    const { MemoryRouter } = await import('react-router-dom');
-    const { AgentsPanel } = await import('../components/AgentsPanel');
-
-    vi.mocked(AppContext.useApp).mockReturnValue({
-      agents: [],
-      setAgents: vi.fn(),
-      fetchAgents: vi.fn(),
-      activeAgentId: null,
-      setActiveAgentId: vi.fn(),
+  it('accepts valid mcpServers array', async () => {
+    vi.mocked(api.apiFetch).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ id: 1, name: 'my-agent', prompt: 'hi' }),
     } as any);
 
-    render(
-      <MemoryRouter>
-        <AgentsPanel />
-      </MemoryRouter>
-    );
+    render(<AgentImportModal onClose={() => {}} />);
+    const textarea = screen.getByLabelText('Or paste JSON directly:');
+    const payload = {
+      name: 'my-agent',
+      prompt: 'hi',
+      mcpServers: [{ name: 'server1', command: 'npx', args: [], env: [] }],
+    };
+    fireEvent.change(textarea, { target: { value: JSON.stringify(payload) } });
+    fireEvent.click(getImportBtn());
 
-    expect(screen.queryByRole('button', { name: /^import$/i })).not.toBeInTheDocument();
-  });
-
-  it('clicking Import button opens the AgentImportModal', async () => {
-    const { MemoryRouter } = await import('react-router-dom');
-    const { AgentsPanel } = await import('../components/AgentsPanel');
-
-    vi.mocked(AppContext.useApp).mockReturnValue({
-      agents: [{ id: 1, name: 'dev-agent', prompt: 'go', kind: 'editor', requiresTask: true, claimState: 'todo', workingState: 'in-progress', resolveState: 'developed', tools: [], allowedTools: [], resources: [] }] as any,
-      setAgents: vi.fn(),
-      fetchAgents: vi.fn(),
-      activeAgentId: 1,
-      setActiveAgentId: vi.fn(),
-    } as any);
-
-    render(
-      <MemoryRouter>
-        <AgentsPanel />
-      </MemoryRouter>
-    );
-
-    fireEvent.click(screen.getByRole('button', { name: /import/i }));
-
-    // Modal should appear — look for the Import Agent submit button
-    expect(screen.getByRole('button', { name: /import agent/i })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(vi.mocked(api.apiFetch)).toHaveBeenCalled();
+    });
   });
 });

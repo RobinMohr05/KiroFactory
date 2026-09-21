@@ -61,8 +61,9 @@ export function TabBar() {
       // Editing existing
       setTabs(prev => prev.map(b => b.id === saved.id ? saved : b));
     } else {
-      // Creating new
-      setTabs(prev => [...prev, saved]);
+      // Creating new — upsert by id so that a WS tab-created echo arriving
+      // before the POST response doesn't produce a duplicate entry.
+      setTabs(prev => prev.find(b => b.id === saved.id) ? prev : [...prev, saved]);
       setCurrentTabId(saved.id);
     }
   };

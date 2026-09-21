@@ -96,7 +96,9 @@ export function AgentModal({ agent, onClose }: AgentModalProps) {
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const created = await res.json();
-        setAgents(prev => [...prev, created]);
+        // Upsert by id so that a WS agent-created echo arriving before the
+        // POST response doesn't produce a duplicate entry.
+        setAgents(prev => prev.find(a => a.id === created.id) ? prev : [...prev, created]);
         setActiveAgentId(created.id);
       }
       onClose();

@@ -1,4 +1,5 @@
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback } from 'react';
+import type { DragEvent, ChangeEvent } from 'react';
 import { useApp } from '../context/AppContext';
 import { apiFetch } from '../utils/api';
 
@@ -6,59 +7,46 @@ interface AgentImportModalProps {
   onClose: () => void;
 }
 
-/** Fields that are server-managed and must be stripped before POST */
 const SERVER_FIELDS = ['id', 'userId', 'createdAt', 'updatedAt', 'tabIds'] as const;
 
-/**
- * Validate the parsed agent object and return the first validation error,
- * or null if valid.
- */
-function validateAgent(parsed: unknown): string | null {
+function validateAgentJson(parsed: unknown): string | null {
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    return 'Invalid JSON: expected a JSON object';
+    return 'Expected a JSON object';
   }
-
   const obj = parsed as Record<string, unknown>;
 
-  // 1. name — required, non-empty, matching /^[a-zA-Z0-9_-]+$/
-  if (!('name' in obj) || obj.name === undefined || obj.name === null || obj.name === '') {
+  // 1. name must be a non-empty string matching /^[a-zA-Z0-9_-]+$/
+  if (!('name' in obj) || typeof obj.name !== 'string' || obj.name.trim() === '') {
     return 'Missing required field: name';
   }
-  if (typeof obj.name !== 'string' || obj.name.trim() === '') {
-    return 'Missing required field: name';
-  }
-  if (!/^[a-zA-Z0-9_-]+$/.test(obj.name.trim())) {
+  if (!/^[a-zA-Z0-9_-]+$/.test(obj.name)) {
     return 'name must only contain letters, numbers, dashes, and underscores';
   }
 
-  // 2. prompt — required, non-empty
-  if (!('prompt' in obj) || obj.prompt === undefined || obj.prompt === null || obj.prompt === '') {
-    return 'Missing required field: prompt';
-  }
-  if (typeof obj.prompt !== 'string' || obj.prompt.trim() === '') {
+  // 2. prompt must be a non-empty string
+  if (!('prompt' in obj) || typeof obj.prompt !== 'string' || obj.prompt.trim() === '') {
     return 'Missing required field: prompt';
   }
 
-  // 3. kind — if present, must be 'editor' or 'inspector'
-  if ('kind' in obj && obj.kind !== undefined && obj.kind !== null) {
-    if (obj.kind !== 'editor' && obj.kind !== 'inspector') {
-      return "kind must be 'editor' or 'inspector'";
-    }
+  // 3. kind, if present, must be 'editor' or 'inspector'
+  if ('kind' in obj && obj.kind !== 'editor' && obj.kind !== 'inspector') {
+    return "kind must be 'editor' or 'inspector'";
   }
 
-  // 4. mcpServers — if present, must be an array where each item has non-empty name and command
-  if ('mcpServers' in obj && obj.mcpServers !== undefined && obj.mcpServers !== null) {
+  // 4. mcpServers, if present, must be an array with valid items
+  if ('mcpServers' in obj) {
     if (!Array.isArray(obj.mcpServers)) {
       return 'mcpServers must be an array';
     }
     for (let i = 0; i < obj.mcpServers.length; i++) {
-      const srv = obj.mcpServers[i];
+      const server = obj.mcpServers[i];
       if (
-        typeof srv !== 'object' || srv === null ||
-        typeof (srv as Record<string, unknown>).name !== 'string' ||
-        !(srv as Record<string, unknown>).name ||
-        typeof (srv as Record<string, unknown>).command !== 'string' ||
-        !(srv as Record<string, unknown>).command
+        typeof server !== 'object' ||
+        server === null ||
+        typeof (server as Record<string, unknown>).name !== 'string' ||
+        ((server as Record<string, unknown>).name as string).trim() === '' ||
+        typeof (server as Record<string, unknown>).command !== 'string' ||
+        ((server as Record<string, unknown>).command as string).trim() === ''
       ) {
         return `mcpServers[${i}]: each server must have a non-empty name and command`;
       }
@@ -68,22 +56,7 @@ function validateAgent(parsed: unknown): string | null {
   return null;
 }
 
-/**
- * Try to parse JSON and return either an error message or the parsed value.
- */
-function tryParseJson(text: string): { parsed: unknown; error: null } | { parsed: null; error: string } {
-  try {
-    const parsed = JSON.parse(text);
-    return { parsed, error: null };
-  } catch (e) {
-    return { parsed: null, error: `Invalid JSON: ${(e as Error).message}` };
-  }
-}
-
-/**
- * Strip server-managed fields from the payload before sending to POST /api/agents.
- */
-function cleanPayload(obj: Record<string, unknown>): Record<string, unknown> {
+function stripServerFields(obj: Record<string, unknown>): Record<string, unknown> {
   const result = { ...obj };
   for (const field of SERVER_FIELDS) {
     delete result[field];
@@ -94,172 +67,181 @@ function cleanPayload(obj: Record<string, unknown>): Record<string, unknown> {
 export function AgentImportModal({ onClose }: AgentImportModalProps) {
   const { setAgents, setActiveAgentId } = useApp();
   const [jsonText, setJsonText] = useState('');
-  const [liveError, setLiveError] = useState<string | null>(null);
-  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Live JSON parse feedback as the user types
-  useEffect(() => {
-    if (!jsonText.trim()) {
-      setLiveError(null);
+  const loadFileContent = useCallback((file: File) => {
+    if (!file.name.endsWith('.json')) {
+      setError('Please select a .json file');
       return;
     }
-    const { error } = tryParseJson(jsonText);
-    setLiveError(error);
-  }, [jsonText]);
-
-  const loadFileContent = useCallback((file: File) => {
     const reader = new FileReader();
     reader.onload = (e) => {
-      const content = e.target?.result as string;
-      setJsonText(content);
-      setSubmitError(null);
+      const text = e.target?.result as string;
+      setJsonText(text);
+      // Run live parse feedback
+      try {
+        JSON.parse(text);
+        setError(null);
+      } catch (err) {
+        setError(`Invalid JSON: ${(err as Error).message}`);
+      }
     };
     reader.readAsText(file);
   }, []);
 
-  const handleDragOver = useCallback((e: React.DragEvent) => {
+  const handleDragOver = (e: DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     setIsDragOver(true);
-  }, []);
+  };
 
-  const handleDragLeave = useCallback(() => {
+  const handleDragLeave = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
     setIsDragOver(false);
-  }, []);
+  };
 
-  const handleDrop = useCallback((e: React.DragEvent) => {
+  const handleDrop = (e: DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     setIsDragOver(false);
     const file = e.dataTransfer.files[0];
-    if (file) {
-      loadFileContent(file);
-    }
-  }, [loadFileContent]);
+    if (file) loadFileContent(file);
+  };
 
-  const handleBrowse = useCallback(() => {
-    fileInputRef.current?.click();
-  }, []);
-
-  const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      loadFileContent(file);
-    }
-    // Reset input so the same file can be re-selected
+    if (file) loadFileContent(file);
+    // Reset input so same file can be picked again
     e.target.value = '';
-  }, [loadFileContent]);
+  };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setSubmitError(null);
+  const handleTextChange = (e: ChangeEvent<HTMLTextAreaElement>) => {
+    const text = e.target.value;
+    setJsonText(text);
+    // Live parse feedback
+    if (text.trim() === '') {
+      setError(null);
+      return;
+    }
+    try {
+      JSON.parse(text);
+      setError(null);
+    } catch (err) {
+      setError(`Invalid JSON: ${(err as Error).message}`);
+    }
+  };
 
-    if (!jsonText.trim()) {
-      setSubmitError('Missing required field: name');
+  const handleSubmit = async () => {
+    if (isSubmitting) return;
+
+    // Parse
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(jsonText);
+    } catch (err) {
+      setError(`Invalid JSON: ${(err as Error).message}`);
       return;
     }
 
-    // Parse JSON
-    const { parsed, error: parseError } = tryParseJson(jsonText);
-    if (parseError) {
-      setSubmitError(parseError);
-      return;
-    }
-
-    // Semantic validation
-    const validationError = validateAgent(parsed);
+    // Validate semantics
+    const validationError = validateAgentJson(parsed);
     if (validationError) {
-      setSubmitError(validationError);
+      setError(validationError);
       return;
     }
 
-    // Clean payload
-    const payload = cleanPayload(parsed as Record<string, unknown>);
+    // Strip server-managed fields
+    const cleaned = stripServerFields(parsed as Record<string, unknown>);
 
+    setIsSubmitting(true);
     try {
       const res = await apiFetch('/api/agents', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(cleaned),
       });
-
       if (!res.ok) {
-        let message = `HTTP ${res.status}`;
+        let errMsg = `HTTP ${res.status}`;
         try {
           const body = await res.json();
-          if (body?.error) message = body.error;
-          else if (body?.message) message = body.message;
+          if (body.error) errMsg = body.error;
         } catch {
           // ignore parse error
         }
-        setSubmitError(message);
+        setError(errMsg);
         return;
       }
-
       const created = await res.json();
       setAgents(prev => [...prev, created]);
       setActiveAgentId(created.id);
       onClose();
-    } catch (e) {
-      setSubmitError('Failed to import agent: ' + (e as Error).message);
+    } catch (err) {
+      setError((err as Error).message || 'Failed to import agent');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
-  // The visible error is the live parse error (while typing) or the submit error (on submit)
-  const displayError = liveError ?? submitError;
-
   return (
-    <div
-      className="modal-backdrop"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-    >
+    <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="modal" role="dialog" aria-labelledby="agentImportModalTitle">
         <h2 id="agentImportModalTitle">Import Agent</h2>
 
-        <form onSubmit={handleSubmit}>
-          {/* Drop zone */}
-          <div
-            className={`import-drop-zone${isDragOver ? ' drag-over' : ''}`}
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
+        <div
+          className={`agent-import-drop-zone${isDragOver ? ' drag-over' : ''}`}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          aria-label="Drop zone for JSON file"
+        >
+          <span className="agent-import-drop-label">Drop a <code>.json</code> file here, or</span>
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={() => fileInputRef.current?.click()}
           >
-            <p>Drag &amp; drop a <code>.json</code> file here</p>
-            <button type="button" className="btn btn-secondary btn-sm" onClick={handleBrowse}>
-              Browse file
-            </button>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".json,application/json"
-              style={{ display: 'none' }}
-              onChange={handleFileChange}
-            />
-          </div>
+            Browse file
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".json"
+            style={{ display: 'none' }}
+            onChange={handleFileChange}
+            aria-label="Browse JSON file"
+          />
+        </div>
 
-          {/* JSON textarea */}
-          <div className="form-group">
-            <label htmlFor="agentImportJson">Or paste JSON directly</label>
-            <textarea
-              id="agentImportJson"
-              rows={12}
-              placeholder='{ "name": "my-agent", "prompt": "You are..." }'
-              value={jsonText}
-              onChange={(e) => {
-                setJsonText(e.target.value);
-                setSubmitError(null);
-              }}
-            />
-            {displayError && (
-              <p className="form-error" role="alert">{displayError}</p>
-            )}
-          </div>
+        <div className="form-group" style={{ marginTop: '1rem' }}>
+          <label htmlFor="agentImportTextarea">Or paste JSON directly:</label>
+          <textarea
+            id="agentImportTextarea"
+            rows={10}
+            placeholder={'{\n  "name": "my-agent",\n  "prompt": "You are..."\n}'}
+            value={jsonText}
+            onChange={handleTextChange}
+            style={{ fontFamily: 'monospace', fontSize: '0.82rem' }}
+          />
+        </div>
 
-          <div className="form-actions">
-            <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
-            <button type="submit" className="btn btn-primary">Import Agent</button>
+        {error && (
+          <div className="agent-import-error" role="alert">
+            {error}
           </div>
-        </form>
+        )}
+
+        <div className="form-actions">
+          <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={handleSubmit}
+            disabled={isSubmitting || !jsonText.trim()}
+          >
+            {isSubmitting ? 'Importing…' : 'Import Agent'}
+          </button>
+        </div>
       </div>
     </div>
   );

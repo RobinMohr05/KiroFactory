@@ -8,8 +8,11 @@ import { AgentModal } from './AgentModal';
 import { AgentImportModal } from './AgentImportModal';
 import type { Agent } from '../types';
 
-/** Fields that are server-managed and must not be included in an exported agent file */
-const EXPORT_STRIP_FIELDS = ['id', 'userId', 'createdAt', 'updatedAt', 'tabIds'] as const;
+const EXPORT_FIELDS = [
+  'name', 'description', 'prompt', 'tools', 'allowedTools', 'toolsSettings',
+  'resources', 'kind', 'requiresTask', 'claimState', 'workingState', 'resolveState',
+  'mcpServers',
+] as const;
 
 export function AgentsPanel() {
   const { agents, setAgents, fetchAgents, activeAgentId, setActiveAgentId } = useApp();
@@ -62,9 +65,9 @@ export function AgentsPanel() {
   const handleExport = () => {
     if (!activeAgent) return;
     const exportable = Object.fromEntries(
-      Object.entries(activeAgent as unknown as Record<string, unknown>).filter(
-        ([key]) => !(EXPORT_STRIP_FIELDS as readonly string[]).includes(key)
-      )
+      EXPORT_FIELDS
+        .filter(field => field in activeAgent)
+        .map(field => [field, activeAgent[field as keyof Agent]])
     );
     const data = JSON.stringify(exportable, null, 2);
     const blob = new Blob([data], { type: 'application/json' });

@@ -256,5 +256,8 @@ export type WsMessage =
   | { type: 'autoscaler-created'; autoScaler: AutoScaler }
   | { type: 'autoscaler-updated'; autoScaler: AutoScaler }
   | { type: 'autoscaler-deleted'; autoScalerId: number }
+  | { type: 'agent-created'; agent: Agent }
+  | { type: 'agent-updated'; agent: Agent }
+  | { type: 'agent-deleted'; agentId: number }
   | { type: 'wsl-diagnostic-line'; line: WslDiagnosticLine }
   | { type: 'connected' };

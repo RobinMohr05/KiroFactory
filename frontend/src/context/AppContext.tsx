@@ -58,10 +58,35 @@ export function useApp(): AppContextValue {
   return ctx;
 }
 
+const VALID_VIEWS: ViewTab[] = ['boards', 'sessions', 'agents', 'errors', 'usage'];
+
+function readPersistedTabId(): number | null {
+  try {
+    const raw = localStorage.getItem('kf_currentTabId');
+    if (raw === null) return null;
+    const parsed = parseInt(raw, 10);
+    return isNaN(parsed) ? null : parsed;
+  } catch {
+    return null;
+  }
+}
+
+function readPersistedActiveView(): ViewTab {
+  try {
+    const raw = localStorage.getItem('kf_activeView');
+    if (raw !== null && (VALID_VIEWS as string[]).includes(raw)) {
+      return raw as ViewTab;
+    }
+  } catch {
+    // ignore
+  }
+  return 'boards';
+}
+
 export function AppProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [tabs, setTabs] = useState<Tab[]>([]);
-  const [currentTabId, setCurrentTabId] = useState<number | null>(null);
+  const [currentTabId, setCurrentTabIdRaw] = useState<number | null>(readPersistedTabId);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -71,8 +96,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [activeSessionId, setActiveSessionId] = useState<number | null>(null);
   const [activeAgentId, setActiveAgentId] = useState<number | null>(null);
   const [currentSort, setCurrentSort] = useState<'priority' | 'updated' | 'created'>('priority');
-  const [activeView, setActiveView] = useState<ViewTab>('boards');
+  const [activeView, setActiveViewRaw] = useState<ViewTab>(readPersistedActiveView);
   const [highlightedTaskId, setHighlightedTaskId] = useState<number | null>(null);
+
+  const setCurrentTabId = useCallback((id: number | null) => {
+    setCurrentTabIdRaw(id);
+    try {
+      if (id === null) {
+        localStorage.removeItem('kf_currentTabId');
+      } else {
+        localStorage.setItem('kf_currentTabId', String(id));
+      }
+    } catch {
+      // ignore storage errors
+    }
+  }, []);
+
+  const setActiveView = useCallback((view: ViewTab) => {
+    setActiveViewRaw(view);
+    try {
+      localStorage.setItem('kf_activeView', view);
+    } catch {
+      // ignore storage errors
+    }
+  }, []);
 
   const pendingOps = useRef<Set<string>>(new Set());
   const wsRef = useRef<WebSocket | null>(null);
@@ -108,7 +155,29 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!res.ok) return;
       const data: Tab[] = await res.json();
       setTabs(data);
-      setCurrentTabId(prev => prev === null && data.length > 0 ? data[0].id : prev);
+      setCurrentTabIdRaw(prev => {
+        let next: number | null;
+        if (prev !== null) {
+          // Persisted tab is still valid — keep it
+          if (data.some(t => t.id === prev)) {
+            next = prev;
+          } else {
+            // Persisted tab was deleted — fall back
+            next = data.length > 0 ? data[0].id : null;
+          }
+        } else {
+          // No persisted tab — default to first tab
+          next = data.length > 0 ? data[0].id : null;
+        }
+        try {
+          if (next === null) {
+            localStorage.removeItem('kf_currentTabId');
+          } else {
+            localStorage.setItem('kf_currentTabId', String(next));
+          }
+        } catch { /* ignore */ }
+        return next;
+      });
     } catch (e) {
       console.error('Failed to fetch tabs:', e);
     }
@@ -172,6 +241,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const logout = useCallback(async () => {
     try {
       await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' });
+    } catch { /* ignore */ }
+    try {
+      localStorage.removeItem('kf_currentTabId');
+      localStorage.removeItem('kf_activeView');
     } catch { /* ignore */ }
     window.location.href = '/login.html';
   }, []);
@@ -386,6 +459,29 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       case 'autoscaler-deleted': {
         setAutoScalers(prev => prev.filter(f => f.id !== message.autoScalerId));
+        break;
+      }
+      case 'agent-created': {
+        setAgents(prev => {
+          if (prev.find(a => a.id === message.agent.id)) return prev;
+          return [...prev, message.agent];
+        });
+        break;
+      }
+      case 'agent-updated': {
+        setAgents(prev => {
+          const idx = prev.findIndex(a => a.id === message.agent.id);
+          if (idx !== -1) {
+            const next = [...prev];
+            next[idx] = message.agent;
+            return next;
+          }
+          return [...prev, message.agent];
+        });
+        break;
+      }
+      case 'agent-deleted': {
+        setAgents(prev => prev.filter(a => a.id !== message.agentId));
         break;
       }
       case 'wsl-diagnostic-line': {
