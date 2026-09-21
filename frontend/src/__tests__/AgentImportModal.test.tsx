@@ -272,6 +272,39 @@ describe('AgentImportModal', () => {
     expect(setAgents).toHaveBeenCalled();
   });
 
+  it('upserts by id on success — no duplicate when agent already added by WS echo', async () => {
+    const createdAgent = { id: 99, ...validAgent };
+    vi.mocked(api.apiFetch).mockResolvedValueOnce({
+      ok: true,
+      json: async () => createdAgent,
+    } as any);
+
+    // Capture the state updater passed to setAgents so we can apply it to a
+    // prev list that ALREADY contains the created agent (simulating the WS
+    // `agent-created` echo landing before the POST response resolves).
+    const setAgents = vi.fn();
+    const setActiveAgentId = vi.fn();
+    mockUseApp({ setAgents, setActiveAgentId });
+
+    render(<AgentImportModal onClose={() => {}} />);
+    const textarea = screen.getByLabelText('Or paste JSON directly:');
+    fireEvent.change(textarea, { target: { value: JSON.stringify(validAgent) } });
+    fireEvent.click(getImportBtn());
+
+    await waitFor(() => {
+      expect(setAgents).toHaveBeenCalled();
+    });
+
+    // setAgents must be called with a functional updater (not a raw array),
+    // and that updater must dedup by id.
+    const updater = setAgents.mock.calls[0][0];
+    expect(typeof updater).toBe('function');
+    const prevWithEcho = [createdAgent];
+    const next = updater(prevWithEcho);
+    expect(next.filter((a: any) => a.id === createdAgent.id)).toHaveLength(1);
+    expect(next).toHaveLength(1);
+  });
+
   it('calls onClose after successful import', async () => {
     const createdAgent = { id: 99, ...validAgent };
     vi.mocked(api.apiFetch).mockResolvedValueOnce({
