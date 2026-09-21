@@ -36,7 +36,7 @@ import { getAllPooledSessionIds } from "./db/autoscalers.js";
 import { getUserKiroApiKey, getUserById } from "./db/users.js";
 import { getAllDecryptedCredentials, getDecryptedCredential } from "./db/credentials.js";
 import { isDbAvailable } from "./db/connection.js";
-import { getTaskAutoMergePrs, areAllGroupTasksDone, createTask } from "./db/tasks.js";
+import { getTaskAutoMergePrs, areAllGroupTasksDone, createTask, getAllTasks } from "./db/tasks.js";
 import { recordError, type RecordErrorInput } from "./error-store.js";
 import { log, logSessionEvent, logWorkerEvent, toErrorFields } from "./logger.js";
 import { getAgentTabs, getTabById } from "./db/tabs.js";
@@ -74,6 +74,7 @@ import {
   setWorkerEventHandler,
   sendWorkerPrompt,
   sendWorkerStop,
+  sendWorkerListTasksResponse,
   isWorkerConnected,
   connectToLocalWorker,
   type WorkerEventHandler,
@@ -777,6 +778,54 @@ export async function handleWorkerTaskCreate(
       stream: "stderr",
       text: `Warning: Failed to create task from agent report: ${msg}`,
     });
+  }
+}
+
+/**
+ * Handle a list-tasks request forwarded by an inspector-kind worker that can
+ * create tasks (originating from the list_tasks MCP tool — see
+ * worker/list-tasks-mcp-server.js). Resolves the tab the same way task
+ * creation does (taskCreationTabId ?? tabIds[0]), reads every task in that tab
+ * scoped to the session's own user, and sends a correlated
+ * `list-tasks-response` back to the worker with the same
+ * { id, title, type, priority, state } shape task-planner-board-mcp's
+ * handleListTasks returns.
+ *
+ * A no-op for an unknown/unregistered session id — mirrors
+ * handleWorkerTaskCreate's session-lookup-then-no-op-if-missing shape.
+ */
+export async function handleWorkerListTasksRequest(
+  sessionId: number,
+  requestId: string
+): Promise<void> {
+  const session = sessions.get(sessionId);
+  if (!session) return;
+
+  // Same tab resolution as task creation: an explicitly chosen target tab wins,
+  // otherwise fall back to the session's first assigned tab.
+  const tabId =
+    session.meta.taskCreationTabId != null
+      ? session.meta.taskCreationTabId
+      : session.meta.tabIds?.[0];
+
+  try {
+    const tasks = await getAllTasks({ tabId, userId: session.meta.userId });
+    const shaped = tasks.map((t) => ({
+      id: t.id,
+      title: t.title,
+      type: t.type,
+      priority: t.priority,
+      state: t.state,
+    }));
+    sendWorkerListTasksResponse(sessionId, requestId, { tasks: shaped });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    appendOutput(session, {
+      timestamp: now(),
+      stream: "stderr",
+      text: `Warning: Failed to list tasks for agent request: ${msg}`,
+    });
+    sendWorkerListTasksResponse(sessionId, requestId, { error: msg });
   }
 }
 
@@ -4276,6 +4325,10 @@ function initWorkerEventHandler(): void {
 
     onWorkerTaskCreate(sessionId: number, spec) {
       void handleWorkerTaskCreate(sessionId, spec);
+    },
+
+    onWorkerListTasksRequest(sessionId: number, requestId: string) {
+      void handleWorkerListTasksRequest(sessionId, requestId);
     },
 
     onWorkerPromptDone(sessionId: number, result: unknown) {

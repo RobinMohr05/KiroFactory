@@ -58,6 +58,12 @@ export interface WorkerTaskCreateMessage extends WorkerMessage {
   files?: string[];
 }
 
+export interface WorkerListTasksRequestMessage extends WorkerMessage {
+  action: "list-tasks-request";
+  /** Correlation id echoed back on the list-tasks-response so the worker can match it. */
+  requestId: string;
+}
+
 export interface WorkerReadyMessage extends WorkerMessage {
   action: "worker-ready";
   acpSessionId: string;
@@ -103,6 +109,7 @@ export interface WorkerEventHandler {
   onWorkerSessionUpdate: (sessionId: number, update: unknown) => void;
   onWorkerAgentError: (sessionId: number, message: string, context: string) => void;
   onWorkerTaskCreate: (sessionId: number, spec: { title: string; description: string; type: "improvement" | "bug" | "feature"; priority: 1 | 2 | 3 | 4; files: string[] }) => void;
+  onWorkerListTasksRequest: (sessionId: number, requestId: string) => void;
   onWorkerPromptDone: (sessionId: number, result: unknown) => void;
   onWorkerExited: (sessionId: number, exitCode: number | null, signal: string | null) => void;
   onWorkerShutdown: (sessionId: number, exitCode: number) => void;
@@ -358,6 +365,12 @@ function attachWorkerConnectionHandlers(ws: WebSocket, hooks: WorkerConnectionHo
         break;
       }
 
+      case "list-tasks-request": {
+        const m = msg as WorkerListTasksRequestMessage;
+        eventHandler.onWorkerListTasksRequest(sessionId, m.requestId);
+        break;
+      }
+
       case "prompt-done":
         eventHandler.onWorkerPromptDone(sessionId, (msg as WorkerPromptDoneMessage).result);
         break;
@@ -448,6 +461,26 @@ export function sendWorkerStop(sessionId: number): boolean {
   if (!ws || ws.readyState !== WebSocket.OPEN) return false;
 
   ws.send(JSON.stringify({ action: "stop" }));
+  return true;
+}
+
+/**
+ * Reply to a worker's `list-tasks-request` with the correlated result.
+ *
+ * The `requestId` must be the same one the worker sent so it can match this
+ * response to the in-flight IPC request from its list_tasks MCP tool. Pass
+ * either `{ tasks }` on success or `{ error }` on failure — the worker relays
+ * whichever it gets back to the MCP tool over its local socket.
+ */
+export function sendWorkerListTasksResponse(
+  sessionId: number,
+  requestId: string,
+  payload: { tasks?: Array<{ id: number; title: string; type: string; priority: number; state: string }>; error?: string }
+): boolean {
+  const ws = workerConnections.get(sessionId);
+  if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+
+  ws.send(JSON.stringify({ action: "list-tasks-response", requestId, ...payload }));
   return true;
 }
 
