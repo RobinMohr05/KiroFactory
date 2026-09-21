@@ -95,4 +95,25 @@ describe('Header', () => {
     // Should have triggered a fetch call from ws-session-updated
     expect(vi.mocked(api.apiFetch)).toHaveBeenCalledWith('/api/usage/current-month');
   });
+
+  it('reveals a hidden dancing cow after clicking the logo 5 times', async () => {
+    const { container } = render(<MemoryRouter><Header /></MemoryRouter>);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByTestId('dancing-cow')).not.toBeInTheDocument();
+
+    const logo = container.querySelector('.logo') as HTMLElement;
+    expect(logo).toBeTruthy();
+
+    await act(async () => {
+      for (let i = 0; i < 5; i++) {
+        logo.click();
+      }
+    });
+
+    expect(screen.getByTestId('dancing-cow')).toBeInTheDocument();
+  });
 });

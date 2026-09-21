@@ -13,8 +13,22 @@ export function Header() {
   const [showSettings, setShowSettings] = useState(false);
   const [monthlyCredits, setMonthlyCredits] = useState<number>(0);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [logoClicks, setLogoClicks] = useState(0);
+  const [showCow, setShowCow] = useState(false);
 
   const handleDrawerClose = useCallback(() => setDrawerOpen(false), []);
+
+  // Hidden easter egg: clicking the logo 5 times in a row summons a dancing cow.
+  const handleLogoClick = useCallback(() => {
+    setLogoClicks((prev) => {
+      const next = prev + 1;
+      if (next >= 5) {
+        setShowCow(true);
+        return 0;
+      }
+      return next;
+    });
+  }, []);
 
   const fetchMonthlyCredits = useCallback(async () => {
     try {
@@ -47,6 +61,12 @@ export function Header() {
     navigate('/usage');
   };
 
+  useEffect(() => {
+    if (!showCow) return;
+    const timeout = setTimeout(() => setShowCow(false), 4000);
+    return () => clearTimeout(timeout);
+  }, [showCow]);
+
   return (
     <>
       <header className="header">
@@ -60,7 +80,12 @@ export function Header() {
               <path d="M3 6h18M3 12h18M3 18h18" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
             </svg>
           </button>
-          <span className="logo">Vibe<span className="logo-accent">code</span> Heaven</span>
+          <span className="logo" onClick={handleLogoClick}>Vibe<span className="logo-accent">code</span> Heaven</span>
+          {showCow && (
+            <span className="dancing-cow" data-testid="dancing-cow" role="img" aria-label="A dancing cow">
+              🐮💃
+            </span>
+          )}
         </div>
         <div className="header-actions">
           <button

@@ -249,6 +249,27 @@ h1, h2, h3, h4, h5, h6 {
   color: var(--ta-mango);
 }
 
+.logo {
+  cursor: default;
+}
+
+/* Hidden easter egg: dancing cow, revealed after 5 clicks on the logo. */
+.dancing-cow {
+  display: inline-block;
+  margin-left: 0.5rem;
+  font-size: 1.1rem;
+  animation: dancing-cow-wiggle 0.4s ease-in-out infinite;
+}
+
+@keyframes dancing-cow-wiggle {
+  0%, 100% {
+    transform: rotate(-15deg) translateY(0);
+  }
+  50% {
+    transform: rotate(15deg) translateY(-4px);
+  }
+}
+
 .header-actions {
   display: flex;
   align-items: center;
