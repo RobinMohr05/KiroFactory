@@ -1379,15 +1379,17 @@ export async function setScheduleActive(id: number, active: boolean): Promise<bo
   const session = sessions.get(id);
   if (!session) return false;
 
+  // Persist the flag change FIRST — a lightweight targeted DB write. Always
+  // attempt it (letting errors propagate) so a persistence failure can't be
+  // masked by a 200 response; the flag would otherwise silently revert to its
+  // stored value on the next server restart. Only after the DB write succeeds
+  // do we mutate the in-memory flag and broadcast, so a failed write never
+  // leaves in-memory state / connected clients diverged from the DB.
+  await updateSessionScheduleActiveInDb(id, active);
+
   session.meta.scheduleActive = active;
 
   broadcastToUser(session.meta.userId, { type: "session-updated", session: sanitizeSessionForClient(session.meta) });
-
-  // Persist the flag change directly — a lightweight targeted DB write. Always
-  // attempt it (letting errors propagate) so a persistence failure can't be
-  // masked by a 200 response; the flag would otherwise silently revert to its
-  // stored value on the next server restart.
-  await updateSessionScheduleActiveInDb(id, active);
 
   log.info("session-schedule-active-set", { component: "session-manager", sessionId: id, scheduleActive: active });
   return true;

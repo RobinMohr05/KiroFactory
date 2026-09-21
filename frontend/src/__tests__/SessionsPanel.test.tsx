@@ -609,3 +609,135 @@ describe('SessionsPanel - Card Start/Stop buttons', () => {
     expect(within(item).queryByRole('button', { name: /starting/i })).not.toBeInTheDocument();
   });
 });
+
+describe('SessionsPanel - Scheduled session buttons (Activate/Deactivate/Start now/Stop run)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.apiFetch).mockResolvedValue({ ok: true, json: async () => [] } as any);
+  });
+
+  const detail = () => document.getElementById('sessionDetail') as HTMLElement;
+
+  it('renders the Activate button (not Deactivate) when scheduleActive is false', () => {
+    mockUseApp({
+      sessions: [{
+        id: 20, name: 'Nightly', agent: 'developer-agent', status: 'stopped',
+        cronExpression: '0 0 * * *', scheduleActive: false, tabIds: [1],
+      }],
+      activeSessionId: 20,
+    });
+
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
+
+    expect(within(detail()).getByRole('button', { name: /^activate$/i })).toBeInTheDocument();
+    expect(within(detail()).queryByRole('button', { name: /^deactivate$/i })).not.toBeInTheDocument();
+  });
+
+  it('renders the Deactivate button (not Activate) when scheduleActive is true', () => {
+    mockUseApp({
+      sessions: [{
+        id: 21, name: 'Nightly', agent: 'developer-agent', status: 'stopped',
+        cronExpression: '0 0 * * *', scheduleActive: true, tabIds: [1],
+      }],
+      activeSessionId: 21,
+    });
+
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
+
+    expect(within(detail()).getByRole('button', { name: /^deactivate$/i })).toBeInTheDocument();
+    expect(within(detail()).queryByRole('button', { name: /^activate$/i })).not.toBeInTheDocument();
+  });
+
+  it('treats a missing scheduleActive as false and renders the Activate button', () => {
+    mockUseApp({
+      sessions: [{
+        id: 22, name: 'Nightly', agent: 'developer-agent', status: 'stopped',
+        cronExpression: '0 0 * * *', tabIds: [1],
+      }],
+      activeSessionId: 22,
+    });
+
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
+
+    expect(within(detail()).getByRole('button', { name: /^activate$/i })).toBeInTheDocument();
+    expect(within(detail()).queryByRole('button', { name: /^deactivate$/i })).not.toBeInTheDocument();
+  });
+
+  it('clicking Activate calls POST /api/sessions/:id/schedule/activate', async () => {
+    mockUseApp({
+      sessions: [{
+        id: 23, name: 'Nightly', agent: 'developer-agent', status: 'stopped',
+        cronExpression: '0 0 * * *', scheduleActive: false, tabIds: [1],
+      }],
+      activeSessionId: 23,
+    });
+
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
+
+    fireEvent.click(within(detail()).getByRole('button', { name: /^activate$/i }));
+
+    await waitFor(() => {
+      expect(api.apiFetch).toHaveBeenCalledWith('/api/sessions/23/schedule/activate', { method: 'POST' });
+    });
+  });
+
+  it('clicking Deactivate calls POST /api/sessions/:id/schedule/deactivate', async () => {
+    mockUseApp({
+      sessions: [{
+        id: 24, name: 'Nightly', agent: 'developer-agent', status: 'stopped',
+        cronExpression: '0 0 * * *', scheduleActive: true, tabIds: [1],
+      }],
+      activeSessionId: 24,
+    });
+
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
+
+    fireEvent.click(within(detail()).getByRole('button', { name: /^deactivate$/i }));
+
+    await waitFor(() => {
+      expect(api.apiFetch).toHaveBeenCalledWith('/api/sessions/24/schedule/deactivate', { method: 'POST' });
+    });
+  });
+
+  it('shows "Start now" (not "Stop run") on an idle scheduled session and clicking it calls run-now', async () => {
+    mockUseApp({
+      sessions: [{
+        id: 25, name: 'Nightly', agent: 'developer-agent', status: 'stopped',
+        cronExpression: '0 0 * * *', scheduleActive: true, tabIds: [1],
+      }],
+      activeSessionId: 25,
+    });
+
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
+
+    expect(within(detail()).getByRole('button', { name: /^start now$/i })).toBeInTheDocument();
+    expect(within(detail()).queryByRole('button', { name: /^stop run$/i })).not.toBeInTheDocument();
+
+    fireEvent.click(within(detail()).getByRole('button', { name: /^start now$/i }));
+
+    await waitFor(() => {
+      expect(api.apiFetch).toHaveBeenCalledWith('/api/sessions/25/run-now', { method: 'POST' });
+    });
+  });
+
+  it('shows "Stop run" (not "Start now") on a running scheduled session and clicking it calls stop', async () => {
+    mockUseApp({
+      sessions: [{
+        id: 26, name: 'Nightly', agent: 'developer-agent', status: 'running',
+        cronExpression: '0 0 * * *', scheduleActive: true, tabIds: [1],
+      }],
+      activeSessionId: 26,
+    });
+
+    render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
+
+    expect(within(detail()).getByRole('button', { name: /^stop run$/i })).toBeInTheDocument();
+    expect(within(detail()).queryByRole('button', { name: /^start now$/i })).not.toBeInTheDocument();
+
+    fireEvent.click(within(detail()).getByRole('button', { name: /^stop run$/i }));
+
+    await waitFor(() => {
+      expect(api.apiFetch).toHaveBeenCalledWith('/api/sessions/26/stop', { method: 'POST' });
+    });
+  });
+});
