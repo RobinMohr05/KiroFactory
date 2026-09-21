@@ -173,7 +173,7 @@ export function AgentImportModal({ onClose }: AgentImportModalProps) {
         return;
       }
       const created = await res.json();
-      setAgents(prev => [...prev, created]);
+      setAgents(prev => prev.find(a => a.id === created.id) ? prev : [...prev, created]);
       setActiveAgentId(created.id);
       onClose();
     } catch (err) {
