@@ -198,6 +198,16 @@ export function SessionsPanel() {
     await apiFetch(`/api/sessions/${activeSessionId}/run-now`, { method: 'POST' });
   };
 
+  const handleActivate = async () => {
+    if (!activeSessionId) return;
+    await apiFetch(`/api/sessions/${activeSessionId}/schedule/activate`, { method: 'POST' });
+  };
+
+  const handleDeactivate = async () => {
+    if (!activeSessionId) return;
+    await apiFetch(`/api/sessions/${activeSessionId}/schedule/deactivate`, { method: 'POST' });
+  };
+
   const handleDelete = async () => {
     if (!activeSessionId) return;
     await apiFetch(`/api/sessions/${activeSessionId}`, { method: 'DELETE' });
@@ -593,10 +603,24 @@ export function SessionsPanel() {
                   <span className={`session-status-badge status-${activeSession.status}`}>{activeSession.status}</span>
                 </div>
                 <div className="session-controls">
-                  <button className="btn btn-success btn-sm" disabled={isRunning} onClick={handleStart}>Start</button>
-                  <button className="btn btn-danger btn-sm" disabled={!isRunning} onClick={handleStop}>Stop</button>
-                  {isScheduled && (
-                    <button className="btn btn-primary btn-sm" id="sessionRunNowBtn" disabled={isRunning} title={isRunning ? 'A run is already in progress' : 'Run this scheduled session now'} onClick={handleRunNow}>Run now</button>
+                  {isScheduled ? (
+                    <>
+                      {activeSession.scheduleActive === true ? (
+                        <button className="btn btn-warning btn-sm" id="sessionDeactivateBtn" onClick={handleDeactivate} title="Stop the cron schedule from firing (does not abort a running session)">Deactivate</button>
+                      ) : (
+                        <button className="btn btn-success btn-sm" id="sessionActivateBtn" onClick={handleActivate} title="Arm the cron schedule so it fires on schedule">Activate</button>
+                      )}
+                      {isRunning ? (
+                        <button className="btn btn-danger btn-sm" id="sessionStopRunBtn" onClick={handleStop} title="Stop the current in-progress run">Stop run</button>
+                      ) : (
+                        <button className="btn btn-primary btn-sm" id="sessionRunNowBtn" onClick={handleRunNow} title="Run this scheduled session now">Start now</button>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <button className="btn btn-success btn-sm" disabled={isRunning} onClick={handleStart}>Start</button>
+                      <button className="btn btn-danger btn-sm" disabled={!isRunning} onClick={handleStop}>Stop</button>
+                    </>
                   )}
                   <button className="btn btn-secondary btn-sm" id="sessionEditBtn" disabled={isRunning} title={isRunning ? 'Stop the session to edit its settings' : 'Edit session settings'} onClick={handleEdit}>Edit</button>
                   <button className="btn btn-secondary btn-sm" onClick={() => setOutput([])}>Clear</button>

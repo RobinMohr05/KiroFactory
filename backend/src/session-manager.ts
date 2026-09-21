@@ -30,6 +30,7 @@ import {
   isSessionOwnedByUser,
   reorderSessionsInDb,
   updateSessionPinInDb,
+  updateSessionScheduleActiveInDb,
 } from "./db/sessions.js";
 import { getAllPooledSessionIds } from "./db/autoscalers.js";
 import { getUserKiroApiKey, getUserById } from "./db/users.js";
@@ -905,6 +906,7 @@ export async function createSession(input: CreateSessionInput): Promise<Session>
     cronExpression: input.cronExpression || undefined,
     cronTimezone: input.cronTimezone || undefined,
     retries: input.retries != null ? input.retries : undefined,
+    scheduleActive: input.scheduleActive === true ? true : false,
     createTasksEnabled: input.createTasksEnabled === true ? true : undefined,
     taskCreationTabId: input.createTasksEnabled === true ? (input.taskCreationTabId ?? null) : null,
   };
@@ -1343,6 +1345,7 @@ export function updateSessionFields(
   if (updates.cronExpression !== undefined) session.meta.cronExpression = updates.cronExpression || undefined;
   if (updates.cronTimezone !== undefined) session.meta.cronTimezone = updates.cronTimezone || undefined;
   if (updates.retries !== undefined) session.meta.retries = updates.retries != null ? updates.retries : undefined;
+  if (updates.scheduleActive !== undefined) session.meta.scheduleActive = updates.scheduleActive;
   if (updates.createTasksEnabled !== undefined) {
     session.meta.createTasksEnabled = updates.createTasksEnabled === true ? true : undefined;
     // When the toggle is off, always clear the tab so it's never stale
@@ -1359,6 +1362,37 @@ export function updateSessionFields(
 
   logSessionEvent("session-fields-updated", id, { updatedKeys: Object.keys(updates) });
   return { success: true };
+}
+
+/**
+ * Set the `scheduleActive` flag on a session in-memory and persist it.
+ * Unlike `updateSessionFields`, this does NOT enforce the "must not be running"
+ * restriction — activate/deactivate must work regardless of the live run status.
+ *
+ * The DB write is always attempted and awaited: if persistence fails (e.g. the
+ * DB is temporarily unavailable) the returned promise rejects so the caller can
+ * surface an error rather than silently reporting success on a flag that was
+ * never persisted. Resolves to true on success, false if the session doesn't
+ * exist.
+ */
+export async function setScheduleActive(id: number, active: boolean): Promise<boolean> {
+  const session = sessions.get(id);
+  if (!session) return false;
+
+  // Persist the flag change FIRST — a lightweight targeted DB write. Always
+  // attempt it (letting errors propagate) so a persistence failure can't be
+  // masked by a 200 response; the flag would otherwise silently revert to its
+  // stored value on the next server restart. Only after the DB write succeeds
+  // do we mutate the in-memory flag and broadcast, so a failed write never
+  // leaves in-memory state / connected clients diverged from the DB.
+  await updateSessionScheduleActiveInDb(id, active);
+
+  session.meta.scheduleActive = active;
+
+  broadcastToUser(session.meta.userId, { type: "session-updated", session: sanitizeSessionForClient(session.meta) });
+
+  log.info("session-schedule-active-set", { component: "session-manager", sessionId: id, scheduleActive: active });
+  return true;
 }
 
 /**

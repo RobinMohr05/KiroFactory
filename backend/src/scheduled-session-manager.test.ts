@@ -9,7 +9,7 @@
  * KiroRunner / worker / DB is needed.
  */
 
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // scheduled-session-manager imports session-manager at module load, which
 // pulls in the DB/worker/runner layers. Mock those so the import is cheap and
@@ -79,8 +79,18 @@ vi.mock("./worker-ws-handler.js", () => ({
   connectToLocalWorker: vi.fn(),
 }));
 
-import { runScheduledSessionOnce } from "./scheduled-session-manager.js";
+// Mock session-manager to control getScheduledSessions output in initScheduledSessions tests
+vi.mock("./session-manager.js", () => ({
+  getScheduledSessions: vi.fn().mockReturnValue([]),
+  getSessionStatus: vi.fn().mockReturnValue("stopped"),
+  runOneShotTurn: vi.fn().mockResolvedValue(undefined),
+  appendScheduledSystemLine: vi.fn(),
+  recordScheduledAttemptError: vi.fn(),
+}));
+
+import { runScheduledSessionOnce, initScheduledSessions, armSession, disarmSession, disarmAll } from "./scheduled-session-manager.js";
 import type { ScheduledRunDeps } from "./scheduled-session-manager.js";
+import { getScheduledSessions } from "./session-manager.js";
 
 function makeDeps(overrides: Partial<ScheduledRunDeps> = {}): ScheduledRunDeps {
   return {
@@ -148,5 +158,89 @@ describe("runScheduledSessionOnce — retries", () => {
     expect(deps.recordAttemptError).toHaveBeenCalledTimes(1);
     expect(deps.recordAttemptError).toHaveBeenNthCalledWith(1, 1, 4, expect.any(Error));
     expect(result).toEqual({ skipped: false, attempts: 2, succeeded: true });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// initScheduledSessions — boot-time arming with scheduleActive condition
+// ---------------------------------------------------------------------------
+
+describe("initScheduledSessions — arms only sessions with cronExpression AND scheduleActive=true", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    disarmAll();
+  });
+
+  const BASE_SESSION = {
+    id: 1,
+    name: "Sched",
+    agent: "",
+    status: "stopped" as const,
+    prompt: "",
+    interactive: false,
+    loop: false,
+    runs: 0,
+    intervalSeconds: 10,
+    cwd: "/workspace",
+    timeoutSeconds: 0,
+    userId: 1,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    output: [],
+    pinned: false,
+    isPermanent: false,
+    sortOrder: 0,
+  };
+
+  it("does NOT arm a session that has a cronExpression but scheduleActive=false", async () => {
+    vi.mocked(getScheduledSessions).mockReturnValue([
+      { ...BASE_SESSION, cronExpression: "0 9 * * *", cronTimezone: "UTC", scheduleActive: false },
+    ] as any);
+
+    // Arming a session ultimately schedules a timer via setTimeout. Spy on it
+    // so we can assert the arming decision directly rather than merely that
+    // getScheduledSessions was read — a bug that unconditionally armed every
+    // cron session would otherwise slip through.
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+
+    await initScheduledSessions();
+
+    expect(getScheduledSessions).toHaveBeenCalled();
+    expect(setTimeoutSpy).not.toHaveBeenCalled();
+
+    setTimeoutSpy.mockRestore();
+  });
+
+  it("does NOT arm a session that has a cronExpression but scheduleActive is undefined (defaults to false)", async () => {
+    vi.mocked(getScheduledSessions).mockReturnValue([
+      { ...BASE_SESSION, cronExpression: "0 9 * * *", cronTimezone: "UTC" }, // no scheduleActive
+    ] as any);
+
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+
+    await initScheduledSessions();
+
+    expect(getScheduledSessions).toHaveBeenCalled();
+    expect(setTimeoutSpy).not.toHaveBeenCalled();
+
+    setTimeoutSpy.mockRestore();
+  });
+
+  it("arms a session that has cronExpression AND scheduleActive=true", async () => {
+    vi.mocked(getScheduledSessions).mockReturnValue([
+      { ...BASE_SESSION, id: 42, cronExpression: "0 9 * * *", cronTimezone: "UTC", retries: 1, scheduleActive: true },
+    ] as any);
+
+    // armSession → scheduleNext → setTimeout for the next cron fire. Spy on
+    // setTimeout to confirm a timer was actually scheduled for this session.
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+
+    await initScheduledSessions();
+
+    expect(getScheduledSessions).toHaveBeenCalled();
+    expect(setTimeoutSpy).toHaveBeenCalledTimes(1);
+
+    setTimeoutSpy.mockRestore();
+    // Clean up the timer that was actually armed so it can't fire later.
+    disarmSession(42);
   });
 });

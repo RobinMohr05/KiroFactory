@@ -25,6 +25,7 @@ vi.mock("../session-manager.js", () => ({
   reorderSessions: vi.fn(),
   pinSession: vi.fn(),
   updateSessionFields: vi.fn().mockReturnValue({ success: true }),
+  setScheduleActive: vi.fn().mockResolvedValue(true),
 }));
 
 vi.mock("../scheduled-session-manager.js", () => ({
@@ -45,11 +46,20 @@ vi.mock("../logger.js", () => ({
 
 vi.mock("../db/turns.js", () => ({ getTurnsBySession: vi.fn().mockResolvedValue([]) }));
 
+// sessions.ts imports getTabById from ../db/tabs.js (via validateCreateTasksFields),
+// which statically pulls in db/connection.js (and its dotenv.config()). Mock it so
+// the test never touches a live DB path — matching routes/sessions.test.ts.
+vi.mock("../db/tabs.js", () => ({
+  getAgentTabs: vi.fn().mockResolvedValue([]),
+  getTabById: vi.fn().mockResolvedValue(null),
+}));
+
 import {
   createSession,
   getSession,
   deleteSession,
   updateSessionFields,
+  setScheduleActive,
 } from "../session-manager.js";
 import { armSession, disarmSession, triggerRunNow } from "../scheduled-session-manager.js";
 import sessionsRouter from "./sessions.js";
@@ -106,17 +116,39 @@ describe("POST /api/sessions — cron validation", () => {
     expect(createSession).not.toHaveBeenCalled();
   });
 
-  it("creates a scheduled session and arms it", async () => {
+  it("creates a scheduled session and does NOT arm it (scheduleActive defaults to false)", async () => {
     vi.mocked(createSession).mockResolvedValue({
       ...SESSION_FIXTURE,
       cronExpression: "0 9 * * *",
       cronTimezone: "Europe/Berlin",
       retries: 2,
+      scheduleActive: false,
     });
 
     const res = await request(createApp())
       .post("/api/sessions")
       .send({ name: "S", cronExpression: "0 9 * * *", cronTimezone: "Europe/Berlin", retries: 2 });
+
+    expect(res.status).toBe(201);
+    expect(createSession).toHaveBeenCalledWith(
+      expect.objectContaining({ cronExpression: "0 9 * * *", cronTimezone: "Europe/Berlin", retries: 2 })
+    );
+    // scheduleActive defaults to false → do NOT arm on creation
+    expect(armSession).not.toHaveBeenCalled();
+  });
+
+  it("creates a scheduled session and arms it when scheduleActive=true", async () => {
+    vi.mocked(createSession).mockResolvedValue({
+      ...SESSION_FIXTURE,
+      cronExpression: "0 9 * * *",
+      cronTimezone: "Europe/Berlin",
+      retries: 2,
+      scheduleActive: true,
+    });
+
+    const res = await request(createApp())
+      .post("/api/sessions")
+      .send({ name: "S", cronExpression: "0 9 * * *", cronTimezone: "Europe/Berlin", retries: 2, scheduleActive: true });
 
     expect(res.status).toBe(201);
     expect(createSession).toHaveBeenCalledWith(
@@ -305,8 +337,8 @@ describe("PATCH /api/sessions/:id — cron validation & (dis)arm", () => {
 
   it("allows a timezone-only update with a valid tz on an already-scheduled session", async () => {
     vi.mocked(getSession)
-      .mockReturnValueOnce({ ...SESSION_FIXTURE, cronExpression: "0 9 * * *", cronTimezone: "UTC" }) // ownership check
-      .mockReturnValueOnce({ ...SESSION_FIXTURE, cronExpression: "0 9 * * *", cronTimezone: "Europe/Berlin" }); // post-update read
+      .mockReturnValueOnce({ ...SESSION_FIXTURE, cronExpression: "0 9 * * *", cronTimezone: "UTC", scheduleActive: true }) // ownership check
+      .mockReturnValueOnce({ ...SESSION_FIXTURE, cronExpression: "0 9 * * *", cronTimezone: "Europe/Berlin", scheduleActive: true }); // post-update read
 
     const res = await request(createApp())
       .patch("/api/sessions/1")
@@ -319,7 +351,7 @@ describe("PATCH /api/sessions/:id — cron validation & (dis)arm", () => {
   it("re-arms the scheduler when cron fields are set", async () => {
     vi.mocked(getSession)
       .mockReturnValueOnce(SESSION_FIXTURE) // ownership check
-      .mockReturnValueOnce({ ...SESSION_FIXTURE, cronExpression: "0 9 * * *", cronTimezone: "UTC", retries: 1 }); // post-update read
+      .mockReturnValueOnce({ ...SESSION_FIXTURE, cronExpression: "0 9 * * *", cronTimezone: "UTC", retries: 1, scheduleActive: true }); // post-update read
 
     const res = await request(createApp())
       .patch("/api/sessions/1")
@@ -395,6 +427,256 @@ describe("DELETE /api/sessions/:id — disarms the scheduler", () => {
     const res = await request(createApp()).delete("/api/sessions/1");
 
     expect(res.status).toBe(404);
+    expect(disarmSession).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// scheduleActive — POST /api/sessions creates session NOT armed by default
+// ---------------------------------------------------------------------------
+
+describe("POST /api/sessions — scheduleActive defaults to false (no auto-arm)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("does NOT arm the scheduler for a newly created scheduled session (scheduleActive defaults false)", async () => {
+    vi.mocked(createSession).mockResolvedValue({
+      ...SESSION_FIXTURE,
+      cronExpression: "0 9 * * *",
+      cronTimezone: "Europe/Berlin",
+      retries: 0,
+      scheduleActive: false,
+    });
+
+    const res = await request(createApp())
+      .post("/api/sessions")
+      .send({ name: "S", cronExpression: "0 9 * * *", cronTimezone: "Europe/Berlin" });
+
+    expect(res.status).toBe(201);
+    // scheduleActive is false → do NOT arm
+    expect(armSession).not.toHaveBeenCalled();
+  });
+
+  it("arms the scheduler when scheduleActive is true on a newly created scheduled session", async () => {
+    vi.mocked(createSession).mockResolvedValue({
+      ...SESSION_FIXTURE,
+      cronExpression: "0 9 * * *",
+      cronTimezone: "Europe/Berlin",
+      retries: 0,
+      scheduleActive: true,
+    });
+
+    const res = await request(createApp())
+      .post("/api/sessions")
+      .send({ name: "S", cronExpression: "0 9 * * *", cronTimezone: "Europe/Berlin", scheduleActive: true });
+
+    expect(res.status).toBe(201);
+    expect(armSession).toHaveBeenCalledWith(1, "0 9 * * *", "Europe/Berlin", 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// scheduleActive — PATCH arms only when scheduleActive === true
+// ---------------------------------------------------------------------------
+
+describe("PATCH /api/sessions/:id — arming respects scheduleActive", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("does NOT arm when cronExpression is set but scheduleActive remains false", async () => {
+    vi.mocked(getSession)
+      .mockReturnValueOnce(SESSION_FIXTURE)
+      .mockReturnValueOnce({ ...SESSION_FIXTURE, cronExpression: "0 9 * * *", cronTimezone: "UTC", scheduleActive: false });
+
+    const res = await request(createApp())
+      .patch("/api/sessions/1")
+      .send({ cronExpression: "0 9 * * *", cronTimezone: "UTC" });
+
+    expect(res.status).toBe(200);
+    expect(disarmSession).toHaveBeenCalledWith(1);
+    expect(armSession).not.toHaveBeenCalled();
+  });
+
+  it("arms when cronExpression is set and scheduleActive is true", async () => {
+    vi.mocked(getSession)
+      .mockReturnValueOnce(SESSION_FIXTURE)
+      .mockReturnValueOnce({ ...SESSION_FIXTURE, cronExpression: "0 9 * * *", cronTimezone: "UTC", scheduleActive: true });
+
+    const res = await request(createApp())
+      .patch("/api/sessions/1")
+      .send({ cronExpression: "0 9 * * *", cronTimezone: "UTC", scheduleActive: true });
+
+    expect(res.status).toBe(200);
+    expect(armSession).toHaveBeenCalledWith(1, "0 9 * * *", "UTC", undefined);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/sessions/:id/schedule/activate
+// ---------------------------------------------------------------------------
+
+describe("POST /api/sessions/:id/schedule/activate", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("returns 404 for a non-existent session", async () => {
+    vi.mocked(getSession).mockReturnValue(undefined);
+
+    const res = await request(createApp())
+      .post("/api/sessions/99/schedule/activate");
+
+    expect(res.status).toBe(404);
+    expect(setScheduleActive).not.toHaveBeenCalled();
+    expect(armSession).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 for another user's session", async () => {
+    vi.mocked(getSession).mockReturnValue({ ...SESSION_FIXTURE, userId: 2 });
+
+    const res = await request(createApp())
+      .post("/api/sessions/1/schedule/activate");
+
+    expect(res.status).toBe(404);
+    expect(setScheduleActive).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when session has no cronExpression", async () => {
+    vi.mocked(getSession).mockReturnValue(SESSION_FIXTURE); // no cronExpression
+
+    const res = await request(createApp())
+      .post("/api/sessions/1/schedule/activate");
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/cron/i);
+    expect(setScheduleActive).not.toHaveBeenCalled();
+    expect(armSession).not.toHaveBeenCalled();
+  });
+
+  it("sets scheduleActive=true and arms the session", async () => {
+    vi.mocked(getSession).mockReturnValue({
+      ...SESSION_FIXTURE,
+      cronExpression: "0 9 * * *",
+      cronTimezone: "Europe/Berlin",
+      retries: 2,
+    });
+    vi.mocked(setScheduleActive).mockResolvedValue(true);
+
+    const res = await request(createApp())
+      .post("/api/sessions/1/schedule/activate");
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(setScheduleActive).toHaveBeenCalledWith(1, true);
+    expect(armSession).toHaveBeenCalledWith(1, "0 9 * * *", "Europe/Berlin", 2);
+  });
+
+  it("works even when the session is currently running", async () => {
+    vi.mocked(getSession).mockReturnValue({
+      ...SESSION_FIXTURE,
+      status: "running" as const,
+      cronExpression: "0 9 * * *",
+      cronTimezone: "UTC",
+    });
+    vi.mocked(setScheduleActive).mockResolvedValue(true);
+
+    const res = await request(createApp())
+      .post("/api/sessions/1/schedule/activate");
+
+    expect(res.status).toBe(200);
+    expect(setScheduleActive).toHaveBeenCalledWith(1, true);
+    expect(armSession).toHaveBeenCalled();
+  });
+
+  it("returns 500 (does NOT arm) when persisting scheduleActive fails", async () => {
+    vi.mocked(getSession).mockReturnValue({
+      ...SESSION_FIXTURE,
+      cronExpression: "0 9 * * *",
+      cronTimezone: "UTC",
+    });
+    // DB write rejects (e.g. DB temporarily unavailable) — must not respond 200.
+    vi.mocked(setScheduleActive).mockRejectedValue(new Error("db down"));
+
+    const res = await request(createApp())
+      .post("/api/sessions/1/schedule/activate");
+
+    expect(res.status).toBe(500);
+    expect(setScheduleActive).toHaveBeenCalledWith(1, true);
+    // Persistence failed → the timer must NOT be armed on a false promise.
+    expect(armSession).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/sessions/:id/schedule/deactivate", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("returns 404 for a non-existent session", async () => {
+    vi.mocked(getSession).mockReturnValue(undefined);
+
+    const res = await request(createApp())
+      .post("/api/sessions/99/schedule/deactivate");
+
+    expect(res.status).toBe(404);
+    expect(setScheduleActive).not.toHaveBeenCalled();
+    expect(disarmSession).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 for another user's session", async () => {
+    vi.mocked(getSession).mockReturnValue({ ...SESSION_FIXTURE, userId: 2 });
+
+    const res = await request(createApp())
+      .post("/api/sessions/1/schedule/deactivate");
+
+    expect(res.status).toBe(404);
+    expect(setScheduleActive).not.toHaveBeenCalled();
+  });
+
+  it("sets scheduleActive=false and disarms the session", async () => {
+    vi.mocked(getSession).mockReturnValue({
+      ...SESSION_FIXTURE,
+      cronExpression: "0 9 * * *",
+      cronTimezone: "UTC",
+      scheduleActive: true,
+    });
+    vi.mocked(setScheduleActive).mockResolvedValue(true);
+
+    const res = await request(createApp())
+      .post("/api/sessions/1/schedule/deactivate");
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(setScheduleActive).toHaveBeenCalledWith(1, false);
+    expect(disarmSession).toHaveBeenCalledWith(1);
+  });
+
+  it("works even when the session is currently running (does NOT abort the run)", async () => {
+    vi.mocked(getSession).mockReturnValue({
+      ...SESSION_FIXTURE,
+      status: "running" as const,
+      cronExpression: "0 9 * * *",
+      cronTimezone: "UTC",
+      scheduleActive: true,
+    });
+    vi.mocked(setScheduleActive).mockResolvedValue(true);
+
+    const res = await request(createApp())
+      .post("/api/sessions/1/schedule/deactivate");
+
+    expect(res.status).toBe(200);
+    expect(setScheduleActive).toHaveBeenCalledWith(1, false);
+    expect(disarmSession).toHaveBeenCalledWith(1);
+  });
+
+  it("returns 500 (does NOT disarm) when persisting scheduleActive fails", async () => {
+    vi.mocked(getSession).mockReturnValue({
+      ...SESSION_FIXTURE,
+      cronExpression: "0 9 * * *",
+      cronTimezone: "UTC",
+      scheduleActive: true,
+    });
+    vi.mocked(setScheduleActive).mockRejectedValue(new Error("db down"));
+
+    const res = await request(createApp())
+      .post("/api/sessions/1/schedule/deactivate");
+
+    expect(res.status).toBe(500);
+    expect(setScheduleActive).toHaveBeenCalledWith(1, false);
     expect(disarmSession).not.toHaveBeenCalled();
   });
 });
