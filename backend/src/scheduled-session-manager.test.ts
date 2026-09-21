@@ -88,7 +88,7 @@ vi.mock("./session-manager.js", () => ({
   recordScheduledAttemptError: vi.fn(),
 }));
 
-import { runScheduledSessionOnce, initScheduledSessions, armSession, disarmAll } from "./scheduled-session-manager.js";
+import { runScheduledSessionOnce, initScheduledSessions, armSession, disarmSession, disarmAll } from "./scheduled-session-manager.js";
 import type { ScheduledRunDeps } from "./scheduled-session-manager.js";
 import { getScheduledSessions } from "./session-manager.js";
 
@@ -196,16 +196,18 @@ describe("initScheduledSessions — arms only sessions with cronExpression AND s
       { ...BASE_SESSION, cronExpression: "0 9 * * *", cronTimezone: "UTC", scheduleActive: false },
     ] as any);
 
+    // Arming a session ultimately schedules a timer via setTimeout. Spy on it
+    // so we can assert the arming decision directly rather than merely that
+    // getScheduledSessions was read — a bug that unconditionally armed every
+    // cron session would otherwise slip through.
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+
     await initScheduledSessions();
 
-    // armSession is not directly testable here because it calls setTimeout,
-    // but we can confirm no timer is armed by checking via a different mechanism.
-    // The test here is that initScheduledSessions reads scheduleActive correctly.
-    // We confirm indirectly: armSession internally is called only when active=true.
-    // Since we only have access to the module's armed state via disarmAll/exports,
-    // confirm via the mock: getScheduledSessions was called and session was NOT armed.
     expect(getScheduledSessions).toHaveBeenCalled();
-    // No error thrown — just no arming. Fine.
+    expect(setTimeoutSpy).not.toHaveBeenCalled();
+
+    setTimeoutSpy.mockRestore();
   });
 
   it("does NOT arm a session that has a cronExpression but scheduleActive is undefined (defaults to false)", async () => {
@@ -213,9 +215,14 @@ describe("initScheduledSessions — arms only sessions with cronExpression AND s
       { ...BASE_SESSION, cronExpression: "0 9 * * *", cronTimezone: "UTC" }, // no scheduleActive
     ] as any);
 
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+
     await initScheduledSessions();
 
     expect(getScheduledSessions).toHaveBeenCalled();
+    expect(setTimeoutSpy).not.toHaveBeenCalled();
+
+    setTimeoutSpy.mockRestore();
   });
 
   it("arms a session that has cronExpression AND scheduleActive=true", async () => {
@@ -223,13 +230,17 @@ describe("initScheduledSessions — arms only sessions with cronExpression AND s
       { ...BASE_SESSION, id: 42, cronExpression: "0 9 * * *", cronTimezone: "UTC", retries: 1, scheduleActive: true },
     ] as any);
 
-    // armSession calls computeNextFireDelayMs from cron-schedule.js which is
-    // NOT mocked — it uses real cron parsing. That's fine for the real lib,
-    // but we can observe that the armed map has an entry for id=42 by calling
-    // disarmSession on it (no-op if not armed, no throw either way).
-    // The simplest proof is: getScheduledSessions is called and no error is thrown.
+    // armSession → scheduleNext → setTimeout for the next cron fire. Spy on
+    // setTimeout to confirm a timer was actually scheduled for this session.
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+
     await initScheduledSessions();
 
     expect(getScheduledSessions).toHaveBeenCalled();
+    expect(setTimeoutSpy).toHaveBeenCalledTimes(1);
+
+    setTimeoutSpy.mockRestore();
+    // Clean up the timer that was actually armed so it can't fire later.
+    disarmSession(42);
   });
 });

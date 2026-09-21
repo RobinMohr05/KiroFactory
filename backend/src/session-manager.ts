@@ -1369,9 +1369,13 @@ export function updateSessionFields(
  * Unlike `updateSessionFields`, this does NOT enforce the "must not be running"
  * restriction — activate/deactivate must work regardless of the live run status.
  *
- * Returns true on success, false if the session doesn't exist.
+ * The DB write is always attempted and awaited: if persistence fails (e.g. the
+ * DB is temporarily unavailable) the returned promise rejects so the caller can
+ * surface an error rather than silently reporting success on a flag that was
+ * never persisted. Resolves to true on success, false if the session doesn't
+ * exist.
  */
-export function setScheduleActive(id: number, active: boolean): boolean {
+export async function setScheduleActive(id: number, active: boolean): Promise<boolean> {
   const session = sessions.get(id);
   if (!session) return false;
 
@@ -1379,12 +1383,11 @@ export function setScheduleActive(id: number, active: boolean): boolean {
 
   broadcastToUser(session.meta.userId, { type: "session-updated", session: sanitizeSessionForClient(session.meta) });
 
-  // Persist the flag change directly — a lightweight targeted DB write.
-  if (isDbAvailable()) {
-    updateSessionScheduleActiveInDb(id, active).catch(() => {
-      // Silent — will be corrected by the next full persistSession call
-    });
-  }
+  // Persist the flag change directly — a lightweight targeted DB write. Always
+  // attempt it (letting errors propagate) so a persistence failure can't be
+  // masked by a 200 response; the flag would otherwise silently revert to its
+  // stored value on the next server restart.
+  await updateSessionScheduleActiveInDb(id, active);
 
   log.info("session-schedule-active-set", { component: "session-manager", sessionId: id, scheduleActive: active });
   return true;

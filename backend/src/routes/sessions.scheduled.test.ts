@@ -25,7 +25,7 @@ vi.mock("../session-manager.js", () => ({
   reorderSessions: vi.fn(),
   pinSession: vi.fn(),
   updateSessionFields: vi.fn().mockReturnValue({ success: true }),
-  setScheduleActive: vi.fn().mockReturnValue(true),
+  setScheduleActive: vi.fn().mockResolvedValue(true),
 }));
 
 vi.mock("../scheduled-session-manager.js", () => ({
@@ -45,6 +45,14 @@ vi.mock("../logger.js", () => ({
 }));
 
 vi.mock("../db/turns.js", () => ({ getTurnsBySession: vi.fn().mockResolvedValue([]) }));
+
+// sessions.ts imports getTabById from ../db/tabs.js (via validateCreateTasksFields),
+// which statically pulls in db/connection.js (and its dotenv.config()). Mock it so
+// the test never touches a live DB path — matching routes/sessions.test.ts.
+vi.mock("../db/tabs.js", () => ({
+  getAgentTabs: vi.fn().mockResolvedValue([]),
+  getTabById: vi.fn().mockResolvedValue(null),
+}));
 
 import {
   createSession,
@@ -548,7 +556,7 @@ describe("POST /api/sessions/:id/schedule/activate", () => {
       cronTimezone: "Europe/Berlin",
       retries: 2,
     });
-    vi.mocked(setScheduleActive).mockReturnValue(true);
+    vi.mocked(setScheduleActive).mockResolvedValue(true);
 
     const res = await request(createApp())
       .post("/api/sessions/1/schedule/activate");
@@ -566,7 +574,7 @@ describe("POST /api/sessions/:id/schedule/activate", () => {
       cronExpression: "0 9 * * *",
       cronTimezone: "UTC",
     });
-    vi.mocked(setScheduleActive).mockReturnValue(true);
+    vi.mocked(setScheduleActive).mockResolvedValue(true);
 
     const res = await request(createApp())
       .post("/api/sessions/1/schedule/activate");
@@ -575,11 +583,25 @@ describe("POST /api/sessions/:id/schedule/activate", () => {
     expect(setScheduleActive).toHaveBeenCalledWith(1, true);
     expect(armSession).toHaveBeenCalled();
   });
-});
 
-// ---------------------------------------------------------------------------
-// POST /api/sessions/:id/schedule/deactivate
-// ---------------------------------------------------------------------------
+  it("returns 500 (does NOT arm) when persisting scheduleActive fails", async () => {
+    vi.mocked(getSession).mockReturnValue({
+      ...SESSION_FIXTURE,
+      cronExpression: "0 9 * * *",
+      cronTimezone: "UTC",
+    });
+    // DB write rejects (e.g. DB temporarily unavailable) — must not respond 200.
+    vi.mocked(setScheduleActive).mockRejectedValue(new Error("db down"));
+
+    const res = await request(createApp())
+      .post("/api/sessions/1/schedule/activate");
+
+    expect(res.status).toBe(500);
+    expect(setScheduleActive).toHaveBeenCalledWith(1, true);
+    // Persistence failed → the timer must NOT be armed on a false promise.
+    expect(armSession).not.toHaveBeenCalled();
+  });
+});
 
 describe("POST /api/sessions/:id/schedule/deactivate", () => {
   beforeEach(() => vi.clearAllMocks());
@@ -612,7 +634,7 @@ describe("POST /api/sessions/:id/schedule/deactivate", () => {
       cronTimezone: "UTC",
       scheduleActive: true,
     });
-    vi.mocked(setScheduleActive).mockReturnValue(true);
+    vi.mocked(setScheduleActive).mockResolvedValue(true);
 
     const res = await request(createApp())
       .post("/api/sessions/1/schedule/deactivate");
@@ -631,7 +653,7 @@ describe("POST /api/sessions/:id/schedule/deactivate", () => {
       cronTimezone: "UTC",
       scheduleActive: true,
     });
-    vi.mocked(setScheduleActive).mockReturnValue(true);
+    vi.mocked(setScheduleActive).mockResolvedValue(true);
 
     const res = await request(createApp())
       .post("/api/sessions/1/schedule/deactivate");
@@ -639,5 +661,22 @@ describe("POST /api/sessions/:id/schedule/deactivate", () => {
     expect(res.status).toBe(200);
     expect(setScheduleActive).toHaveBeenCalledWith(1, false);
     expect(disarmSession).toHaveBeenCalledWith(1);
+  });
+
+  it("returns 500 (does NOT disarm) when persisting scheduleActive fails", async () => {
+    vi.mocked(getSession).mockReturnValue({
+      ...SESSION_FIXTURE,
+      cronExpression: "0 9 * * *",
+      cronTimezone: "UTC",
+      scheduleActive: true,
+    });
+    vi.mocked(setScheduleActive).mockRejectedValue(new Error("db down"));
+
+    const res = await request(createApp())
+      .post("/api/sessions/1/schedule/deactivate");
+
+    expect(res.status).toBe(500);
+    expect(setScheduleActive).toHaveBeenCalledWith(1, false);
+    expect(disarmSession).not.toHaveBeenCalled();
   });
 });

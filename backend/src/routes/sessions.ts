@@ -669,7 +669,7 @@ router.post("/:id/schedule/activate", async (req: Request, res: Response) => {
       res.status(400).json({ error: "Session has no cronExpression — cannot activate schedule" });
       return;
     }
-    setScheduleActive(id, true);
+    await setScheduleActive(id, true);
     armSession(id, session.cronExpression, session.cronTimezone, session.retries);
     res.json({ success: true });
   } catch (err) {
@@ -700,7 +700,7 @@ router.post("/:id/schedule/deactivate", async (req: Request, res: Response) => {
       res.status(404).json({ error: "Session not found" });
       return;
     }
-    setScheduleActive(id, false);
+    await setScheduleActive(id, false);
     disarmSession(id);
     res.json({ success: true });
   } catch (err) {
