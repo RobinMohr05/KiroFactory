@@ -24,7 +24,7 @@ import agentsRouter from "./routes/agents.js";
 import errorsRouter from "./routes/errors.js";
 import credentialsRouter from "./routes/credentials.js";
 import adminRouter from "./routes/admin.js";
-import taskPlannerRouter, { plannerPool } from "./routes/task-planner.js";
+import taskPlannerRouter, { plannerPool, initPlannerConversationCleanup } from "./routes/task-planner.js";
 import taskPlannerBoardMcpRouter from "./routes/task-planner-board-mcp.js";
 import autoscalersRouter from "./routes/autoscalers.js";
 import usageRouter from "./routes/usage.js";
@@ -235,6 +235,11 @@ async function start(): Promise<void> {
     // session store) and adopts each AutoScaler's persisted pooled session
     // pool — see autoscaler-manager.ts's initAutoScalers() doc comment.
     await initAutoScalers();
+
+    // Start the AI Task Planner conversation TTL sweeper (immediate sweep +
+    // hourly). Only meaningful with a DB connection, so it lives inside the
+    // isDbAvailable() guard alongside the other boot-time initializers.
+    initPlannerConversationCleanup();
   } else {
     log.warn("db-unavailable-at-startup", {
       component: "startup",

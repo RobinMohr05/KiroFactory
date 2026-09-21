@@ -55,6 +55,7 @@ vi.mock("../session-manager.js", () => ({
   sendPrompt: vi.fn(),
   getAllSessions: vi.fn().mockReturnValue([]),
   injectPendingRunner: vi.fn().mockReturnValue(false),
+  registerTurnCompletionHook: vi.fn(),
 }));
 vi.mock("../error-store.js", () => ({ recordError: vi.fn() }));
 vi.mock("../agent/kiro-runner.js", () => ({ KiroRunner: { create: vi.fn() } }));

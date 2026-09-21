@@ -59,6 +59,7 @@ vi.mock("../session-manager.js", () => ({
   sendPrompt: vi.fn().mockResolvedValue(true),
   getAllSessions: vi.fn().mockReturnValue([]),
   injectPendingRunner: vi.fn().mockReturnValue(false),
+  registerTurnCompletionHook: vi.fn(),
 }));
 
 vi.mock("../error-store.js", () => ({

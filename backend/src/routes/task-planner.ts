@@ -9,7 +9,18 @@ import {
   deleteSession,
   getAllSessions,
   injectPendingRunner,
+  registerTurnCompletionHook,
 } from "../session-manager.js";
+import {
+  createPlannerConversation,
+  appendPlannerMessage,
+  listPlannerConversations,
+  getPlannerConversation,
+  deletePlannerConversation,
+  deleteExpiredPlannerConversations,
+  sanitizePlannerMessageText,
+  type PlannerMessageRecord,
+} from "../db/planner-conversations.js";
 import { createTask } from "../db/tasks.js";
 import { getAllTabs, getTabById } from "../db/tabs.js";
 import { broadcastToUser } from "../websocket-handler.js";
@@ -41,6 +52,245 @@ const router = Router();
 
 // All task planner routes require authentication
 router.use(requireAuth);
+
+// ---------------------------------------------------------------------------
+// Conversation persistence (durable transcripts with resume + 7-day TTL)
+// ---------------------------------------------------------------------------
+
+/** Session name that marks a session as an AI Task Planner conversation. */
+const PLANNER_SESSION_NAME = "Task Planner";
+
+/** Resume-transcript caps (protect the prompt budget). */
+const RESUME_MAX_MESSAGES = 40;
+const RESUME_MAX_CHARS = 12000;
+
+/** 7-day TTL for planner conversations, and hourly sweep interval. */
+const PLANNER_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const PLANNER_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
+
+/**
+ * Live mapping from a planner session's id to its persisted conversation id.
+ * Populated lazily on the first user message of a planner session (see the
+ * POST /:sessionId/message handler) and read by the turn-completion hook to
+ * know which conversation an assistant reply belongs to. Entries are best-
+ * effort/in-memory only — losing them (e.g. server restart) simply means a
+ * dead session's conversation stops growing, which is fine since the transcript
+ * is already durably stored.
+ */
+const sessionToConversation = new Map<number, number>();
+
+/**
+ * Cap a stored transcript for replay into a resumed planner's system prompt:
+ * keep at most the last RESUME_MAX_MESSAGES messages AND at most
+ * ~RESUME_MAX_CHARS characters (whichever is smaller), always keeping the MOST
+ * RECENT messages. At least the single most recent message is always kept even
+ * if it alone exceeds the char cap. Pure/synchronous for unit testing.
+ */
+export function capResumeTranscript(messages: PlannerMessageRecord[]): PlannerMessageRecord[] {
+  if (messages.length === 0) return [];
+
+  // First cap by message count (keep the most recent).
+  const byCount = messages.slice(-RESUME_MAX_MESSAGES);
+
+  // Then cap by characters, walking backwards from the most recent so the
+  // newest messages are preferentially retained.
+  const kept: PlannerMessageRecord[] = [];
+  let total = 0;
+  for (let i = byCount.length - 1; i >= 0; i--) {
+    const len = byCount[i].text.length;
+    if (kept.length > 0 && total + len > RESUME_MAX_CHARS) break;
+    kept.unshift(byCount[i]);
+    total += len;
+  }
+  return kept;
+}
+
+/**
+ * Format a (already-capped) transcript into a "## Resumed Conversation"
+ * system-prompt block as an ordered "User: …" / "Assistant: …" dialogue.
+ */
+export function buildResumeBlock(messages: PlannerMessageRecord[]): string {
+  const lines = messages.map((m) => {
+    const speaker = m.role === "assistant" ? "Assistant" : "User";
+    return `${speaker}: ${m.text}`;
+  });
+  return [
+    `\n\n## Resumed Conversation`,
+    `The user is resuming an earlier planning session. Here is the prior dialogue (most recent messages, truncated to fit). Continue from where it left off rather than restarting the interview:`,
+    ``,
+    ...lines,
+  ].join("\n");
+}
+
+/**
+ * Turn-completion hook: when a planner session's assistant reply completes,
+ * append it to that session's persisted conversation (if one exists yet).
+ * Registered once at module load. Fire-and-forget; never throws.
+ */
+registerTurnCompletionHook((session, assistantText) => {
+  if (session.name !== PLANNER_SESSION_NAME) return;
+  const conversationId = sessionToConversation.get(session.id);
+  if (conversationId === undefined) return;
+  const text = assistantText.trim();
+  if (!text) return;
+  appendPlannerMessage({ conversationId, role: "assistant", text }).catch((err) => {
+    log.warn("planner-persist-assistant-failed", {
+      component: "task-planner",
+      sessionId: session.id,
+      conversationId,
+      ...toErrorFields(err),
+      msg: "Failed to persist planner assistant message",
+    });
+  });
+});
+
+/**
+ * In-process TTL sweeper: delete planner conversations older than 7 days.
+ * Runs immediately on boot and then hourly. Guarded against DB unavailability
+ * the same way other boot-time initializers are (see index.ts). Never throws.
+ */
+export function initPlannerConversationCleanup(): void {
+  const sweep = () => {
+    const cutoff = new Date(Date.now() - PLANNER_TTL_MS).toISOString();
+    deleteExpiredPlannerConversations(cutoff)
+      .then((count) => {
+        if (count > 0) {
+          log.info("planner-conversations-swept", {
+            component: "task-planner",
+            deleted: count,
+            msg: `Deleted ${count} expired planner conversation(s) (older than 7 days)`,
+          });
+        }
+      })
+      .catch((err) => {
+        log.warn("planner-conversations-sweep-failed", {
+          component: "task-planner",
+          ...toErrorFields(err),
+          msg: "Planner conversation TTL sweep failed",
+        });
+      });
+  };
+
+  sweep();
+  const timer = setInterval(sweep, PLANNER_CLEANUP_INTERVAL_MS);
+  // Don't keep the event loop alive solely for the sweeper.
+  if (typeof timer.unref === "function") timer.unref();
+}
+
+/**
+ * Persist a planner user message, creating the PlannerConversation on the
+ * first message of the session. Best-effort — logs and swallows errors so a
+ * persistence failure never affects the live chat. The first message's text is
+ * also used to derive the conversation's shortDescription.
+ */
+async function persistPlannerUserMessage(
+  sessionId: number,
+  userId: number,
+  tabId: number | null,
+  storedText: string
+): Promise<void> {
+  try {
+    let conversationId = sessionToConversation.get(sessionId);
+    if (conversationId === undefined) {
+      const conversation = await createPlannerConversation({
+        userId,
+        tabId,
+        firstUserMessage: storedText,
+      });
+      conversationId = conversation.id;
+      sessionToConversation.set(sessionId, conversationId);
+    }
+    await appendPlannerMessage({ conversationId, role: "user", text: storedText });
+  } catch (err) {
+    log.warn("planner-persist-user-failed", {
+      component: "task-planner",
+      sessionId,
+      ...toErrorFields(err),
+      msg: "Failed to persist planner user message",
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Conversation persistence endpoints (list / get / delete)
+//
+// Registered BEFORE the `/:sessionId/*` routes below so "/conversations" is
+// not swallowed by the `:sessionId` param (Number("conversations") → NaN).
+// ---------------------------------------------------------------------------
+
+// GET /api/task-planner/conversations — List the current user's saved planner conversations
+router.get("/conversations", async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const conversations = await listPlannerConversations(userId);
+    res.json({ conversations });
+  } catch (err) {
+    log.error("route-error", {
+      component: "task-planner",
+      method: "GET",
+      path: "/api/task-planner/conversations",
+      ...toErrorFields(err),
+      msg: "Failed to list planner conversations",
+    });
+    res.status(500).json({ error: "Failed to list conversations" });
+  }
+});
+
+// GET /api/task-planner/conversations/:id — Full transcript (404 if not owned)
+router.get("/conversations/:id", async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const id = Number(req.params.id);
+    if (isNaN(id)) {
+      res.status(400).json({ error: "Invalid conversation ID" });
+      return;
+    }
+
+    const conversation = await getPlannerConversation(id, userId);
+    if (!conversation) {
+      res.status(404).json({ error: "Conversation not found" });
+      return;
+    }
+    res.json({ conversation });
+  } catch (err) {
+    log.error("route-error", {
+      component: "task-planner",
+      method: "GET",
+      path: "/api/task-planner/conversations/:id",
+      ...toErrorFields(err),
+      msg: "Failed to get planner conversation",
+    });
+    res.status(500).json({ error: "Failed to get conversation" });
+  }
+});
+
+// DELETE /api/task-planner/conversations/:id — Manual delete (404 if not owned)
+router.delete("/conversations/:id", async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const id = Number(req.params.id);
+    if (isNaN(id)) {
+      res.status(400).json({ error: "Invalid conversation ID" });
+      return;
+    }
+
+    const deleted = await deletePlannerConversation(id, userId);
+    if (!deleted) {
+      res.status(404).json({ error: "Conversation not found" });
+      return;
+    }
+    res.status(204).send();
+  } catch (err) {
+    log.error("route-error", {
+      component: "task-planner",
+      method: "DELETE",
+      path: "/api/task-planner/conversations/:id",
+      ...toErrorFields(err),
+      msg: "Failed to delete planner conversation",
+    });
+    res.status(500).json({ error: "Failed to delete conversation" });
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Warm Session Pool
@@ -364,7 +614,7 @@ router.post("/heartbeat", (req: Request, res: Response) => {
 router.post("/start", async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
-    const { tabId } = req.body as { tabId?: number };
+    const { tabId, resumeConversationId } = req.body as { tabId?: number; resumeConversationId?: number };
 
     // Enforce at most one Task Planner session per user at a time. A stray
     // duplicate can otherwise be created by a double-fire of this route
@@ -379,6 +629,7 @@ router.post("/start", async (req: Request, res: Response) => {
     );
     for (const stale of stalePlanners) {
       deleteSession(stale.id);
+      sessionToConversation.delete(stale.id);
     }
 
     // Build the system prompt, optionally enriched with tab/repository context
@@ -456,6 +707,29 @@ router.post("/start", async (req: Request, res: Response) => {
         });
         if (!rawMcpServers) rawMcpServers = [];
         rawMcpServers.push(boardMcp);
+      }
+    }
+
+    // Resume support: if resumeConversationId is provided and owned by the
+    // user, load the stored transcript, cap it (last 40 messages AND ~12000
+    // chars, most recent kept), and append a "## Resumed Conversation" block to
+    // the system prompt so the fresh planner continues where the old one left
+    // off. Unknown/unowned ids are silently ignored (a fresh session starts).
+    if (resumeConversationId) {
+      try {
+        const prior = await getPlannerConversation(resumeConversationId, userId);
+        if (prior && prior.messages.length > 0) {
+          const capped = capResumeTranscript(prior.messages);
+          systemPrompt += buildResumeBlock(capped);
+        }
+      } catch (err) {
+        log.warn("planner-resume-load-failed", {
+          component: "task-planner",
+          userId,
+          resumeConversationId,
+          ...toErrorFields(err),
+          msg: "Failed to load conversation for resume — starting fresh",
+        });
       }
     }
 
@@ -614,6 +888,16 @@ router.post("/:sessionId/message", async (req: Request, res: Response) => {
       const msg = err instanceof Error ? err.message : String(err);
       res.status(400).json({ error: msg });
       return;
+    }
+
+    // Persist the user message for planner sessions only. Create the
+    // PlannerConversation lazily on the first user message of this session,
+    // then append. Image blobs are never stored — sanitizePlannerMessageText
+    // replaces them with an [image] marker. Best-effort/fire-and-forget: a
+    // persistence failure must never break the live chat.
+    if (session.name === PLANNER_SESSION_NAME) {
+      const storedText = sanitizePlannerMessageText(message.trim(), images);
+      void persistPlannerUserMessage(session.id, userId, session.tabIds?.[0] ?? null, storedText);
     }
 
     res.json({ ok: true });
@@ -843,6 +1127,7 @@ router.post("/:sessionId/create-task", async (req: Request, res: Response) => {
       try {
         await stopSession(sessionId);
         deleteSession(sessionId);
+        sessionToConversation.delete(sessionId);
       } catch {
         // Non-fatal — session cleanup failure doesn't affect the created tasks
       }
@@ -879,6 +1164,7 @@ router.delete("/:sessionId", async (req: Request, res: Response) => {
 
     await stopSession(sessionId);
     deleteSession(sessionId);
+    sessionToConversation.delete(sessionId);
 
     res.status(204).send();
   } catch (err) {
