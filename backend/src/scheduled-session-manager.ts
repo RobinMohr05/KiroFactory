@@ -201,16 +201,17 @@ export async function initScheduledSessions(): Promise<void> {
   }
 
   for (const s of scheduled) {
-    if (s.cronExpression) {
+    if (s.cronExpression && s.scheduleActive === true) {
       armSession(s.id, s.cronExpression, s.cronTimezone, s.retries);
     }
   }
 
-  if (scheduled.length > 0) {
+  const activeCount = scheduled.filter(s => s.cronExpression && s.scheduleActive === true).length;
+  if (activeCount > 0) {
     log.info("scheduled-sessions-armed", {
       component: "scheduled-session-manager",
-      count: scheduled.length,
-      msg: `Armed ${scheduled.length} scheduled session(s)`,
+      count: activeCount,
+      msg: `Armed ${activeCount} scheduled session(s)`,
     });
   }
 }

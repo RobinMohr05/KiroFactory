@@ -30,6 +30,7 @@ import {
   isSessionOwnedByUser,
   reorderSessionsInDb,
   updateSessionPinInDb,
+  updateSessionScheduleActiveInDb,
 } from "./db/sessions.js";
 import { getAllPooledSessionIds } from "./db/autoscalers.js";
 import { getUserKiroApiKey, getUserById } from "./db/users.js";
@@ -905,6 +906,7 @@ export async function createSession(input: CreateSessionInput): Promise<Session>
     cronExpression: input.cronExpression || undefined,
     cronTimezone: input.cronTimezone || undefined,
     retries: input.retries != null ? input.retries : undefined,
+    scheduleActive: input.scheduleActive === true ? true : false,
     createTasksEnabled: input.createTasksEnabled === true ? true : undefined,
     taskCreationTabId: input.createTasksEnabled === true ? (input.taskCreationTabId ?? null) : null,
   };
@@ -1343,6 +1345,7 @@ export function updateSessionFields(
   if (updates.cronExpression !== undefined) session.meta.cronExpression = updates.cronExpression || undefined;
   if (updates.cronTimezone !== undefined) session.meta.cronTimezone = updates.cronTimezone || undefined;
   if (updates.retries !== undefined) session.meta.retries = updates.retries != null ? updates.retries : undefined;
+  if (updates.scheduleActive !== undefined) session.meta.scheduleActive = updates.scheduleActive;
   if (updates.createTasksEnabled !== undefined) {
     session.meta.createTasksEnabled = updates.createTasksEnabled === true ? true : undefined;
     // When the toggle is off, always clear the tab so it's never stale
@@ -1359,6 +1362,32 @@ export function updateSessionFields(
 
   logSessionEvent("session-fields-updated", id, { updatedKeys: Object.keys(updates) });
   return { success: true };
+}
+
+/**
+ * Set the `scheduleActive` flag on a session in-memory and persist it.
+ * Unlike `updateSessionFields`, this does NOT enforce the "must not be running"
+ * restriction — activate/deactivate must work regardless of the live run status.
+ *
+ * Returns true on success, false if the session doesn't exist.
+ */
+export function setScheduleActive(id: number, active: boolean): boolean {
+  const session = sessions.get(id);
+  if (!session) return false;
+
+  session.meta.scheduleActive = active;
+
+  broadcastToUser(session.meta.userId, { type: "session-updated", session: sanitizeSessionForClient(session.meta) });
+
+  // Persist the flag change directly — a lightweight targeted DB write.
+  if (isDbAvailable()) {
+    updateSessionScheduleActiveInDb(id, active).catch(() => {
+      // Silent — will be corrected by the next full persistSession call
+    });
+  }
+
+  log.info("session-schedule-active-set", { component: "session-manager", sessionId: id, scheduleActive: active });
+  return true;
 }
 
 /**

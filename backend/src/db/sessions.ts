@@ -199,6 +199,7 @@ function mapRecordToSession(record: Neo4jRecord): Session {
       props.retries !== null && props.retries !== undefined
         ? Number(props.retries)
         : undefined,
+    scheduleActive: props.scheduleActive === true ? true : false,
     createTasksEnabled: props.createTasksEnabled ? true : undefined,
     taskCreationTabId:
       props.taskCreationTabId !== null && props.taskCreationTabId !== undefined
@@ -330,6 +331,7 @@ export async function insertSession(session: Session): Promise<number> {
           excludedMcpServerNames: $excludedMcpServerNames,
           cronExpression: $cronExpression, cronTimezone: $cronTimezone, retries: $retries,
           createTasksEnabled: $createTasksEnabled, taskCreationTabId: $taskCreationTabId,
+          scheduleActive: $scheduleActive,
           createdAt: datetime($createdAt), startedAt: datetime($startedAt)
         })
         CREATE (owner)-[:OWNS]->(s)
@@ -384,6 +386,7 @@ export async function insertSession(session: Session): Promise<number> {
         retries: session.retries ?? null,
         createTasksEnabled: session.createTasksEnabled ? true : null,
         taskCreationTabId: session.taskCreationTabId ?? null,
+        scheduleActive: session.scheduleActive === true ? true : false,
         tabIds: session.tabIds ?? [],
         mcpServers: buildMcpServerParams(session.mcpServers),
         rawMcpServers: buildRawMcpServerParams(session.rawMcpServers),
@@ -471,6 +474,7 @@ export async function updateSessionMeta(session: Session): Promise<void> {
             s.excludedMcpServerNames = $excludedMcpServerNames,
             s.cronExpression = $cronExpression, s.cronTimezone = $cronTimezone, s.retries = $retries,
             s.createTasksEnabled = $createTasksEnabled, s.taskCreationTabId = $taskCreationTabId,
+            s.scheduleActive = $scheduleActive,
             s.startedAt = datetime($startedAt)
         WITH s
         OPTIONAL MATCH (s)-[oldTabRel:IN_TAB]->(:Tab)
@@ -534,6 +538,7 @@ export async function updateSessionMeta(session: Session): Promise<void> {
         retries: session.retries ?? null,
         createTasksEnabled: session.createTasksEnabled ? true : null,
         taskCreationTabId: session.taskCreationTabId ?? null,
+        scheduleActive: session.scheduleActive === true ? true : false,
       }
     );
   });
@@ -617,6 +622,22 @@ export async function updateSessionPinInDb(
     await tx.run(
       `MATCH (s:Session {id: $sessionId}) SET s.pinned = $pinned, s.sortOrder = $sortOrder`,
       { sessionId, pinned, sortOrder }
+    );
+  });
+}
+
+/**
+ * Update the scheduleActive flag on a session node directly.
+ * Used by the activate/deactivate endpoints to avoid a full updateSessionMeta.
+ */
+export async function updateSessionScheduleActiveInDb(
+  sessionId: number,
+  scheduleActive: boolean
+): Promise<void> {
+  await writeQuery(async (tx: ManagedTransaction) => {
+    await tx.run(
+      `MATCH (s:Session {id: $sessionId}) SET s.scheduleActive = $scheduleActive`,
+      { sessionId, scheduleActive }
     );
   });
 }

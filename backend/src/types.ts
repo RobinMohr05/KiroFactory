@@ -440,6 +440,13 @@ export interface Session {
    */
   retries?: number;
   /**
+   * Whether the cron schedule is armed (timer fires on schedule). Only
+   * meaningful alongside `cronExpression`. Defaults to `false` — a newly
+   * created scheduled session is NOT armed until explicitly activated via
+   * POST /api/sessions/:id/schedule/activate.
+   */
+  scheduleActive?: boolean;
+  /**
    * When true, the inspector/QA agent is allowed to file new tasks on the board
    * using the create_task MCP tool. The specific tab to file into is set by
    * `taskCreationTabId`. When false, the task-create MCP tool is not injected
@@ -502,6 +509,11 @@ export interface CreateSessionInput {
   /** Retry count for a failed scheduled run (default 0). */
   retries?: number;
   /**
+   * Whether the cron schedule should be activated (armed) immediately.
+   * Defaults to false — create but do not arm.
+   */
+  scheduleActive?: boolean;
+  /**
    * When true, the inspector/QA agent is allowed to file tasks via the
    * create_task MCP tool. Requires `taskCreationTabId` to be set.
    */
@@ -538,6 +550,11 @@ export interface UpdateSessionInput {
   cronTimezone?: string | null;
   /** Retry count for a failed scheduled run (default 0). */
   retries?: number;
+  /**
+   * Whether the cron schedule should be activated (armed).
+   * Settable via PATCH, but also has dedicated activate/deactivate endpoints.
+   */
+  scheduleActive?: boolean;
   /**
    * When true, the inspector/QA agent is allowed to file tasks via the
    * create_task MCP tool. Requires `taskCreationTabId` to be set.

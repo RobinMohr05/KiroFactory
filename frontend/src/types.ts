@@ -63,6 +63,11 @@ export interface Session {
   /** Retry count for a failed scheduled run (default 0). */
   retries?: number;
   /**
+   * Whether the cron schedule is active (timer armed). Defaults to false.
+   * Missing/undefined should be treated as false (Activate button shown).
+   */
+  scheduleActive?: boolean;
+  /**
    * When true, the inspector/QA agent is allowed to file tasks via the
    * create_task MCP tool.
    */

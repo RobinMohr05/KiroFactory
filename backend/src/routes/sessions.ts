@@ -13,6 +13,7 @@ import {
   reorderSessions,
   pinSession,
   updateSessionFields,
+  setScheduleActive,
 } from "../session-manager.js";
 import { requireAuth, getUserId } from "../middleware/auth.js";
 import type { CreateSessionInput, UpdateSessionInput } from "../types.js";
@@ -178,8 +179,10 @@ router.post("/", async (req: Request, res: Response) => {
     input.rawMcpServers = undefined;
     const session = await createSession(input);
 
-    // Arm the scheduler if this is a scheduled session.
-    if (session.cronExpression) {
+    // Arm the scheduler if this is a scheduled session AND scheduleActive is true.
+    // New sessions default to scheduleActive=false, so they are not armed until
+    // explicitly activated via POST /api/sessions/:id/schedule/activate.
+    if (session.cronExpression && session.scheduleActive === true) {
       armSession(session.id, session.cronExpression, session.cronTimezone, session.retries);
     }
 
@@ -542,6 +545,7 @@ router.patch("/:id", async (req: Request, res: Response) => {
     if (rest.cronExpression !== undefined) updates.cronExpression = rest.cronExpression;
     if (rest.cronTimezone !== undefined) updates.cronTimezone = rest.cronTimezone;
     if (rest.retries !== undefined) updates.retries = rest.retries;
+    if (rest.scheduleActive !== undefined) updates.scheduleActive = rest.scheduleActive;
     if (rest.createTasksEnabled !== undefined) updates.createTasksEnabled = rest.createTasksEnabled;
     if (rest.taskCreationTabId !== undefined) updates.taskCreationTabId = rest.taskCreationTabId;
 
@@ -590,7 +594,8 @@ router.patch("/:id", async (req: Request, res: Response) => {
     const cronFieldsTouched =
       updates.cronExpression !== undefined ||
       updates.cronTimezone !== undefined ||
-      updates.retries !== undefined;
+      updates.retries !== undefined ||
+      updates.scheduleActive !== undefined;
     if (cronFieldsTouched) {
       const effectiveExpression =
         updates.cronExpression !== undefined ? updates.cronExpression : session.cronExpression;
@@ -624,7 +629,7 @@ router.patch("/:id", async (req: Request, res: Response) => {
     // (Re)arm or disarm the scheduler when cron fields changed.
     if (cronFieldsTouched) {
       const updated = getSession(id);
-      if (updated?.cronExpression) {
+      if (updated?.cronExpression && updated.scheduleActive === true) {
         armSession(id, updated.cronExpression, updated.cronTimezone, updated.retries);
       } else {
         disarmSession(id);
@@ -641,6 +646,72 @@ router.patch("/:id", async (req: Request, res: Response) => {
       msg: "Failed to update session",
     });
     res.status(500).json({ error: "Failed to update session" });
+  }
+});
+
+// POST /api/sessions/:id/schedule/activate — set scheduleActive=true and arm the cron timer
+// Works regardless of the session's live run status.
+// Returns 400 if the session has no cronExpression.
+router.post("/:id/schedule/activate", async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const id = paramId(req);
+    if (id === null) {
+      res.status(400).json({ error: "Invalid session id" });
+      return;
+    }
+    const session = getSession(id);
+    if (!session || session.userId !== userId) {
+      res.status(404).json({ error: "Session not found" });
+      return;
+    }
+    if (!session.cronExpression) {
+      res.status(400).json({ error: "Session has no cronExpression — cannot activate schedule" });
+      return;
+    }
+    setScheduleActive(id, true);
+    armSession(id, session.cronExpression, session.cronTimezone, session.retries);
+    res.json({ success: true });
+  } catch (err) {
+    log.error("route-error", {
+      component: "sessions",
+      method: "POST",
+      path: "/api/sessions/:id/schedule/activate",
+      ...toErrorFields(err),
+      msg: "Failed to activate schedule",
+    });
+    res.status(500).json({ error: "Failed to activate schedule" });
+  }
+});
+
+// POST /api/sessions/:id/schedule/deactivate — set scheduleActive=false and disarm the cron timer
+// Works regardless of the session's live run status.
+// Does NOT abort any currently in-progress run.
+router.post("/:id/schedule/deactivate", async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const id = paramId(req);
+    if (id === null) {
+      res.status(400).json({ error: "Invalid session id" });
+      return;
+    }
+    const session = getSession(id);
+    if (!session || session.userId !== userId) {
+      res.status(404).json({ error: "Session not found" });
+      return;
+    }
+    setScheduleActive(id, false);
+    disarmSession(id);
+    res.json({ success: true });
+  } catch (err) {
+    log.error("route-error", {
+      component: "sessions",
+      method: "POST",
+      path: "/api/sessions/:id/schedule/deactivate",
+      ...toErrorFields(err),
+      msg: "Failed to deactivate schedule",
+    });
+    res.status(500).json({ error: "Failed to deactivate schedule" });
   }
 });
 
