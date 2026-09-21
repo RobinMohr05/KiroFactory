@@ -461,6 +461,29 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setAutoScalers(prev => prev.filter(f => f.id !== message.autoScalerId));
         break;
       }
+      case 'agent-created': {
+        setAgents(prev => {
+          if (prev.find(a => a.id === message.agent.id)) return prev;
+          return [...prev, message.agent];
+        });
+        break;
+      }
+      case 'agent-updated': {
+        setAgents(prev => {
+          const idx = prev.findIndex(a => a.id === message.agent.id);
+          if (idx !== -1) {
+            const next = [...prev];
+            next[idx] = message.agent;
+            return next;
+          }
+          return [...prev, message.agent];
+        });
+        break;
+      }
+      case 'agent-deleted': {
+        setAgents(prev => prev.filter(a => a.id !== message.agentId));
+        break;
+      }
       case 'wsl-diagnostic-line': {
         // No app-wide state to update — the "WSL/Docker Logs" sub-tab listens
         // for this directly via the custom event, matching the ws-session-*
