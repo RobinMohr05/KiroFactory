@@ -243,14 +243,13 @@ h1, h2, h3, h4, h5, h6 {
   font-weight: 600;
   color: var(--text-on-dark);
   letter-spacing: -0.3px;
+  /* Intentionally no pointer cursor: keeps the click-to-reveal dancing-cow
+     easter egg hidden (no affordance hinting the logo is clickable). */
+  cursor: default;
 }
 
 .logo-accent {
   color: var(--ta-mango);
-}
-
-.logo {
-  cursor: default;
 }
 
 /* Hidden easter egg: dancing cow, revealed after 5 clicks on the logo. */
