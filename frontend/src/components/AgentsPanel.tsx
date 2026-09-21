@@ -5,7 +5,13 @@ import { apiFetch } from '../utils/api';
 import { useConfirmAction } from '../hooks/useConfirmAction';
 import { useMobileBreakpoint } from '../hooks/useMobileBreakpoint';
 import { AgentModal } from './AgentModal';
+import { AgentImportModal } from './AgentImportModal';
 import type { Agent } from '../types';
+
+/** Fields that are server-managed and must be stripped from exports. */
+const EXPORT_STRIP_FIELDS: ReadonlyArray<string> = [
+  'id', 'userId', 'createdAt', 'updatedAt', 'tabIds',
+];
 
 export function AgentsPanel() {
   const { agents, setAgents, fetchAgents, activeAgentId, setActiveAgentId } = useApp();
@@ -13,6 +19,7 @@ export function AgentsPanel() {
   const { id: routeId } = useParams<{ id?: string }>();
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
+  const [showImportModal, setShowImportModal] = useState(false);
   const isMobile = useMobileBreakpoint();
   const [mobileShowDetail, setMobileShowDetail] = useState(false);
   const scrollTopRef = useRef<number>(0);
@@ -56,7 +63,11 @@ export function AgentsPanel() {
 
   const handleExport = () => {
     if (!activeAgent) return;
-    const data = JSON.stringify(activeAgent, null, 2);
+    // Strip server-managed fields — only export importable fields.
+    const exportable = Object.fromEntries(
+      Object.entries(activeAgent).filter(([key]) => !EXPORT_STRIP_FIELDS.includes(key as keyof typeof activeAgent))
+    );
+    const data = JSON.stringify(exportable, null, 2);
     const blob = new Blob([data], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -153,6 +164,7 @@ export function AgentsPanel() {
                 </div>
                 <div className="agent-controls">
                   <button className="btn btn-secondary btn-sm" onClick={handleExport}>Export</button>
+                  <button className="btn btn-secondary btn-sm" onClick={() => setShowImportModal(true)}>Import</button>
                   <button className="btn btn-secondary btn-sm" onClick={() => setEditingAgent(activeAgent)}>Edit</button>
                   <button className={`btn btn-danger btn-sm${deleteConfirmPending ? ' btn-confirm-pending' : ''}`} onClick={handleDeleteClick}>{deleteConfirmPending ? 'Confirm?' : 'Delete'}</button>
                 </div>
@@ -214,6 +226,12 @@ export function AgentsPanel() {
         <AgentModal
           agent={editingAgent}
           onClose={() => { setShowCreateModal(false); setEditingAgent(null); }}
+        />
+      )}
+
+      {showImportModal && (
+        <AgentImportModal
+          onClose={() => setShowImportModal(false)}
         />
       )}
     </section>
