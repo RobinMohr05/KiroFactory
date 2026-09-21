@@ -83,6 +83,7 @@ interface ExposedState {
   setAgents: React.Dispatch<React.SetStateAction<Agent[]>>;
   setErrors: React.Dispatch<React.SetStateAction<AgentError[]>>;
   setAutoScalers: React.Dispatch<React.SetStateAction<AutoScaler[]>>;
+  setCurrentTabId: (id: number | null) => void;
 }
 
 function Exposer({ stateRef }: { stateRef: { current: ExposedState | null } }) {
@@ -100,6 +101,7 @@ function Exposer({ stateRef }: { stateRef: { current: ExposedState | null } }) {
     setAgents: ctx.setAgents,
     setErrors: ctx.setErrors,
     setAutoScalers: ctx.setAutoScalers,
+    setCurrentTabId: ctx.setCurrentTabId,
   };
   return null;
 }
@@ -232,20 +234,27 @@ describe('task-created dedup — WS handler', () => {
     const stateRef = renderApp();
     await waitFor(() => expect(stateRef.current).not.toBeNull());
 
-    // Simulate WS appending first (bypassing tab check by direct set)
+    // Set the current tab to match TASK_1.tabs[0].id so the WS handler
+    // includes the task (the WS task-created handler filters by currentTabId)
     act(() => {
-      stateRef.current!.setTasks(prev => [...prev, TASK_1]);
+      stateRef.current!.setCurrentTabId(TASK_1.tabs![0].id);
+    });
+
+    // WS echo arrives first — fires the real WS handler in AppContext,
+    // which checks belongsToTab and upserts by id
+    act(() => {
+      fireWsMessage({ type: 'task-created', task: TASK_1 });
     });
 
     await waitFor(() => expect(stateRef.current!.tasks).toHaveLength(1));
 
-    // POST response upsert (the TaskModal already uses pendingOps, but
-    // simulating the correct idempotent pattern here for completeness)
+    // POST response arrives — TaskModal.handleSubmit now uses upsert:
+    //   setTasks(prev => prev.find(t => t.id === created.id) ? prev : [...prev, created])
+    // This must NOT add a second entry since the WS handler already added it.
     act(() => {
-      stateRef.current!.setTasks(prev => {
-        if (prev.find(t => t.id === TASK_1.id)) return prev;
-        return [...prev, TASK_1];
-      });
+      stateRef.current!.setTasks(prev =>
+        prev.find(t => t.id === TASK_1.id) ? prev : [...prev, TASK_1]
+      );
     });
 
     await waitFor(() => {
@@ -419,13 +428,22 @@ describe('create-then-broadcast sequence', () => {
     const stateRef = renderApp();
     await waitFor(() => expect(stateRef.current).not.toBeNull());
 
+    // Set the current tab so the WS handler's belongsToTab check passes
     act(() => {
-      stateRef.current!.setTasks(prev => {
-        if (prev.find(t => t.id === TASK_1.id)) return prev;
-        return [...prev, TASK_1];
-      });
+      stateRef.current!.setCurrentTabId(TASK_1.tabs![0].id);
     });
 
+    // POST response arrives first — TaskModal.handleSubmit uses upsert after the fix:
+    //   setTasks(prev => prev.find(t => t.id === created.id) ? prev : [...prev, created])
+    act(() => {
+      stateRef.current!.setTasks(prev =>
+        prev.find(t => t.id === TASK_1.id) ? prev : [...prev, TASK_1]
+      );
+    });
+
+    await waitFor(() => expect(stateRef.current!.tasks).toHaveLength(1));
+
+    // WS echo arrives — real WS handler in AppContext must dedup
     act(() => {
       fireWsMessage({ type: 'task-created', task: TASK_1 });
     });
