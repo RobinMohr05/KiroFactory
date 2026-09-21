@@ -20,6 +20,7 @@
 import { spawn, execSync, execFileSync } from "node:child_process";
 import { WebSocket, WebSocketServer } from "ws";
 import { mkdirSync, existsSync, writeFileSync, appendFileSync, readFileSync, unlinkSync } from "node:fs";
+import { createServer as createNetServer } from "node:net";
 import { buildGroupPrContent, findSiblingPrUrl } from "./shared-branch-utils.js";
 import { buildSpawnEnv } from "./spawn-env.js";
 
@@ -125,6 +126,17 @@ const REVIEW_MARKER_PATH = `/tmp/kirofactory-review-comments-${SESSION_ID || "lo
  */
 const DELIVERY_RESULT_PATH = `/tmp/kirofactory-delivery-result-${SESSION_ID || "local"}.json`;
 
+/**
+ * Unix domain socket path over which the list-tasks MCP server (a separate
+ * kiro-cli-spawned child process, see buildMcpServers()) asks this worker
+ * process to fetch the board. The MCP server has no DB access and no
+ * orchestrator WebSocket of its own; it connects to this socket, and
+ * worker.js relays the request to the orchestrator over the existing
+ * WebSocket and writes the correlated response back. Only ever created for
+ * inspector sessions that can create tasks (same gate as task-create).
+ */
+const LIST_TASKS_IPC_PATH = `/tmp/kirofactory-list-tasks-${SESSION_ID || "local"}.sock`;
+
 const WORKSPACE = "/workspace";
 
 // Connection retry: 30 attempts × 5s ≈ 150s, comfortably inside the
@@ -173,6 +185,18 @@ let heartbeatTimer = null;
 const promptQueue = [];
 let kiroReady = false;
 let promptCounter = 0;
+
+/**
+ * In-flight list-tasks requests, keyed by requestId. Each entry resolves when
+ * the orchestrator sends back a matching `list-tasks-response`. See
+ * requestTaskListFromOrchestrator() and handleOrchestratorMessage()'s
+ * "list-tasks-response" case. Nothing like this correlation existed on this
+ * channel before — every other worker→orchestrator action is fire-and-forget.
+ */
+const pendingListTasks = new Map();
+let listTasksRequestCounter = 0;
+/** The IPC server handed to the list-tasks MCP child; started lazily once. */
+let listTasksIpcServer = null;
 let currentPromptId = null;
 /** Current task metadata (set when a prompt arrives with task info). */
 let currentTaskMeta = null;
@@ -383,6 +407,92 @@ function sendShutdown(exitCode) {
 }
 
 // ---------------------------------------------------------------------------
+// list_tasks request/response (inspector sessions that can create tasks)
+//
+// The list-tasks MCP server is its own kiro-cli-spawned child process with no
+// DB access and no orchestrator WebSocket. It connects to a local unix-domain
+// socket this worker hosts; worker.js relays the request to the orchestrator
+// over the existing WebSocket (a correlated request/response pair — the only
+// such pair on this otherwise fire-and-forget channel) and writes the tasks
+// back over the socket.
+// ---------------------------------------------------------------------------
+
+const LIST_TASKS_TIMEOUT_MS = 30_000;
+
+/**
+ * Ask the orchestrator for every task in this session's tab. Resolves with an
+ * array of { id, title, type, priority, state }, or rejects on error/timeout.
+ * Correlated by requestId so concurrent requests can't cross wires.
+ */
+function requestTaskListFromOrchestrator() {
+  return new Promise((resolve, reject) => {
+    if (!connected || !ws || ws.readyState !== WebSocket.OPEN) {
+      reject(new Error("Not connected to orchestrator"));
+      return;
+    }
+    listTasksRequestCounter += 1;
+    const requestId = `lt-${listTasksRequestCounter}`;
+    const timer = setTimeout(() => {
+      pendingListTasks.delete(requestId);
+      reject(new Error(`list-tasks request timed out after ${LIST_TASKS_TIMEOUT_MS / 1000}s`));
+    }, LIST_TASKS_TIMEOUT_MS);
+    pendingListTasks.set(requestId, { resolve, reject, timer });
+    send("list-tasks-request", { requestId });
+  });
+}
+
+/**
+ * Lazily start the unix-domain-socket IPC server the list-tasks MCP child
+ * connects to. Called from buildMcpServers() only when the list-tasks server
+ * is actually being registered. Idempotent — a fresh ACP session per task
+ * calls buildMcpServers() repeatedly, but the socket only needs to exist once.
+ */
+function ensureListTasksIpcServer() {
+  if (listTasksIpcServer) return;
+
+  // Remove any stale socket left over from a prior process on this path.
+  try {
+    if (existsSync(LIST_TASKS_IPC_PATH)) unlinkSync(LIST_TASKS_IPC_PATH);
+  } catch { /* best effort */ }
+
+  listTasksIpcServer = createNetServer((conn) => {
+    let buffer = "";
+    conn.on("data", (chunk) => {
+      buffer += chunk.toString();
+      const newlineIdx = buffer.indexOf("\n");
+      if (newlineIdx === -1) return; // wait for a full line
+      const line = buffer.slice(0, newlineIdx).trim();
+      buffer = ""; // one request per connection
+      // The request body is currently empty ({ type: "list-tasks" }); parsing
+      // is defensive so a malformed line still gets a clean error response.
+      try {
+        JSON.parse(line || "{}");
+      } catch { /* ignore — request has no meaningful fields yet */ }
+
+      requestTaskListFromOrchestrator().then(
+        (tasks) => {
+          try { conn.write(JSON.stringify({ tasks }) + "\n"); } catch { /* noop */ }
+          try { conn.end(); } catch { /* noop */ }
+        },
+        (err) => {
+          try { conn.write(JSON.stringify({ error: err?.message || String(err) }) + "\n"); } catch { /* noop */ }
+          try { conn.end(); } catch { /* noop */ }
+        }
+      );
+    });
+    conn.on("error", () => { /* client went away — nothing to do */ });
+  });
+
+  listTasksIpcServer.on("error", (err) => {
+    logError("list-tasks IPC server error", { error: err?.message || String(err), path: LIST_TASKS_IPC_PATH });
+  });
+
+  listTasksIpcServer.listen(LIST_TASKS_IPC_PATH, () => {
+    logInfo("list-tasks IPC server listening", { path: LIST_TASKS_IPC_PATH });
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Orchestrator → worker message handling
 // ---------------------------------------------------------------------------
 
@@ -411,6 +521,25 @@ function handleOrchestratorMessage(msg) {
       logInfo("Received stop signal from orchestrator");
       gracefulShutdown(0);
       break;
+
+    case "list-tasks-response": {
+      // Correlated reply to a requestTaskListFromOrchestrator() call. The
+      // requestId ties it back to the specific in-flight IPC request from the
+      // list-tasks MCP child so concurrent tool calls never cross wires.
+      const pending = pendingListTasks.get(msg.requestId);
+      if (!pending) {
+        logInfo("Received list-tasks-response with no matching pending request", { requestId: msg.requestId });
+        break;
+      }
+      pendingListTasks.delete(msg.requestId);
+      clearTimeout(pending.timer);
+      if (msg.error) {
+        pending.reject(new Error(String(msg.error)));
+      } else {
+        pending.resolve(Array.isArray(msg.tasks) ? msg.tasks : []);
+      }
+      break;
+    }
 
     default:
       // Unknown/keepalive — ignore.
@@ -2250,6 +2379,22 @@ function buildMcpServers() {
       env: [],
     });
     logInfo("Including task-create MCP server", { agentKind: AGENT_KIND, taskCreateEnabled: true });
+
+    // Bundle read access with create access: every session that can create
+    // tasks (the exact same AGENT_KIND=inspector && TASK_CREATE_ENABLED=true
+    // gate above) also gets a list_tasks tool so it can inspect the board
+    // before filing follow-up work. The tool has no DB access itself — it
+    // asks worker.js over a local IPC socket, which relays the request to the
+    // orchestrator over the existing WebSocket and returns the correlated
+    // response (see ensureListTasksIpcServer() and onListTasksResponse()).
+    servers.push({
+      name: "list-tasks",
+      command: "node",
+      args: ["/app/list-tasks-mcp-server.js"],
+      env: [{ name: "LIST_TASKS_IPC_PATH", value: LIST_TASKS_IPC_PATH }],
+    });
+    ensureListTasksIpcServer();
+    logInfo("Including list-tasks MCP server", { agentKind: AGENT_KIND, taskCreateEnabled: true });
   }
 
   // Include the git-delivery MCP server for editor-kind, task-based sessions
