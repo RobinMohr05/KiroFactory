@@ -16,11 +16,12 @@
  * page.addInitScript() so we can fire a WS `*-created` message at a precise
  * point and assert the deduplicated result.
  *
- * NOTE: Playwright browsers were not available when this spec was first
- * committed (no Chromium installation found at the expected path). The spec
- * is committed so it runs in CI where browsers are installed. The unit-level
- * dedup coverage lives in `src/__tests__/wsDedup.test.tsx` and runs with
- * Vitest regardless of browser availability.
+ * NOTE: These specs require Playwright browsers (installed via
+ * `npx playwright install chromium` plus its system libraries). They were
+ * verified passing locally with browsers installed, and run in CI where
+ * browsers are available. The unit-level dedup coverage lives in
+ * `src/__tests__/wsDedup.test.tsx` and runs with Vitest regardless of
+ * browser availability.
  */
 
 import { test, expect } from '@playwright/test';
@@ -75,6 +76,15 @@ async function setupApiMocks(page: import('@playwright/test').Page) {
   await page.route('/api/autoscalers', route =>
     route.fulfill({ status: 200, contentType: 'application/json', body: '[]' })
   );
+  // GET /api/tasks is queried by TaskModal on mount to populate its
+  // dependency picker — return an empty list so the modal boots cleanly.
+  await page.route('/api/tasks', route => {
+    if (route.request().method() === 'GET') {
+      return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    }
+    // POST handled by per-test override; fallback so nothing hangs.
+    return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+  });
 }
 
 /**
@@ -164,8 +174,9 @@ test.describe('tab create — no duplicate without page refresh', () => {
     // Open the "New Tab" modal
     await page.click('#newBoardBtn');
 
-    // Fill in the name and submit
-    await page.fill('#tabName', NEW_TAB.name);
+    // Fill in the name and submit. The tab-name input in TabModal has
+    // id="tabFormName" (not "tabName").
+    await page.fill('#tabFormName', NEW_TAB.name);
     await page.click('button[type="submit"]');
 
     // Simulate the WS echo that the backend sends to all open sockets.
@@ -196,7 +207,9 @@ test.describe('task create — no duplicate without page refresh', () => {
       tabs: [{ id: MOCK_TAB.id, name: MOCK_TAB.name }],
     };
 
-    // Mock POST /api/tasks
+    // Mock POST /api/tasks (create). GET /api/tasks is already mocked in
+    // setupApiMocks to return [] for the TaskModal dependency picker.
+    await page.unroute('/api/tasks');
     await page.route('/api/tasks', async route => {
       if (route.request().method() === 'POST') {
         await route.fulfill({
@@ -205,17 +218,37 @@ test.describe('task create — no duplicate without page refresh', () => {
           body: JSON.stringify(NEW_TASK),
         });
       } else {
+        // GET — dependency picker list
         await route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
       }
     });
 
+    // The "+ Task" button (#newTaskBtn) opens the AI Task Planner, NOT the
+    // manual TaskModal. The only real code path to the manual create form
+    // (which has #taskTitle and POSTs a single task to /api/tasks) is to open
+    // the planner and switch its mode dropdown to "Manual". Mock the planner
+    // start/stop endpoints so opening it doesn't hang, then switch to manual.
+    await page.route('/api/task-planner/start', route =>
+      route.fulfill({
+        status: 201,
+        contentType: 'application/json',
+        body: JSON.stringify({ sessionId: 4242 }),
+      })
+    );
+    await page.route('/api/task-planner/4242', route =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: '{}' })
+    );
+
     await page.goto('/');
     await expect(page.locator('#root > *').first()).toBeVisible();
 
-    // Click the "+ Task" button in the tasks panel toolbar
+    // Open the AI Task Planner…
     await page.click('#newTaskBtn');
+    // …then switch its mode dropdown to "Manual" to open the manual TaskModal
+    // in create mode (onSwitchToManual -> setEditingTask(null)).
+    await page.selectOption('#taskPlannerTitle', 'manual');
 
-    // Fill in the task title and submit
+    // The manual create form's title input is #taskTitle.
     await page.fill('#taskTitle', NEW_TASK.title);
     await page.click('button[type="submit"]');
 
