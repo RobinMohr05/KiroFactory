@@ -81,6 +81,45 @@ export function SessionsPanel() {
     }
   }, [sortedSessions.length, activeSessionId, setActiveSessionId]);
 
+  // Keep the permanent Chat session bound to the currently active tab.
+  // Runs on mount and whenever the active tab (or the permanent session's id)
+  // changes. The permanent session is the one that clones/works against
+  // whichever tab's repo is active, so switching tabs must re-point it:
+  // stop it if running, then update its tabIds to just the active tab.
+  //
+  // Dependency array is intentionally limited to `currentTabId` and the
+  // permanent session's id — not the full `sessions` array or its `tabIds` —
+  // because the optimistic setSessions() below mutates `tabIds`, which would
+  // otherwise re-trigger this effect and loop forever.
+  const permanentSessionId = sessions.find(s => s.isPermanent)?.id;
+  useEffect(() => {
+    if (permanentSessionId === undefined || currentTabId === null || currentTabId === undefined) {
+      return;
+    }
+    const permanent = sessions.find(s => s.isPermanent);
+    if (!permanent) return;
+    const id = permanent.id;
+    (async () => {
+      try {
+        // Best-effort stop if it's running; proceed with the tab update even
+        // if the stop fails (network error or non-2xx).
+        if (permanent.status === 'running') {
+          try {
+            await apiFetch(`/api/sessions/${id}/stop`, { method: 'POST' });
+          } catch { /* best-effort stop */ }
+        }
+        await apiFetch(`/api/sessions/${id}/tabs`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tabIds: [currentTabId] }),
+        });
+        // Optimistically reflect the new tab binding in the in-memory list.
+        setSessions(prev => prev.map(s => s.id === id ? { ...s, tabIds: [currentTabId] } : s));
+      } catch { /* never throw out of the effect */ }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentTabId, permanentSessionId]);
+
   // Load session output when active session changes
   useEffect(() => {
     if (!activeSessionId) {
