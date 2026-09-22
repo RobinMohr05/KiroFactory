@@ -275,16 +275,21 @@ export async function updateTab(
   autoMergePrs?: boolean
 ): Promise<Tab | null> {
   const hasAutoMergePrs = autoMergePrs !== undefined;
+  const hasRepositoryUrl = repositoryUrl !== undefined;
 
   return writeQuery(async (tx: ManagedTransaction) => {
-    // autoMergePrs uses FOREACH(CASE ...) pattern: only update the
-    // property when the caller explicitly provided a value.
+    // repositoryUrl and autoMergePrs both use the FOREACH(CASE ...) pattern:
+    // only update the property when the caller explicitly provided a value.
+    // An omitted (undefined) repositoryUrl leaves the stored URL untouched,
+    // so a partial update (e.g. rename-only) doesn't wipe the tab's repo URL.
     const result = await tx.run(
       `MATCH (t:Tab {id: $id})
        SET t.name = $name,
-           t.repositoryUrl = $repositoryUrl,
            t.gitProvider = $gitProvider
        WITH t
+       FOREACH (_ IN CASE WHEN $hasRepositoryUrl THEN [1] ELSE [] END |
+         SET t.repositoryUrl = $repositoryUrl
+       )
        FOREACH (_ IN CASE WHEN $hasAutoMergePrs THEN [1] ELSE [] END |
          SET t.autoMergePrs = $autoMergePrs
        )
@@ -293,8 +298,9 @@ export async function updateTab(
       {
         id,
         name,
-        repositoryUrl: repositoryUrl ?? null,
+        repositoryUrl: hasRepositoryUrl ? repositoryUrl ?? null : null,
         gitProvider: gitProvider ?? null,
+        hasRepositoryUrl,
         hasAutoMergePrs,
         autoMergePrs: hasAutoMergePrs ? autoMergePrs : false,
       }
