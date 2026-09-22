@@ -1567,7 +1567,7 @@ async function updateAzureDevOpsPullRequest(prUrl, title, description) {
 
 /** Create a Pull Request via the GitHub REST API. */
 async function createGitHubPullRequest(branchName) {
-  const match = REPO_URL.match(/github\.com[/:]([^/]+)\/([^/]+)/);
+  const match = REPO_URL.match(/github\.com[/:]([^/]+)\/([^/?#]+)/);
   if (!match) {
     logError("Cannot parse owner/repo from REPO_URL", { url: redactSecrets(REPO_URL) });
     return null;
@@ -1575,8 +1575,11 @@ async function createGitHubPullRequest(branchName) {
   const [, owner, rawRepo] = match;
   // Strip only a trailing ".git" — the old `[^/.]+` capture stopped at the
   // first dot, truncating legitimately dotted repo names (e.g. "org/my.repo"
-  // → "my") and producing 404s on PR creation. Match parseGitHubRepo() in the
-  // MCP servers, which capture greedily then strip ".git" the same way.
+  // → "my") and producing 404s on PR creation. The repo capture group also
+  // stops at `?`/`#` (`[^/?#]+`) so a trailing query string or fragment in a
+  // user-supplied REPO_URL (e.g. "org/repo?tab=readme" or "org/repo#anchor")
+  // isn't captured as part of the repo name. Match parseGitHubRepo() in the
+  // MCP servers, which capture the same way then strip ".git".
   const repo = rawRepo.replace(/\.git$/, "");
   const { title, body } = buildPrContent();
 
