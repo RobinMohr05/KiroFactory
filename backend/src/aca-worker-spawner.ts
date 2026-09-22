@@ -162,13 +162,171 @@ interface AcaJobSecret {
   value: string;
 }
 
+// ---------------------------------------------------------------------------
+// Concurrency control for the shared job `configuration.secrets` list
+// ---------------------------------------------------------------------------
+//
+// The autoscaler runs a POOL of concurrent worker sessions against the SAME
+// Container Apps Job resource. Registering / removing session-scoped secrets is
+// a read-modify-write on that job's single `configuration.secrets` list
+// (GET full list → merge/filter in memory → PATCH full list). Without
+// coordination, two sessions starting (or one starting while another stops) can
+// interleave so that the losing writer merges onto a STALE snapshot and silently
+// drops the other session's just-registered secrets — whose `secretRef` then
+// dangles and the execution start fails / the worker boots without its creds.
+//
+// We defend against this on two levels (coding_guidelines §26):
+//   1. An in-process async mutex serialises all secret mutations for a given job
+//      within this orchestrator process (the common case — one orchestrator).
+//   2. ARM optimistic concurrency: each mutation GETs the current list + its
+//      ETag, then PATCHes with `If-Match: <etag>`. If ARM reports 412
+//      (Precondition Failed) — e.g. another orchestrator instance wrote
+//      concurrently — we re-read and re-apply, up to a bounded number of retries.
+
+/** Minimal FIFO async mutex (see coding_guidelines §26). */
+class AsyncMutex {
+  private tail: Promise<void> = Promise.resolve();
+
+  /** Run `fn` exclusively; callers are serialised in acquisition order. */
+  async runExclusive<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.tail.then(fn, fn);
+    // Keep the chain alive regardless of whether `fn` resolves or rejects.
+    this.tail = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
+  }
+}
+
+/** One mutex per job resource path, so unrelated jobs don't serialise together. */
+const jobSecretMutexes = new Map<string, AsyncMutex>();
+
+function getJobSecretMutex(jobUrl: string): AsyncMutex {
+  let mutex = jobSecretMutexes.get(jobUrl);
+  if (!mutex) {
+    mutex = new AsyncMutex();
+    jobSecretMutexes.set(jobUrl, mutex);
+  }
+  return mutex;
+}
+
+/** Build the ARM URL for the job resource. */
+function jobResourceUrl(config: AcaWorkerConfig): string {
+  const apiVersion = "2024-03-01";
+  return (
+    `https://management.azure.com/subscriptions/${config.subscriptionId}` +
+    `/resourceGroups/${config.resourceGroup}` +
+    `/providers/Microsoft.App/jobs/${config.jobName}` +
+    `?api-version=${apiVersion}`
+  );
+}
+
+/** Max attempts for the GET→PATCH cycle when ARM reports a 412 ETag conflict. */
+const SECRET_MUTATION_MAX_ATTEMPTS = 5;
+
 /**
- * PATCH the job's `configuration.secrets` array.
+ * Atomically read-modify-write the job's `configuration.secrets` list.
  *
- * Azure Container Apps Jobs require the *full* secrets list on every PATCH —
- * it replaces the existing list entirely. We therefore GET the current list
- * first to preserve any existing secrets (e.g., the ACR password added by
- * Bicep), then merge in the new entries.
+ * Serialised per-job via {@link AsyncMutex} and guarded with ARM's `If-Match`
+ * optimistic concurrency: we GET the current list (+ETag), apply `transform` to
+ * produce the next list, then PATCH with `If-Match: <etag>`. On HTTP 412 we
+ * re-read and retry (up to {@link SECRET_MUTATION_MAX_ATTEMPTS}) so a losing
+ * writer re-merges onto fresh state instead of clobbering it.
+ *
+ * `transform` receives the current list and returns the desired next list, or
+ * `null` to indicate "no change needed" (the PATCH is then skipped).
+ *
+ * Returns `true` if the desired state was achieved (patched or already correct),
+ * `false` if the mutation ultimately failed (logged as a warning by callers).
+ */
+async function mutateJobSecrets(
+  config: AcaWorkerConfig,
+  token: string,
+  transform: (current: AcaJobSecret[]) => AcaJobSecret[] | null,
+  opContext: string
+): Promise<boolean> {
+  const jobUrl = jobResourceUrl(config);
+  const mutex = getJobSecretMutex(jobUrl);
+
+  return mutex.runExclusive(async () => {
+    for (let attempt = 1; attempt <= SECRET_MUTATION_MAX_ATTEMPTS; attempt++) {
+      // ── GET current list + ETag ──────────────────────────────────────
+      const getResponse = await fetch(jobUrl, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      if (!getResponse.ok) {
+        // If GET fails (e.g., RBAC issue), we cannot safely merge. Surface a
+        // warning; the subsequent start will fail anyway if secrets are missing.
+        console.warn(
+          `[aca-spawner] Could not GET job to ${opContext} (HTTP ${getResponse.status})`
+        );
+        return false;
+      }
+
+      const current = (await getResponse.json()) as {
+        properties?: { configuration?: { secrets?: AcaJobSecret[] } };
+      };
+      const existingSecrets = current.properties?.configuration?.secrets ?? [];
+      const etag = getResponse.headers.get("ETag") ?? undefined;
+
+      const nextSecrets = transform(existingSecrets);
+      if (nextSecrets === null) {
+        // Transform decided nothing needs to change.
+        return true;
+      }
+
+      // ── PATCH with optimistic concurrency (If-Match) ─────────────────
+      const patchHeaders: Record<string, string> = {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      };
+      if (etag) {
+        patchHeaders["If-Match"] = etag;
+      }
+
+      const patchResponse = await fetch(jobUrl, {
+        method: "PATCH",
+        headers: patchHeaders,
+        body: JSON.stringify({
+          properties: { configuration: { secrets: nextSecrets } },
+        }),
+      });
+
+      if (patchResponse.ok) {
+        return true;
+      }
+
+      // 412 Precondition Failed → another writer updated the list between our
+      // GET and PATCH. Re-read and retry with fresh state.
+      if (patchResponse.status === 412 && attempt < SECRET_MUTATION_MAX_ATTEMPTS) {
+        continue;
+      }
+
+      const errorText = await patchResponse.text();
+      console.warn(
+        `[aca-spawner] Failed to ${opContext} (HTTP ${patchResponse.status}): ${errorText.slice(0, 200)}`
+      );
+      return false;
+    }
+
+    console.warn(
+      `[aca-spawner] Gave up trying to ${opContext} after ${SECRET_MUTATION_MAX_ATTEMPTS} ETag-conflict retries`
+    );
+    return false;
+  });
+}
+
+/**
+ * Register/merge session-scoped secrets into the job's `configuration.secrets`.
+ *
+ * Azure Container Apps Jobs require the *full* secrets list on every PATCH — it
+ * replaces the existing list entirely. We therefore merge onto the current list
+ * (preserving e.g. the ACR password added by Bicep) inside an atomic
+ * read-modify-write (see {@link mutateJobSecrets}) so concurrent sessions don't
+ * clobber each other's entries.
  *
  * Note: the "Container Apps Jobs Operator" built-in role covers both
  * `Microsoft.App/jobs/read` and `Microsoft.App/jobs/write`, so the managed
@@ -179,144 +337,55 @@ async function patchJobSecrets(
   token: string,
   secretsToMerge: AcaJobSecret[]
 ): Promise<void> {
-  const apiVersion = "2024-03-01";
-  const jobUrl =
-    `https://management.azure.com/subscriptions/${config.subscriptionId}` +
-    `/resourceGroups/${config.resourceGroup}` +
-    `/providers/Microsoft.App/jobs/${config.jobName}` +
-    `?api-version=${apiVersion}`;
-
-  // GET current job definition so we can preserve existing secrets
-  const getResponse = await fetch(jobUrl, {
-    method: "GET",
-    headers: { Authorization: `Bearer ${token}` },
-  });
-
-  let existingSecrets: AcaJobSecret[] = [];
-  if (getResponse.ok) {
-    const current = await getResponse.json() as {
-      properties?: {
-        configuration?: {
-          secrets?: AcaJobSecret[];
-        };
-      };
-    };
-    existingSecrets = current.properties?.configuration?.secrets ?? [];
-  }
-  // If GET fails (e.g., RBAC issue), we proceed with only the new secrets —
-  // the start call will fail anyway if RBAC is wrong.
-
-  // Merge: new entries override any existing entry with the same name
-  const mergedSecretMap = new Map<string, AcaJobSecret>();
-  for (const s of existingSecrets) {
-    mergedSecretMap.set(s.name, s);
-  }
-  for (const s of secretsToMerge) {
-    mergedSecretMap.set(s.name, s);
-  }
-  const mergedSecrets = Array.from(mergedSecretMap.values());
-
-  const patchResponse = await fetch(jobUrl, {
-    method: "PATCH",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
+  await mutateJobSecrets(
+    config,
+    token,
+    (existingSecrets) => {
+      // Merge: new entries override any existing entry with the same name.
+      const mergedSecretMap = new Map<string, AcaJobSecret>();
+      for (const s of existingSecrets) {
+        mergedSecretMap.set(s.name, s);
+      }
+      for (const s of secretsToMerge) {
+        mergedSecretMap.set(s.name, s);
+      }
+      return Array.from(mergedSecretMap.values());
     },
-    body: JSON.stringify({
-      properties: {
-        configuration: {
-          secrets: mergedSecrets,
-        },
-      },
-    }),
-  });
-
-  if (!patchResponse.ok) {
-    const errorText = await patchResponse.text();
-    // Non-fatal warning — if the PATCH fails, the subsequent start will fail too
-    // (secretRef would point at a non-existent secret), so the error surfaces there.
-    console.warn(
-      `[aca-spawner] Failed to patch job secrets (HTTP ${patchResponse.status}): ${errorText.slice(0, 200)}`
-    );
-  }
+    "patch job secrets"
+  );
 }
 
 /**
  * Remove session-scoped secrets from the job after the execution has completed.
  *
  * ACA secrets can only be removed by PATCHing the full list without them — there
- * is no single-secret delete endpoint. We set the value to an empty string rather
- * than omitting the entry, which is the documented approach for "blanking" a secret
- * without removing the name (Azure validates that listed secrets are non-empty on
- * some API versions, so we omit session entries entirely from the next PATCH).
+ * is no single-secret delete endpoint. We omit this session's entries from the
+ * next PATCH. This runs inside the same atomic read-modify-write as
+ * registration (see {@link mutateJobSecrets}), so a stop that overlaps another
+ * session's start cannot clobber that session's live secrets.
  *
- * Best-effort: failures are logged but do not throw, since the execution is already
- * done and missing cleanup is preferable to an unhandled rejection here.
+ * Best-effort: failures are logged but do not throw, since the execution is
+ * already done and missing cleanup is preferable to an unhandled rejection here.
  */
 async function removeSessionSecrets(
   config: AcaWorkerConfig,
   token: string,
   sessionId: number
 ): Promise<void> {
-  const apiVersion = "2024-03-01";
-  const jobUrl =
-    `https://management.azure.com/subscriptions/${config.subscriptionId}` +
-    `/resourceGroups/${config.resourceGroup}` +
-    `/providers/Microsoft.App/jobs/${config.jobName}` +
-    `?api-version=${apiVersion}`;
-
-  // GET current job definition
-  const getResponse = await fetch(jobUrl, {
-    method: "GET",
-    headers: { Authorization: `Bearer ${token}` },
-  });
-
-  if (!getResponse.ok) {
-    console.warn(
-      `[aca-spawner] Could not GET job to clean up session ${sessionId} secrets (HTTP ${getResponse.status})`
-    );
-    return;
-  }
-
-  const current = await getResponse.json() as {
-    properties?: {
-      configuration?: {
-        secrets?: AcaJobSecret[];
-      };
-    };
-  };
-  const existingSecrets = current.properties?.configuration?.secrets ?? [];
-
-  // Keep only secrets that are NOT session-scoped to this session
   const sessionSuffix = `-sess-${sessionId}`;
-  const filteredSecrets = existingSecrets.filter((s) => !s.name.endsWith(sessionSuffix));
-
-  if (filteredSecrets.length === existingSecrets.length) {
-    // Nothing to remove — already cleaned up or never registered
-    return;
-  }
-
-  const patchResponse = await fetch(jobUrl, {
-    method: "PATCH",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
+  await mutateJobSecrets(
+    config,
+    token,
+    (existingSecrets) => {
+      const filteredSecrets = existingSecrets.filter((s) => !s.name.endsWith(sessionSuffix));
+      if (filteredSecrets.length === existingSecrets.length) {
+        // Nothing to remove — already cleaned up or never registered.
+        return null;
+      }
+      return filteredSecrets;
     },
-    body: JSON.stringify({
-      properties: {
-        configuration: {
-          secrets: filteredSecrets,
-        },
-      },
-    }),
-  });
-
-  if (!patchResponse.ok) {
-    const errorText = await patchResponse.text();
-    console.warn(
-      `[aca-spawner] Failed to remove session ${sessionId} secrets (HTTP ${patchResponse.status}): ${errorText.slice(0, 200)}`
-    );
-  }
+    `remove session ${sessionId} secrets`
+  );
 }
 
 // ---------------------------------------------------------------------------

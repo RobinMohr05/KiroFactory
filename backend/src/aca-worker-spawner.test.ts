@@ -19,15 +19,19 @@
  * 5. After stopWorkerJob, a PATCH is made to remove the session-scoped secrets.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, beforeAll } from "vitest";
 
 // Mock Azure Identity — we just need a token.
 // The module uses dynamic import("@azure/identity") internally so we must
 // mock it at the module level with vi.mock, which vitest hoists.
+// NOTE: the constructor deliberately reads its getToken behavior lazily so that
+// vi.clearAllMocks() (called in beforeEach) — which clears mock implementations —
+// does not strand the token acquisition. Each construction returns a fresh stub
+// resolving a fake token.
 vi.mock("@azure/identity", () => {
-  const DefaultAzureCredential = vi.fn().mockImplementation(function (this: unknown) {
+  const DefaultAzureCredential = vi.fn(function (this: unknown) {
     return {
-      getToken: vi.fn().mockResolvedValue({ token: "fake-azure-token" }),
+      getToken: async () => ({ token: "fake-azure-token" }),
     };
   });
   return { DefaultAzureCredential };
@@ -459,3 +463,213 @@ describe("aca-worker-spawner — secretRef for sensitive env vars", () => {
     expect(adoPatEntry?.value).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Concurrency: no read-modify-write clobbering of the shared secrets list
+// ---------------------------------------------------------------------------
+//
+// Regression guard for the KF-1939 PR review: patchJobSecrets / removeSessionSecrets
+// do GET-full-list → merge in memory → PATCH-full-list against the SAME job resource.
+// The autoscaler runs a pool of concurrent worker sessions, so multiple startWorkerJob
+// calls hit that shared list simultaneously. Without serialization (in-process mutex)
+// and/or ARM optimistic concurrency (If-Match ETag + retry-on-412), a losing writer
+// merges onto a stale snapshot and silently drops the other session's secrets — whose
+// secretRef then dangles and the execution start fails / the worker boots without creds.
+
+describe("aca-worker-spawner — concurrent secret PATCHes must not clobber each other", () => {
+  /**
+   * ARM-like stateful fetch mock with optimistic-concurrency semantics:
+   * - GET returns the current secrets list plus an ETag; the GET response is
+   *   deliberately delayed a tick so two concurrent callers both observe the
+   *   SAME initial snapshot (this is what forces the interleaving).
+   * - PATCH enforces If-Match: if the caller's ETag is stale, respond 412 and do
+   *   NOT mutate state. On match, replace the list and bump the ETag.
+   */
+  function setupConcurrentFetchMock() {
+    fetchCalls = [];
+    let secretsState: Array<{ name: string; value: string }> = [];
+    let etag = 'W/"0"';
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit): Promise<Response> => {
+        let parsedBody: unknown = undefined;
+        if (init?.body && typeof init.body === "string") {
+          try {
+            parsedBody = JSON.parse(init.body);
+          } catch {
+            parsedBody = init.body;
+          }
+        }
+        fetchCalls.push({ method: init?.method ?? "GET", url: String(url), body: parsedBody });
+
+        const urlStr = String(url);
+        if (urlStr.includes("/start"))
+          return new Response(
+            JSON.stringify({ name: "exec", properties: { status: "Running" } }),
+            { status: 202, headers: { "Content-Type": "application/json" } }
+          );
+        if (urlStr.includes("/stop")) return new Response(null, { status: 202 });
+
+        const isJobLevel = !urlStr.includes("/executions/");
+
+        // PATCH secrets — enforce If-Match optimistic concurrency
+        if (init?.method === "PATCH" && isJobLevel) {
+          const ifMatch = (init.headers as Record<string, string> | undefined)?.["If-Match"];
+          if (ifMatch !== undefined && ifMatch !== etag) {
+            return new Response(
+              JSON.stringify({ error: { code: "PreconditionFailed" } }),
+              { status: 412, headers: { "Content-Type": "application/json" } }
+            );
+          }
+          const body = parsedBody as Record<string, unknown> | undefined;
+          const newSecrets = (
+            (body?.properties as Record<string, unknown>)?.configuration as Record<string, unknown>
+          )?.secrets as Array<{ name: string; value: string }> | undefined;
+          if (newSecrets !== undefined) {
+            secretsState = newSecrets;
+            etag = `W/"${Number(etag.match(/\d+/)?.[0] ?? 0) + 1}"`;
+          }
+          return new Response(
+            JSON.stringify({
+              name: "job",
+              properties: { configuration: { secrets: secretsState } },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json", ETag: etag } }
+          );
+        }
+
+        // GET job — snapshot the list NOW (at request time), then delay before
+        // returning it. A later-launched caller whose GET fires while an earlier
+        // caller's PATCH has not yet landed therefore receives the SAME stale
+        // snapshot — exactly the read-modify-write window the race exploits.
+        if ((!init?.method || init.method === "GET") && isJobLevel) {
+          const snapshot = secretsState;
+          const snapshotEtag = etag;
+          await new Promise((r) => setTimeout(r, 50));
+          return new Response(
+            JSON.stringify({
+              name: "job",
+              properties: { configuration: { secrets: snapshot } },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json", ETag: snapshotEtag } }
+          );
+        }
+
+        return new Response(
+          JSON.stringify({ name: "job", properties: { status: "Running" } }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      })
+    );
+
+    return { getState: () => secretsState };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getUserKiroApiKey).mockResolvedValue("per-user-kiro-key");
+  });
+
+  /**
+   * Launch several startWorkerJob (or arbitrary) operations that OVERLAP in
+   * their GET→PATCH secret work, without their `await import("@azure/identity")`
+   * calls colliding.
+   *
+   * Why the stagger: vitest's module-mock registry can hand back the *real*
+   * module when the SAME mocked module is dynamically imported by two in-flight
+   * async operations at the exact same time — a test-harness artifact unrelated
+   * to the secrets-list race under test. A small real-time stagger lets each
+   * operation's import + token acquisition resolve before the next starts, while
+   * the 50ms GET delay guarantees their secret GET/PATCH windows still overlap
+   * (so the race we care about is still exercised).
+   */
+  async function launchOverlapping(ops: Array<() => Promise<unknown>>): Promise<void> {
+    const inflight: Array<Promise<unknown>> = [];
+    for (const op of ops) {
+      inflight.push(op());
+      // Give this op's dynamic import + token acquisition a chance to settle
+      // before the next op starts its own import.
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    await Promise.all(inflight);
+  }
+
+  it("two concurrent startWorkerJob calls both keep their own secrets on the job", async () => {
+    const mock = setupConcurrentFetchMock();
+
+    // Start two sessions whose secret GET/PATCH windows overlap — the classic
+    // interleaving that a stale-snapshot merge would clobber.
+    await launchOverlapping([
+      () => startWorkerJob(baseConfig, 42, "developer-agent", 1, 900),
+      () => startWorkerJob(baseConfig, 99, "developer-agent", 1, 900),
+    ]);
+
+    const names = mock.getState().map((s) => s.name);
+
+    // Both sessions' worker-secret and kiro-api-key entries must survive — neither
+    // session may have been clobbered by the other's stale-snapshot PATCH.
+    expect(names).toContain(sessionScoped("worker-secret", 42));
+    expect(names).toContain(sessionScoped("kiro-api-key", 42));
+    expect(names).toContain(sessionScoped("worker-secret", 99));
+    expect(names).toContain(sessionScoped("kiro-api-key", 99));
+  });
+
+  it("start body secretRefs still resolve to secrets present on the job after concurrent starts", async () => {
+    const mock = setupConcurrentFetchMock();
+
+    await launchOverlapping([
+      () => startWorkerJob(baseConfig, 42, "developer-agent", 1, 900),
+      () => startWorkerJob(baseConfig, 99, "developer-agent", 1, 900),
+    ]);
+
+    const finalSecretNames = new Set(mock.getState().map((s) => s.name));
+
+    // Every secretRef referenced in a start body must exist in the final list.
+    const startBodies = fetchCalls
+      .filter((c) => c.method === "POST" && c.url.includes("/start"))
+      .map((c) => c.body as Record<string, unknown>);
+    expect(startBodies.length).toBe(2);
+
+    for (const body of startBodies) {
+      const workerEnv = (body?.containers as Array<{ name: string; env: unknown[] }>)?.find(
+        (c) => c.name === "worker"
+      )?.env as Array<{ name: string; secretRef?: string }> | undefined;
+      const refs = (workerEnv ?? [])
+        .map((e) => e.secretRef)
+        .filter((r): r is string => typeof r === "string");
+      for (const ref of refs) {
+        expect(finalSecretNames.has(ref)).toBe(true);
+      }
+    }
+  });
+
+  it("stop after concurrent starts removes only the stopped session's secrets, keeping the other's", async () => {
+    const mock = setupConcurrentFetchMock();
+
+    await launchOverlapping([
+      () => startWorkerJob(baseConfig, 42, "developer-agent", 1, 900),
+      () => startWorkerJob(baseConfig, 99, "developer-agent", 1, 900),
+    ]);
+
+    // Stop 42 while another session's secret work overlaps — the removal must
+    // not clobber session 99's or 77's live secrets.
+    await launchOverlapping([
+      () => stopWorkerJob(baseConfig, "exec-42", 42),
+      () => startWorkerJob(baseConfig, 77, "developer-agent", 1, 900),
+    ]);
+
+    const names = mock.getState().map((s) => s.name);
+    // 42 removed
+    expect(names).not.toContain(sessionScoped("worker-secret", 42));
+    expect(names).not.toContain(sessionScoped("kiro-api-key", 42));
+    // 99 and 77 preserved
+    expect(names).toContain(sessionScoped("worker-secret", 99));
+    expect(names).toContain(sessionScoped("worker-secret", 77));
+  });
+});
+
+/** Mirror of the module's internal sessionSecretName for test assertions. */
+function sessionScoped(base: string, sessionId: number): string {
+  return `${base}-sess-${sessionId}`;
+}
