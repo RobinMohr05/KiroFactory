@@ -127,7 +127,7 @@ describe("reorderSessionsOnServer - pendingOps cleanup on failure", () => {
   it("should remove pendingOps entry when fetch returns non-ok response", async () => {
     // Simulate the pattern
     const pendingOps = new Set<string>();
-    let fetchResult: { ok: boolean; status: number } = { ok: false, status: 500 };
+    const fetchResult: { ok: boolean; status: number } = { ok: false, status: 500 };
 
     async function reorderSessionsOnServer() {
       try {
@@ -163,7 +163,7 @@ describe("reorderSessionsOnServer - pendingOps cleanup on failure", () => {
 
   it("pendingOps entry persists on success (only cleared by WS handler)", async () => {
     const pendingOps = new Set<string>();
-    let fetchResult: { ok: boolean; status: number } = { ok: true, status: 200 };
+    const fetchResult: { ok: boolean; status: number } = { ok: true, status: 200 };
 
     async function reorderSessionsOnServer() {
       try {

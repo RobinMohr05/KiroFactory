@@ -1,0 +1,8 @@
+node_modules/
+dist/
+worker/
+mcp-proxy/
+knowledge-base/
+.kiro/
+infra/
+frontend/src/style.css

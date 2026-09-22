@@ -117,8 +117,8 @@ export async function runMigration(): Promise<boolean> {
       await writeQuery(async (tx) => {
         await tx.run(`MATCH (f:Flock) SET f:AutoScaler REMOVE f:Flock`);
       });
-    } catch (err: any) {
-      console.warn(`[migrate] ⚠ Flock→AutoScaler relabel failed: ${err.message || err}`);
+    } catch (err: unknown) {
+      console.warn(`[migrate] ⚠ Flock→AutoScaler relabel failed: ${err instanceof Error ? err.message : String(err)}`);
     }
 
     // ── Chat session backfill ──────────────────────────────────────────────
@@ -168,19 +168,19 @@ export async function runMigration(): Promise<boolean> {
               forceLocal: false,
             };
             await insertSession(session);
-          } catch (err: any) {
-            console.warn(`[migrate] ⚠ Failed to backfill Chat session for user ${userId}: ${err.message || err}`);
+          } catch (err: unknown) {
+            console.warn(`[migrate] ⚠ Failed to backfill Chat session for user ${userId}: ${err instanceof Error ? err.message : String(err)}`);
           }
         }
         console.log("[migrate] Chat session backfill complete.");
       }
-    } catch (err: any) {
-      console.warn(`[migrate] ⚠ Chat session backfill failed: ${err.message || err}`);
+    } catch (err: unknown) {
+      console.warn(`[migrate] ⚠ Chat session backfill failed: ${err instanceof Error ? err.message : String(err)}`);
     }
 
     return true;
-  } catch (err: any) {
-    console.warn(`[migrate] ⚠ Migration failed: ${err.message || err}`);
+  } catch (err: unknown) {
+    console.warn(`[migrate] ⚠ Migration failed: ${err instanceof Error ? err.message : String(err)}`);
     console.warn("[migrate] ⚠ Database features will be unavailable until the connection is restored.");
     return false;
   }

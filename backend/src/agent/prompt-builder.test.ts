@@ -96,7 +96,7 @@ describe("buildReviewPrompt", () => {
     it("falls back to evaluating against the develop branch when no PR/branch is set", () => {
       const task = makeTask({ branch: null, pullRequestUrl: null });
       const prompt = buildReviewPrompt(task, "/workspace");
-      expect(prompt).toContain("evaluate against the base \`develop\` branch");
+      expect(prompt).toContain("evaluate against the base `develop` branch");
     });
   });
 });

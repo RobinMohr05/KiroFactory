@@ -35,6 +35,7 @@
 import { getUserKiroApiKey } from "./db/users.js";
 import type { ProxyServersConfig } from "./mcp-proxy-config.js";
 import { encodeServersConfigBase64, buildProxyCredentialEnvVars, type SessionCredentials } from "./mcp-proxy-config.js";
+import { log } from "./logger.js";
 
 /** MCP proxy sidecar configuration passed to startWorkerJob */
 export interface McpProxySidecarConfig {
@@ -333,9 +334,11 @@ async function mutateJobSecrets(
       if (!getResponse.ok) {
         // If GET fails (e.g., RBAC issue), we cannot safely merge. Surface a
         // warning; the subsequent start will fail anyway if secrets are missing.
-        console.warn(
-          `[aca-spawner] Could not GET job to ${opContext} (HTTP ${getResponse.status})`
-        );
+        log.warn("aca-spawner-get-job-failed", {
+          component: "aca-spawner",
+          msg: `Could not GET job to ${opContext} (HTTP ${getResponse.status})`,
+          status: getResponse.status,
+        });
         return false;
       }
 
@@ -346,10 +349,10 @@ async function mutateJobSecrets(
       // pre-existing secrets (e.g. acr-password) with empty values on PATCH.
       const existingSecrets = await listJobSecrets(config, token);
       if (existingSecrets === null) {
-        console.warn(
-          `[aca-spawner] Could not listSecrets to ${opContext} (values redacted on GET); ` +
-            `aborting to avoid clobbering existing secrets`
-        );
+        log.warn("aca-spawner-list-secrets-failed", {
+          component: "aca-spawner",
+          msg: `Could not listSecrets to ${opContext} (values redacted on GET); aborting to avoid clobbering existing secrets`,
+        });
         return false;
       }
 
@@ -387,15 +390,18 @@ async function mutateJobSecrets(
       }
 
       const errorText = await patchResponse.text();
-      console.warn(
-        `[aca-spawner] Failed to ${opContext} (HTTP ${patchResponse.status}): ${errorText.slice(0, 200)}`
-      );
+      log.warn("aca-spawner-patch-failed", {
+        component: "aca-spawner",
+        msg: `Failed to ${opContext} (HTTP ${patchResponse.status}): ${errorText.slice(0, 200)}`,
+        status: patchResponse.status,
+      });
       return false;
     }
 
-    console.warn(
-      `[aca-spawner] Gave up trying to ${opContext} after ${SECRET_MUTATION_MAX_ATTEMPTS} ETag-conflict retries`
-    );
+    log.warn("aca-spawner-gave-up", {
+      component: "aca-spawner",
+      msg: `Gave up trying to ${opContext} after ${SECRET_MUTATION_MAX_ATTEMPTS} ETag-conflict retries`,
+    });
     return false;
   });
 }
@@ -905,9 +911,11 @@ export async function stopWorkerJob(
   // 200, 202, 204 are all acceptable
   if (!response.ok && response.status !== 404) {
     const errorText = await response.text();
-    console.warn(
-      `[aca-spawner] ${explainAcaHttpError(`stop of execution ${executionName}`, response.status, errorText, config)}`
-    );
+    log.warn("aca-spawner-stop-failed", {
+      component: "aca-spawner",
+      msg: explainAcaHttpError(`stop of execution ${executionName}`, response.status, errorText, config),
+      status: response.status,
+    });
   }
 
   // Clean up session-scoped secrets after stopping (best-effort)
@@ -916,7 +924,11 @@ export async function stopWorkerJob(
       await removeSessionSecrets(config, token, sessionId);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.warn(`[aca-spawner] Failed to clean up session ${sessionId} secrets: ${msg}`);
+      log.warn("aca-spawner-cleanup-secrets-failed", {
+        component: "aca-spawner",
+        sessionId,
+        error: msg,
+      });
     }
   }
 }

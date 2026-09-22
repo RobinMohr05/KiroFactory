@@ -67,7 +67,7 @@ async function main(): Promise<void> {
       await session.run(
         "CREATE (n:VerifyNeo4jProbe {createdAt: datetime()}) RETURN n"
       );
-      const deleteResult = await session.run(
+      await session.run(
         "MATCH (n:VerifyNeo4jProbe) DETACH DELETE n RETURN count(n) AS deleted"
       );
       console.log(
@@ -93,4 +93,4 @@ async function main(): Promise<void> {
   }
 }
 
-main();
+void main();

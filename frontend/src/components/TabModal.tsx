@@ -79,8 +79,8 @@ export function TabModal({ tab, onClose, onSave }: TabModalProps) {
         onSave(created);
       }
       onClose();
-    } catch (err: any) {
-      setError(err.message || 'Failed to save tab.');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to save tab.');
     }
   };
 

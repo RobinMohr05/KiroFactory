@@ -14,7 +14,7 @@ import { KiroRunner } from "./agent/kiro-runner.js";
 import type { SessionUpdateChunk } from "./agent/kiro-runner.js";
 import { broadcastToUser } from "./websocket-handler.js";
 import { sanitizeSessionForClient } from "./session-sanitize.js";
-import { claimTask, resolveTask, resetTask, getAvailableTaskCount, waitForTaskAvailable, markTaskDone, findSiblingTasks, findSiblingTasksByGroupId, describeClaimFailure } from "./agent/task-claimer.js";
+import { claimTask, resolveTask, resetTask, getAvailableTaskCount, waitForTaskAvailable, findSiblingTasks, findSiblingTasksByGroupId, describeClaimFailure } from "./agent/task-claimer.js";
 import type { ClaimedTask } from "./agent/task-claimer.js";
 import { buildDevPrompt, buildReviewPrompt } from "./agent/prompt-builder.js";
 import { hasLocalGitChanges } from "./agent/local-git-check.js";
@@ -22,12 +22,9 @@ import { buildPersistentBranchName, buildTaskBranchName, sanitizeBranchName } fr
 import { resolveGitProvider, NO_TASKS_PARK_DETAIL, type GitProvider } from "./types.js";
 import {
   getAllSessionsFromDb,
-  getRunningSessionsFromDb,
   insertSession,
-  updateSessionStatus,
   updateSessionMeta,
   deleteSessionFromDb,
-  isSessionOwnedByUser,
   reorderSessionsInDb,
   updateSessionPinInDb,
   updateSessionScheduleActiveInDb,
@@ -39,7 +36,7 @@ import { isDbAvailable } from "./db/connection.js";
 import { getTaskAutoMergePrs, areAllGroupTasksDone, getTasksByBranch, createTask, getAllTasks } from "./db/tasks.js";
 import { recordError, type RecordErrorInput } from "./error-store.js";
 import { log, logSessionEvent, logWorkerEvent, toErrorFields } from "./logger.js";
-import { getAgentTabs, getTabById } from "./db/tabs.js";
+import { getTabById } from "./db/tabs.js";
 import { getAgentByName } from "./db/agents.js";
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { materializeAgentConfigIfMissing, encodeAgentConfigBase64 } from "./agent/agent-config-writer.js";
@@ -56,9 +53,7 @@ import {
   startWorkerJob as startAcaWorkerJob,
   stopWorkerJob as stopAcaWorkerJob,
   getWorkerJobStatus as getAcaWorkerJobStatus,
-  isAcaModeEnabled,
   type AcaWorkerConfig,
-  type AcaJobExecution,
   type McpProxySidecarConfig,
 } from "./aca-worker-spawner.js";
 import {
@@ -67,7 +62,6 @@ import {
   stopWorkerJob as stopWslWorkerJob,
   getWorkerJobStatus as getWslWorkerJobStatus,
   captureContainerLogs as captureWslContainerLogs,
-  isWslModeEnabled,
   type WslWorkerConfig,
 } from "./wsl-worker-spawner.js";
 import {
@@ -504,8 +498,7 @@ export async function initSessions(): Promise<void> {
 
   for (const meta of persisted) {
     // If the session was running, keep the status as "stopped" for now
-    // (loadSessions already resets running → stopped) but schedule a restart.
-    const wasRunning = meta.status === "stopped" && meta.startedAt;
+    // (loadSessions already resets running --> stopped) but schedule a restart.
     sessions.set(meta.id, {
       meta,
       runner: null,
@@ -549,11 +542,11 @@ export async function initSessions(): Promise<void> {
     //
     // Sessions owned/pooled by an AutoScaler are likewise exempt: they load
     // as "stopped" here and are resumed by initAutoScalers() -> startAutoScaler(),
-    // which adopts the persisted pool and runs its own reconcile — not by this
+    // which adopts the persisted pool and runs its own reconcile -- not by this
     // generic auto-restart path.
-    if ((meta as any).__wasRunning && !meta.cronExpression && !persistedPooledIds.has(meta.id)) {
+    if ((meta as Session & { __wasRunning?: boolean }).__wasRunning && !meta.cronExpression && !persistedPooledIds.has(meta.id)) {
       toRestart.push(meta.id);
-      delete (meta as any).__wasRunning;
+      delete (meta as Session & { __wasRunning?: boolean }).__wasRunning;
     }
   }
 
@@ -1253,7 +1246,7 @@ export function deleteSession(id: number): boolean {
 
   // Stop first if running
   if (session.meta.status === "running") {
-    stopSession(id);
+    void stopSession(id);
   }
 
   sessions.delete(id);

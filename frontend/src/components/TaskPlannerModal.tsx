@@ -322,9 +322,9 @@ export function TaskPlannerModal({ onClose, onSwitchToManual, hidden = false, on
         // sent — so just focus the input and leave status as 'connecting'
         // until that event arrives.
         inputRef.current?.focus();
-      } catch (e: any) {
+      } catch (e: unknown) {
         if (cancelled) return;
-        addMessage('system', 'Failed to start: ' + e.message);
+        addMessage('system', 'Failed to start: ' + (e instanceof Error ? e.message : String(e)));
         setStatus('error');
       }
     })();
@@ -431,8 +431,8 @@ export function TaskPlannerModal({ onClose, onSwitchToManual, hidden = false, on
       }
       const data = await res.json();
       setConversations(Array.isArray(data.conversations) ? data.conversations : []);
-    } catch (e: any) {
-      addMessage('system', 'Failed to load conversation history: ' + e.message);
+    } catch (e: unknown) {
+      addMessage('system', 'Failed to load conversation history: ' + (e instanceof Error ? e.message : String(e)));
     }
   }, []);
 
@@ -459,8 +459,8 @@ export function TaskPlannerModal({ onClose, onSwitchToManual, hidden = false, on
       }
       const data = await res.json();
       transcript = data.conversation as PlannerConversationRecord;
-    } catch (e: any) {
-      addMessage('system', 'Failed to load conversation: ' + e.message);
+    } catch (e: unknown) {
+      addMessage('system', 'Failed to load conversation: ' + (e instanceof Error ? e.message : String(e)));
       return;
     }
 
@@ -501,8 +501,8 @@ export function TaskPlannerModal({ onClose, onSwitchToManual, hidden = false, on
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error || `HTTP ${res.status}`);
       }
-    } catch (e: any) {
-      addMessage('system', 'Failed to delete conversation: ' + e.message);
+    } catch (e: unknown) {
+      addMessage('system', 'Failed to delete conversation: ' + (e instanceof Error ? e.message : String(e)));
       return;
     }
     if (selectedConversationId === conversationId) setSelectedConversationId(null);
@@ -759,8 +759,8 @@ export function TaskPlannerModal({ onClose, onSwitchToManual, hidden = false, on
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error || `HTTP ${res.status}`);
       }
-    } catch (e: any) {
-      addMessage('system', 'Error: ' + e.message);
+    } catch (e: unknown) {
+      addMessage('system', 'Error: ' + (e instanceof Error ? e.message : String(e)));
       setStatus('ready');
       setReady(true);
     }
@@ -801,13 +801,13 @@ export function TaskPlannerModal({ onClose, onSwitchToManual, hidden = false, on
       // Add all successfully created tasks to state
       if (created && created.length > 0) {
         setTasks(prev => {
-          let updated = [...prev];
+          const updated = [...prev];
           for (const task of created) {
             const existing = updated.findIndex(t => t.id === task.id);
             if (existing >= 0) {
-              updated[existing] = task as any;
+              updated[existing] = task as unknown as Task;
             } else {
-              updated.push(task as any);
+              updated.push(task as unknown as Task);
             }
           }
           return updated;
@@ -818,15 +818,15 @@ export function TaskPlannerModal({ onClose, onSwitchToManual, hidden = false, on
       if (failed && failed.length > 0) {
         // Update parsedTasks to only contain the failed tasks, so a retry
         // doesn't re-send the already-created ones (which would create duplicates).
-        const failedTasks: typeof parsedTasks = failed.map((f: any) => ({
-          title: f.task.title,
-          description: f.task.description,
-          priority: f.task.priority,
-          type: f.task.type,
-          files: f.task.files,
-          // Drop dependsOnBatchIndex — indices are stale after the array changed
-          dependsOnTaskId: f.task.dependsOnTaskId,
-          groupId: f.task.groupId,
+        const failedTasks: typeof parsedTasks = failed.map((f) => ({
+          title: f.task.title as string,
+          description: f.task.description as string | undefined,
+          priority: f.task.priority as number,
+          type: f.task.type as string,
+          files: f.task.files as string[] | undefined,
+          // Drop dependsOnBatchIndex -- indices are stale after the array changed
+          dependsOnTaskId: f.task.dependsOnTaskId as number[] | undefined,
+          groupId: f.task.groupId as string | undefined,
         }));
         setParsedTasks(failedTasks);
         for (const f of failed) {
@@ -837,8 +837,8 @@ export function TaskPlannerModal({ onClose, onSwitchToManual, hidden = false, on
         // Full success — close modal
         onClose();
       }
-    } catch (e: any) {
-      addMessage('system', '❌ Failed to create task: ' + e.message);
+    } catch (e: unknown) {
+      addMessage('system', '❌ Failed to create task: ' + (e instanceof Error ? e.message : String(e)));
     } finally {
       setCreating(false);
     }

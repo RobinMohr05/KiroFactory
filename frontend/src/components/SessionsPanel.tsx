@@ -123,7 +123,6 @@ export function SessionsPanel() {
         setSessions(prev => prev.map(s => s.id === id ? { ...s, tabIds: [currentTabId] } : s));
       } catch { /* never throw out of the effect */ }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentTabId, permanentSessionId]);
 
   // Load session output when active session changes
