@@ -49,6 +49,7 @@ vi.mock("./mcp-proxy-config.js", () => ({
 }));
 
 import { getUserKiroApiKey } from "./db/users.js";
+import { buildProxyCredentialEnvVars } from "./mcp-proxy-config.js";
 import { startWorkerJob, stopWorkerJob, type AcaWorkerConfig } from "./aca-worker-spawner.js";
 
 /** Builds a minimal valid AcaWorkerConfig for tests. */
@@ -673,3 +674,130 @@ describe("aca-worker-spawner — concurrent secret PATCHes must not clobber each
 function sessionScoped(base: string, sessionId: number): string {
   return `${base}-sess-${sessionId}`;
 }
+
+// ---------------------------------------------------------------------------
+// MCP proxy sidecar credentials must also use secretRef, not plaintext value
+// ---------------------------------------------------------------------------
+//
+// Regression guard for the KF-1939 PR review: the mcp-proxy sidecar container is
+// part of the SAME job execution as the worker, so its env vars are returned
+// verbatim by the same `az containerapp job execution show` / ARM GET. Injecting
+// ATLASSIAN_API_TOKEN / AZURE_DEVOPS_EXT_PAT / AWS_* as plaintext `value` entries
+// leaks them just as badly as the worker container did before the fix. These must
+// be registered as session-scoped job secrets and referenced via `secretRef`.
+
+describe("aca-worker-spawner — MCP proxy sidecar credentials use secretRef", () => {
+  const proxyConfig: AcaWorkerConfig = {
+    ...baseConfig,
+    proxyImage: "acr.test/mcp-proxy:latest",
+  };
+
+  const sidecar = {
+    serversConfig: { atlassian: { command: "npx", args: ["-y", "mcp-atlassian"] } },
+    credentials: {
+      atlassianApiToken: "atl-token-xyz",
+      atlassianUsername: "user@test.local",
+      azureDevOpsPat: "ado-proxy-pat",
+      awsAccessKeyId: "AKIAEXAMPLE",
+      awsSecretAccessKey: "aws-secret-value",
+    },
+  };
+
+  /** The plaintext env vars the proxy would inject (mirrors buildProxyCredentialEnvVars). */
+  const proxyCredEntries = [
+    { name: "ATLASSIAN_API_TOKEN", value: "atl-token-xyz" },
+    { name: "ATLASSIAN_USERNAME", value: "user@test.local" },
+    { name: "AZURE_DEVOPS_EXT_PAT", value: "ado-proxy-pat" },
+    { name: "AWS_ACCESS_KEY_ID", value: "AKIAEXAMPLE" },
+    { name: "AWS_SECRET_ACCESS_KEY", value: "aws-secret-value" },
+  ];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getUserKiroApiKey).mockResolvedValue("per-user-kiro-key");
+    vi.mocked(buildProxyCredentialEnvVars).mockReturnValue(proxyCredEntries);
+    setupFetchMock();
+  });
+
+  function getProxyEnv(): Array<{ name: string; value?: string; secretRef?: string }> {
+    const startCall = getStartCall();
+    expect(startCall).toBeDefined();
+    const body = startCall!.body as Record<string, unknown>;
+    const proxyEnv = (body?.containers as Array<{ name: string; env: unknown[] }>)?.find(
+      (c) => c.name === "mcp-proxy"
+    )?.env as Array<{ name: string; value?: string; secretRef?: string }> | undefined;
+    expect(proxyEnv).toBeDefined();
+    return proxyEnv!;
+  }
+
+  it("no proxy credential env var is passed as a plaintext value", async () => {
+    await startWorkerJob(proxyConfig, 42, "developer-agent", 1, 900, sidecar);
+
+    const proxyEnv = getProxyEnv();
+    for (const cred of proxyCredEntries) {
+      const entry = proxyEnv.find((e) => e.name === cred.name);
+      expect(entry, `expected proxy env to include ${cred.name}`).toBeDefined();
+      expect(entry!.value, `${cred.name} must not be plaintext value`).toBeUndefined();
+      expect(entry!.secretRef, `${cred.name} must use secretRef`).toBeDefined();
+      // secretRef must be session-scoped
+      expect(entry!.secretRef).toContain("42");
+    }
+  });
+
+  it("proxy credential secrets are registered on the job via PATCH with their real values", async () => {
+    await startWorkerJob(proxyConfig, 42, "developer-agent", 1, 900, sidecar);
+
+    // Collect all secrets sent across the PATCH calls before start.
+    const patch = getPatchCalls()[0];
+    const secretsArray = (
+      (patch.body as Record<string, unknown>)?.properties as Record<string, unknown>
+    )?.configuration as Record<string, unknown>;
+    const secrets = (secretsArray)?.secrets as Array<{ name: string; value: string }> | undefined;
+    expect(secrets).toBeDefined();
+
+    // Every proxy credential value must be present in the job secrets, none as plaintext env.
+    for (const cred of proxyCredEntries) {
+      const match = secrets!.find((s) => s.value === cred.value);
+      expect(match, `expected a job secret carrying the ${cred.name} value`).toBeDefined();
+      expect(match!.name).toContain("42");
+    }
+  });
+
+  it("each proxy secretRef in the start body resolves to a registered job secret", async () => {
+    await startWorkerJob(proxyConfig, 42, "developer-agent", 1, 900, sidecar);
+
+    const registeredNames = new Set(simulatedJobSecrets.map((s) => s.name));
+    const proxyEnv = getProxyEnv();
+    const refs = proxyEnv
+      .map((e) => e.secretRef)
+      .filter((r): r is string => typeof r === "string");
+    expect(refs.length).toBeGreaterThanOrEqual(proxyCredEntries.length);
+    for (const ref of refs) {
+      expect(registeredNames.has(ref), `secretRef ${ref} must be a registered job secret`).toBe(true);
+    }
+  });
+
+  it("non-sensitive proxy env vars (MCP_PROXY_PORT, MCP_SERVERS_JSON_B64) still use plaintext value", async () => {
+    await startWorkerJob(proxyConfig, 42, "developer-agent", 1, 900, sidecar);
+
+    const proxyEnv = getProxyEnv();
+    const portEntry = proxyEnv.find((e) => e.name === "MCP_PROXY_PORT");
+    expect(portEntry?.value).toBe("9090");
+    expect(portEntry?.secretRef).toBeUndefined();
+
+    const serversEntry = proxyEnv.find((e) => e.name === "MCP_SERVERS_JSON_B64");
+    expect(serversEntry?.value).toBeDefined();
+    expect(serversEntry?.secretRef).toBeUndefined();
+  });
+
+  it("stopWorkerJob removes the proxy credential secrets along with the rest", async () => {
+    await startWorkerJob(proxyConfig, 42, "developer-agent", 1, 900, sidecar);
+    // Proxy secrets should now be present.
+    expect(simulatedJobSecrets.some((s) => s.value === "atl-token-xyz")).toBe(true);
+
+    await stopWorkerJob(proxyConfig, "test-exec-42", 42);
+
+    // All session-42 secrets (including proxy creds) removed.
+    expect(simulatedJobSecrets.some((s) => s.name.endsWith("-sess-42"))).toBe(false);
+  });
+});

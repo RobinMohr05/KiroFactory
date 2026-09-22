@@ -13,10 +13,12 @@
  *
  * ## Secret handling
  *
- * Sensitive values (WORKER_SECRET, KIRO_API_KEY, GITHUB_PAT, AZURE_DEVOPS_PAT)
- * are NOT passed as plaintext `value` entries in the per-execution env override.
- * Doing so exposes them in `az containerapp job execution show` and the Azure
- * Portal's execution detail blade, readable by anyone with Reader on the job.
+ * Sensitive values (WORKER_SECRET, KIRO_API_KEY, GITHUB_PAT, AZURE_DEVOPS_PAT,
+ * and the MCP proxy sidecar's per-user credentials — Atlassian / Azure DevOps /
+ * AWS) are NOT passed as plaintext `value` entries in the per-execution env
+ * override. Doing so exposes them in `az containerapp job execution show` and the
+ * Azure Portal's execution detail blade, readable by anyone with Reader on the job.
+ * The proxy sidecar runs in the same execution, so its env leaks just as badly.
  *
  * Instead, before each execution start we PATCH the job's `configuration.secrets`
  * array to register session-scoped secrets (named `<base>-sess-<sessionId>`), then
@@ -152,6 +154,23 @@ interface EnvironmentVar {
  */
 function sessionSecretName(base: string, sessionId: number): string {
   return `${base}-sess-${sessionId}`;
+}
+
+/**
+ * Derive an ACA-safe secret *base* name from an environment variable name.
+ *
+ * ACA secret names must be lowercase alphanumeric plus hyphens, so we lower-case
+ * the env name and replace any run of non-alphanumeric characters (e.g. the
+ * underscores in `ATLASSIAN_API_TOKEN`) with a single hyphen. The result is fed
+ * to {@link sessionSecretName} to make it session-scoped.
+ *
+ * Example: secretBaseFromEnvName("ATLASSIAN_API_TOKEN") = "atlassian-api-token"
+ */
+function secretBaseFromEnvName(envName: string): string {
+  return envName
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }
 
 /**
@@ -328,9 +347,11 @@ async function mutateJobSecrets(
  * read-modify-write (see {@link mutateJobSecrets}) so concurrent sessions don't
  * clobber each other's entries.
  *
- * Note: the "Container Apps Jobs Operator" built-in role covers both
- * `Microsoft.App/jobs/read` and `Microsoft.App/jobs/write`, so the managed
- * identity that starts executions can also PATCH secrets.
+ * Note: PATCHing `configuration.secrets` requires `Microsoft.App/jobs/write`,
+ * which the built-in "Container Apps Jobs Operator" role does NOT grant. The
+ * orchestrator's managed identity therefore needs a role that includes
+ * `jobs/write` — see `infra/modules/worker-job.bicep`, which assigns
+ * "Contributor" scoped to this single job for exactly this reason.
  */
 async function patchJobSecrets(
   config: AcaWorkerConfig,
@@ -402,8 +423,11 @@ function truncate(text: string, max = 400): string {
  * Turn a failed Azure management API response into an actionable error message.
  *
  * The most common failure by far is an RBAC problem: the orchestrator's managed
- * identity is missing the "Container Apps Jobs Operator" role on the worker job.
- * That surfaces as HTTP 403 with code "AuthorizationFailed" and is NOT a user
+ * identity lacks a role granting `Microsoft.App/jobs/write` on the worker job.
+ * Note the built-in "Container Apps Jobs Operator" role covers start/stop but NOT
+ * jobs/write, which the secret-PATCH path introduced for secretRef injection needs
+ * — that's why worker-job.bicep grants "Contributor" scoped to the job. An RBAC
+ * failure surfaces as HTTP 403 with code "AuthorizationFailed" and is NOT a user
  * credential problem — the Azure DevOps / Atlassian / AWS credentials are injected
  * into the worker only AFTER it starts, so they cannot cause this. This helper makes
  * the distinction explicit so the failure is self-explanatory in the UI.
@@ -423,8 +447,11 @@ function explainAcaHttpError(
     return (
       `ACA ${operation} was denied by Azure (HTTP ${status}) for ${jobRef}. ` +
       `This is an Azure RBAC problem, not a user credential problem: the orchestrator's ` +
-      `managed identity lacks permission to act on the job. Grant it the built-in ` +
-      `"Container Apps Jobs Operator" role scoped to the job (least privilege — avoid Contributor). ` +
+      `managed identity lacks permission to act on the job. It needs a role that grants both ` +
+      `start/stop AND \`Microsoft.App/jobs/write\` (the latter is required to PATCH the job's ` +
+      `configuration.secrets for secretRef injection). The built-in "Container Apps Jobs Operator" ` +
+      `role does NOT include jobs/write, so grant "Contributor" scoped to the job (least privilege — ` +
+      `Contributor on one job only, not the resource group), matching infra/modules/worker-job.bicep. ` +
       `See ARCHITECTURE.md → "Managed Identity & permissions". Azure detail: ${truncate(errorText)}`
     );
   }
@@ -562,6 +589,20 @@ export async function startWorkerJob(
     }
   }
 
+  // Add MCP proxy sidecar credential secrets. The proxy container runs in the
+  // SAME execution as the worker, so its env is returned by the same
+  // `az containerapp job execution show` / ARM GET — these per-user credentials
+  // (Atlassian / Azure DevOps / AWS) must be secretRef'd, not plaintext values.
+  // We build the plaintext list once here (so it can be registered), and reuse
+  // the same list below to emit the proxy container's secretRef env entries.
+  let proxyCredEnvVars: Array<{ name: string; value: string }> = [];
+  if (mcpSidecar && config.proxyImage) {
+    proxyCredEnvVars = buildProxyCredentialEnvVars(mcpSidecar.credentials);
+    for (const { name, value } of proxyCredEnvVars) {
+      sessionSecrets.push({ name: sessionSecretName(secretBaseFromEnvName(name), sessionId), value });
+    }
+  }
+
   await patchJobSecrets(config, token, sessionSecrets);
 
   // ── Step 2: build env vars — sensitive ones use secretRef ───────────────
@@ -661,9 +702,12 @@ export async function startWorkerJob(
     ];
 
     // Inject credential env vars into the proxy container so spawned MCP servers
-    // inherit them (some servers read credentials from the process environment)
-    const credEnvVars = buildProxyCredentialEnvVars(mcpSidecar.credentials);
-    proxyEnvVars.push(...credEnvVars);
+    // inherit them (some servers read credentials from the process environment).
+    // These reference the session-scoped secrets registered above via secretRef,
+    // never plaintext values — otherwise they'd leak in execution metadata.
+    for (const { name } of proxyCredEnvVars) {
+      proxyEnvVars.push(secretEnv(name, secretBaseFromEnvName(name)));
+    }
 
     containers.push({
       name: "mcp-proxy",
@@ -729,9 +773,10 @@ export async function stopWorkerJob(
   // generic DELETE. A DELETE on this path 403s even for a fully-privileged
   // identity because `Microsoft.App/jobs/executions/delete` isn't a real
   // permission (jobs/executions only exposes `read`); the actual permission
-  // this needs is `Microsoft.App/jobs/stop/execution/action`, which IS
-  // covered by the built-in "Container Apps Jobs Operator" role already
-  // assigned to this identity. See:
+  // this needs is `Microsoft.App/jobs/stop/execution/action`, which is covered
+  // by the "Contributor" role scoped to this job that worker-job.bicep assigns
+  // to this identity (it's also covered by "Container Apps Jobs Operator", but
+  // that role lacks the jobs/write the secret-PATCH path needs). See:
   // https://learn.microsoft.com/en-us/rest/api/resource-manager/containerapps/jobs/stop-execution
   const url =
     `https://management.azure.com/subscriptions/${config.subscriptionId}` +
@@ -828,10 +873,12 @@ export interface AcaAccessCheck {
 /**
  * Preflight check: verify the orchestrator's managed identity can operate the worker job.
  *
- * Performs a GET on the job resource, which requires the same `Microsoft.App/jobs/read`
- * permission that "Container Apps Jobs Operator" grants alongside start/stop. A success
- * therefore strongly implies that starting a session will work, letting us surface an RBAC
- * or identity misconfiguration at boot instead of at the first "start session" click.
+ * Performs a GET on the job resource, which requires `Microsoft.App/jobs/read`.
+ * A success confirms the identity can reach and read the job, surfacing an RBAC
+ * or identity misconfiguration at boot instead of at the first "start session"
+ * click. Note it does NOT prove the identity has `Microsoft.App/jobs/write` —
+ * the permission the secret-PATCH path needs — since read is a strictly weaker
+ * grant; a write-only RBAC gap would still only surface at first start.
  *
  * This never throws — it returns a structured result intended for logging at startup.
  */
