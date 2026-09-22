@@ -23,6 +23,19 @@ import { log } from "./logger.js";
 const WORKER_SECRET = process.env.ACA_WORKER_SECRET || process.env.WSL_WORKER_SECRET || "";
 const AUTH_TIMEOUT_MS = 10_000; // 10s to authenticate after connecting
 
+/**
+ * WebSocket ping/pong heartbeat configuration.
+ *
+ * After a worker authenticates, the orchestrator sends a ping every
+ * HEARTBEAT_INTERVAL_MS. If no pong is received within HEARTBEAT_TIMEOUT_MS
+ * of the ping, the connection is considered dead and treated the same as a
+ * clean WS close (onWorkerExited called with signal "disconnected"). This
+ * catches the case where a worker's TCP socket goes dark without a clean
+ * FIN/RST (e.g. WSL VM reset, OOM-kill, Docker daemon restart).
+ */
+const HEARTBEAT_INTERVAL_MS = 30_000; // 30s between pings
+const HEARTBEAT_TIMEOUT_MS = 15_000; // 15s to receive a pong after ping
+
 // ---------------------------------------------------------------------------
 // Types for worker messages
 // ---------------------------------------------------------------------------
@@ -263,6 +276,7 @@ interface WorkerConnectionHooks {
 function attachWorkerConnectionHandlers(ws: WebSocket, hooks: WorkerConnectionHooks = {}): void {
   let authenticated = false;
   let sessionId: number | null = null;
+  let heartbeat: HeartbeatHandle | null = null;
 
   // Auth timeout — close if not authenticated within 10s
   const authTimer = setTimeout(() => {
@@ -305,6 +319,27 @@ function attachWorkerConnectionHandlers(ws: WebSocket, hooks: WorkerConnectionHo
           });
           ws.send(JSON.stringify({ action: "auth-ok" }));
           hooks.onAuthenticated?.(sessionId);
+
+          // Start the ping/pong heartbeat now that the worker is authenticated.
+          // If the TCP connection goes dark without a clean close (e.g. WSL VM
+          // reset, container OOM-kill), this fires onDead() within
+          // HEARTBEAT_INTERVAL_MS + HEARTBEAT_TIMEOUT_MS, triggering the same
+          // onWorkerExited path a clean disconnect would.
+          heartbeat = startHeartbeat(ws, () => {
+            if (sessionId) {
+              log.warn("worker-heartbeat-timeout", {
+                component: "worker-ws",
+                sessionId,
+                intervalMs: HEARTBEAT_INTERVAL_MS,
+                timeoutMs: HEARTBEAT_TIMEOUT_MS,
+                msg: `Worker ${sessionId} did not respond to ping within ${HEARTBEAT_TIMEOUT_MS}ms — treating as dead`,
+              });
+              workerConnections.delete(sessionId);
+              if (eventHandler) {
+                eventHandler.onWorkerExited(sessionId, null, "disconnected");
+              }
+            }
+          });
         } else {
           const reason = sessionMismatch
             ? `sessionId mismatch (expected ${hooks.expectedSessionId}, got ${msg.sessionId ?? "none"})`
@@ -391,6 +426,7 @@ function attachWorkerConnectionHandlers(ws: WebSocket, hooks: WorkerConnectionHo
 
   ws.on("close", () => {
     clearTimeout(authTimer);
+    heartbeat?.stop();
     if (sessionId) {
       workerConnections.delete(sessionId);
       // Notify handler that worker disconnected (treat as exited)
@@ -407,6 +443,7 @@ function attachWorkerConnectionHandlers(ws: WebSocket, hooks: WorkerConnectionHo
 
   ws.on("error", (err) => {
     clearTimeout(authTimer);
+    heartbeat?.stop();
     log.warn("worker-ws-error", {
       component: "worker-ws",
       sessionId,
@@ -490,6 +527,109 @@ export function sendWorkerListTasksResponse(
 export function isWorkerConnected(sessionId: number): boolean {
   const ws = workerConnections.get(sessionId);
   return ws !== undefined && ws.readyState === WebSocket.OPEN;
+}
+
+// ---------------------------------------------------------------------------
+// WebSocket ping/pong heartbeat
+// ---------------------------------------------------------------------------
+
+/** Handle returned by startHeartbeat / _heartbeatForTest to cancel the heartbeat. */
+export interface HeartbeatHandle {
+  /** Stop the heartbeat — safe to call multiple times. */
+  stop(): void;
+}
+
+/**
+ * Start a ping/pong heartbeat on an authenticated worker WebSocket.
+ *
+ * Every `intervalMs` the orchestrator sends a WebSocket-level ping frame.
+ * If no pong is received within `timeoutMs` of the ping being sent, the
+ * connection is treated as dead: `onDead()` is called (which triggers
+ * `onWorkerExited(sessionId, null, "disconnected")` at the call site), and
+ * the socket is terminated.
+ *
+ * This detects the case where a worker's underlying TCP connection goes dark
+ * without a clean FIN/RST (e.g. WSL VM reset, OOM-killed container, Docker
+ * daemon restart) — cases where neither the `ws.on("close")` nor
+ * `ws.on("error")` handlers would ever fire.
+ */
+function startHeartbeat(
+  ws: WebSocket,
+  onDead: () => void,
+  intervalMs = HEARTBEAT_INTERVAL_MS,
+  timeoutMs = HEARTBEAT_TIMEOUT_MS
+): HeartbeatHandle {
+  let stopped = false;
+  let pongTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  let pingIntervalHandle: ReturnType<typeof setInterval> | null = null;
+
+  const cleanup = () => {
+    stopped = true;
+    if (pingIntervalHandle !== null) {
+      clearInterval(pingIntervalHandle);
+      pingIntervalHandle = null;
+    }
+    if (pongTimeoutHandle !== null) {
+      clearTimeout(pongTimeoutHandle);
+      pongTimeoutHandle = null;
+    }
+    // Remove the pong listener to avoid memory leaks
+    ws.off("pong", onPong);
+  };
+
+  const onPong = () => {
+    if (stopped) return;
+    // Pong received — cancel the pending timeout
+    if (pongTimeoutHandle !== null) {
+      clearTimeout(pongTimeoutHandle);
+      pongTimeoutHandle = null;
+    }
+  };
+
+  ws.on("pong", onPong);
+
+  pingIntervalHandle = setInterval(() => {
+    if (stopped) return;
+    if ((ws.readyState as number) !== WebSocket.OPEN) {
+      cleanup();
+      return;
+    }
+
+    // Send the ping and arm a timeout to detect missing pong
+    try {
+      ws.ping();
+    } catch {
+      // Socket already closed — no need to proceed
+      cleanup();
+      return;
+    }
+
+    pongTimeoutHandle = setTimeout(() => {
+      if (stopped) return;
+      // No pong received within timeoutMs — treat as dead connection
+      cleanup();
+      onDead();
+      try { ws.terminate(); } catch { /* already gone */ }
+    }, timeoutMs);
+  }, intervalMs);
+
+  return { stop: cleanup };
+}
+
+/**
+ * Test-only export: the heartbeat implementation with injectable timing
+ * parameters. This allows unit tests to use fake timers with short
+ * intervals without having to spin up a real WebSocket server.
+ *
+ * @internal Do not call from production code.
+ */
+export function _heartbeatForTest(
+  ws: WebSocket,
+  onDead: () => void,
+  intervalMs: number,
+  timeoutMs: number
+): HeartbeatHandle {
+  return startHeartbeat(ws, onDead, intervalMs, timeoutMs);
 }
 
 /**

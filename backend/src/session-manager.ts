@@ -1617,10 +1617,24 @@ export async function stopSession(id: number): Promise<boolean> {
     // Send stop signal to worker via WebSocket (triggers graceful shutdown)
     sendWorkerStop(id);
 
-    // Tear down the container/job via whichever backend started it
-    session.containerSpawner.stop(session.acaExecutionName).catch((err) => {
-      console.warn(`[session-manager] Failed to stop worker ${session.acaExecutionName}:`, err);
-    });
+    // Tear down the container/job via whichever backend started it.
+    // Awaited (not fire-and-forget) so a slow or failing teardown is
+    // visible to the caller rather than silently continuing after claiming
+    // the session is stopped. Failures are structured-logged (not
+    // console.warn) so they appear in log aggregation / Azure Monitor.
+    const executionName = session.acaExecutionName;
+    const spawner = session.containerSpawner;
+    try {
+      await spawner.stop(executionName);
+    } catch (err) {
+      log.warn("stop-worker-failed", {
+        component: "session-manager",
+        sessionId: id,
+        executionName,
+        ...toErrorFields(err),
+        msg: `Failed to stop worker container/job ${executionName}`,
+      });
+    }
     session.acaExecutionName = null;
     session.containerSpawner = null;
 
@@ -4522,4 +4536,183 @@ export async function shutdownAllSessions(): Promise<void> {
     (s) => s.meta.status === "running"
   );
   await Promise.allSettled(running.map((s) => stopSession(s.meta.id)));
+}
+
+// ---------------------------------------------------------------------------
+// Periodic zombie detection sweep
+// ---------------------------------------------------------------------------
+
+/**
+ * Interval handle for the zombie detection sweep, so it can be stopped
+ * cleanly (e.g. in tests or on server shutdown).
+ */
+let zombieSweepInterval: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * Terminal container/job statuses — when the spawner reports one of these,
+ * the container is gone and the session is a zombie.
+ *
+ * Note: "running" is the only genuinely-live status; everything else
+ * (including "stopped", "completed", "unknown") means the container is not
+ * actually running. We use an allowlist of the single known-live status
+ * rather than a denylist of dead ones so a new/unexpected status from a
+ * spawner (e.g. a future ACA status name) defaults to "treat as dead"
+ * rather than "silently ignore".
+ */
+const CONTAINER_ALIVE_STATUSES = new Set(["running", "starting", "provisioning", "waiting"]);
+
+/**
+ * Sweep all sessions with `status: "running"` against their actual
+ * container/job status. If a session's container is gone (terminal status
+ * or status-check error), the session is marked as errored, its
+ * `currentTaskId` (if any) is reset to "todo" so it can be re-claimed,
+ * and the orphaned tasks notified as available.
+ *
+ * This is the runtime analogue of the startup-time `initSessions()` /
+ * `resetOrphanedTasks()` sweep: it catches the case where a worker
+ * container dies WITHOUT sending a clean WebSocket close (e.g. WSL VM
+ * reset, container OOM-kill, Docker daemon restart), which the
+ * ping/pong heartbeat also covers per-connection but which this sweep
+ * catches for any survivors that slipped through.
+ *
+ * Pure async, never throws.
+ */
+async function zombieDetectionSweep(): Promise<void> {
+  const { resetTask: resetTaskFn, notifyTaskAvailable } = await import("./agent/task-claimer.js");
+
+  const runningSessions = Array.from(sessions.values()).filter(
+    (s) => s.meta.status === "running" && s.containerSpawner !== null && s.acaExecutionName !== null
+  );
+
+  if (runningSessions.length === 0) return;
+
+  await Promise.allSettled(
+    runningSessions.map(async (session) => {
+      const { containerSpawner, acaExecutionName } = session;
+      if (!containerSpawner || !acaExecutionName) return;
+
+      let isAlive = false;
+      try {
+        const jobStatus = await containerSpawner.status(acaExecutionName);
+        isAlive = CONTAINER_ALIVE_STATUSES.has((jobStatus.status ?? "").toLowerCase());
+      } catch (err) {
+        // Status check failed — treat as dead (conservative: better to reset
+        // an orphaned task that re-runs than to leave it stuck forever).
+        log.warn("zombie-sweep-status-check-failed", {
+          component: "session-manager",
+          sessionId: session.meta.id,
+          executionName: acaExecutionName,
+          ...toErrorFields(err),
+          msg: `Zombie sweep: status check failed for ${acaExecutionName} — treating session ${session.meta.id} as dead`,
+        });
+        isAlive = false;
+      }
+
+      if (isAlive) return;
+
+      // Container is gone — mark session as errored
+      log.warn("zombie-session-detected", {
+        component: "session-manager",
+        sessionId: session.meta.id,
+        agent: session.meta.agent,
+        executionName: acaExecutionName,
+        currentTaskId: session.meta.currentTaskId ?? null,
+        msg: `Zombie session detected: container ${acaExecutionName} is no longer running but session ${session.meta.id} is still marked 'running'. Cleaning up.`,
+      });
+
+      // Abort any in-flight loop / pending awaiter
+      session.abortController?.abort();
+      if (session.acaPromptRejecter) {
+        session.acaPromptRejecter(new Error("Worker container no longer running (zombie detected)"));
+        session.acaPromptResolver = null;
+        session.acaPromptRejecter = null;
+      }
+
+      // Reset the claimed task (if any) so it can be re-claimed
+      const taskId = session.meta.currentTaskId;
+      if (taskId !== undefined) {
+        try {
+          await resetTaskFn(taskId, "todo");
+          notifyTaskAvailable();
+          appendOutput(session, {
+            timestamp: now(),
+            stream: "system",
+            text: `Task ${taskId} reset to "todo" — worker container disappeared (zombie session cleaned up).`,
+          });
+        } catch (err) {
+          log.warn("zombie-task-reset-failed", {
+            component: "session-manager",
+            sessionId: session.meta.id,
+            taskId,
+            ...toErrorFields(err),
+            msg: `Failed to reset orphaned task ${taskId} for zombie session ${session.meta.id}`,
+          });
+        }
+      }
+
+      session.acaExecutionName = null;
+      session.containerSpawner = null;
+      session.meta.currentTaskId = undefined;
+      session.meta.currentTaskTitle = undefined;
+
+      setStatus(session, "error");
+      setActivity(session, { type: "idle" });
+      appendOutput(session, {
+        timestamp: now(),
+        stream: "system",
+        text: `Session marked as errored — worker container ${acaExecutionName} disappeared without a clean disconnect.`,
+      });
+    })
+  );
+}
+
+/**
+ * Start the periodic zombie detection sweep.
+ *
+ * Should be called once at server startup (after `initSessions()`). The
+ * sweep checks every `intervalMs` milliseconds (default: 3 minutes) and
+ * is idempotent — calling it again while already running replaces the
+ * existing interval with the new one.
+ *
+ * @param intervalMs Interval in milliseconds (default: 3 minutes). Exposed
+ *   as a parameter primarily for testing with shorter intervals.
+ */
+export function startZombieDetectionSweep(intervalMs = 3 * 60 * 1000): void {
+  if (zombieSweepInterval !== null) {
+    clearInterval(zombieSweepInterval);
+  }
+  zombieSweepInterval = setInterval(() => {
+    zombieDetectionSweep().catch((err) => {
+      log.warn("zombie-sweep-error", {
+        component: "session-manager",
+        ...toErrorFields(err),
+        msg: "Zombie detection sweep encountered an unexpected error",
+      });
+    });
+  }, intervalMs);
+}
+
+/**
+ * Stop the periodic zombie detection sweep (used in tests and on
+ * graceful server shutdown).
+ */
+export function stopZombieDetectionSweep(): void {
+  if (zombieSweepInterval !== null) {
+    clearInterval(zombieSweepInterval);
+    zombieSweepInterval = null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Test helper — exposes internal state for unit tests only
+// ---------------------------------------------------------------------------
+
+/**
+ * Expose the internal sessions map for unit tests. Only call this in test
+ * code — production code must never call this function.
+ *
+ * @internal
+ */
+export function _sessionsForTest(): Map<number, ManagedSession> {
+  return sessions;
 }
