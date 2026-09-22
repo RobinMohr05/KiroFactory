@@ -257,7 +257,9 @@ async function start(): Promise<void> {
 
   // ACA preflight: verify the managed identity can operate the worker job.
   // Non-blocking and non-fatal — it just surfaces RBAC/identity problems at boot
-  // (a missing "Container Apps Jobs Operator" role) instead of at the first session start.
+  // (a missing job role — the job now needs "Contributor" scoped to it for the
+  // secret-PATCH path, not just "Container Apps Jobs Operator") instead of at the
+  // first session start.
   if (isAcaModeEnabled()) {
     const acaConfig = loadAcaConfig();
     if (acaConfig) {
