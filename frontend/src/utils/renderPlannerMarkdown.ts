@@ -10,10 +10,16 @@ marked.use({
       const level = depth < 3 ? 3 : depth > 4 ? 4 : depth;
       return `<h${level}>${text}</h${level}>\n`;
     },
-    // Links: open in new tab, sanitize non-http(s) hrefs
-    link({ href, text }: { href: string; text: string }) {
+    // Links: open in new tab, sanitize non-http(s) hrefs. The inner content is
+    // rendered through the inline parser (like `heading` above) rather than
+    // interpolating the raw `text` field — in marked v15 `Tokens.Link.text` is
+    // the RAW markdown source, so interpolating it directly would let HTML
+    // smuggled through link text (e.g. `[<img onerror=...>](https://x)`) inject
+    // live markup into the dangerouslySetInnerHTML output.
+    link(this: { parser: { parseInline(tokens: unknown[]): string } }, { href, tokens }: { href: string; tokens: unknown[] }) {
       const sanitizedHref = href && href.match(/^https?:\/\//) ? href : '#';
       const escapedHref = sanitizedHref.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+      const text = this.parser.parseInline(tokens);
       return `<a href="${escapedHref}" target="_blank" rel="noopener noreferrer">${text}</a>`;
     },
     // Strip images
