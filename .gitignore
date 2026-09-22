@@ -2,6 +2,10 @@ node_modules/
 dist/
 .env
 *.local
+# Temporary ESLint test fixture files — created and deleted during test runs
+# but gitignored so a crash/SIGINT can't accidentally stage them.
+backend/eslint-fixtures/
+backend/dist-fixtures/
 /.devcontainer
 .temp/
 workspaces/

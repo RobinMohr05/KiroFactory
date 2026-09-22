@@ -1,0 +1,29 @@
+// Lint-only TypeScript project for the backend workspace.
+//
+// The build tsconfig (tsconfig.json) intentionally only includes `src/**/*` so
+// `tsc` emits just the application code into dist/. But the ESLint `lint`
+// script also targets `scripts/**/*`, and type-aware linting requires every
+// linted .ts file to belong to a TypeScript project — otherwise
+// typescript-eslint's project service throws a "was not found by the project
+// service" parsing error (see PR #171 review).
+//
+// Using a dedicated `include`-based project (rather than projectService's
+// `allowDefaultProject`) is deliberate: allowDefaultProject caps out at 8 files
+// and throws "Too many files (>8) have matched the default project" once the
+// scripts + ephemeral test fixtures exceed that — an include list has no such
+// limit.
+//
+// This config widens the program to also cover:
+//   - scripts/**/*         the operational scripts the lint command lints
+//   - eslint-fixtures/**/* the gitignored dir where the ESLint test suite writes
+//                          throwaway snippets that need a real TS program
+//
+// It is never used for emit (noEmit); it exists purely so the linter has a
+// program that sees these files.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": ["src/**/*", "scripts/**/*", "eslint-fixtures/**/*"]
+}
