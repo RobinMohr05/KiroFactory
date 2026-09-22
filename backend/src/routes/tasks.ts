@@ -119,9 +119,17 @@ router.post("/", async (req: Request, res: Response) => {
     } else {
       // No tabIds provided — assign to the user's first tab so the task is owned
       const userTabs = await getAllTabs(userId);
-      if (userTabs.length > 0) {
-        input.tabIds = [userTabs[0].id];
+      if (userTabs.length === 0) {
+        // A task must belong to at least one tab (createTask enforces this to
+        // prevent orphaned tasks). Surface an actionable 409 here rather than
+        // letting createTask throw into the generic 500 path. Mirrors
+        // POST /api/errors/:id/create-task.
+        res.status(409).json({
+          error: "Create a board/tab before creating a task",
+        });
+        return;
       }
+      input.tabIds = [userTabs[0].id];
     }
 
     // Verify all dependsOn targets belong to the authenticated user. Without
