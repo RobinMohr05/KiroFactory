@@ -267,28 +267,59 @@ export async function updateUserPassword(
 }
 
 /**
- * Delete a user by ID.
+ * Delete a user by ID (self-service account deletion).
+ *
+ * The original SQL Server schema refused to delete a user who still owned any
+ * Tab/Agent/Session row (FK with no ON DELETE CASCADE). A first Neo4j port
+ * replicated that by refusing whenever the user owned ANYTHING via :OWNS —
+ * but that guard can never pass for a real user: every registered user is
+ * auto-provisioned a permanent "Chat" :Session at registration (and
+ * migrate.ts backfills it), so `(:User)-[:OWNS]->(:Session)` always exists
+ * and account deletion was completely broken (DELETE /api/auth/me always
+ * 404'd). See task #1972.
+ *
+ * The guard is therefore narrowed to only the node types that must NOT be
+ * silently destroyed — Tab, Agent, AutoScaler (shared/config-like resources).
+ * If the user still owns any of those, refuse the delete (return false, touch
+ * nothing) so the caller can surface a clear error instead of quietly
+ * orphaning or cascading into them.
+ *
+ * The remaining owned node types are per-user, disposable, and safe to remove
+ * along with the account, so they're cascade-cleaned in the same transaction:
+ *   - :Session (+ its HAS_MCP_SERVER / HAS_RAW_MCP_SERVER / HAS_MCP_CONFIG_OVERRIDE
+ *     config children and HAS_TURN turns)
+ *   - :PlannerConversation (+ its HAS_MESSAGE messages)
+ * DETACH DELETE tolerates null operands from OPTIONAL MATCHes that found
+ * nothing, so this single statement is correct whether or not the user has
+ * any of these.
  */
 export async function deleteUser(id: number): Promise<boolean> {
   return writeQuery(async (tx: ManagedTransaction) => {
-    // Preserve the original SQL Server safety behavior: tabs.user_id,
-    // agents.user_id, and sessions.user_id all reference users(id) with no
-    // "ON DELETE CASCADE" (see schema.sql) — deleting a user who still owned
-    // any Tab/Agent/Session used to fail outright on the FK constraint,
-    // rather than silently orphaning those rows or cascading into them.
-    // Neo4j has no FK constraint to enforce this for us, so that safety
-    // property is replicated explicitly here: if the user still owns
-    // anything via :OWNS, refuse the delete (return false, touch nothing)
-    // instead of deleting the user node or cascading into what it owns.
-    const ownsCheck = await tx.run(
-      `RETURN EXISTS { MATCH (u:User {id: $id})-[:OWNS]->() } AS ownsSomething`,
+    // Refuse the delete only if the user still owns a protected node type
+    // (Tab/Agent/AutoScaler) that shouldn't be silently destroyed.
+    const guard = await tx.run(
+      `RETURN EXISTS {
+         MATCH (u:User {id: $id})-[:OWNS]->(owned)
+         WHERE owned:Tab OR owned:Agent OR owned:AutoScaler
+       } AS blocked`,
       { id }
     );
-    const ownsSomething = ownsCheck.records[0].get("ownsSomething") as boolean;
-    if (ownsSomething) return false;
+    const blocked = guard.records[0].get("blocked") as boolean;
+    if (blocked) return false;
 
-    const result = await tx.run(`MATCH (u:User {id: $id}) DELETE u RETURN u`, { id });
-    return result.records.length > 0;
+    // Cascade-clean the user's disposable owned nodes, then delete the user.
+    const result = await tx.run(
+      `MATCH (u:User {id: $id})
+       OPTIONAL MATCH (u)-[:OWNS]->(s:Session)
+       OPTIONAL MATCH (s)-[:HAS_MCP_SERVER|HAS_RAW_MCP_SERVER|HAS_MCP_CONFIG_OVERRIDE]->(sc)
+       OPTIONAL MATCH (s)-[:HAS_TURN]->(turn:Turn)
+       OPTIONAL MATCH (u)-[:OWNS]->(c:PlannerConversation)
+       OPTIONAL MATCH (c)-[:HAS_MESSAGE]->(pm:PlannerMessage)
+       DETACH DELETE u, s, sc, turn, c, pm
+       RETURN count(DISTINCT u) AS deletedCount`,
+      { id }
+    );
+    return (result.records[0]?.get("deletedCount") as number) > 0;
   });
 }
 

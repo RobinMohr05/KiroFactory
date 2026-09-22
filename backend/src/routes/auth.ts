@@ -431,10 +431,25 @@ router.delete("/me", async (req: Request, res: Response) => {
       return;
     }
 
-    // Delete the user (cascading deletes will clean up related data)
+    // Stop the user's running sessions first, so we don't leave orphaned
+    // worker containers/processes behind once their Session rows are removed
+    // by the cascade delete below.
+    await stopAllSessionsForUser(userId);
+
+    // Delete the user. deleteUser cascade-cleans the user's disposable owned
+    // nodes (Sessions, PlannerConversations, ...) but refuses (returns false)
+    // if the user still owns protected resources (Tabs/Agents/AutoScalers)
+    // that must not be silently destroyed.
     const deleted = await deleteUser(userId);
     if (!deleted) {
-      res.status(404).json({ error: "User not found" });
+      // The password was just verified, so the user definitely exists — a
+      // false result here means the delete was refused because the account
+      // still owns protected resources. Surface that as a 409 Conflict rather
+      // than a misleading 404.
+      res.status(409).json({
+        error:
+          "Account still owns tabs, agents, or autoscalers. Delete or reassign them before deleting your account.",
+      });
       return;
     }
 
