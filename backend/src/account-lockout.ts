@@ -51,7 +51,8 @@ export function recordFailedLogin(email: string, opts: LockoutOptions = DEFAULT_
   const now = Date.now();
   const existing = entries.get(key);
 
-  // If a prior lockout window has already elapsed, start counting fresh.
+  // If a prior lockout window has already elapsed, start counting fresh. The
+  // stale entry is overwritten below, so it never lingers past its window here.
   if (existing && now - existing.lastFailureAt > opts.lockoutMs) {
     entries.set(key, { failures: 1, lastFailureAt: now });
     return false;
@@ -75,16 +76,65 @@ export function clearFailedLogins(email: string): void {
  * failure threshold and the cooldown window has not yet elapsed.
  */
 export function isAccountLockedOut(email: string, opts: LockoutOptions = DEFAULT_LOCKOUT_OPTIONS): boolean {
-  const entry = entries.get(keyFor(email));
+  const key = keyFor(email);
+  const entry = entries.get(key);
   if (!entry) return false;
+  // The entry's window has fully elapsed: it's logically dead, so evict it on
+  // read to keep the Map bounded even for emails that only ever fail.
+  if (Date.now() - entry.lastFailureAt > opts.lockoutMs) {
+    entries.delete(key);
+    return false;
+  }
   if (entry.failures < opts.maxAttempts) return false;
   // Threshold reached — locked until the cooldown elapses from the last failure.
-  return Date.now() - entry.lastFailureAt <= opts.lockoutMs;
+  return true;
 }
+
+/**
+ * Deletes every entry whose most recent failure is older than the lockout
+ * window — such an entry is logically dead (see recordFailedLogin's reset
+ * branch) and only kept around waiting to be reclaimed. Called on a timer (see
+ * below) and exposed for tests.
+ */
+function sweepExpiredLockouts(opts: LockoutOptions = DEFAULT_LOCKOUT_OPTIONS): void {
+  const now = Date.now();
+  for (const [key, entry] of entries) {
+    if (now - entry.lastFailureAt > opts.lockoutMs) {
+      entries.delete(key);
+    }
+  }
+}
+
+/**
+ * Periodic reaper that bounds Map growth from a distributed credential-stuffing
+ * sweep across many distinct (possibly non-existent) emails, which would
+ * otherwise accumulate an entry per email for the process lifetime.
+ *
+ * The interval is unref()'d so it never keeps the Node process alive on its own
+ * — this remains a best-effort, in-memory measure (see the file header).
+ */
+const SWEEP_INTERVAL_MS = DEFAULT_LOCKOUT_OPTIONS.lockoutMs;
+const sweepTimer = setInterval(() => sweepExpiredLockouts(), SWEEP_INTERVAL_MS);
+sweepTimer.unref?.();
 
 /**
  * Test-only: wipes all lockout state. Not part of the production API surface.
  */
 export function __resetLockoutState(): void {
   entries.clear();
+}
+
+/**
+ * Test-only: number of tracked entries, for asserting the Map stays bounded.
+ */
+export function __lockoutEntryCount(): number {
+  return entries.size;
+}
+
+/**
+ * Test-only: run the reaper synchronously (the production sweep fires on an
+ * unref()'d interval, which isn't deterministic under fake timers).
+ */
+export function __sweepExpiredLockouts(opts: LockoutOptions = DEFAULT_LOCKOUT_OPTIONS): void {
+  sweepExpiredLockouts(opts);
 }
