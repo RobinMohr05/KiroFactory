@@ -4549,24 +4549,42 @@ export async function shutdownAllSessions(): Promise<void> {
 let zombieSweepInterval: ReturnType<typeof setInterval> | null = null;
 
 /**
- * Terminal container/job statuses — when the spawner reports one of these,
- * the container is gone and the session is a zombie.
+ * Known *terminal* container/job statuses — when the spawner reports one of
+ * these, the container has genuinely stopped and the session is a zombie.
  *
- * Note: "running" is the only genuinely-live status; everything else
- * (including "stopped", "completed", "unknown") means the container is not
- * actually running. We use an allowlist of the single known-live status
- * rather than a denylist of dead ones so a new/unexpected status from a
- * spawner (e.g. a future ACA status name) defaults to "treat as dead"
- * rather than "silently ignore".
+ * This is a denylist of known-dead statuses rather than an allowlist of
+ * live ones on purpose: `getWorkerJobStatus()` can return an ambiguous
+ * value (e.g. ACA responds `ok` but with no `status` field, yielding
+ * `"Unknown"`). Treating an unrecognized/ambiguous status as dead would
+ * false-positive-kill a healthy `running` session and reset its in-flight
+ * task mid-turn. Instead, only genuinely-terminal statuses trigger cleanup;
+ * anything unrecognized is treated as "still alive, re-check next sweep" —
+ * the 3-minute cadence still catches a truly-dead container on a later pass,
+ * but a one-off ambiguous status won't nuke a live session's task.
+ *
+ * (A hard API error throws and is handled by the catch in the sweep, which
+ * conservatively treats the session as dead — that's the separate
+ * "couldn't reach the API at all" case, not this "responded but no usable
+ * status" case.)
  */
-const CONTAINER_ALIVE_STATUSES = new Set(["running", "starting", "provisioning", "waiting"]);
+const CONTAINER_DEAD_STATUSES = new Set([
+  "stopped",
+  "exited",
+  "failed",
+  "succeeded",
+  "completed",
+  "canceled",
+  "cancelled",
+  "terminated",
+  "degraded",
+]);
 
 /**
  * Sweep all sessions with `status: "running"` against their actual
- * container/job status. If a session's container is gone (terminal status
- * or status-check error), the session is marked as errored, its
- * `currentTaskId` (if any) is reset to "todo" so it can be re-claimed,
- * and the orphaned tasks notified as available.
+ * container/job status. If a session's container is gone (known-terminal
+ * status or status-check error), the session is marked as errored, its
+ * `currentTaskId` (if any) is reset to the agent's stage claimState so it
+ * can be re-claimed, and the orphaned tasks notified as available.
  *
  * This is the runtime analogue of the startup-time `initSessions()` /
  * `resetOrphanedTasks()` sweep: it catches the case where a worker
@@ -4591,13 +4609,19 @@ async function zombieDetectionSweep(): Promise<void> {
       const { containerSpawner, acaExecutionName } = session;
       if (!containerSpawner || !acaExecutionName) return;
 
-      let isAlive = false;
+      let isDead = false;
       try {
         const jobStatus = await containerSpawner.status(acaExecutionName);
-        isAlive = CONTAINER_ALIVE_STATUSES.has((jobStatus.status ?? "").toLowerCase());
+        // Only a *known-terminal* status means the container is gone. An
+        // unrecognized/ambiguous status (e.g. "Unknown" from an ACA response
+        // missing its status field) is treated as still-alive and re-checked
+        // on the next sweep — see CONTAINER_DEAD_STATUSES' doc comment.
+        isDead = CONTAINER_DEAD_STATUSES.has((jobStatus.status ?? "").toLowerCase());
       } catch (err) {
-        // Status check failed — treat as dead (conservative: better to reset
-        // an orphaned task that re-runs than to leave it stuck forever).
+        // Status check failed entirely — treat as dead (conservative: better
+        // to reset an orphaned task that re-runs than to leave it stuck
+        // forever). This is the "couldn't reach the API at all" case, distinct
+        // from the "responded but no usable status" case handled above.
         log.warn("zombie-sweep-status-check-failed", {
           component: "session-manager",
           sessionId: session.meta.id,
@@ -4605,10 +4629,10 @@ async function zombieDetectionSweep(): Promise<void> {
           ...toErrorFields(err),
           msg: `Zombie sweep: status check failed for ${acaExecutionName} — treating session ${session.meta.id} as dead`,
         });
-        isAlive = false;
+        isDead = true;
       }
 
-      if (isAlive) return;
+      if (!isDead) return;
 
       // Container is gone — mark session as errored
       log.warn("zombie-session-detected", {
@@ -4628,16 +4652,32 @@ async function zombieDetectionSweep(): Promise<void> {
         session.acaPromptRejecter = null;
       }
 
-      // Reset the claimed task (if any) so it can be re-claimed
+      // Reset the claimed task (if any) so it can be re-claimed. Reset it to
+      // the agent's own stage claimState — NOT a hardcoded "todo" — so a task
+      // orphaned mid-review or mid-QA re-enters its own stage (e.g. an
+      // inspector's claimState of "developed") instead of being sent all the
+      // way back to the front of the pipeline, discarding completed work.
+      // Unlike startup-time resetOrphanedTasks() (which has no in-memory
+      // session and so can't know the claiming agent), this sweep iterates
+      // live ManagedSession objects and has session.meta.agent in hand.
       const taskId = session.meta.currentTaskId;
       if (taskId !== undefined) {
+        let claimState = "todo";
         try {
-          await resetTaskFn(taskId, "todo");
+          const stages = await getAgentStageStates(session.meta.agent);
+          claimState = stages.claimState;
+        } catch {
+          // getAgentStageStates already falls back to the developer default
+          // internally, but guard here too so a lookup failure never blocks
+          // the task reset — worst case the task returns to "todo".
+        }
+        try {
+          await resetTaskFn(taskId, claimState);
           notifyTaskAvailable();
           appendOutput(session, {
             timestamp: now(),
             stream: "system",
-            text: `Task ${taskId} reset to "todo" — worker container disappeared (zombie session cleaned up).`,
+            text: `Task ${taskId} reset to "${claimState}" — worker container disappeared (zombie session cleaned up).`,
           });
         } catch (err) {
           log.warn("zombie-task-reset-failed", {

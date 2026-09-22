@@ -192,6 +192,7 @@ import {
 import { resetTask } from "../agent/task-claimer.js";
 import { log } from "../logger.js";
 import * as wslSpawner from "../wsl-worker-spawner.js";
+import { getAgentByName } from "../db/agents.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -325,6 +326,17 @@ describe("startZombieDetectionSweep() / stopZombieDetectionSweep()", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(wslSpawner.getWorkerJobStatus).mockResolvedValue({ status: "running" });
+    // Default agent for these tests is the developer-agent (claimState "todo").
+    // Individual tests that need an inspector-stage agent override this.
+    vi.mocked(getAgentByName).mockResolvedValue({
+      name: "developer-agent",
+      kind: "editor",
+      claimState: "todo",
+      workingState: "in-progress",
+      resolveState: "developed",
+      requiresTask: true,
+      mcpServers: [],
+    } as any);
   });
 
   afterEach(() => {
@@ -456,5 +468,91 @@ describe("startZombieDetectionSweep() / stopZombieDetectionSweep()", () => {
     // cast to unknown[] since the actual call from containerSpawner.status()
     // passes one arg (executionName), while the raw function signature has two.
     expect((statusCallsAfter as unknown[][]).some((call) => call.includes("stopped-container-unique-1"))).toBe(false);
+  });
+
+  it("resets an inspector-stage zombie's task to that stage's claimState (not literal 'todo')", async () => {
+    vi.useFakeTimers();
+
+    // A code-reviewer-agent claims tasks in the 'developed' state, works them
+    // in 'in-code-review', and resolves to 'in-qa'. A zombie mid-review must
+    // return the task to 'developed', NOT all the way back to 'todo'.
+    vi.mocked(getAgentByName).mockResolvedValue({
+      name: "code-reviewer-agent",
+      kind: "inspector",
+      claimState: "developed",
+      workingState: "in-code-review",
+      resolveState: "in-qa",
+      requiresTask: true,
+      mcpServers: [],
+    } as any);
+
+    const session = await createSession({
+      name: "Zombie Reviewer Session",
+      agent: "code-reviewer-agent",
+      userId: 1,
+      loop: true,
+      interactive: false,
+    });
+
+    await setSessionRunningWithContainer(session.id, "zombie-reviewer-1", 777);
+
+    vi.mocked(wslSpawner.getWorkerJobStatus).mockResolvedValue({ status: "exited" });
+    vi.mocked(resetTask).mockResolvedValue(undefined);
+
+    startZombieDetectionSweep(100);
+    await vi.advanceTimersByTimeAsync(200);
+
+    const updatedSession = getSession(session.id);
+    expect(updatedSession?.status).not.toBe("running");
+    expect(resetTask).toHaveBeenCalledWith(777, "developed");
+  });
+
+  it("treats an unrecognized/'unknown' container status as still alive (re-check next sweep)", async () => {
+    vi.useFakeTimers();
+
+    const session = await createSession({
+      name: "Ambiguous Status Session",
+      agent: "developer-agent",
+      userId: 1,
+      loop: true,
+      interactive: false,
+    });
+
+    await setSessionRunningWithContainer(session.id, "ambiguous-container-1", 555);
+
+    // ACA API responded ok but with no usable status field → "Unknown".
+    // This must NOT be treated as a dead container.
+    vi.mocked(wslSpawner.getWorkerJobStatus).mockResolvedValue({ status: "Unknown" });
+
+    startZombieDetectionSweep(100);
+    await vi.advanceTimersByTimeAsync(200);
+
+    const updatedSession = getSession(session.id);
+    expect(updatedSession?.status).toBe("running");
+    expect(resetTask).not.toHaveBeenCalled();
+  });
+
+  it("treats a known terminal status ('failed') as a dead container", async () => {
+    vi.useFakeTimers();
+
+    const session = await createSession({
+      name: "Failed Container Session",
+      agent: "developer-agent",
+      userId: 1,
+      loop: true,
+      interactive: false,
+    });
+
+    await setSessionRunningWithContainer(session.id, "failed-container-1", 444);
+
+    vi.mocked(wslSpawner.getWorkerJobStatus).mockResolvedValue({ status: "failed" });
+    vi.mocked(resetTask).mockResolvedValue(undefined);
+
+    startZombieDetectionSweep(100);
+    await vi.advanceTimersByTimeAsync(200);
+
+    const updatedSession = getSession(session.id);
+    expect(updatedSession?.status).not.toBe("running");
+    expect(resetTask).toHaveBeenCalledWith(444, "todo");
   });
 });
