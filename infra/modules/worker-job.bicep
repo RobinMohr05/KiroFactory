@@ -53,16 +53,16 @@ param tags object = {
 
 var workerImage = '${acrLoginServer}/kirofactory-worker:${workerImageTag}'
 
-// Built-in role "Container Apps Jobs Operator" — read + start/stop actions on ACA jobs
-// (Microsoft.App/jobs/read, start/action, stopExecution/action, listSecrets/action).
-// NOTE: this role does NOT include Microsoft.App/jobs/write, so it cannot be used to
-// update the job's configuration.secrets via PATCH (needed for secretRef injection).
+// The orchestrator identity needs to PATCH this job's configuration.secrets before each
+// execution (needed for secretRef injection — see backend/src/aca-worker-spawner.ts). The
+// built-in "Container Apps Jobs Operator" role (b9a307c4-5aa3-4b52-ba60-2b17c136cd7b) only
+// covers read + start/stop actions and lacks Microsoft.App/jobs/write, so it is insufficient.
 // We therefore grant the broader "Contributor" role — but scoped ONLY to this specific
 // job resource, not to the resource group. Contributor on one job = manage that job
 // exclusively; the identity still cannot touch any other Azure resource.
 //
 // Do NOT expand this to a resource-group-scoped or subscription-scoped grant.
-var jobsOperatorRoleId = 'b9a307c4-5aa3-4b52-ba60-2b17c136cd7b'
+//
 // Built-in "Contributor" role — full CRUD on the job + its secrets (PATCH supported)
 var contributorRoleId = 'b24988ac-6180-42a0-ab88-20f7382dd24c'
 
