@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { execFileSync } from "node:child_process";
 
 const rootDir = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -117,5 +118,34 @@ export async function g(): Promise<number> {
     // A fatal parse/config error surfaces as a message with fatal: true.
     const fatal = result.messages.filter((m) => m.fatal);
     expect(fatal).toEqual([]);
+  });
+
+  it("can type-aware lint backend/scripts/*.ts without a project-service parsing error", async () => {
+    // The backend `lint` script targets both src and scripts. Every linted .ts
+    // must belong to a TypeScript project (or be allowed as a default-project
+    // file) or projectService emits a fatal "was not found by the project
+    // service" parsing error. This guards that backend/scripts/ stays covered
+    // (see PR #171 review comment 1).
+    const eslint = new ESLint({ cwd: rootDir });
+    const results = await eslint.lintFiles([join(rootDir, "backend", "scripts", "*.ts")]);
+    expect(results.length).toBeGreaterThan(0);
+    const parsingErrors = results.flatMap((r) =>
+      r.messages.filter(
+        (m) => m.fatal || /was not found by the project service/.test(m.message ?? ""),
+      ),
+    );
+    expect(parsingErrors).toEqual([]);
+  });
+
+  it("keeps lint fixtures out of the tracked source tree (gitignored)", () => {
+    // Fixtures are written under backend/eslint-fixtures/, which must be
+    // gitignored so an interrupted run can never leave a committable/lintable
+    // artifact in tracked source (see PR #171 review comment 2).
+    const probe = join(rootDir, "backend", "eslint-fixtures", "eslint-fixture-probe", "fixture.ts");
+    const out = execFileSync("git", ["check-ignore", probe], {
+      cwd: rootDir,
+      encoding: "utf8",
+    }).trim();
+    expect(out).toBe(probe);
   });
 });

@@ -59,45 +59,38 @@ export default tseslint.config(
   // Type-aware recommended rules for all TypeScript sources.
   ...tseslint.configs.recommendedTypeChecked,
 
-  // Enable the type-aware parser + project service for TS files only.
-  // allowDefaultProject lets files that are not included in any tsconfig
-  // (e.g. backend/scripts/, or the ephemeral backend/eslint-fixtures/ dirs
-  // created by the ESLint behaviour tests) still be type-checked using the
-  // nearest tsconfig as a fallback, so `npm run lint -w backend` does not emit
-  // "was not found by the project service" parse errors for those files.
+  // Backend: Node.js runtime globals. The backend `lint` script targets both
+  // `src` and `scripts`, so the parser is pointed at tsconfig.eslint.json
+  // (which includes src, scripts, and the gitignored eslint-fixtures dir)
+  // rather than the emit-only tsconfig.json — otherwise every scripts/*.ts file
+  // would trip a "not found by the project service" parsing error.
   //
-  // Note: allowDefaultProject globs must not contain '**' (too wide) —
-  // single-level wildcards only. The fixture dirs are one level deep
-  // (backend/eslint-fixtures/<tmpdir>/fixture.ts), so `*/*` is sufficient.
-  {
-    files: ["**/*.ts", "**/*.tsx", "**/*.mts", "**/*.cts"],
-    languageOptions: {
-      parserOptions: {
-        projectService: {
-          allowDefaultProject: [
-            "backend/scripts/*.ts",
-            "backend/eslint-fixtures/*/*.ts",
-          ],
-        },
-        tsconfigRootDir: import.meta.dirname,
-      },
-    },
-  },
-
-  // Backend: Node.js runtime globals.
+  // An include-based project (not projectService's allowDefaultProject) is used
+  // on purpose: allowDefaultProject throws "Too many files (>8) have matched the
+  // default project" once scripts + ephemeral test fixtures exceed 8 files; an
+  // include list has no such cap.
   {
     files: ["backend/**/*.ts"],
     languageOptions: {
       globals: { ...globals.node },
+      parserOptions: {
+        project: ["./backend/tsconfig.eslint.json"],
+        tsconfigRootDir: import.meta.dirname,
+      },
     },
     rules: guardrailRules,
   },
 
-  // Frontend: browser runtime globals (React/Vite app).
+  // Frontend: browser runtime globals (React/Vite app). Uses the project
+  // service, which auto-discovers the right tsconfig (app vs. node/e2e).
   {
     files: ["frontend/**/*.{ts,tsx}"],
     languageOptions: {
       globals: { ...globals.browser },
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
+      },
     },
     rules: guardrailRules,
   },
