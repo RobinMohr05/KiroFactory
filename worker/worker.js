@@ -2073,9 +2073,13 @@ function logSessionUpdate(update) {
       //    {"verdict": "..."} regardless of which tool produced it. The
       //    verdict-mcp-server is the only tool that emits this shape, so false
       //    positives are not a real concern.
+      // NOTE: match bare `verdict` (no surrounding quote requirement) — see
+      // isTaskCreatedUpdate's comment below for why the outer quotes are
+      // backslash-escaped at this nesting level for ACP-wrapped MCP results,
+      // so a literal `"verdict"` substring check never matches them.
       const isVerdictUpdate =
         (verdictToolCallId && update.toolCallId === verdictToolCallId && update.status === "completed") ||
-        (update.status === "completed" && outputText && outputText.includes('"verdict"'));
+        (update.status === "completed" && outputText && outputText.includes("verdict"));
 
       if (isVerdictUpdate && outputText) {
         // The verdict JSON is always {"verdict":"...","reason":"..."}.
@@ -2127,8 +2131,14 @@ function logSessionUpdate(update) {
       // agent-error-mcp-server is the only tool that emits this shape, so
       // false positives are not a real concern. Mirrors the verdict capture
       // above, including the ACP items-envelope unwrapping.
+      // NOTE: match bare `agentError` (no surrounding quote requirement) —
+      // ACP-wrapped MCP tool results nest this string one level deeper, where
+      // the outer string's quotes around the key are backslash-escaped
+      // (\"agentError\"), so a literal `"agentError"` substring check never
+      // matches. See isTaskCreatedUpdate's comment below for the full
+      // explanation (root-caused 2026-09-22).
       const isAgentErrorUpdate =
-        update.status === "completed" && outputText && outputText.includes('"agentError"');
+        update.status === "completed" && outputText && outputText.includes("agentError");
       if (isAgentErrorUpdate && outputText) {
         function tryParseAgentError(str) {
           if (!str || typeof str !== "string") return null;
@@ -2171,12 +2181,24 @@ function logSessionUpdate(update) {
 
       // Capture a task spec from the create_task tool's completed output.
       // Detection is purely content-based (scan every completed
-      // tool_call_update for the {"taskCreated":...} shape) — the
+      // tool_call_update for the taskCreated shape) — the
       // task-create-mcp-server is the only tool that emits this shape, so
       // false positives are not a real concern. Mirrors the agent-error
       // capture above, including the ACP items-envelope unwrapping.
+      //
+      // NOTE: match bare `taskCreated` (no surrounding quote requirement).
+      // outputText is often JSON-nested inside JSON (ACP wraps the MCP tool's
+      // text response as {"items":[{"Json":{"content":[{"type":"text",
+      // "text":"{\"taskCreated\":{...}}"}]}}]}), so at this string's top level
+      // the quotes around the key are backslash-escaped (\"taskCreated\"),
+      // not the literal `"taskCreated"` three-character-quote sequence the
+      // old check required. That mismatch silently dropped every real
+      // create_task result — root-caused 2026-09-22 via the
+      // task-create-detection-miss diagnostic below, which fired on every
+      // single create_task call in a real run despite the payload
+      // demonstrably containing "taskCreated" data.
       const isTaskCreatedUpdate =
-        update.status === "completed" && outputText && outputText.includes('"taskCreated"');
+        update.status === "completed" && outputText && outputText.includes("taskCreated");
       // Diagnostic: also detect create_task calls by title/kind alone (same
       // substring-match pattern used for report_verdict above), independent
       // of whether the "taskCreated" shape was found in outputText. If a
