@@ -59,12 +59,19 @@ router.get("/settings", async (_req: Request, res: Response) => {
 router.put("/settings", async (req: Request, res: Response) => {
   try {
     const { registrationEnabled } = req.body as {
-      registrationEnabled?: boolean;
+      registrationEnabled?: unknown;
     };
 
-    if (typeof registrationEnabled === "boolean") {
-      await setRegistrationEnabled(registrationEnabled);
+    // Fail loudly instead of silently returning 200 for a no-op write: the
+    // only recognized field is registrationEnabled, so require it to be a
+    // boolean. A missing/null/non-boolean value (or an empty body) is a client
+    // error, not a successful update.
+    if (typeof registrationEnabled !== "boolean") {
+      res.status(400).json({ error: "registrationEnabled must be a boolean" });
+      return;
     }
+
+    await setRegistrationEnabled(registrationEnabled);
 
     // Return the updated settings
     const settings = await getAppSettings();
