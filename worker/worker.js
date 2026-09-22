@@ -1988,7 +1988,17 @@ function extractToolOutputText(update) {
   }
 
   if (parts.length === 0) return null;
-  return truncate(parts.join("\n"), TOOL_OUTPUT_LOG_LIMIT);
+  // Deliberately NOT truncated here — the caller uses this same string both
+  // for the display log (which truncates for readability) and for detecting
+  // structured envelopes like {"taskCreated":...}/{"agentError":...}/
+  // {"verdict":...}. Truncating at this layer corrupted those envelopes
+  // mid-JSON for any task with a description over 4000 chars: JSON.parse()
+  // threw (unterminated string/object) and the regex fallback couldn't match
+  // an object with no closing brace, so create_task calls with a long
+  // description silently produced no DB write with zero error/log trace.
+  // Root-caused 2026-09-22 after a session confidently reported 8 successful
+  // create_task calls that resulted in zero tasks on the board.
+  return parts.join("\n");
 }
 
 /**
@@ -2036,13 +2046,19 @@ function logSessionUpdate(update) {
       break;
     }
     case "tool_call_update": {
+      // Full, untruncated text — used for both the (truncated-for-display)
+      // log line below and structured-envelope detection further down. See
+      // extractToolOutputText's doc comment for why truncation must not
+      // happen before envelope detection runs.
       const outputText = extractToolOutputText(update);
       logInfo("agent-tool-call-update", {
         toolCallId: update.toolCallId ?? null,
         status: update.status ?? null,
         // Always captured when present so completed-but-informative output
         // (e.g. a command that "succeeds" but prints warnings) isn't lost either.
-        output: outputText,
+        // Truncated here for log readability only — envelope detection below
+        // uses the full outputText, not this truncated copy.
+        output: typeof outputText === "string" ? truncate(outputText, TOOL_OUTPUT_LOG_LIMIT) : outputText,
       });
       // Capture verdict from the report_verdict tool's completed output.
       //
