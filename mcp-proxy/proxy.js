@@ -112,6 +112,16 @@ if (existsSync(SERVERS_CONFIG_PATH)) {
 /** Track active connections for health reporting */
 let activeConnections = 0;
 
+/** Read the current active connection count (for health reporting / tests). */
+export function getActiveConnections() {
+  return activeConnections;
+}
+
+/** Reset the active connection count (test helper). */
+export function resetActiveConnections() {
+  activeConnections = 0;
+}
+
 /**
  * Spawn an MCP server process for the given server name.
  * Returns the child process handle, or null if the server is not configured.
@@ -172,12 +182,37 @@ function spawnMcpServer(serverName) {
 // TCP Server — Multiplexes MCP connections
 // ---------------------------------------------------------------------------
 
-const tcpServer = createTcpServer((socket) => {
+/**
+ * Per-connection TCP handler. Exported so its teardown accounting can be
+ * tested in isolation without binding a real port.
+ *
+ * Teardown is tracked with a single `settled` guard so the `activeConnections`
+ * decrement (and child-process cleanup) runs at most once per connection,
+ * regardless of which of `end` / `error` / `close` fires — and Node guarantees
+ * `close` always fires exactly once, so a socket that is destroyed/reset
+ * without emitting `end` is still accounted for.
+ */
+export function handleConnection(socket) {
   activeConnections++;
   let serverProc = null;
   let serverName = "unknown";
   let handshakeDone = false;
   let buffer = "";
+  let settled = false;
+
+  // Single authoritative teardown point. Runs at most once.
+  function teardown() {
+    if (settled) return;
+    settled = true;
+    activeConnections--;
+    log("debug", `TCP connection closed (server: ${serverName})`);
+    if (serverProc) {
+      try {
+        serverProc.stdin.end();
+        serverProc.kill("SIGTERM");
+      } catch { /* best effort */ }
+    }
+  }
 
   log("debug", "New TCP connection", { remote: socket.remoteAddress });
 
@@ -241,34 +276,20 @@ const tcpServer = createTcpServer((socket) => {
     }
   });
 
-  socket.on("end", () => {
-    activeConnections--;
-    log("debug", `TCP connection ended (server: ${serverName})`);
-    if (serverProc) {
-      try {
-        serverProc.stdin.end();
-        serverProc.kill("SIGTERM");
-      } catch { /* best effort */ }
-    }
-  });
-
   socket.on("error", (err) => {
-    activeConnections--;
     log("debug", `TCP socket error (server: ${serverName}): ${err.message}`);
-    if (serverProc) {
-      try {
-        serverProc.kill("SIGTERM");
-      } catch { /* best effort */ }
-    }
+    // Do not tear down here — `close` always follows `error` and is the single
+    // authoritative teardown point, so accounting stays correct even if both fire.
   });
-});
 
-tcpServer.listen(PROXY_PORT, "0.0.0.0", () => {
-  log("info", `MCP Proxy listening on port ${PROXY_PORT}`, {
-    configPath: SERVERS_CONFIG_PATH,
-    servers: Object.keys(serversConfig),
+  // `close` is guaranteed by Node to fire exactly once per socket, after any
+  // `end`/`error`, and even when the socket is destroyed/reset without an `end`.
+  socket.on("close", () => {
+    teardown();
   });
-});
+}
+
+const tcpServer = createTcpServer(handleConnection);
 
 // ---------------------------------------------------------------------------
 // Health Check HTTP Server
@@ -289,10 +310,6 @@ const healthServer = createHttpServer((req, res) => {
   }
 });
 
-healthServer.listen(HEALTH_PORT, "0.0.0.0", () => {
-  log("info", `Health check endpoint on port ${HEALTH_PORT}`);
-});
-
 // ---------------------------------------------------------------------------
 // Graceful Shutdown
 // ---------------------------------------------------------------------------
@@ -304,5 +321,24 @@ function shutdown(signal) {
   process.exit(0);
 }
 
-process.on("SIGTERM", () => shutdown("SIGTERM"));
-process.on("SIGINT", () => shutdown("SIGINT"));
+/** Bind the TCP and health servers and wire signal handlers. */
+function start() {
+  tcpServer.listen(PROXY_PORT, "0.0.0.0", () => {
+    log("info", `MCP Proxy listening on port ${PROXY_PORT}`, {
+      configPath: SERVERS_CONFIG_PATH,
+      servers: Object.keys(serversConfig),
+    });
+  });
+
+  healthServer.listen(HEALTH_PORT, "0.0.0.0", () => {
+    log("info", `Health check endpoint on port ${HEALTH_PORT}`);
+  });
+
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
+}
+
+// Only start the servers when run directly (not when imported by tests).
+if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
+  start();
+}
