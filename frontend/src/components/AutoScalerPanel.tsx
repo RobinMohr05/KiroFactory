@@ -197,7 +197,7 @@ export function AutoScalerDetailView({
         const res = await apiFetch(`/api/autoscalers/${autoScaler.id}/sessions`);
         if (!cancelled && res.ok) {
           const data = await res.json();
-          setChildSessions(data);
+          setChildSessions(Array.isArray(data) ? data : []);
         }
       } catch {
         // Silently ignore fetch errors; the section will show the empty hint
