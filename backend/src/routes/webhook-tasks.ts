@@ -127,13 +127,17 @@ router.post("/", async (req: Request, res: Response) => {
       tabId = parsed;
     } else {
       // No explicit tab — resolve the default. If WEBHOOK_DEFAULT_TAB_ID is set
-      // but malformed, treat it as a configuration error and reject rather than
-      // silently ignoring it.
+      // but malformed, that's an operator-facing server configuration error
+      // (the caller's request is valid), so surface it as 500 — never 400 —
+      // mirroring how an unset WEBHOOK_SECRET returns 503 rather than 401.
       const envDefault = process.env.WEBHOOK_DEFAULT_TAB_ID;
       if (envDefault !== undefined && envDefault !== "") {
         const parsed = parseValidTabId(envDefault);
         if (parsed === null) {
-          res.status(400).json({ error: "tabId must be a positive integer" });
+          res.status(500).json({
+            error:
+              "Server misconfiguration: WEBHOOK_DEFAULT_TAB_ID is not a valid positive integer",
+          });
           return;
         }
         tabId = parsed;

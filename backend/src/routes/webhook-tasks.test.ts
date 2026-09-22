@@ -503,9 +503,12 @@ describe("POST /api/webhooks/tasks", () => {
     expect(createTask).not.toHaveBeenCalled();
   });
 
-  // ─── Tab validation: 400 when WEBHOOK_DEFAULT_TAB_ID is malformed ─────────
+  // ─── Tab validation: 500 when WEBHOOK_DEFAULT_TAB_ID is malformed ─────────
 
-  it("returns 400 when WEBHOOK_DEFAULT_TAB_ID is set to a non-integer", async () => {
+  it("returns 500 (server misconfiguration) when WEBHOOK_DEFAULT_TAB_ID is set to a non-integer", async () => {
+    // The caller provided a perfectly valid request (no tabId); the bad value
+    // came from the server's own env var. This is an operator-facing config
+    // error, not a caller payload error, so it must surface as 5xx — never 400.
     process.env.WEBHOOK_DEFAULT_TAB_ID = "abc";
     const app = createApp();
     const res = await request(app)
@@ -513,8 +516,11 @@ describe("POST /api/webhooks/tasks", () => {
       .set("X-Webhook-Secret", VALID_SECRET)
       .send({ title: "Bad default" });
 
-    expect(res.status).toBe(400);
-    expect(res.body.error).toBe("tabId must be a positive integer");
+    expect(res.status).toBe(500);
+    expect(res.body.error).toBe(
+      "Server misconfiguration: WEBHOOK_DEFAULT_TAB_ID is not a valid positive integer",
+    );
+    expect(getTabById).not.toHaveBeenCalled();
     expect(createTask).not.toHaveBeenCalled();
   });
 });
