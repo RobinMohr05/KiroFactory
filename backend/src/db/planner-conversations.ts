@@ -47,6 +47,12 @@ export interface PlannerConversationSummary {
   shortDescription: string;
   createdAt: string;
   lastMessageAt: string;
+  /**
+   * Whether at least one task has been created from this conversation.
+   * Derived from the node's `taskCreated` property, coalescing an absent
+   * property to `false` so pre-existing conversation nodes read as `false`.
+   */
+  taskCreated: boolean;
 }
 
 /** Full transcript shape returned by getPlannerConversation. */
@@ -131,7 +137,8 @@ export async function createPlannerConversation(
          lastMessageAt: datetime($now)
        })
        RETURN c.id AS id, c.shortDescription AS shortDescription,
-              toString(c.createdAt) AS createdAt, toString(c.lastMessageAt) AS lastMessageAt`,
+              toString(c.createdAt) AS createdAt, toString(c.lastMessageAt) AS lastMessageAt,
+              coalesce(c.taskCreated, false) AS taskCreated`,
       {
         id,
         userId: input.userId,
@@ -153,6 +160,7 @@ export async function createPlannerConversation(
       shortDescription: record.get("shortDescription") as string,
       createdAt: record.get("createdAt") as string,
       lastMessageAt: record.get("lastMessageAt") as string,
+      taskCreated: record.get("taskCreated") as boolean,
     };
   });
 }
@@ -206,7 +214,8 @@ export async function listPlannerConversations(
     const result = await tx.run(
       `MATCH (u:User {id: $userId})-[:OWNS]->(c:PlannerConversation)
        RETURN c.id AS id, c.shortDescription AS shortDescription,
-              toString(c.createdAt) AS createdAt, toString(c.lastMessageAt) AS lastMessageAt
+              toString(c.createdAt) AS createdAt, toString(c.lastMessageAt) AS lastMessageAt,
+              coalesce(c.taskCreated, false) AS taskCreated
        ORDER BY c.lastMessageAt DESC`,
       { userId }
     );
@@ -216,6 +225,7 @@ export async function listPlannerConversations(
       shortDescription: record.get("shortDescription") as string,
       createdAt: record.get("createdAt") as string,
       lastMessageAt: record.get("lastMessageAt") as string,
+      taskCreated: record.get("taskCreated") as boolean,
     }));
   });
 }
@@ -243,6 +253,7 @@ export async function getPlannerConversation(
        }
        RETURN c.id AS id, c.shortDescription AS shortDescription,
               toString(c.createdAt) AS createdAt, toString(c.lastMessageAt) AS lastMessageAt,
+              coalesce(c.taskCreated, false) AS taskCreated,
               messages`,
       { id, userId }
     );
@@ -256,6 +267,7 @@ export async function getPlannerConversation(
       shortDescription: record.get("shortDescription") as string,
       createdAt: record.get("createdAt") as string,
       lastMessageAt: record.get("lastMessageAt") as string,
+      taskCreated: record.get("taskCreated") as boolean,
       messages: messages.map((m) => ({
         role: m.role,
         text: m.text,
@@ -286,6 +298,26 @@ export async function deletePlannerConversation(
     );
 
     return (result.records[0]?.get("deletedCount") as number) > 0;
+  });
+}
+
+/**
+ * Mark a planner conversation as having produced at least one task. Sets
+ * `taskCreated = true` and `taskCreatedAt = datetime()` on the node.
+ *
+ * Idempotent — safe to call multiple times. No-op (does not throw) when the
+ * conversation does not exist: it's a plain MATCH-and-SET, so zero rows
+ * matched simply sets nothing.
+ */
+export async function markPlannerConversationTaskCreated(
+  conversationId: number
+): Promise<void> {
+  await writeQuery(async (tx: ManagedTransaction) => {
+    await tx.run(
+      `MATCH (c:PlannerConversation {id: $conversationId})
+       SET c.taskCreated = true, c.taskCreatedAt = datetime()`,
+      { conversationId }
+    );
   });
 }
 

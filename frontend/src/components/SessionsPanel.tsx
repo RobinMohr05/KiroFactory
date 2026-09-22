@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { SessionModal } from './SessionModal';
 import { SessionDetailTabs } from './SessionDetailTabs';
-import { AutoScalerPanel, AutoScalerDetailView } from './AutoScalerPanel';
+import { AutoScalerPanel, AutoScalerDetailView, AutoScalerCreateView } from './AutoScalerPanel';
 import { apiFetch } from '../utils/api';
 import { formatCreditsWithEur } from '../utils/format';
 import { useConfirmAction } from '../hooks/useConfirmAction';
@@ -35,7 +35,7 @@ export function SessionsPanel() {
 
   // Looper-mode sidebar view: 'autoscalers' | 'scheduled' (persisted to localStorage)
   const [looperSidebarView, setLooperSidebarView] = useState<LooperSidebarView>(readLooperSidebarView);
-  const [selectedAutoScalerId, setSelectedAutoScalerId] = useState<number | null>(null);
+  const [selectedAutoScalerId, setSelectedAutoScalerId] = useState<number | 'new' | null>(null);
 
   const handleLooperViewChange = (view: LooperSidebarView) => {
     setLooperSidebarView(view);
@@ -47,7 +47,7 @@ export function SessionsPanel() {
   // (e.g. via autoscaler-deleted WS event), to prevent stale ID from auto-selecting a
   // future auto-scaler that reuses the same numeric ID.
   useEffect(() => {
-    if (selectedAutoScalerId !== null && !autoScalers.find(a => a.id === selectedAutoScalerId)) {
+    if (typeof selectedAutoScalerId === 'number' && !autoScalers.find(a => a.id === selectedAutoScalerId)) {
       setSelectedAutoScalerId(null);
     }
   }, [autoScalers, selectedAutoScalerId]);
@@ -541,13 +541,33 @@ export function SessionsPanel() {
                 setSelectedAutoScalerId(next);
                 if (isMobile) setMobileShowDetail(next !== null);
               }}
+              onRequestCreate={() => {
+                setSelectedAutoScalerId('new');
+                if (isMobile) setMobileShowDetail(true);
+              }}
             />
           )}
         </aside>
         <div className={`session-detail-panel${detailHidden ? ' mobile-hidden' : ''}`} id="sessionDetailPanel">
           {user?.uiViewMode === 'looper' && looperSidebarView === 'autoscalers' ? (
             (() => {
-              const selectedAS = selectedAutoScalerId !== null ? autoScalers.find(a => a.id === selectedAutoScalerId) : undefined;
+              const selectedAS = typeof selectedAutoScalerId === 'number' ? autoScalers.find(a => a.id === selectedAutoScalerId) : undefined;
+              if (selectedAutoScalerId === 'new') {
+                return (
+                  <>
+                    {isMobile && (
+                      <button className="mobile-back-btn" onClick={() => {
+                        setSelectedAutoScalerId(null);
+                        setMobileShowDetail(false);
+                      }} aria-label="Back to auto-scaler list">←</button>
+                    )}
+                    <AutoScalerCreateView
+                      onClose={() => setSelectedAutoScalerId(null)}
+                      onCreated={(id: number) => setSelectedAutoScalerId(id)}
+                    />
+                  </>
+                );
+              }
               if (selectedAS) {
                 return (
                   <>
