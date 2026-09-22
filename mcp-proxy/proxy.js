@@ -123,6 +123,19 @@ export function resetActiveConnections() {
 }
 
 /**
+ * Optional override for the MCP-server spawner, used only by tests to inject a
+ * fake child process without binding a real port or launching a subprocess.
+ * When null (production), `handleConnection` uses the real `spawnMcpServer`.
+ * @type {((serverName: string) => any) | null}
+ */
+let spawnOverride = null;
+
+/** Install/clear a spawn override (test helper). Pass null to restore default. */
+export function setSpawnOverrideForTest(fn) {
+  spawnOverride = fn;
+}
+
+/**
  * Spawn an MCP server process for the given server name.
  * Returns the child process handle, or null if the server is not configured.
  */
@@ -244,7 +257,7 @@ export function handleConnection(socket) {
       }
 
       // Spawn the MCP server
-      serverProc = spawnMcpServer(serverName);
+      serverProc = spawnOverride ? spawnOverride(serverName) : spawnMcpServer(serverName);
       if (!serverProc) {
         socket.end(JSON.stringify({ error: `MCP server "${serverName}" not available` }) + "\n");
         return;
