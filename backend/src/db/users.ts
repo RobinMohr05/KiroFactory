@@ -19,6 +19,19 @@ import type { ManagedTransaction } from "neo4j-driver";
 const BCRYPT_ROUNDS = 12;
 
 /**
+ * Precomputed bcrypt hash of a throwaway value, at the same cost factor as
+ * real password hashes (BCRYPT_ROUNDS). When verifyPassword is called for an
+ * email that has no matching user, we still run bcrypt.compare against this
+ * dummy hash so the request takes the same amount of time as one for an
+ * existing user. Without this, the "no user" path would return immediately,
+ * leaking account existence via a timing side channel (user enumeration —
+ * OWASP A07). The plaintext is irrelevant; it just needs to be a valid
+ * $2b$ hash at the correct cost so the compare does the full amount of work.
+ */
+const DUMMY_PASSWORD_HASH =
+  "$2b$12$3csTTqUhTu8zmHFqxdv8TevJRiHuG12OpCEyI7T/kYVjgwxoBOgAe";
+
+/**
  * Minimal typed view of a Neo4j Node value pulled out of a query result
  * record (e.g. `record.get("u")`) — just the bit every mapper here needs.
  */
@@ -113,7 +126,14 @@ export async function verifyPassword(
 ): Promise<User | null> {
   return readQuery(async (tx: ManagedTransaction) => {
     const result = await tx.run(`MATCH (u:User {email: $email}) RETURN u`, { email });
-    if (result.records.length === 0) return null;
+    if (result.records.length === 0) {
+      // No user with this email. Still run a bcrypt.compare against a dummy
+      // hash so this path costs the same as the "user exists" path — otherwise
+      // the early return leaks account existence via a timing side channel
+      // (user enumeration). Discard the result and return null regardless.
+      await bcrypt.compare(password, DUMMY_PASSWORD_HASH);
+      return null;
+    }
 
     const node = result.records[0].get("u") as NodeResult;
     const passwordHash = node.properties.passwordHash as string;
