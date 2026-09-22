@@ -31,6 +31,7 @@
 
 import { createInterface } from "node:readline";
 import { readFileSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 
 const SERVER_NAME = "pr-review-mcp-server";
 const SERVER_VERSION = "1.0.0";
@@ -125,10 +126,10 @@ function detectProvider() {
  * Extract owner and repo from a GitHub repo URL.
  * Handles https://github.com/owner/repo and git@github.com:owner/repo.git
  */
-function parseGitHubRepo(url) {
-  const match = url.match(/github\.com[/:]([^/]+)\/([^/.]+)/);
+export function parseGitHubRepo(url) {
+  const match = url.match(/github\.com[/:]([^/]+)\/([^/]+)/);
   if (!match) return null;
-  return { owner: match[1], repo: match[2] };
+  return { owner: match[1], repo: match[2].replace(/\.git$/, "") };
 }
 
 /**
@@ -1036,39 +1037,48 @@ async function handleResolveComment(id, args) {
 // Stdio transport
 // ---------------------------------------------------------------------------
 
-const rl = createInterface({ input: process.stdin, terminal: false });
+function startStdioTransport() {
+  const rl = createInterface({ input: process.stdin, terminal: false });
 
-// Track pending async operations
-let pendingOps = 0;
-let closing = false;
+  // Track pending async operations
+  let pendingOps = 0;
+  let closing = false;
 
-function maybExit() {
-  if (closing && pendingOps === 0) {
-    process.exit(0);
+  function maybExit() {
+    if (closing && pendingOps === 0) {
+      process.exit(0);
+    }
   }
+
+  rl.on("line", async (line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    try {
+      const msg = JSON.parse(trimmed);
+      if (msg.method && msg.id !== undefined) {
+        pendingOps++;
+        try {
+          await handleRequest(msg);
+        } finally {
+          pendingOps--;
+          maybExit();
+        }
+      }
+      // Notifications (no id) — ignore silently
+    } catch {
+      // Non-JSON line — ignore
+    }
+  });
+
+  rl.on("close", () => {
+    closing = true;
+    maybExit();
+  });
 }
 
-rl.on("line", async (line) => {
-  const trimmed = line.trim();
-  if (!trimmed) return;
-  try {
-    const msg = JSON.parse(trimmed);
-    if (msg.method && msg.id !== undefined) {
-      pendingOps++;
-      try {
-        await handleRequest(msg);
-      } finally {
-        pendingOps--;
-        maybExit();
-      }
-    }
-    // Notifications (no id) — ignore silently
-  } catch {
-    // Non-JSON line — ignore
-  }
-});
-
-rl.on("close", () => {
-  closing = true;
-  maybExit();
-});
+// Only start the server when run as the entry point — importing this module
+// (e.g. from a unit test) must not attach a stdin listener that keeps the
+// process alive.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  startStdioTransport();
+}
