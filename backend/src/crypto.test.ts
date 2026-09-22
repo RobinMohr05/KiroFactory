@@ -3,8 +3,17 @@
  * so that malformed/corrupt ciphertexts produce clear, diagnosable errors
  * instead of cryptic low-level Node.js crypto failures.
  */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { scryptSync } from "crypto";
 import { encrypt, decrypt } from "./crypto.js";
+
+vi.mock("crypto", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("crypto")>();
+  return {
+    ...actual,
+    scryptSync: vi.fn(actual.scryptSync),
+  };
+});
 
 const MIN_HEX_LENGTH = (16 + 16) * 2; // (IV_LENGTH + AUTH_TAG_LENGTH) * 2 = 64
 
@@ -87,5 +96,43 @@ describe("decrypt() input validation", () => {
     const plaintext = "super-secret-value-123";
     const encrypted = encrypt(plaintext);
     expect(decrypt(encrypted)).toBe(plaintext);
+  });
+});
+
+describe("key derivation caching", () => {
+  const originalKey = process.env.ENCRYPTION_KEY;
+  const scryptMock = vi.mocked(scryptSync);
+
+  beforeEach(() => {
+    scryptMock.mockClear();
+    process.env.ENCRYPTION_KEY = "cache-test-secret-key";
+  });
+
+  afterEach(() => {
+    if (originalKey === undefined) {
+      delete process.env.ENCRYPTION_KEY;
+    } else {
+      process.env.ENCRYPTION_KEY = originalKey;
+    }
+  });
+
+  it("derives the key only once across many encrypt/decrypt calls with the same ENCRYPTION_KEY", () => {
+    // First call may derive; subsequent calls with the same key must not re-derive.
+    const c1 = encrypt("value-one");
+    const c2 = encrypt("value-two");
+    decrypt(c1);
+    decrypt(c2);
+
+    expect(scryptMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-derives the key when ENCRYPTION_KEY changes", () => {
+    encrypt("value-one");
+    const callsAfterFirst = scryptMock.mock.calls.length;
+
+    process.env.ENCRYPTION_KEY = "a-different-secret-key";
+    encrypt("value-two");
+
+    expect(scryptMock.mock.calls.length).toBeGreaterThan(callsAfterFirst);
   });
 });
