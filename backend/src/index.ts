@@ -15,6 +15,7 @@ import { isAcaModeEnabled, loadAcaConfig, verifyAcaAccess } from "./aca-worker-s
 import { isWslModeEnabled, loadWslConfig } from "./wsl-worker-spawner.js";
 import { startWslDiagnosticsCollector, stopWslDiagnosticsCollector } from "./wsl-diagnostics-collector.js";
 import { requireAuth, isPublicPath } from "./middleware/auth.js";
+import { applySecurityHeaders } from "./middleware/security-headers.js";
 import authRouter from "./routes/auth.js";
 import tasksRouter from "./routes/tasks.js";
 import tabsRouter from "./routes/tabs.js";
@@ -41,6 +42,11 @@ import { validateStartupSecrets } from "./config.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app = express();
+
+// Security response headers (helmet) + remove X-Powered-By. Registered FIRST
+// so every response — including the SPA HTML served from frontend/dist — carries
+// CSP, HSTS, X-Frame-Options, X-Content-Type-Options, etc. (OWASP A05).
+applySecurityHeaders(app);
 
 // CORS: In production (ACA), frontend and API share the same origin (*.azurecontainerapps.io)
 // so CORS is effectively same-origin. In development, allow localhost origins.
