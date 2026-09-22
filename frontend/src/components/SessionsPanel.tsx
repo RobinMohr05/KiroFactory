@@ -45,12 +45,18 @@ export function SessionsPanel() {
 
   // Clear selectedAutoScalerId when the selected auto-scaler is removed from the list
   // (e.g. via autoscaler-deleted WS event), to prevent stale ID from auto-selecting a
-  // future auto-scaler that reuses the same numeric ID.
+  // future auto-scaler that reuses the same numeric ID. Also clears the selection when
+  // the tab changes and the selected auto-scaler belongs to a different tab (i.e. it is
+  // no longer in the tab-scoped visible list).
   useEffect(() => {
-    if (typeof selectedAutoScalerId === 'number' && !autoScalers.find(a => a.id === selectedAutoScalerId)) {
+    if (typeof selectedAutoScalerId !== 'number') return;
+    const visibleAutoScalers = currentTabId
+      ? autoScalers.filter(a => a.tabIds.includes(Number(currentTabId)))
+      : autoScalers;
+    if (!visibleAutoScalers.find(a => a.id === selectedAutoScalerId)) {
       setSelectedAutoScalerId(null);
     }
-  }, [autoScalers, selectedAutoScalerId]);
+  }, [autoScalers, selectedAutoScalerId, currentTabId]);
 
   // Sync route param to active session
   useEffect(() => {

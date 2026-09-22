@@ -27,7 +27,14 @@ export function AutoScalerPanel({
   onSelect: (id: number) => void;
   onRequestCreate: () => void;
 }) {
-  const { autoScalers } = useApp();
+  const { autoScalers, currentTabId } = useApp();
+
+  // Scope the list to the currently active tab: only show auto-scalers whose
+  // tabIds includes the current tab. When no tab is active, fall back to the
+  // full list.
+  const visibleAutoScalers = currentTabId
+    ? autoScalers.filter(a => a.tabIds.includes(currentTabId))
+    : autoScalers;
 
   const handleStart = async (autoScalerId: number) => {
     try {
@@ -67,7 +74,7 @@ export function AutoScalerPanel({
       <p className="autoscaler-panel-tagline">Auto-scaling pool of agent sessions that scales to match the task queue.</p>
 
       <ul className="autoscaler-list">
-        {autoScalers.map(autoScaler => (
+        {visibleAutoScalers.map(autoScaler => (
           <AutoScalerCard
             key={autoScaler.id}
             autoScaler={autoScaler}
@@ -77,7 +84,7 @@ export function AutoScalerPanel({
             onStop={() => handleStop(autoScaler.id)}
           />
         ))}
-        {autoScalers.length === 0 && (
+        {visibleAutoScalers.length === 0 && (
           <li className="autoscaler-empty-hint">No auto-scalers yet. Create one to auto-scale sessions.</li>
         )}
       </ul>
