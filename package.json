@@ -1,6 +1,7 @@
 {
   "name": "vibecode-heaven",
   "private": true,
+  "type": "module",
   "workspaces": [
     "backend",
     "frontend"
@@ -9,10 +10,20 @@
     "dev": "concurrently -k -s first \"npm run dev -w backend\" \"npm run wait-for-backend && npm run dev -w frontend\"",
     "wait-for-backend": "wait-on http://localhost:3500/api/health",
     "build": "npm run build -w backend && npm run build -w frontend",
-    "start": "npm run start -w backend"
+    "start": "npm run start -w backend",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
     "concurrently": "^9.1.0",
+    "eslint": "^9.39.5",
+    "eslint-config-prettier": "^9.1.2",
+    "globals": "^15.15.0",
+    "prettier": "^3.9.8",
+    "typescript-eslint": "^8.70.1",
     "wait-on": "7.2.0"
   },
   "overrides": {
