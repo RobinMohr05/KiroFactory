@@ -56,6 +56,30 @@ router.get("/", async (req: Request, res: Response) => {
     const userId = getUserId(req);
     const { state, priority, tabId } = req.query;
 
+    // Validate state query param
+    if (state !== undefined && !isTaskState(state)) {
+      res.status(400).json({ error: `state must be one of: ${TASK_STATES.join(", ")}` });
+      return;
+    }
+
+    // Validate priority query param
+    if (priority !== undefined) {
+      const priorityNum = Number(priority);
+      if (!isValidPriority(priorityNum)) {
+        res.status(400).json({ error: "priority must be an integer between 1 and 4" });
+        return;
+      }
+    }
+
+    // Validate tabId query param (must be numeric)
+    if (tabId !== undefined) {
+      const tabIdNum = Number(tabId);
+      if (isNaN(tabIdNum)) {
+        res.status(400).json({ error: "tabId must be a numeric value" });
+        return;
+      }
+    }
+
     // If filtering by tabId, verify the tab belongs to the user
     if (tabId) {
       const userTabs = await getAllTabs(userId);
