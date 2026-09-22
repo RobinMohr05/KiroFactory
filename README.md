@@ -93,7 +93,8 @@ KiroFactory/
 │   └── public/                ← static auxiliary pages (login.html, etc.) served by the backend
 │
 ├── worker/                    ← the Kiro session worker (ACA Job image)
-│   ├── Dockerfile             ← builds kirofactory-worker image
+│   ├── build.sh               ← builds/pushes the kirofactory-worker image
+│   ├── .devcontainer/         ← Dockerfile + devcontainer config for the worker image
 │   └── worker.js              ← worker agent script
 │
 └── infra/                     ← Bicep + shell scripts for Azure deployment
