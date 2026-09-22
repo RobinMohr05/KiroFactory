@@ -34,7 +34,7 @@ import type { ManagedTransaction } from "neo4j-driver";
 import { readQuery, writeQuery } from "./connection.js";
 import { getNextId } from "./id-counter.js";
 import type { Task, CreateTaskInput, UpdateTaskInput } from "../types.js";
-import { DependencyCycleError, isGitProvider } from "../types.js";
+import { DependencyCycleError, isGitProvider, isTaskType, isTaskState, isTaskOrigin, isValidPriority } from "../types.js";
 import { sanitizeBranchName } from "../agent/repo-url-parser.js";
 
 /**
@@ -332,6 +332,19 @@ export async function createTask(input: CreateTaskInput): Promise<Task> {
     );
   }
 
+  // Defend against out-of-domain values reaching the node even if a caller
+  // bypasses the route-level validation (task #1978). An invalid type/priority
+  // corrupts board display; an invalid origin silently falls into claim rank 3.
+  if (!isTaskType(input.type)) {
+    throw new Error(`createTask: invalid type ${JSON.stringify(input.type)}`);
+  }
+  if (!isValidPriority(input.priority)) {
+    throw new Error(`createTask: invalid priority ${JSON.stringify(input.priority)}`);
+  }
+  if (input.origin !== undefined && !isTaskOrigin(input.origin)) {
+    throw new Error(`createTask: invalid origin ${JSON.stringify(input.origin)}`);
+  }
+
   const id = await getNextId("Task");
   const origin = input.origin ?? "user";
   const originRank = computeOriginRank(origin);
@@ -378,6 +391,18 @@ export async function createTask(input: CreateTaskInput): Promise<Task> {
 }
 
 export async function updateTask(id: number, input: UpdateTaskInput): Promise<Task | null> {
+  // Defend against out-of-domain values (task #1978): an unknown `state`
+  // orphans the task off every board column and out of the claim queries; an
+  // invalid type/priority corrupts board display.
+  if (input.type !== undefined && !isTaskType(input.type)) {
+    throw new Error(`updateTask: invalid type ${JSON.stringify(input.type)}`);
+  }
+  if (input.priority !== undefined && !isValidPriority(input.priority)) {
+    throw new Error(`updateTask: invalid priority ${JSON.stringify(input.priority)}`);
+  }
+  if (input.state !== undefined && !isTaskState(input.state)) {
+    throw new Error(`updateTask: invalid state ${JSON.stringify(input.state)}`);
+  }
   return writeQuery(async (tx: ManagedTransaction) => {
     const setParts: string[] = ["t.updatedAt = datetime()"];
     const params: Record<string, unknown> = { id };
