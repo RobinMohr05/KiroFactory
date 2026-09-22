@@ -4,7 +4,7 @@ import { createUser, verifyPassword, verifyPasswordById, getUserById, getUserByE
 import { isRegistrationEnabled } from "../db/settings.js";
 import { createSession, stopAllSessionsForUser } from "../session-manager.js";
 import { getUserId } from "../middleware/auth.js";
-import type { CreateUserInput, AuthenticatedRequest, GitProvider } from "../types.js";
+import type { CreateUserInput, GitProvider } from "../types.js";
 import { GIT_PROVIDERS, isGitProvider, UI_VIEW_MODES, isUiViewMode } from "../types.js";
 import { log, toErrorFields } from "../logger.js";
 import { getJwtSecret } from "../config.js";

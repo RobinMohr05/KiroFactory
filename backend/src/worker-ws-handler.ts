@@ -9,7 +9,7 @@
 
 import { WebSocketServer, WebSocket } from "ws";
 import type { IncomingMessage } from "http";
-import type { OutputEntry, Activity } from "./types.js";
+import type { OutputEntry } from "./types.js";
 import { log } from "./logger.js";
 
 // ---------------------------------------------------------------------------
@@ -213,7 +213,7 @@ export function connectToLocalWorker(url: string, sessionId: number, timeoutMs =
       const ws = new WebSocket(url);
       currentSocket = ws;
 
-      ws.once("error", (err) => {
+      ws.once("error", (_err) => {
         if (settled) return;
         // Swallow and retry — a connection-establishment failure this early
         // (before any auth exchange) is almost always the startup race

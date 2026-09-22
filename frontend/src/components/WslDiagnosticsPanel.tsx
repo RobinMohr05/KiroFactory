@@ -49,8 +49,8 @@ export function WslDiagnosticsPanel() {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data: WslDiagnosticLine[] = await res.json();
         if (!cancelled) setLines(data);
-      } catch (e: any) {
-        if (!cancelled) setLoadError(e.message || 'Failed to load WSL/Docker diagnostics');
+      } catch (e: unknown) {
+        if (!cancelled) setLoadError(e instanceof Error ? e.message : 'Failed to load WSL/Docker diagnostics');
       }
     })();
     return () => { cancelled = true; };

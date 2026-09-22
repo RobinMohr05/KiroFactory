@@ -9,10 +9,19 @@
     "dev": "concurrently -k -s first \"npm run dev -w backend\" \"npm run wait-for-backend && npm run dev -w frontend\"",
     "wait-for-backend": "wait-on http://localhost:3500/api/health",
     "build": "npm run build -w backend && npm run build -w frontend",
-    "start": "npm run start -w backend"
+    "start": "npm run start -w backend",
+    "lint": "eslint backend/ frontend/",
+    "lint:fix": "eslint backend/ frontend/ --fix",
+    "format": "prettier --write backend/src backend/scripts frontend/src",
+    "format:check": "prettier --check backend/src backend/scripts frontend/src"
   },
   "devDependencies": {
+    "@eslint/js": "10.0.0",
     "concurrently": "^9.1.0",
+    "eslint": "10.11.0",
+    "eslint-config-prettier": "10.1.8",
+    "prettier": "3.9.8",
+    "typescript-eslint": "8.70.1",
     "wait-on": "7.2.0"
   },
   "overrides": {

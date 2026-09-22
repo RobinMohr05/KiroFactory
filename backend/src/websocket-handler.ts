@@ -104,7 +104,7 @@ export function setupWebSocket(): WebSocketServer {
     ws.on("message", (data) => {
       try {
         const msg: WsClientMessage = JSON.parse(data.toString());
-        handleClientMessage(ws, userId, msg);
+        void handleClientMessage(ws, userId, msg);
       } catch {
         /* ignore malformed messages */
       }
