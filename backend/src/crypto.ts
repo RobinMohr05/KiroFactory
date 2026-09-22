@@ -8,7 +8,18 @@ const KEY_LENGTH = 32; // 256 bits
 /**
  * Derives a 256-bit key from the ENCRYPTION_KEY env var using scrypt.
  * This ensures we get a proper-length key regardless of the env var length.
+ *
+ * scrypt is deliberately memory-hard/CPU-expensive and scryptSync blocks the
+ * event loop while it runs. Since the salt is a fixed constant and the secret
+ * comes from ENCRYPTION_KEY, the derived key is fully deterministic for a given
+ * secret — so we memoize it at module scope and only re-derive if the
+ * ENCRYPTION_KEY value changes. This removes the repeated per-call scrypt stalls
+ * (e.g. getAllDecryptedCredentials() calling decrypt() once per column) with no
+ * change to the on-disk ciphertext format (same salt, same algorithm).
  */
+let cachedKey: Buffer | null = null;
+let cachedSecret: string | null = null;
+
 function deriveKey(): Buffer {
   const secret = process.env.ENCRYPTION_KEY;
   if (!secret) {
@@ -16,6 +27,11 @@ function deriveKey(): Buffer {
       "ENCRYPTION_KEY environment variable is required for encryption operations"
     );
   }
+
+  if (cachedKey !== null && cachedSecret === secret) {
+    return cachedKey;
+  }
+
   // Fixed, product-name-independent salt. Deterministic but still strengthens
   // short keys via scrypt's memory-hardness.
   //
@@ -25,7 +41,10 @@ function deriveKey(): Buffer {
   // since decrypt() will derive a different key and AES-GCM auth-tag verification
   // will fail with "Unsupported state or unable to authenticate data".
   const salt = "kirofactory-aes256-salt";
-  return scryptSync(secret, salt, KEY_LENGTH);
+  const key = scryptSync(secret, salt, KEY_LENGTH);
+  cachedKey = key;
+  cachedSecret = secret;
+  return key;
 }
 
 /**
