@@ -126,7 +126,6 @@ export function usePlannerPresence(currentTabId: number | null): void {
     };
     // Intentionally empty deps: the hook subscribes once for the app lifetime
     // and reads currentTabId via tabIdRef to avoid re-subscribing on tab change.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Re-warm the newly-current tab whenever currentTabId changes while the user

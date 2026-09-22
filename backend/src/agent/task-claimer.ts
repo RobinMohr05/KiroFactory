@@ -48,7 +48,6 @@
 import { EventEmitter } from "node:events";
 import neo4j, { type ManagedTransaction } from "neo4j-driver";
 import { readQuery, writeQuery } from "../db/connection.js";
-import type { Task } from "../types.js";
 import { getTaskById, getTasksByBranch, getTasksByGroupId } from "../db/tasks.js";
 import { getAllAgents } from "../db/agents.js";
 import { sanitizeBranchName } from "./repo-url-parser.js";
@@ -314,7 +313,7 @@ export async function claimTask(
     const claimed = await attemptClaim(taskId, claimState, workingState);
     if (claimed) {
       // Push the state change to the UI immediately — no poll loop needed.
-      broadcastTaskUpdate(claimed.id);
+      void broadcastTaskUpdate(claimed.id);
     }
     return claimed;
   }
@@ -356,7 +355,7 @@ export async function claimTask(
   for (const candidateId of candidateIds) {
     const claimed = await attemptClaim(candidateId, claimState, workingState);
     if (claimed) {
-      broadcastTaskUpdate(claimed.id);
+      void broadcastTaskUpdate(claimed.id);
       return claimed;
     }
     // Zero rows means a concurrent caller already claimed this candidate
@@ -414,7 +413,7 @@ export async function resolveTask(
     await tx.run(`MATCH (t:Task {id: $taskId}) SET ${setParts.join(", ")}`, params);
   });
 
-  broadcastTaskUpdate(taskId);
+  void broadcastTaskUpdate(taskId);
   // Resolving hands the task to the NEXT pipeline stage's claim state (e.g.
   // dev "developed" -> reviewer's claimState). Wake any loop parked waiting
   // for exactly that state — this is the primary dev -> review -> qa handoff,
@@ -464,7 +463,7 @@ export async function resetTask(
     await tx.run(`MATCH (t:Task {id: $taskId}) SET ${setParts.join(", ")}`, params);
   });
 
-  broadcastTaskUpdate(taskId);
+  void broadcastTaskUpdate(taskId);
   // A reset puts the task back into a claimable state — wake any waiting loops.
   notifyTaskAvailable();
 }
@@ -730,7 +729,7 @@ export async function markTaskDone(
     );
   });
 
-  broadcastTaskUpdate(taskId);
+  void broadcastTaskUpdate(taskId);
 }
 
 /**

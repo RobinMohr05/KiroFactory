@@ -19,7 +19,7 @@
 import dotenv from "dotenv";
 dotenv.config();
 
-import { getPool, sql, closePool, tryConnect } from "../src/db/connection.js";
+import { sql, closePool, tryConnect } from "../src/db/connection.js";
 import { createUser, getUserByEmail } from "../src/db/users.js";
 import { createTab } from "../src/db/tabs.js";
 import { createTask, updateTask } from "../src/db/tasks.js";

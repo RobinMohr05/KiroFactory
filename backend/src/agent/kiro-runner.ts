@@ -118,6 +118,10 @@ export function assertNotContainerPathOnWindows(rawCwd: string): void {
 
 export class KiroRunner {
   private proc: ChildProcess;
+  // ACP SDK's ClientSideConnection is dynamically imported at runtime to avoid
+  // loading the SDK when the runner is not used. Using `any` here instead of
+  // the SDK's type because static import would create an unconditional dependency.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private conn!: any; // ACP ClientSideConnection
   private sessionId: string | null = null;
   private updateQueue: SessionUpdateChunk[] = [];
@@ -295,6 +299,10 @@ export class KiroRunner {
     // Readable side: parse incoming NDJSON from kiro-cli stdout
     let buffer = "";
     const decoder = new TextDecoder();
+    // The ACP SDK's Stream type uses ReadableStream<AnyMessage> (parsed JSON-RPC
+    // objects), not bytes. We pass parsed message objects from stdout NDJSON
+    // directly into the readable stream controller for the SDK to consume.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let ctrl!: ReadableStreamDefaultController<any>;
 
     const readable = new ReadableStream({
@@ -302,10 +310,16 @@ export class KiroRunner {
       cancel() { stdout.destroy(); },
     });
 
-    function handleMessage(msg: any): void {
+    /** Loosely typed ACP/JSON-RPC message shape for internal routing. */
+    interface AcpMessage {
+      method?: string;
+      id?: unknown;
+      params?: Record<string, unknown>;
+    }
+
+    function handleMessage(msg: AcpMessage): void {
       // Intercept Kiro extension notifications
       if (
-        "method" in msg &&
         typeof msg.method === "string" &&
         msg.method.startsWith("_kiro.dev/") &&
         !("id" in msg)
@@ -376,19 +390,30 @@ export class KiroRunner {
     const stream = { readable, writable: ndJson.writable };
 
     // ACP Client implementation (auto-approve all permissions)
-    const clientImpl = {
-      async sessionUpdate(params: any): Promise<void> {
+    // The params types come from the ACP SDK's Client interface, which is not
+    // directly importable without a full static import. Using typed interfaces
+    // here to capture the shapes we depend on, avoiding bare `any`.
+    interface SessionUpdateParams { update: SessionUpdateChunk }
+    interface PermissionOption { kind: string; optionId: string }
+    interface RequestPermissionParams { options: PermissionOption[] }
+
+    // The ACP SDK's Client interface requires specific schema types for requestPermission's
+    // return value that would require importing schema types. Using `as any` here to avoid
+    // a complex import while keeping the implementation type-safe at the call sites.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const clientImpl: any = {
+      async sessionUpdate(params: SessionUpdateParams): Promise<void> {
         client.updateQueue.push(params.update);
         client.updateResolve?.();
         client.updateResolve = null;
       },
-      async requestPermission(params: any): Promise<any> {
+      async requestPermission(params: RequestPermissionParams): Promise<{ outcome: { outcome: "selected"; optionId: string } }> {
         const options = params.options;
         const approve =
-          options.find((o: any) => o.kind === "allow_once") ??
-          options.find((o: any) => o.kind === "allow_always") ??
+          options.find((o) => o.kind === "allow_once") ??
+          options.find((o) => o.kind === "allow_always") ??
           options[0];
-        return { outcome: { outcome: "selected", optionId: approve.optionId } };
+        return { outcome: { outcome: "selected" as const, optionId: approve.optionId } };
       },
     };
 
@@ -440,7 +465,7 @@ export class KiroRunner {
         args: [resolve(import.meta.dirname, "../../../worker/verdict-mcp-server.js")],
         env: [],
       },
-      ...(this.sessionMcpServers as any[]),
+      ...(this.sessionMcpServers),
       ...this.sessionRawMcpServers,
     ];
   }

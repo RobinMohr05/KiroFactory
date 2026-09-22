@@ -178,9 +178,11 @@ export function TaskModal({ task, onClose }: TaskModalProps) {
         setTasks(prev => prev.find(t => t.id === created.id) ? prev : [...prev, created]);
       }
       onClose();
-    } catch (err: any) {
-      setError(err.status === 409
-        ? (err.message || 'This dependency would create a cycle.')
+    } catch (err: unknown) {
+      const status = typeof err === 'object' && err !== null && 'status' in err ? (err as Record<string, unknown>).status : null;
+      const message = err instanceof Error ? err.message : null;
+      setError(status === 409
+        ? (message || 'This dependency would create a cycle.')
         : 'Failed to save task. Please try again.');
     }
   };

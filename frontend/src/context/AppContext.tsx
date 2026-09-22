@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState, useCallback, type ReactNode } from 'react';
-import type { Tab, Task, Session, Agent, AgentError, OutputEntry, SessionActivity, User, ViewTab, UiViewMode, WsMessage, AutoScaler } from '../types';
+import type { Tab, Task, Session, Agent, AgentError, User, ViewTab, UiViewMode, WsMessage, AutoScaler } from '../types';
 import { apiFetch } from '../utils/api';
 import { usePlannerPresence } from '../hooks/usePlannerPresence';
 

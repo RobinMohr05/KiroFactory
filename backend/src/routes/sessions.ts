@@ -528,7 +528,7 @@ router.patch("/:id", async (req: Request, res: Response) => {
     }
 
     // Strip non-editable fields from the request body
-    const { agent, id: _id, status, userId: _userId, createdAt, startedAt, currentTaskId, currentActivity, pinned, output, ...rest } = req.body;
+    const { agent: _agent, id: _id, status: _status, userId: _userId, createdAt: _createdAt, startedAt: _startedAt, currentTaskId: _currentTaskId, currentActivity: _currentActivity, pinned: _pinned, output: _output, ...rest } = req.body;
     const updates: UpdateSessionInput = {};
     if (rest.name !== undefined) updates.name = rest.name;
     if (rest.prompt !== undefined) updates.prompt = rest.prompt;

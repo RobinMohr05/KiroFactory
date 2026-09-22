@@ -68,7 +68,7 @@ export async function tryConnect(retries = 2, delayMs = 5000): Promise<Driver | 
         msg: `Connected to ${NEO4J_URI}`,
       });
       return driver;
-    } catch (err: any) {
+    } catch (err: unknown) {
       const isLast = attempt === retries + 1;
       if (isLast) {
         dbAvailable = false;
@@ -77,7 +77,7 @@ export async function tryConnect(retries = 2, delayMs = 5000): Promise<Driver | 
           uri: NEO4J_URI,
           database: NEO4J_DATABASE,
           attempts: attempt,
-          error: err?.message || String(err),
+          error: err instanceof Error ? err.message : String(err),
           msg: "Could not connect to database — DB-dependent features will be unavailable until it is reachable",
         });
         return null;
@@ -86,7 +86,7 @@ export async function tryConnect(retries = 2, delayMs = 5000): Promise<Driver | 
         component: "db",
         attempt,
         retryInSeconds: delayMs / 1000,
-        error: err?.message || String(err),
+        error: err instanceof Error ? err.message : String(err),
         msg: `Connection attempt ${attempt} failed, retrying in ${delayMs / 1000}s`,
       });
       await new Promise((r) => setTimeout(r, delayMs));
