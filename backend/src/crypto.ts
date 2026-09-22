@@ -50,6 +50,19 @@ export function encrypt(plaintext: string): string {
  * Returns the original plaintext.
  */
 export function decrypt(encryptedHex: string): string {
+  const MIN_HEX_LENGTH = (IV_LENGTH + AUTH_TAG_LENGTH) * 2;
+
+  if (
+    typeof encryptedHex !== "string" ||
+    encryptedHex.length < MIN_HEX_LENGTH ||
+    encryptedHex.length % 2 !== 0 ||
+    !/^[0-9a-fA-F]+$/.test(encryptedHex)
+  ) {
+    throw new Error(
+      `Invalid ciphertext: expected a hex string of at least ${MIN_HEX_LENGTH} characters with even length`
+    );
+  }
+
   const key = deriveKey();
 
   // Extract iv, authTag, and ciphertext from the hex string
