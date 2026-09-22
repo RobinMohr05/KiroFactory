@@ -130,11 +130,14 @@ router.post("/register", async (req: Request, res: Response) => {
       });
     }
 
-    // Issue session token
+    // Issue session token. It's delivered ONLY via the httpOnly kf_session
+    // cookie — deliberately not echoed in the response body, so an XSS bug
+    // can't read it and it doesn't leak into proxy logs / devtools / error
+    // trackers that capture response bodies.
     const token = signToken(user.id);
     setSessionCookie(res, token);
 
-    res.status(201).json({ user, token });
+    res.status(201).json({ user });
   } catch (err) {
     log.error("route-error", {
       component: "auth",
@@ -194,11 +197,12 @@ router.post("/login", async (req: Request, res: Response) => {
     // Successful login clears any accumulated failure count for this account.
     clearFailedLogins(email);
 
-    // Issue session token
+    // Issue session token. Delivered ONLY via the httpOnly kf_session cookie —
+    // deliberately not echoed in the response body (see register handler).
     const token = signToken(user.id);
     setSessionCookie(res, token);
 
-    res.json({ user, token });
+    res.json({ user });
   } catch (err) {
     log.error("route-error", {
       component: "auth",
