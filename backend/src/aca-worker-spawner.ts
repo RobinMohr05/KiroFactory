@@ -24,6 +24,9 @@
  * array to register session-scoped secrets (named `<base>-sess-<sessionId>`), then
  * reference them via `secretRef` in the execution's container env. After stopping
  * we remove those secrets by PATCHing the job again to clear the session entries.
+ * If the start POST itself fails, we remove those just-registered secrets
+ * (best-effort) before re-throwing, so a failed start never leaves live
+ * credentials orphaned on the job.
  *
  * Session-scoped names (e.g., `kiro-api-key-sess-42`) prevent name collisions
  * between concurrent sessions that may have different per-user credentials.
@@ -808,24 +811,49 @@ export async function startWorkerJob(
     containers,
   };
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
+  // ── Step 3: start the execution ─────────────────────────────────────────
+  //
+  // The session secrets are already registered on the job at this point. If the
+  // start POST fails (or anything between here and a successful start throws),
+  // those secrets — including a live GitHub/ADO PAT and KIRO_API_KEY — would be
+  // left resident in the job's configuration.secrets indefinitely. Nothing else
+  // cleans them up on this path: the session-manager only removes secrets via
+  // stopWorkerJob, which it invokes only once an execution name is set (i.e.
+  // after this function returns successfully). That both re-opens the credential
+  // exposure this task set out to close and, over many failed starts, can exhaust
+  // ACA's per-resource secret cap. So on any failure we remove the just-registered
+  // session secrets (best-effort) before re-throwing the original error.
+  let result: { name?: string; properties?: { status?: string } };
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(explainAcaHttpError("job start", response.status, errorText, config));
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(explainAcaHttpError("job start", response.status, errorText, config));
+    }
+
+    result = (await response.json()) as {
+      name?: string;
+      properties?: { status?: string };
+    };
+  } catch (err) {
+    // Best-effort cleanup of the orphaned session secrets. Never let a cleanup
+    // failure mask the original start error — swallow it (removeSessionSecrets
+    // already logs its own warnings) and re-throw what actually went wrong.
+    try {
+      await removeSessionSecrets(config, token, sessionId);
+    } catch {
+      /* best effort — the start error below is what matters */
+    }
+    throw err;
   }
-
-  const result = await response.json() as {
-    name?: string;
-    properties?: { status?: string };
-  };
 
   return {
     executionName: result.name || `${config.jobName}-${sessionId}`,

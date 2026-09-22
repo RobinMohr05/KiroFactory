@@ -3274,6 +3274,28 @@ async function runSessionAca(managed: ManagedSession): Promise<void> {
     if (signal.aborted) return;
     throw err;
   } finally {
+    // If an execution was started but teardown hasn't already happened via
+    // stopSession() (which nulls acaExecutionName after calling spawner.stop),
+    // tear it down here. Otherwise a start that succeeded but then failed to
+    // connect (waitForWorkerOrAbort throwing) would leave the execution's
+    // session-scoped secrets — including a live GitHub/ADO PAT and KIRO_API_KEY
+    // — resident on the job indefinitely: launcher.catch only records the error
+    // and never stops the worker, so nothing else removes them on this path.
+    const orphanedExecution = managed.acaExecutionName;
+    const spawnerForCleanup = managed.containerSpawner;
+    if (orphanedExecution && spawnerForCleanup) {
+      try {
+        await spawnerForCleanup.stop(orphanedExecution, meta.id);
+      } catch (cleanupErr) {
+        log.warn("stop-worker-failed", {
+          component: "session-manager",
+          sessionId: meta.id,
+          executionName: orphanedExecution,
+          ...toErrorFields(cleanupErr),
+          msg: `Failed to tear down worker execution ${orphanedExecution} on the failure path`,
+        });
+      }
+    }
     managed.acaExecutionName = null;
     managed.abortController = null;
     managed.acaPromptResolver = null;

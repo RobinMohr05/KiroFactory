@@ -1039,3 +1039,153 @@ describe("aca-worker-spawner — failed secret registration surfaces early", () 
     ).rejects.toThrow(/register|secret|RBAC|jobs\/write/i);
   });
 });
+
+// ---------------------------------------------------------------------------
+// PR review #3: a failed /start POST must not leave the session's secrets
+// registered on the job (orphaned-secret cleanup on the start-failure path).
+// ---------------------------------------------------------------------------
+//
+// Regression guard for the KF-1939 PR review: startWorkerJob registers the
+// session-scoped secrets (patchJobSecrets) BEFORE the /start POST. If the start
+// POST fails (or any error occurs between successful registration and a
+// successful start), the session secrets — including a live GitHub/ADO PAT and
+// KIRO_API_KEY — were left resident in the job's configuration.secrets
+// indefinitely, re-opening the very exposure this task set out to close (and
+// eventually exhausting ACA's per-resource secret cap). The fix: on a failed
+// start, remove the just-registered session secrets (best-effort) before
+// re-throwing, so the error still surfaces to the caller.
+
+describe("aca-worker-spawner — failed start POST cleans up orphaned session secrets", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getUserKiroApiKey).mockResolvedValue("per-user-kiro-key");
+  });
+
+  /**
+   * Stateful ARM-like mock where the /start POST fails, but the secret
+   * PATCH / listSecrets / GET paths all behave normally (so registration
+   * succeeds and we can observe whether cleanup removes the entries again).
+   */
+  function setupStartFailsFetchMock(startStatus: number) {
+    fetchCalls = [];
+    let secretsState: Array<{ name: string; value: string }> = [];
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit): Promise<Response> => {
+        let parsedBody: unknown = undefined;
+        if (init?.body && typeof init.body === "string") {
+          try {
+            parsedBody = JSON.parse(init.body);
+          } catch {
+            parsedBody = init.body;
+          }
+        }
+        fetchCalls.push({ method: init?.method ?? "GET", url: String(url), body: parsedBody });
+
+        const urlStr = String(url);
+
+        // /start POST always fails (e.g. transient ACA error / bad request).
+        if (urlStr.includes("/start")) {
+          return new Response(
+            JSON.stringify({ error: { code: "InternalServerError" } }),
+            { status: startStatus, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        if (urlStr.includes("/stop")) return new Response(null, { status: 202 });
+
+        const isJobLevel = !urlStr.includes("/executions/");
+
+        // listSecrets POST action — returns the REAL values.
+        if (init?.method === "POST" && urlStr.includes("/listSecrets")) {
+          return new Response(JSON.stringify({ value: secretsState }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+
+        // PATCH secrets — replace the list wholesale.
+        if (init?.method === "PATCH" && isJobLevel) {
+          const body = parsedBody as Record<string, unknown> | undefined;
+          const newSecrets = (
+            (body?.properties as Record<string, unknown>)?.configuration as Record<string, unknown>
+          )?.secrets as Array<{ name: string; value: string }> | undefined;
+          if (newSecrets !== undefined) {
+            secretsState = newSecrets;
+          }
+          return new Response(
+            JSON.stringify({
+              name: "job",
+              properties: {
+                configuration: { secrets: secretsState.map((s) => ({ name: s.name, value: "" })) },
+              },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
+        }
+
+        // GET job — REDACT values (as Azure does).
+        if ((!init?.method || init.method === "GET") && isJobLevel) {
+          return new Response(
+            JSON.stringify({
+              name: "job",
+              properties: {
+                configuration: { secrets: secretsState.map((s) => ({ name: s.name, value: "" })) },
+              },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
+        }
+
+        return new Response(
+          JSON.stringify({ name: "job", properties: { status: "Running" } }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      })
+    );
+
+    return { getState: () => secretsState };
+  }
+
+  it("removes the session-scoped secrets when the start POST fails, then re-throws", async () => {
+    const mock = setupStartFailsFetchMock(500);
+
+    await expect(
+      startWorkerJob(
+        baseConfig,
+        42,
+        "developer-agent",
+        1,
+        900,
+        null,
+        { repositoryUrl: "https://github.com/org/repo", githubPat: "ghp_leak_me" }
+      )
+    ).rejects.toThrow();
+
+    // No session-42 secrets (worker-secret, kiro-api-key, github-pat) may remain
+    // on the job after the failed start — they must be cleaned up.
+    const remaining = mock.getState().filter((s) => s.name.endsWith("-sess-42"));
+    expect(remaining).toEqual([]);
+
+    // Specifically, the live GitHub PAT must not be left resident.
+    expect(mock.getState().some((s) => s.value === "ghp_leak_me")).toBe(false);
+  });
+
+  it("issues a cleanup PATCH after the failed start (start happened, then removal)", async () => {
+    setupStartFailsFetchMock(500);
+
+    await expect(
+      startWorkerJob(baseConfig, 42, "developer-agent", 1, 900)
+    ).rejects.toThrow();
+
+    const startIdx = fetchCalls.findIndex((c) => c.method === "POST" && c.url.includes("/start"));
+    expect(startIdx).toBeGreaterThanOrEqual(0);
+
+    // A job-level PATCH must occur AFTER the failed start (the cleanup removal),
+    // in addition to the registration PATCH before it.
+    const cleanupPatchIdx = fetchCalls.findIndex(
+      (c, i) => i > startIdx && c.method === "PATCH" && !c.url.includes("/executions/")
+    );
+    expect(cleanupPatchIdx).toBeGreaterThan(startIdx);
+  });
+});
