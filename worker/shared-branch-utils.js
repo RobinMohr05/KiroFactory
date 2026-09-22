@@ -9,6 +9,29 @@
  */
 
 /**
+ * Strict allowlist check for a git branch name before it is used anywhere.
+ *
+ * Git ref names legitimately allow characters that are dangerous in a shell
+ * (`$`, backtick, `;`, `(`, `)`, `|`, `&`, spaces). worker.js's
+ * sanitizeBranchName() only strips whitespace/control chars — not shell
+ * metacharacters — so a task/DB-derived branch name such as `` foo`id` `` or
+ * `foo$(cmd)` could otherwise reach a command. This is defense-in-depth
+ * alongside the execFileArgs() convention: any name that isn't a plain,
+ * shell-safe branch identifier is rejected outright.
+ *
+ * The allowlist covers exactly the characters our own branch names use:
+ * ASCII letters/digits, and `. _ / # -` (the `#` and `/` appear in
+ * `buildBranchName`'s `<type>/#<id>_<slug>` shape). Anything else — including
+ * spaces, quotes, and shell metacharacters — is rejected.
+ *
+ * @param {unknown} branch
+ * @returns {boolean} true only if `branch` is a non-empty, shell-safe branch name
+ */
+export function isValidBranchName(branch) {
+  return typeof branch === "string" && /^[A-Za-z0-9._/#-]+$/.test(branch);
+}
+
+/**
  * Neutralize Azure Repos' work-item auto-link syntax ("#<digits>") inside
  * free-form text (task titles, descriptions) before it's embedded into a
  * commit message or PR title/body.

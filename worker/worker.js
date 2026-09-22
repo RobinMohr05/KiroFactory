@@ -21,7 +21,7 @@ import { spawn, execSync, execFileSync } from "node:child_process";
 import { WebSocket, WebSocketServer } from "ws";
 import { mkdirSync, existsSync, writeFileSync, appendFileSync, readFileSync, unlinkSync } from "node:fs";
 import { createServer as createNetServer } from "node:net";
-import { buildGroupPrContent, findSiblingPrUrl, neutralizeIssueLinks } from "./shared-branch-utils.js";
+import { buildGroupPrContent, findSiblingPrUrl, neutralizeIssueLinks, isValidBranchName } from "./shared-branch-utils.js";
 import { buildSpawnEnv } from "./spawn-env.js";
 import { clearWorkspaceContents } from "./workspace-utils.js";
 
@@ -648,7 +648,17 @@ function buildBranchName(taskType, taskId, taskTitle) {
 function sanitizeBranchName(branch) {
   if (!branch) return null;
   const cleaned = String(branch).replace(/[\r\n\t]+/g, "").trim();
-  return cleaned || null;
+  if (!cleaned) return null;
+  // Defense-in-depth: reject anything that isn't a plain, shell-safe branch
+  // name. Git ref names legitimately allow shell metacharacters (`$`,
+  // backtick, `;`, `|`, `&`, `(`, `)`, spaces), and this value originates
+  // from a DB task row / env var, so a name like `` foo`id` `` must never be
+  // able to reach a command. Callers treat null as "no usable branch name".
+  if (!isValidBranchName(cleaned)) {
+    logError("Rejecting branch name with unsafe characters", { branch: cleaned });
+    return null;
+  }
+  return cleaned;
 }
 
 /**
@@ -1145,10 +1155,15 @@ function commitAndPush() {
     const branchName = currentBranchName || `vibecode-heaven/${SESSION_ID}`;
     let localAhead = false;
     try {
-      // Check if we have commits that the remote doesn't — git rev-list will
-      // output commit hashes if local is ahead, empty if not.
-      const ahead = exec(`git rev-list origin/${branchName}..HEAD 2>/dev/null || echo ""`, { cwd: WORKSPACE });
-      localAhead = Boolean(ahead.trim());
+      // Count local commits the remote doesn't have. Run via execFileArgs
+      // (argv array — no shell) so nothing branchName contains can ever be
+      // re-parsed by a shell; git ref names legitimately allow characters
+      // like `$`, backtick, `;`, `|`, `&` that would be dangerous in a shell
+      // string. `--count` yields a plain number; a non-zero result means we
+      // have commits to push. If `origin/<branch>` doesn't exist yet, git
+      // exits non-zero and we fall through to the catch below.
+      const ahead = execFileArgs("git", ["rev-list", "--count", `origin/${branchName}..HEAD`], { cwd: WORKSPACE });
+      localAhead = Number(ahead.trim()) > 0;
     } catch {
       // If origin/branchName doesn't exist yet, check if we're NOT on the
       // base branch (develop/main) — any commits on a new task branch are
