@@ -19,7 +19,7 @@ describe("shared branch group - buildGroupPrContent", () => {
     );
 
     expect(result.title).toContain("Add login page");
-    expect(result.title).toContain("#10");
+    expect(result.title).toContain("KF-10");
     expect(result.body).toContain("Add login page");
     expect(result.body).toContain("Build a login UI");
   });
@@ -34,9 +34,9 @@ describe("shared branch group - buildGroupPrContent", () => {
     const result = buildGroupPrContent(currentTask, siblings);
 
     // Title should reference the group, not just one task
-    expect(result.title).toContain("#10");
-    expect(result.title).toContain("#11");
-    expect(result.title).toContain("#12");
+    expect(result.title).toContain("KF-10");
+    expect(result.title).toContain("KF-11");
+    expect(result.title).toContain("KF-12");
     // Body should list all tasks
     expect(result.body).toContain("Add login page");
     expect(result.body).toContain("Add session management");
@@ -53,8 +53,8 @@ describe("shared branch group - buildGroupPrContent", () => {
     const result = buildGroupPrContent(currentTask, siblings);
 
     // IDs should appear in ascending order in the title
-    const titleIds = result.title.match(/#\d+/g) || [];
-    expect(titleIds).toEqual(["#5", "#15", "#20"]);
+    const titleIds = result.title.match(/KF-\d+/g) || [];
+    expect(titleIds).toEqual(["KF-5", "KF-15", "KF-20"]);
   });
 
   it("should produce consistent format for single task (backward compatible)", () => {
@@ -64,7 +64,7 @@ describe("shared branch group - buildGroupPrContent", () => {
     );
 
     // Should match the existing worker.js buildPrContent() output format
-    expect(result.title).toBe("Fix bug [KiroFactory #42]");
+    expect(result.title).toBe("Fix bug [KiroFactory KF-42]");
     expect(result.body).toContain("## Task");
     expect(result.body).toContain("**Title:** Fix bug");
     expect(result.body).toContain("**Type:** bug");

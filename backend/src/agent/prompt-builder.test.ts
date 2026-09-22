@@ -129,7 +129,7 @@ describe("buildDevPrompt", () => {
     it("tells the agent NOT to add the Vibecode Heaven suffix manually", () => {
       const task = makeTask({ branch: "feature/#100_test-task" });
       const prompt = buildDevPrompt(task, "/workspace");
-      expect(prompt).toContain("Do NOT add a `[Vibecode Heaven #id]` suffix");
+      expect(prompt).toContain("Do NOT add a `[Vibecode Heaven KF-id]` suffix");
     });
 
     it("also includes BRANCH SYNC & DELIVERY section when branch is null (tools handle creation)", () => {

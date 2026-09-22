@@ -71,7 +71,7 @@ After implementation is complete and verified (tests/build passing), call \`subm
 with a \`title\` (and optional \`body\`) you author from the actual diff:
 - Follow conventional-commit format: type prefix (\`feat:\`, \`fix:\`, \`refactor:\`, \`chore:\`, etc.)
 - Use imperative mood in the subject line, under 72 characters
-- Do NOT add a \`[Vibecode Heaven #id]\` suffix — the tool appends that automatically
+- Do NOT add a \`[Vibecode Heaven KF-id]\` suffix — the tool appends that automatically
 `;
 
   return `You are the Developer Implementation Agent. You have been ASSIGNED a specific task.

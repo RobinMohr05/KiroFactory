@@ -21,7 +21,7 @@ import { spawn, execSync, execFileSync } from "node:child_process";
 import { WebSocket, WebSocketServer } from "ws";
 import { mkdirSync, existsSync, writeFileSync, appendFileSync, readFileSync, unlinkSync } from "node:fs";
 import { createServer as createNetServer } from "node:net";
-import { buildGroupPrContent, findSiblingPrUrl } from "./shared-branch-utils.js";
+import { buildGroupPrContent, findSiblingPrUrl, neutralizeIssueLinks } from "./shared-branch-utils.js";
 import { buildSpawnEnv } from "./spawn-env.js";
 
 // ---------------------------------------------------------------------------
@@ -1199,9 +1199,18 @@ function commitAndPush() {
   // by a shell no matter what it contains.
   const taskId = currentTaskMeta?.id || TASK_ID || (PERSISTENT_BRANCH_NAME ? AGENT_NAME : "unknown");
   const taskTitle = currentTaskMeta?.title || (PERSISTENT_BRANCH_NAME ? `${AGENT_NAME} update` : `task ${taskId}`);
-  const commitTitle = `${taskTitle} [Vibecode Heaven #${taskId}]`;
+  // NOTE: intentionally "KF-<id>", not "#<id>". This repo is hosted on Azure
+  // Repos Git, where Azure Boards' work-item linker auto-links any bare
+  // "#<number>" found in a commit message to whatever work item has that
+  // numeric ID *anywhere in the Azure DevOps organization* — it has no idea
+  // "#1774" here means "KiroFactory task 1774" rather than an Azure Boards
+  // work item, and this org's other projects have work items going back to
+  // 2015, so a KiroFactory task ID collides with an unrelated work item's ID
+  // constantly. "KF-<id>" is not Azure Boards link syntax (that's "AB#<id>"),
+  // so it can never trigger the auto-link. Do not reintroduce a bare "#".
+  const commitTitle = `${neutralizeIssueLinks(taskTitle)} [Vibecode Heaven KF-${taskId}]`;
   const commitBody = currentTaskMeta
-    ? `\nType: ${currentTaskMeta.type || "unknown"}\nID: ${taskId}\n\n${currentTaskMeta.description || ""}`
+    ? `\nType: ${currentTaskMeta.type || "unknown"}\nID: ${taskId}\n\n${neutralizeIssueLinks(currentTaskMeta.description) || ""}`
     : "";
   execFileArgs("git", ["commit", "-m", `${commitTitle}${commitBody}`], { cwd: WORKSPACE });
 
@@ -1341,17 +1350,28 @@ function buildPrContent() {
   }
 
   return {
-    title: `${taskTitle} [KiroFactory #${taskId}]`,
+    // "KF-<id>", not "#<id>" — see the comment on commitTitle in
+    // commitAndPush() above. Same reasoning applies to PR titles/bodies:
+    // Azure Repos' work-item linker also scans PR titles/descriptions for
+    // bare "#<number>" and will cross-link to an unrelated Azure Boards work
+    // item that happens to share the numeric ID.
+    //
+    // taskTitle/taskDescription are free-form user/agent-authored text and
+    // can independently contain a bare "#<digits>" (e.g. "fixes #42" typed
+    // by a user, or pasted from elsewhere) — neutralizeIssueLinks() defuses
+    // that too, since only the suffix being "KF-<id>" instead of "#<id>"
+    // isn't enough if the description itself carries the same pattern.
+    title: `${neutralizeIssueLinks(taskTitle)} [KiroFactory KF-${taskId}]`,
     body: [
       "## Task",
       "",
-      `**Title:** ${taskTitle}`,
+      `**Title:** ${neutralizeIssueLinks(taskTitle)}`,
       `**Type:** ${taskType}`,
       `**ID:** ${taskId}`,
       "",
       "## Description",
       "",
-      taskDescription || "_(no description provided)_",
+      taskDescription ? neutralizeIssueLinks(taskDescription) : "_(no description provided)_",
       "",
       "---",
       "*Created automatically by KiroFactory*",

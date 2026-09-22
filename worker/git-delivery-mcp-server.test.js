@@ -638,7 +638,7 @@ describe("git-delivery-mcp-server", () => {
         encoding: "utf-8",
       }).trim();
       assert.ok(log.includes("Add new file"));
-      assert.ok(log.includes("[Vibecode Heaven #70]"));
+      assert.ok(log.includes("[Vibecode Heaven KF-70]"));
 
       // Verify DELIVERY_RESULT_PATH was written
       const deliveryResult = JSON.parse(readFileSync(deliveryPath, "utf-8"));

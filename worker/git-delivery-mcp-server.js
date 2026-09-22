@@ -29,6 +29,7 @@
 import { createInterface } from "node:readline";
 import { execFileSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
+import { neutralizeIssueLinks } from "./shared-branch-utils.js";
 
 const SERVER_NAME = "git-delivery-mcp-server";
 const SERVER_VERSION = "1.0.0";
@@ -519,7 +520,15 @@ async function handleFinalizeBranchSync() {
 // ---------------------------------------------------------------------------
 
 async function handleSubmitTaskChanges(args) {
-  const { title, body } = args;
+  // title/body are agent-authored free-form text and can independently
+  // contain a bare "#<digits>" (e.g. the agent writing "fixes #42" in a
+  // commit/PR title) — neutralize it here, once, before it reaches any
+  // commit message or PR title/body. See the "KF-<id>, not #<id>" comments
+  // below for why: this repo runs on Azure Repos Git, where Azure Boards
+  // auto-links any bare "#<number>" in a commit/PR to an unrelated work
+  // item sharing that numeric ID anywhere in the org.
+  const title = neutralizeIssueLinks(args.title);
+  const body = neutralizeIssueLinks(args.body);
 
   // Check for changes
   let status = "";
@@ -563,7 +572,13 @@ async function handleSubmitTaskChanges(args) {
         const provider = detectProvider();
 
         if (!prUrl) {
-          const prTitle = `${title} [KiroFactory #${TASK_ID}]`;
+          // "KF-<id>", not "#<id>" — this repo is hosted on Azure Repos Git,
+          // where Azure Boards auto-links a bare "#<number>" in a PR title
+          // to any work item sharing that numeric ID anywhere in the Azure
+          // DevOps organization, with no awareness it's actually a
+          // KiroFactory task ID. "KF-<id>" isn't Azure Boards link syntax
+          // (that's "AB#<id>"), so it never triggers the auto-link.
+          const prTitle = `${title} [KiroFactory KF-${TASK_ID}]`;
           const prBody = body || buildDefaultPrBody();
 
           try {
@@ -581,7 +596,8 @@ async function handleSubmitTaskChanges(args) {
             pushError = `Push succeeded but PR creation failed: ${redactSecrets(err?.message || String(err))}`;
           }
         } else {
-          const prTitle = `${title} [KiroFactory #${TASK_ID}]`;
+          // See the "KF-<id>, not #<id>" comment above.
+          const prTitle = `${title} [KiroFactory KF-${TASK_ID}]`;
           const prBody = body || buildDefaultPrBody();
 
           try {
@@ -618,7 +634,10 @@ async function handleSubmitTaskChanges(args) {
   execGit(["add", "-A"]);
 
   // Build commit message (mirrors worker.js commitAndPush() format)
-  const commitTitle = `${title} [Vibecode Heaven #${TASK_ID}]`;
+  // "KF-<id>", not "#<id>" — see the comment in the git-delivery PR-title
+  // sites above; same Azure Boards auto-link hazard applies to commit
+  // message titles.
+  const commitTitle = `${title} [Vibecode Heaven KF-${TASK_ID}]`;
   const commitBody = body
     ? `\nType: ${TASK_TYPE}\nID: ${TASK_ID}\n\n${body}`
     : `\nType: ${TASK_TYPE}\nID: ${TASK_ID}\n\n${TASK_DESCRIPTION || ""}`;
@@ -646,8 +665,12 @@ async function handleSubmitTaskChanges(args) {
     const provider = detectProvider();
 
     if (!prUrl) {
-      // No existing PR — create one
-      const prTitle = `${title} [KiroFactory #${TASK_ID}]`;
+      // No existing PR — create one.
+      // "KF-<id>", not "#<id>" — see the "KF-<id>, not #<id>" comment above
+      // commitTitle: Azure Boards auto-links a bare "#<number>" in a PR
+      // title/description to any work item sharing that numeric ID anywhere
+      // in the org, unrelated to KiroFactory task numbering.
+      const prTitle = `${title} [KiroFactory KF-${TASK_ID}]`;
       const prBody = body || buildDefaultPrBody();
 
       try {
@@ -668,8 +691,8 @@ async function handleSubmitTaskChanges(args) {
         pushError = `Push succeeded but PR creation failed: ${redactSecrets(err?.message || String(err))}`;
       }
     } else {
-      // PR exists — update title/body
-      const prTitle = `${title} [KiroFactory #${TASK_ID}]`;
+      // PR exists — update title/body. See the "KF-<id>, not #<id>" comment above.
+      const prTitle = `${title} [KiroFactory KF-${TASK_ID}]`;
       const prBody = body || buildDefaultPrBody();
 
       try {
@@ -704,13 +727,13 @@ function buildDefaultPrBody() {
   return [
     "## Task",
     "",
-    `**Title:** ${TASK_TITLE || `Task ${TASK_ID}`}`,
+    `**Title:** ${neutralizeIssueLinks(TASK_TITLE) || `Task ${TASK_ID}`}`,
     `**Type:** ${TASK_TYPE}`,
     `**ID:** ${TASK_ID}`,
     "",
     "## Description",
     "",
-    TASK_DESCRIPTION || "_(no description provided)_",
+    neutralizeIssueLinks(TASK_DESCRIPTION) || "_(no description provided)_",
     "",
     "---",
     "*Created automatically by KiroFactory*",
