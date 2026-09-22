@@ -31,6 +31,25 @@ const router = Router();
 // All task routes require authentication
 router.use(requireAuth);
 
+/**
+ * Verify that every task ID in `dependsOn` belongs to the authenticated user
+ * (via one of their tabs). Returns true when `dependsOn` is undefined/empty or
+ * when all IDs are owned; false if any ID is outside the user's owned set.
+ *
+ * This closes a cross-tenant IDOR (OWASP A01): replaceDependencies() only
+ * checks that a dependency task exists, not that the caller owns it. The MCP
+ * path handleAddTaskDependency() performs the equivalent tab-scoped check.
+ */
+async function areDependenciesOwnedByUser(
+  dependsOn: number[] | undefined,
+  userId: number
+): Promise<boolean> {
+  if (!dependsOn || dependsOn.length === 0) return true;
+  const ownedTasks = await getAllTasks({ userId });
+  const ownedIds = new Set(ownedTasks.map((t) => t.id));
+  return dependsOn.every((depId) => ownedIds.has(depId));
+}
+
 // GET /api/tasks — list tasks with optional filters (scoped to user's tabs)
 router.get("/", async (req: Request, res: Response) => {
   try {
@@ -103,6 +122,15 @@ router.post("/", async (req: Request, res: Response) => {
       if (userTabs.length > 0) {
         input.tabIds = [userTabs[0].id];
       }
+    }
+
+    // Verify all dependsOn targets belong to the authenticated user. Without
+    // this, a user could create a DEPENDS_ON edge to any task ID in the system
+    // (OWASP A01 / IDOR) and leak foreign task titles via `blockedBy`. Mirrors
+    // the guard on the MCP path handleAddTaskDependency().
+    if (!(await areDependenciesOwnedByUser(input.dependsOn, userId))) {
+      res.status(403).json({ error: "Cannot depend on tasks you do not own" });
+      return;
     }
 
     const task = await createTask(input);
@@ -190,6 +218,15 @@ router.put("/:id", async (req: Request, res: Response) => {
       res.status(400).json({ error: `state must be one of: ${TASK_STATES.join(", ")}` });
       return;
     }
+
+    // Verify all dependsOn targets belong to the authenticated user (OWASP A01
+    // / IDOR) — same guard as POST /. A user must not be able to point a
+    // DEPENDS_ON edge at a task they don't own via an update either.
+    if (!(await areDependenciesOwnedByUser(input.dependsOn, userId))) {
+      res.status(403).json({ error: "Cannot depend on tasks you do not own" });
+      return;
+    }
+
     const task = await updateTask(id, input);
     if (!task) {
       res.status(404).json({ error: "Task not found" });
