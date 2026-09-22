@@ -537,7 +537,7 @@ export async function setTaskBranchAndPr(
 export async function getTasksByBranch(
   branch: string,
   excludeTaskId?: number
-): Promise<Array<{ id: number; title: string; type: string; description: string; branch: string | null; pullRequestUrl: string | null }>> {
+): Promise<Array<{ id: number; title: string; type: string; description: string; branch: string | null; pullRequestUrl: string | null; state: string | null }>> {
   return readQuery(async (tx: ManagedTransaction) => {
     const result = await tx.run(
       `MATCH (t:Task {branch: $branch})
@@ -555,6 +555,7 @@ export async function getTasksByBranch(
         description: (props.description as string) ?? "",
         branch: (props.branch as string) || null,
         pullRequestUrl: (props.pullRequestUrl as string) || null,
+        state: (props.state as string) || null,
       };
     });
   });

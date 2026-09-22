@@ -32,10 +32,19 @@ const REPO_URL = process.env.REPO_URL || "";
 const GITHUB_PAT = process.env.GITHUB_PAT || "";
 const AZURE_DEVOPS_PAT = process.env.AZURE_DEVOPS_PAT || "";
 const ALL_GROUP_TASKS_DONE = process.env.ALL_GROUP_TASKS_DONE || "true";
+/**
+ * When "true", the branch is still referenced by another currently-active (non-done)
+ * task. Branch deletion must be skipped — deleting it now would destroy a branch that
+ * another task still needs. Set by worker.js from the taskMeta.branchHasActiveTasks
+ * flag computed by the backend via getTasksByBranch().
+ */
+const BRANCH_HAS_ACTIVE_TASKS = process.env.BRANCH_HAS_ACTIVE_TASKS || "false";
 // Override for testing: redirect GitHub API calls to a local mock server.
 const GITHUB_BASE_URL = process.env.GITHUB_BASE_URL || "https://api.github.com";
 // Override for testing: reduce the poll interval for 'unknown' mergeability checks (ms).
 const GITHUB_UNKNOWN_POLL_INTERVAL_MS = parseInt(process.env.GITHUB_UNKNOWN_POLL_INTERVAL_MS || "2000", 10);
+// Override for testing: reduce the branch delete retry delay (ms).
+const GITHUB_DELETE_RETRY_DELAY_MS = parseInt(process.env.GITHUB_DELETE_RETRY_DELAY_MS || "3000", 10);
 // Override for testing: redirect Azure DevOps API calls to a local mock server.
 const AZURE_DEVOPS_BASE_URL = process.env.AZURE_DEVOPS_BASE_URL || "https://dev.azure.com";
 // Override for testing: reduce the poll interval for queued merge status checks (ms).
@@ -151,6 +160,7 @@ async function githubMergePr(owner, repo, number, method) {
 
 /**
  * Delete a branch on GitHub.
+ * Returns { success, status }.
  */
 async function githubDeleteBranch(owner, repo, branch) {
   // Encode each path segment individually to preserve slashes (e.g. "feature/#544_...")
@@ -161,6 +171,38 @@ async function githubDeleteBranch(owner, repo, branch) {
     headers: githubHeaders(),
   });
   return { success: response.status === 204, status: response.status };
+}
+
+/**
+ * Delete a branch on GitHub with retry.
+ *
+ * A squash merge invalidates the branch ref immediately after completion,
+ * and GitHub can return a transient 409 if a ref-update is still in flight
+ * at the moment we send the DELETE. Retrying with a short delay resolves
+ * that race in practice.
+ *
+ * @param {string} owner
+ * @param {string} repo
+ * @param {string} branch
+ * @param {number} [maxRetries=2] — total extra attempts after the first failure
+ * @returns {Promise<{ success: boolean, status: number, attempted: number }>}
+ */
+async function githubDeleteBranchWithRetry(owner, repo, branch, maxRetries = 2) {
+  let lastResult = { success: false, status: 0 };
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    if (attempt > 0) {
+      await sleep(GITHUB_DELETE_RETRY_DELAY_MS);
+    }
+    try {
+      lastResult = await githubDeleteBranch(owner, repo, branch);
+      if (lastResult.success) {
+        return { ...lastResult, attempted: attempt + 1 };
+      }
+    } catch (err) {
+      lastResult = { success: false, status: -1, err };
+    }
+  }
+  return { ...lastResult, attempted: maxRetries + 1 };
 }
 
 /**
@@ -248,19 +290,36 @@ async function completeGitHubPr(owner, repo, number, branch) {
         // Merge succeeded — attempt to delete the branch
         if (branch) {
           try {
-            const deleteResult = await githubDeleteBranch(owner, repo, branch);
-            const branchMsg = deleteResult.success
-              ? `Branch "${branch}" deleted.`
-              : `Branch "${branch}" could not be deleted (HTTP ${deleteResult.status}).`;
+            // Skip deletion if the branch is still referenced by another active task.
+            // Deleting now would destroy a branch a sibling/future task still needs.
+            if (BRANCH_HAS_ACTIVE_TASKS === "true") {
+              return {
+                success: true,
+                message: `PR #${number} merged successfully (method: ${method}). Branch "${branch}" was not deleted because it is still referenced by another active task.`,
+              };
+            }
+
+            const deleteResult = await githubDeleteBranchWithRetry(owner, repo, branch);
+            if (deleteResult.success) {
+              return {
+                success: true,
+                message: `PR #${number} merged successfully (method: ${method}). Branch "${branch}" deleted.`,
+              };
+            }
+            // Delete failed after all retries — surface this clearly rather than
+            // swallowing it in a success:true message. The orchestrator/QA agent
+            // must know the branch still exists so a human can clean it up.
             return {
-              success: true,
-              message: `PR #${number} merged successfully (method: ${method}). ${branchMsg}`,
+              success: false,
+              error: "branch_delete_failed",
+              message: `PR #${number} merged successfully (method: ${method}), but branch "${branch}" could not be deleted after ${deleteResult.attempted} attempt(s) (HTTP ${deleteResult.status}). Please delete the branch manually.`,
             };
           } catch (err) {
-            // Branch deletion failed (network error, etc.) but merge already succeeded
+            // Network error during delete — also a clear failure, not a silent swallow
             return {
-              success: true,
-              message: `PR #${number} merged successfully (method: ${method}). Branch "${branch}" could not be deleted (${err?.message || "unknown error"}).`,
+              success: false,
+              error: "branch_delete_failed",
+              message: `PR #${number} merged successfully (method: ${method}), but branch "${branch}" could not be deleted (${err?.message || "unknown error"}). Please delete the branch manually.`,
             };
           }
         }
@@ -403,7 +462,11 @@ async function completeAzureDevOpsPr(org, project, repo, prId) {
   // Falls back from squash to noFastForward if squash is disallowed (400).
   // On failure, does NOT infer conflict from 409 message text — the pre-check
   // already validated mergeStatus, so a 409 here indicates a different condition.
+  //
+  // If BRANCH_HAS_ACTIVE_TASKS is "true", the branch is still referenced by another
+  // active task — request Azure DevOps to NOT delete the source branch.
   // ---------------------------------------------------------------------------
+  const shouldDeleteBranch = BRANCH_HAS_ACTIVE_TASKS !== "true";
   const strategies = ["squash", "noFastForward"];
 
   for (const strategy of strategies) {
@@ -412,7 +475,7 @@ async function completeAzureDevOpsPr(org, project, repo, prId) {
         status: "completed",
         lastMergeSourceCommit,
         completionOptions: {
-          deleteSourceBranch: true,
+          deleteSourceBranch: shouldDeleteBranch,
           mergeStrategy: strategy,
         },
       };
@@ -424,9 +487,12 @@ async function completeAzureDevOpsPr(org, project, repo, prId) {
       });
 
       if (response.ok) {
+        const branchNote = shouldDeleteBranch
+          ? "Source branch deleted."
+          : "Source branch was not deleted because it is still referenced by another active task.";
         return {
           success: true,
-          message: `PR #${prId} completed successfully (strategy: ${strategy}). Source branch deleted.`,
+          message: `PR #${prId} completed successfully (strategy: ${strategy}). ${branchNote}`,
         };
       }
 

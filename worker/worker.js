@@ -2425,6 +2425,7 @@ function buildMcpServers() {
       { name: "PR_BRANCH", value: process.env.PR_BRANCH || "" },
       { name: "REPO_URL", value: REPO_URL || "" },
       { name: "ALL_GROUP_TASKS_DONE", value: process.env.ALL_GROUP_TASKS_DONE || "true" },
+      { name: "BRANCH_HAS_ACTIVE_TASKS", value: process.env.BRANCH_HAS_ACTIVE_TASKS || "false" },
     ];
     if (process.env.GITHUB_PAT) {
       prCompleteEnv.push({ name: "GITHUB_PAT", value: process.env.GITHUB_PAT });
@@ -2442,6 +2443,7 @@ function buildMcpServers() {
       prUrl: process.env.TASK_PR_URL || "(not yet set)",
       prBranch: process.env.PR_BRANCH || "(not yet set)",
       allGroupTasksDone: process.env.ALL_GROUP_TASKS_DONE || "true",
+      branchHasActiveTasks: process.env.BRANCH_HAS_ACTIVE_TASKS || "false",
     });
   }
 
@@ -3136,6 +3138,7 @@ function handlePrompt(text, taskMeta) {
     // lacks a pullRequestUrl or branch for any reason).
     process.env.TASK_PR_URL = "";
     process.env.PR_BRANCH = "";
+    process.env.BRANCH_HAS_ACTIVE_TASKS = "false";
 
     // Make the task's PR URL available in process.env for child processes
     // (e.g. the pr-review MCP server reads it at tool-call time).
@@ -3148,6 +3151,9 @@ function handlePrompt(text, taskMeta) {
     // inspector AND the tab has autoMergePrs enabled.
     process.env.AUTO_MERGE_ENABLED = (taskMeta.autoMergePrs && AGENT_KIND === "inspector") ? "true" : "false";
     process.env.ALL_GROUP_TASKS_DONE = taskMeta.allGroupTasksDone !== false ? "true" : "false";
+    // BRANCH_HAS_ACTIVE_TASKS for the pr-complete MCP server: when "true", the
+    // branch is still referenced by another active task and must not be deleted.
+    process.env.BRANCH_HAS_ACTIVE_TASKS = taskMeta.branchHasActiveTasks === true ? "true" : "false";
     // PR_BRANCH for the pr-complete MCP server (the branch to delete after merge)
     if (taskMeta.branch) {
       process.env.PR_BRANCH = taskMeta.branch;

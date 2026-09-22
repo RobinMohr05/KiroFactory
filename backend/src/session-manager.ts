@@ -36,7 +36,7 @@ import { getAllPooledSessionIds } from "./db/autoscalers.js";
 import { getUserKiroApiKey, getUserById } from "./db/users.js";
 import { getAllDecryptedCredentials, getDecryptedCredential } from "./db/credentials.js";
 import { isDbAvailable } from "./db/connection.js";
-import { getTaskAutoMergePrs, areAllGroupTasksDone, createTask, getAllTasks } from "./db/tasks.js";
+import { getTaskAutoMergePrs, areAllGroupTasksDone, getTasksByBranch, createTask, getAllTasks } from "./db/tasks.js";
 import { recordError, type RecordErrorInput } from "./error-store.js";
 import { log, logSessionEvent, logWorkerEvent, toErrorFields } from "./logger.js";
 import { getAgentTabs, getTabById } from "./db/tabs.js";
@@ -3460,7 +3460,7 @@ interface WorkerPromptResult {
 /**
  * Send a prompt to an ACA worker and wait for prompt-done response.
  */
-async function streamPromptAca(managed: ManagedSession, text: string, taskMeta?: { id: number; title: string; type: string; description: string; files: string[]; branch?: string | null; pullRequestUrl?: string | null; siblingTasks?: Array<{ id: number; title: string; type: string; description: string; pullRequestUrl: string | null }>; autoMergePrs?: boolean; allGroupTasksDone?: boolean }): Promise<WorkerPromptResult> {
+async function streamPromptAca(managed: ManagedSession, text: string, taskMeta?: { id: number; title: string; type: string; description: string; files: string[]; branch?: string | null; pullRequestUrl?: string | null; siblingTasks?: Array<{ id: number; title: string; type: string; description: string; pullRequestUrl: string | null }>; autoMergePrs?: boolean; allGroupTasksDone?: boolean; branchHasActiveTasks?: boolean }): Promise<WorkerPromptResult> {
   if (!isWorkerConnected(managed.meta.id)) {
     throw new Error("Worker is not connected");
   }
@@ -3498,7 +3498,7 @@ async function streamPromptAca(managed: ManagedSession, text: string, taskMeta?:
   }
 
   // Send the prompt to the worker (with optional task metadata for branch/commit/PR)
-  const workerTaskMeta = taskMeta ? { id: taskMeta.id, title: taskMeta.title, type: taskMeta.type, description: taskMeta.description, files: taskMeta.files, branch: taskMeta.branch ?? null, pullRequestUrl: taskMeta.pullRequestUrl ?? null, siblingTasks: taskMeta.siblingTasks, autoMergePrs: taskMeta.autoMergePrs, allGroupTasksDone: taskMeta.allGroupTasksDone } : undefined;
+  const workerTaskMeta = taskMeta ? { id: taskMeta.id, title: taskMeta.title, type: taskMeta.type, description: taskMeta.description, files: taskMeta.files, branch: taskMeta.branch ?? null, pullRequestUrl: taskMeta.pullRequestUrl ?? null, siblingTasks: taskMeta.siblingTasks, autoMergePrs: taskMeta.autoMergePrs, allGroupTasksDone: taskMeta.allGroupTasksDone, branchHasActiveTasks: taskMeta.branchHasActiveTasks } : undefined;
   const sent = sendWorkerPrompt(managed.meta.id, text, workerTaskMeta);
   if (!sent) {
     throw new Error("Failed to send prompt to worker");
@@ -3895,6 +3895,9 @@ async function runLoopModeAca(
     // areAllGroupTasksDone() throws, a grouped task's merge is safely deferred
     // rather than prematurely allowed.
     let allGroupTasksDone = !task.groupId;
+    // Default: assume branch is not shared with another active task (safe to delete).
+    // Computed via getTasksByBranch() when branch is known.
+    let branchHasActiveTasks = false;
     if (meta.agent === "qa-improvement-agent") {
       try {
         autoMergePrs = await getTaskAutoMergePrs(task.id);
@@ -3912,13 +3915,31 @@ async function runLoopModeAca(
           text: `Warning: could not look up autoMergePrs/group status: ${msg}`,
         });
       }
+      // Check if the branch is still referenced by another active (non-done) task.
+      // Branches can be reused across unrelated tasks via the shared-branch/AC2
+      // sibling-inheritance feature — we must not delete a branch that another
+      // task still needs, even after this task's PR has merged.
+      if (task.branch) {
+        try {
+          const activeSiblings = await getTasksByBranch(task.branch, task.id);
+          branchHasActiveTasks = activeSiblings.some((t) => t.state !== "done");
+        } catch (err) {
+          // Non-critical — if lookup fails, default to false (safe: will attempt delete).
+          const msg = err instanceof Error ? err.message : String(err);
+          appendOutput(managed, {
+            timestamp: now(),
+            stream: "stderr",
+            text: `Warning: could not look up branch active tasks: ${msg}`,
+          });
+        }
+      }
     }
 
     // Build the prompt after autoMergePrs is known (inspector agents need it for the auto-merge section)
     const prompt = buildTurnPrompt(stages.kind, task, ACA_WORKSPACE_PATH, autoMergePrs);
 
     try {
-      promptResult = await streamPromptAca(managed, prompt, { id: task.id, title: task.title, type: task.type, description: task.description, files: task.files, branch: task.branch, pullRequestUrl: task.pullRequestUrl, siblingTasks, autoMergePrs, allGroupTasksDone });
+      promptResult = await streamPromptAca(managed, prompt, { id: task.id, title: task.title, type: task.type, description: task.description, files: task.files, branch: task.branch, pullRequestUrl: task.pullRequestUrl, siblingTasks, autoMergePrs, allGroupTasksDone, branchHasActiveTasks });
     } catch (err) {
       success = false;
       const msg = err instanceof Error ? err.message : String(err);
