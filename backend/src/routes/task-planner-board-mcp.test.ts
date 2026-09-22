@@ -10,7 +10,7 @@
  * 4. The batch create-task endpoint resolves dependsOnBatchIndex to real IDs
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from "vitest";
 
 // Mock DB modules before importing the module under test
 vi.mock("../db/tasks.js", () => ({
@@ -35,6 +35,17 @@ vi.mock("../agent/task-claimer.js", () => ({
 }));
 
 describe("task-planner-board-mcp", () => {
+  beforeAll(() => {
+    // signToken (called by buildPlannerBoardMcpServer) requires JWT_SECRET to be set.
+    // Provide a test value — the actual secret value doesn't matter for unit tests
+    // since we only verify the shape of the output, not the token content.
+    process.env.JWT_SECRET = "test-jwt-secret-for-unit-tests";
+  });
+
+  afterAll(() => {
+    delete process.env.JWT_SECRET;
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
   });
