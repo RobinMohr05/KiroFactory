@@ -43,12 +43,14 @@ vi.mock("../db/planner-conversations.js", async (importOriginal) => {
       shortDescription: "hello",
       createdAt: "x",
       lastMessageAt: "x",
+      taskCreated: false,
     }),
     appendPlannerMessage: vi.fn().mockResolvedValue(0),
     listPlannerConversations: vi.fn().mockResolvedValue([]),
     getPlannerConversation: vi.fn().mockResolvedValue(null),
     deletePlannerConversation: vi.fn().mockResolvedValue(false),
     deleteExpiredPlannerConversations: vi.fn().mockResolvedValue(0),
+    markPlannerConversationTaskCreated: vi.fn().mockResolvedValue(undefined),
   };
 });
 
@@ -72,6 +74,53 @@ vi.mock("../middleware/auth.js", () => ({
 vi.mock("../logger.js", () => ({
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
   toErrorFields: vi.fn().mockReturnValue({}),
+}));
+
+vi.mock("../db/tasks.js", () => ({
+  createTask: vi.fn().mockResolvedValue({
+    id: 99,
+    title: "Test Task",
+    priority: 2,
+    type: "feature",
+    state: "todo",
+    description: "",
+    files: [],
+    origin: "user-assisted",
+    dependsOn: [],
+    isBlocked: false,
+    blockedBy: [],
+    branch: null,
+    pullRequestUrl: null,
+    groupId: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    tabs: [{ id: 2, name: "Test Tab" }],
+  }),
+}));
+
+vi.mock("../db/tabs.js", () => ({
+  getAllTabs: vi.fn().mockResolvedValue([{ id: 2, name: "Test Tab", userId: 1 }]),
+  getTabById: vi.fn().mockResolvedValue({ id: 2, name: "Test Tab", userId: 1, repositoryUrl: null }),
+}));
+
+vi.mock("../db/users.js", () => ({
+  getUserById: vi.fn().mockResolvedValue({ id: 1, email: "test@test.com", defaultGitProvider: null }),
+}));
+
+vi.mock("../db/credentials.js", () => ({
+  getDecryptedCredential: vi.fn().mockResolvedValue(null),
+}));
+
+vi.mock("../websocket-handler.js", () => ({
+  broadcastToUser: vi.fn(),
+}));
+
+vi.mock("../agent/task-claimer.js", () => ({
+  notifyTaskAvailable: vi.fn(),
+}));
+
+vi.mock("./task-planner-board-mcp.js", () => ({
+  buildPlannerBoardMcpServer: vi.fn().mockReturnValue({ type: "http", name: "task-board", url: "" }),
 }));
 
 describe("task-planner conversation persistence wiring", () => {
@@ -152,10 +201,60 @@ describe("task-planner conversation persistence wiring", () => {
 
   it("GET /conversations lists conversations for the current user", async () => {
     (db.listPlannerConversations as any).mockResolvedValue([
-      { id: 1, shortDescription: "A", createdAt: "x", lastMessageAt: "y" },
+      { id: 1, shortDescription: "A", createdAt: "x", lastMessageAt: "y", taskCreated: false },
     ]);
     const res = await supertest(app).get("/api/task-planner/conversations").expect(200);
     expect(res.body.conversations).toHaveLength(1);
     expect(db.listPlannerConversations).toHaveBeenCalledWith(1);
+  });
+});
+
+describe("task-planner taskCreated flag wiring — POST /:sessionId/create-task", () => {
+  let app: express.Express;
+  let db: typeof import("../db/planner-conversations.js");
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    currentSession = { id: 5, name: "Task Planner", userId: 1, tabIds: [2], status: "running" };
+
+    db = await import("../db/planner-conversations.js");
+    const { default: router } = await import("./task-planner.js");
+    app = express();
+    app.use(express.json());
+    app.use("/api/task-planner", router);
+  });
+
+  it("calls markPlannerConversationTaskCreated when tasks are created and a conversation is mapped", async () => {
+    // First, send a message to create the sessionToConversation mapping (conversationId = 42)
+    await supertest(app)
+      .post("/api/task-planner/5/message")
+      .send({ message: "plan a feature" })
+      .expect(200);
+
+    // Wait for fire-and-forget persistence to complete
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Now create a task — should trigger markPlannerConversationTaskCreated
+    await supertest(app)
+      .post("/api/task-planner/5/create-task")
+      .send({ tasks: [{ title: "My Task", priority: 2, type: "feature" }] })
+      .expect(201);
+
+    // Give the fire-and-forget flag a tick to run
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(db.markPlannerConversationTaskCreated).toHaveBeenCalledWith(42);
+  });
+
+  it("does NOT call markPlannerConversationTaskCreated when no conversation is mapped", async () => {
+    // Create a task directly without first sending a message (no sessionToConversation entry)
+    await supertest(app)
+      .post("/api/task-planner/5/create-task")
+      .send({ tasks: [{ title: "My Task", priority: 2, type: "feature" }] })
+      .expect(201);
+
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(db.markPlannerConversationTaskCreated).not.toHaveBeenCalled();
   });
 });
