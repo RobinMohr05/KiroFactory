@@ -608,9 +608,9 @@ async function handleToolCall(id, params) {
         content: [{ type: "text", text: result.message }],
       });
     } else {
-      // merge_conflict and blocked_by_policy are not MCP errors — the agent can act on them.
+      // merge_conflict and rejected_by_policy are not MCP errors — the agent can act on them.
       // not_ready and merge_failed are MCP errors (unexpected/terminal conditions).
-      const isActionable = result.error === "merge_conflict" || result.error === "blocked_by_policy";
+      const isActionable = result.error === "merge_conflict" || result.error === "rejected_by_policy";
       respond(id, {
         content: [
           {
