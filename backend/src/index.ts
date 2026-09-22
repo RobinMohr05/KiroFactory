@@ -15,6 +15,7 @@ import { isAcaModeEnabled, loadAcaConfig, verifyAcaAccess } from "./aca-worker-s
 import { isWslModeEnabled, loadWslConfig } from "./wsl-worker-spawner.js";
 import { startWslDiagnosticsCollector, stopWslDiagnosticsCollector } from "./wsl-diagnostics-collector.js";
 import { requireAuth, isPublicPath } from "./middleware/auth.js";
+import { requireDb } from "./middleware/require-db.js";
 import { applySecurityHeaders } from "./middleware/security-headers.js";
 import { createAuthRateLimiter, createGlobalRateLimiter } from "./middleware/rate-limit.js";
 import authRouter from "./routes/auth.js";
@@ -82,16 +83,6 @@ app.use(apiErrorLogger);
 // Mount API routes (with DB availability guard and auth)
 import type { Request, Response, NextFunction } from "express";
 
-function requireDb(req: Request, res: Response, next: NextFunction): void {
-  if (!isDbAvailable()) {
-    res.status(503).json({
-      error: "Database is currently unavailable. Some features may not work until the connection is restored.",
-    });
-    return;
-  }
-  next();
-}
-
 // Global rate limiter for the entire /api/* surface (OWASP A07 —
 // coding_guidelines.MD §2). A generous per-IP ceiling that only blunts abusive
 // floods, not normal interactive use. Registered before the auth guard so it
@@ -130,9 +121,9 @@ app.use("/api/auth/register", authRateLimiter);
 app.use("/api/auth", requireDb, authRouter);
 app.use("/api/tasks", requireDb, tasksRouter);
 app.use("/api/tabs", requireDb, tabsRouter);
-app.use("/api/sessions", sessionsRouter);
+app.use("/api/sessions", requireDb, sessionsRouter);
 app.use("/api/models", modelsRouter);
-app.use("/api/agents", agentsRouter);
+app.use("/api/agents", requireDb, agentsRouter);
 app.use("/api/errors", errorsRouter);
 app.use("/api/users/me/credentials", requireDb, credentialsRouter);
 app.use("/api/admin", requireDb, adminRouter);
