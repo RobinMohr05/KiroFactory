@@ -9,7 +9,7 @@ import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
 
-import { setupWebSocket } from "./websocket-handler.js";
+import { setupWebSocket, isOriginAllowed } from "./websocket-handler.js";
 import { setupWorkerWebSocket } from "./worker-ws-handler.js";
 import { isAcaModeEnabled, loadAcaConfig, verifyAcaAccess } from "./aca-worker-spawner.js";
 import { isWslModeEnabled, loadWslConfig } from "./wsl-worker-spawner.js";
@@ -200,6 +200,23 @@ server.on("upgrade", (req, socket, head) => {
   }
 
   if (pathname === "/ws") {
+    // Validate the Origin header to prevent Cross-Site WebSocket Hijacking
+    // (CSWSH). Browsers automatically attach cookies to cross-origin WebSocket
+    // handshakes, so an unvalidated /ws endpoint would let a malicious page
+    // authenticate as the victim using their kf_session cookie.
+    // isOriginAllowed() allows all origins in development and restricts to
+    // same-origin (± PUBLIC_URL) in production — mirroring the CORS behavior.
+    if (!isOriginAllowed(req.headers.origin, req.headers.host)) {
+      log.warn("ws-origin-rejected", {
+        component: "ws",
+        origin: req.headers.origin ?? "(none)",
+        host: req.headers.host ?? "(none)",
+        msg: "WebSocket upgrade rejected: Origin not in allowlist (CSWSH protection)",
+      });
+      socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+      return;
+    }
     clientWss.handleUpgrade(req, socket, head, (ws) => clientWss.emit("connection", ws, req));
   } else if (workerWss && pathname === "/internal/worker") {
     workerWss.handleUpgrade(req, socket, head, (ws) => workerWss.emit("connection", ws, req));
