@@ -20,6 +20,7 @@ import type { CreateSessionInput, UpdateSessionInput } from "../types.js";
 import { log, toErrorFields } from "../logger.js";
 import { sanitizeSessionForClient } from "../session-sanitize.js";
 import { getTurnsBySession } from "../db/turns.js";
+import { getSessionFromDb } from "../db/sessions.js";
 import { isValidCronExpression, isValidTimezone } from "../cron-schedule.js";
 import { armSession, disarmSession, triggerRunNow } from "../scheduled-session-manager.js";
 import { getTabById } from "../db/tabs.js";
@@ -254,7 +255,7 @@ router.get("/:id", (req: Request, res: Response) => {
 });
 
 // GET /api/sessions/:id/output — get session output buffer (must belong to authenticated user)
-router.get("/:id/output", (req: Request, res: Response) => {
+router.get("/:id/output", async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
     const id = paramId(req);
@@ -262,11 +263,16 @@ router.get("/:id/output", (req: Request, res: Response) => {
       res.status(400).json({ error: "Invalid session id" });
       return;
     }
-    const session = getSession(id);
+    // Verify ownership. Prefer the in-memory record, but fall back to the DB
+    // for pooled sessions that have been stopped and evicted from memory (so
+    // the auto-scaler turn browser can still load them — see PR #143 review).
+    const session = getSession(id) ?? (await getSessionFromDb(id));
     if (!session || session.userId !== userId) {
       res.status(404).json({ error: "Session not found" });
       return;
     }
+    // Raw output is only buffered in memory, so an evicted session legitimately
+    // has none — getSessionOutput returns an empty array in that case.
     const output = getSessionOutput(id);
     res.json(output);
   } catch (err) {
@@ -290,7 +296,11 @@ router.get("/:id/turns", async (req: Request, res: Response) => {
       res.status(400).json({ error: "Invalid session id" });
       return;
     }
-    const session = getSession(id);
+    // Verify ownership. Prefer the in-memory record, but fall back to the DB
+    // for pooled sessions that have been stopped and evicted from memory, so
+    // the turn list still loads for them (see PR #143 review). Turns are
+    // persisted as :Turn nodes, so they're available regardless of residency.
+    const session = getSession(id) ?? (await getSessionFromDb(id));
     if (!session || session.userId !== userId) {
       res.status(404).json({ error: "Session not found" });
       return;
