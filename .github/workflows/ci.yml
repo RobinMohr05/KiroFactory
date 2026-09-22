@@ -21,6 +21,32 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Audit dependencies
+        # coding_guidelines.MD §8/§10/§25: surface known high/critical CVEs in
+        # the dependency tree (the "dependency" AI-agent guardrail).
+        #
+        # Staged rollout: reported but NON-blocking for now. There is a
+        # pre-existing backlog of transitive advisories (react-router, node-tar
+        # via bcrypt, nanoid) whose fixes are semver-major / auth-touching
+        # dependency bumps out of scope for wiring the gate itself. Once those
+        # are burned down in a follow-up, drop `continue-on-error` to make this
+        # a hard gate.
+        run: npm audit --audit-level=high
+        continue-on-error: true
+
+      - name: Lint
+        # coding_guidelines.MD §21/§25: ESLint gate (type-aware rules such as
+        # @typescript-eslint/no-floating-promises, no-explicit-any, eqeqeq) run
+        # ahead of build so lint failures surface early in the PR check.
+        #
+        # Staged rollout: reported but NON-blocking for now. The rules are set
+        # up as errors (see eslint.config.base.mjs), but the repo carries a
+        # pre-existing violation backlog that is out of scope to clear here.
+        # Once it is driven to zero, drop `continue-on-error` to turn this into
+        # a hard gate.
+        run: npm run lint
+        continue-on-error: true
+
       - name: Build backend
         run: npm run build -w backend
 

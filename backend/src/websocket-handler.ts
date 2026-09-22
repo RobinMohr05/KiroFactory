@@ -167,7 +167,16 @@ export function setupWebSocket(): WebSocketServer {
     ws.on("message", (data) => {
       try {
         const msg: WsClientMessage = JSON.parse(data.toString());
-        handleClientMessage(ws, userId, msg);
+        // The listener callback is synchronous, so we can't await here; handle
+        // the async dispatcher's rejection explicitly to avoid a floating
+        // promise / unhandled rejection (see @typescript-eslint/no-floating-promises).
+        handleClientMessage(ws, userId, msg).catch((err) => {
+          log.error("ws-message-handler-failed", {
+            component: "websocket",
+            userId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
       } catch {
         /* ignore malformed messages */
       }
