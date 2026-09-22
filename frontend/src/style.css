@@ -5749,6 +5749,39 @@ textarea:focus {
   color: var(--text-secondary);
 }
 
+/* ===== Auto-Scaler pooled-session cards (task #1969) ===== */
+.autoscaler-sessions-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.autoscaler-session-card-run-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.autoscaler-session-card-run-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+}
+
+.autoscaler-session-card-run-row .autoscaler-run-number {
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.autoscaler-session-card-run-row .autoscaler-run-task {
+  color: var(--text-secondary);
+}
+
 .autoscaler-edit-disabled-hint {
   font-size: 0.8rem;
   color: var(--text-secondary);

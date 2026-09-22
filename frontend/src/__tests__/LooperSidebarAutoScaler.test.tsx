@@ -1179,7 +1179,7 @@ describe('AutoScalerDetailView — Sessions section', () => {
     await screen.findByText('auto-session-1');
   });
 
-  it('expanding a session row fetches its turns', async () => {
+  it('does not fetch turns until "Load runs" is clicked, then fetches on click', async () => {
     const { apiFetch } = await import('../utils/api');
     const childSession = {
       id: 10,
@@ -1200,13 +1200,18 @@ describe('AutoScalerDetailView — Sessions section', () => {
     render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
     fireEvent.click(document.querySelector('[data-autoscaler-id="10"]')!);
 
-    // Wait for session row to appear
+    // Wait for the session card to appear
     await screen.findByText('auto-session-1');
 
-    // Click the row header button to expand it
-    const sessionRowHeader = document.querySelector('.autoscaler-session-row-header');
-    expect(sessionRowHeader).not.toBeNull();
-    fireEvent.click(sessionRowHeader!);
+    // Runs are NOT fetched on mount
+    expect(
+      vi.mocked(apiFetch).mock.calls.filter(
+        ([url]) => typeof url === 'string' && url.includes('/sessions/10/turns')
+      ).length
+    ).toBe(0);
+
+    // Click "Load runs" to fetch turns
+    fireEvent.click(screen.getByRole('button', { name: /load runs/i }));
 
     await vi.waitFor(() => {
       const turnFetches = vi.mocked(apiFetch).mock.calls.filter(
@@ -1216,7 +1221,7 @@ describe('AutoScalerDetailView — Sessions section', () => {
     });
   });
 
-  it('only one child session can be expanded at a time (accordion)', async () => {
+  it('renders an independent card per child session (runs load per-card)', async () => {
     const { apiFetch } = await import('../utils/api');
     const sessions = [
       { id: 10, name: 'session-a', status: 'stopped' },
@@ -1233,20 +1238,25 @@ describe('AutoScalerDetailView — Sessions section', () => {
     render(<MemoryRouter><SessionsPanel /></MemoryRouter>);
     fireEvent.click(document.querySelector('[data-autoscaler-id="10"]')!);
 
-    // Wait for both sessions to appear
+    // Wait for both session cards to appear
     await screen.findByText('session-a');
     await screen.findByText('session-b');
 
-    // Expand session-a (first row header)
-    const rowHeaders = document.querySelectorAll('.autoscaler-session-row-header');
-    expect(rowHeaders.length).toBe(2);
-    fireEvent.click(rowHeaders[0]);
+    // Each card is independent: two "Load runs" buttons, one per session card.
+    const loadButtons = screen.getAllByRole('button', { name: /load runs/i });
+    expect(loadButtons.length).toBe(2);
 
-    // Expand session-b — session-a should collapse
-    fireEvent.click(rowHeaders[1]);
-
-    // Only one expanded container exists
-    const expandedPanes = document.querySelectorAll('.autoscaler-session-turn-browser');
-    expect(expandedPanes.length).toBeLessThanOrEqual(1);
+    // Clicking the first card's "Load runs" only fetches turns for that session.
+    fireEvent.click(loadButtons[0]);
+    await vi.waitFor(() => {
+      const sessionATurns = vi.mocked(apiFetch).mock.calls.filter(
+        ([url]) => typeof url === 'string' && url.includes('/sessions/10/turns')
+      );
+      expect(sessionATurns.length).toBeGreaterThan(0);
+    });
+    const sessionBTurns = vi.mocked(apiFetch).mock.calls.filter(
+      ([url]) => typeof url === 'string' && url.includes('/sessions/11/turns')
+    );
+    expect(sessionBTurns.length).toBe(0);
   });
 });

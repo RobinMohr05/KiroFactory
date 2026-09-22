@@ -2,8 +2,9 @@ import { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { apiFetch } from '../utils/api';
 import { ModelSelect } from './ModelSelect';
+import { AutoScalerSessionCard } from './AutoScalerSessionCard';
 import { useConfirmAction } from '../hooks/useConfirmAction';
-import type { AutoScaler, Session, TurnRecord, OutputEntry } from '../types';
+import type { AutoScaler, Session } from '../types';
 
 /**
  * Auto-Scaler controls panel — rendered inside the SessionsPanel sidebar only when
@@ -177,10 +178,6 @@ export function AutoScalerDetailView({
 
   // Child sessions state
   const [childSessions, setChildSessions] = useState<Session[]>([]);
-  const [expandedSessionId, setExpandedSessionId] = useState<number | null>(null);
-  const [sessionTurns, setSessionTurns] = useState<Record<number, TurnRecord[]>>({});
-  const [sessionOutput, setSessionOutput] = useState<Record<number, OutputEntry[]>>({});
-  const [selectedTurn, setSelectedTurn] = useState<Record<number, number | null>>({});
 
   // Re-sync form state when the autoScaler prop changes (e.g. via WS autoscaler-updated event).
   // This ensures the edit form shows up-to-date values even if a WS event arrives while the
@@ -342,70 +339,6 @@ export function AutoScalerDetailView({
   const displayModel = autoScaler.model ? autoScaler.model : 'auto';
   const displayMax = autoScaler.maxConcurrency === 0 ? '∞' : String(autoScaler.maxConcurrency);
   const displayCreatedAt = new Date(autoScaler.createdAt).toLocaleString();
-
-  // Expand a child session (accordion): fetch turns + output lazily
-  const handleExpandSession = async (sessionId: number) => {
-    if (expandedSessionId === sessionId) {
-      setExpandedSessionId(null);
-      return;
-    }
-    setExpandedSessionId(sessionId);
-
-    // Fetch turns if not already loaded
-    if (!sessionTurns[sessionId]) {
-      try {
-        const res = await apiFetch(`/api/sessions/${sessionId}/turns`);
-        if (res.ok) {
-          const turns: TurnRecord[] = await res.json();
-          setSessionTurns(prev => ({ ...prev, [sessionId]: turns }));
-          // Default-select the most recent turn
-          if (turns.length > 0) {
-            setSelectedTurn(prev => ({ ...prev, [sessionId]: turns[turns.length - 1].number }));
-          }
-        }
-      } catch {
-        // ignore
-      }
-    }
-
-    // Fetch output if not already loaded
-    if (!sessionOutput[sessionId]) {
-      try {
-        const res = await apiFetch(`/api/sessions/${sessionId}/output`);
-        if (res.ok) {
-          const output: OutputEntry[] = await res.json();
-          setSessionOutput(prev => ({ ...prev, [sessionId]: output }));
-        }
-      } catch {
-        // ignore
-      }
-    }
-  };
-
-  // Slice output to the selected turn's time range
-  function getTurnOutput(sessionId: number, turnNumber: number | null): OutputEntry[] {
-    if (turnNumber === null) return [];
-    const turns = sessionTurns[sessionId] ?? [];
-    const turn = turns.find(t => t.number === turnNumber);
-    if (!turn) return [];
-    const allOutput = sessionOutput[sessionId] ?? [];
-    const startMs = new Date(turn.startedAt).getTime();
-    const endMs = turn.endedAt ? new Date(turn.endedAt).getTime() : Infinity;
-    return allOutput.filter(entry => {
-      if (!entry.timestamp) return false;
-      const ts = new Date(entry.timestamp).getTime();
-      return ts >= startMs && ts <= endMs;
-    });
-  }
-
-  function formatDurationMs(ms: number): string {
-    if (ms < 1000) return `${ms}ms`;
-    const s = Math.round(ms / 1000);
-    if (s < 60) return `${s}s`;
-    const m = Math.floor(s / 60);
-    const rem = s % 60;
-    return rem > 0 ? `${m}m ${rem}s` : `${m}m`;
-  }
 
   return (
     <div className="autoscaler-detail-panel" data-testid="autoscaler-detail-panel">
@@ -571,80 +504,11 @@ export function AutoScalerDetailView({
         {childSessions.length === 0 ? (
           <p className="autoscaler-sessions-empty">No sessions spawned yet.</p>
         ) : (
-          <ul className="autoscaler-sessions-list">
-            {childSessions.map(session => {
-              const isExpanded = expandedSessionId === session.id;
-              const sessionIsRunning = session.status === 'running';
-              const turns = sessionTurns[session.id] ?? [];
-              const selTurn = selectedTurn[session.id] ?? null;
-              const turnOutput = getTurnOutput(session.id, selTurn);
-
-              return (
-                <li key={session.id} className={`autoscaler-session-row${isExpanded ? ' autoscaler-session-row--expanded' : ''}`}>
-                  <button
-                    className="autoscaler-session-row-header"
-                    onClick={() => handleExpandSession(session.id)}
-                    aria-expanded={isExpanded}
-                  >
-                    <span className={`autoscaler-status-dot${sessionIsRunning ? ' autoscaler-status-dot--running' : ''}`} aria-hidden="true" />
-                    <span className="autoscaler-session-name">{session.name}</span>
-                    <span className={`autoscaler-session-badge${sessionIsRunning ? ' badge-running' : ' badge-stopped'}`}>
-                      {sessionIsRunning ? 'running' : 'stopped'}
-                    </span>
-                    <span className="autoscaler-session-chevron" aria-hidden="true">{isExpanded ? '▾' : '▸'}</span>
-                  </button>
-
-                  {isExpanded && (
-                    <div className="autoscaler-session-turn-browser">
-                      <div className="autoscaler-turn-list">
-                        {turns.length === 0 ? (
-                          <p className="autoscaler-turns-empty">No turns yet.</p>
-                        ) : (
-                          <ul>
-                            {turns.map(turn => (
-                              <li
-                                key={turn.number}
-                                className={`autoscaler-turn-item${selTurn === turn.number ? ' autoscaler-turn-item--selected' : ''}`}
-                                onClick={() => setSelectedTurn(prev => ({ ...prev, [session.id]: turn.number }))}
-                                role="button"
-                                tabIndex={0}
-                                onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSelectedTurn(prev => ({ ...prev, [session.id]: turn.number })); } }}
-                              >
-                                <span className="autoscaler-turn-number">#{turn.number}</span>
-                                <span className="autoscaler-turn-task">{turn.taskTitle ?? '—'}</span>
-                                <span className="autoscaler-turn-verdict">{turn.verdict ?? '—'}</span>
-                                <span className="autoscaler-turn-duration">{formatDurationMs(turn.durationMs)}</span>
-                              </li>
-                            ))}
-                          </ul>
-                        )}
-                      </div>
-                      <div className="autoscaler-turn-output">
-                        {selTurn === null ? (
-                          <p className="autoscaler-turn-output-hint">Select a turn to see its output.</p>
-                        ) : turnOutput.length === 0 ? (
-                          <p className="autoscaler-turn-output-hint">No output for this turn.</p>
-                        ) : (
-                          <div className="session-output" role="log" aria-label="Turn output">
-                            <pre className="output-pre">
-                              {turnOutput.map((entry, i) => {
-                                const ts = entry.timestamp ? `[${new Date(entry.timestamp).toLocaleTimeString()}] ` : '';
-                                return (
-                                  <span key={i} className={`output-line output-${entry.stream}`}>
-                                    {ts}{entry.text}{'\n'}
-                                  </span>
-                                );
-                              })}
-                            </pre>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
+          <div className="autoscaler-sessions-cards">
+            {childSessions.map(session => (
+              <AutoScalerSessionCard key={session.id} session={session} />
+            ))}
+          </div>
         )}
       </div>
     </div>
