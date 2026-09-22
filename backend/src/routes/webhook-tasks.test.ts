@@ -86,6 +86,24 @@ describe("POST /api/webhooks/tasks", () => {
     expect(createTask).not.toHaveBeenCalled();
   });
 
+  it("returns 401 (not 500) when configured secret has multibyte UTF-8 chars and header secret has same string length but different byte length", async () => {
+    // "café" has string .length === 4 but encodes to 5 UTF-8 bytes.
+    // "caff" has string .length === 4 and encodes to 4 UTF-8 bytes.
+    // Before the fix: headerSecret.length === webhookSecret.length (4 === 4) passes the
+    // string-length guard, then timingSafeEqual throws RangeError (4 vs 5 bytes), which
+    // is caught by the outer try/catch and returned as 500 instead of 401.
+    process.env.WEBHOOK_SECRET = "café"; // 4 code units, 5 UTF-8 bytes
+    const app = createApp();
+    const res = await request(app)
+      .post("/api/webhooks/tasks")
+      .set("X-Webhook-Secret", "caff") // 4 code units, 4 UTF-8 bytes — wrong secret
+      .send({ title: "Test task" });
+
+    expect(res.status).toBe(401);
+    expect(res.body.error).toBe("Invalid or missing webhook secret");
+    expect(createTask).not.toHaveBeenCalled();
+  });
+
   // ─── Auth: WEBHOOK_SECRET not configured ─────────────────────────────────
 
   it("returns 503 when WEBHOOK_SECRET env var is not set", async () => {
