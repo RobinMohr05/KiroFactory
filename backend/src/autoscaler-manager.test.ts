@@ -440,6 +440,47 @@ describe("autoscaler-manager", () => {
       const result = await stopAutoScaler(999);
       expect(result).toBeNull();
     });
+
+    it("surfaces a per-session stop failure via structured log.warn (not a silent empty catch)", async () => {
+      // Start the autoScaler so it has in-memory state with an owned session.
+      const stoppedAutoScaler = makeAutoScaler({ status: "stopped" });
+      const runningAutoScaler = makeAutoScaler({ status: "running" });
+      vi.mocked(getAutoScalerById).mockResolvedValue(stoppedAutoScaler);
+      vi.mocked(updateAutoScalerStatus).mockResolvedValue(runningAutoScaler);
+      vi.mocked(getAvailableTaskCount).mockResolvedValue(2);
+      vi.mocked(getAllSessions).mockReturnValue([]);
+
+      let sessionCounter = 100;
+      vi.mocked(createSession).mockImplementation(async () =>
+        makeSession({ id: sessionCounter++, status: "running" })
+      );
+      vi.mocked(startSession).mockResolvedValue(undefined as any);
+
+      await startAutoScaler(1);
+      await flushAsync();
+
+      // stopSession rejects for this owned session (e.g. unexpected error
+      // before/after its own teardown try/catch).
+      vi.mocked(stopSession).mockRejectedValue(new Error("unexpected stop failure"));
+
+      const stoppedAutoScalerResult = makeAutoScaler({ status: "stopped" });
+      vi.mocked(updateAutoScalerStatus).mockResolvedValue(stoppedAutoScalerResult);
+
+      const { log } = await import("./logger.js");
+
+      // Must NOT throw — a failed per-session stop is logged, not propagated.
+      const result = await stopAutoScaler(1);
+
+      // The AutoScaler is still marked stopped, but the failure is operator-visible.
+      expect(result?.status).toBe("stopped");
+      expect(log.warn).toHaveBeenCalledWith(
+        "autoscaler-stop-session-failed",
+        expect.objectContaining({
+          component: "autoscaler-manager",
+          autoScalerId: 1,
+        })
+      );
+    });
   });
 
   describe("deleteAutoScalerRecord", () => {

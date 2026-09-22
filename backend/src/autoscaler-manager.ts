@@ -71,7 +71,7 @@ import { getAvailableTaskCount, getNonDoneTaskCount, waitForTaskAvailable } from
 import { createSession, startSession, stopSession, deleteSession, getSession, markSessionPooled } from "./session-manager.js";
 import { getAgentStageStates } from "./session-manager.js";
 import { updateSessionStatus } from "./db/sessions.js";
-import { log } from "./logger.js";
+import { log, toErrorFields } from "./logger.js";
 import type { AutoScaler, CreateAutoScalerInput, Session } from "./types.js";
 
 /**
@@ -368,11 +368,26 @@ export async function stopAutoScaler(autoScalerId: number): Promise<AutoScaler |
 
     // Stop (not delete) all owned sessions — they remain in the pool, ready
     // to be reused the next time this autoscaler is started.
+    //
+    // stopSession() awaits its own container teardown and structured-logs its
+    // internal teardown failures. But if stopSession() itself rejects (an
+    // unexpected error before/after its teardown try/catch), that must NOT be
+    // silently swallowed — otherwise the AutoScaler is still marked "stopped"
+    // while a session (and its claimed task) keeps running, reproducing the
+    // exact "I stopped it and it's still running" zombie symptom this task
+    // targets. Surface each failure via structured log.warn so it's
+    // operator-visible, then continue tearing down the remaining sessions.
     for (const sessionId of managed.sessionIds) {
       try {
         await stopSession(sessionId);
-      } catch {
-        // best-effort
+      } catch (err) {
+        log.warn("autoscaler-stop-session-failed", {
+          component: "autoscaler-manager",
+          autoScalerId,
+          sessionId,
+          ...toErrorFields(err),
+          msg: `Failed to stop session ${sessionId} while stopping AutoScaler ${autoScalerId} — the session may still be running against a 'stopped' AutoScaler`,
+        });
       }
     }
     managed.sessionIds.clear();
