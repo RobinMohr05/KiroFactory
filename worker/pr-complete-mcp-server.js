@@ -32,6 +32,10 @@ const REPO_URL = process.env.REPO_URL || "";
 const GITHUB_PAT = process.env.GITHUB_PAT || "";
 const AZURE_DEVOPS_PAT = process.env.AZURE_DEVOPS_PAT || "";
 const ALL_GROUP_TASKS_DONE = process.env.ALL_GROUP_TASKS_DONE || "true";
+// Override for testing: redirect Azure DevOps API calls to a local mock server.
+const AZURE_DEVOPS_BASE_URL = process.env.AZURE_DEVOPS_BASE_URL || "https://dev.azure.com";
+// Override for testing: reduce the poll interval for queued merge status checks (ms).
+const AZURE_DEVOPS_QUEUED_POLL_INTERVAL_MS = parseInt(process.env.AZURE_DEVOPS_QUEUED_POLL_INTERVAL_MS || "2000", 10);
 
 // ---------------------------------------------------------------------------
 // Tool definition
@@ -218,29 +222,101 @@ function azureDevOpsHeaders() {
 /**
  * Complete an Azure DevOps PR (sets status to completed with branch deletion).
  * Falls back from squash to noFastForward if squash is disallowed.
+ *
+ * Before attempting the PATCH, GETs the PR and inspects `mergeStatus` to
+ * determine whether/when the PR can be completed:
+ *   - 'conflicts'        → merge_conflict (don't attempt PATCH)
+ *   - 'rejectedByPolicy' → rejected_by_policy (don't attempt PATCH)
+ *   - 'failure'          → merge_failed (don't attempt PATCH)
+ *   - 'queued'           → retry GET until status resolves; not_ready if exhausted
+ *   - 'succeeded'/'notSet' → proceed with PATCH
  */
 async function completeAzureDevOpsPr(org, project, repo, prId) {
+  const prApiUrl =
+    `${AZURE_DEVOPS_BASE_URL}/${encodeURIComponent(org)}/${encodeURIComponent(project)}` +
+    `/_apis/git/repositories/${encodeURIComponent(repo)}/pullrequests/${prId}` +
+    `?api-version=7.1`;
+
+  // ---------------------------------------------------------------------------
+  // Step 1: GET the PR and check mergeStatus before attempting PATCH.
+  // 'queued' means Azure DevOps is still computing the merge — poll until it
+  // resolves (up to MAX_QUEUED_POLLS attempts with QUEUED_POLL_INTERVAL_MS delay).
+  // ---------------------------------------------------------------------------
+  const MAX_QUEUED_POLLS = 3;
+  const QUEUED_POLL_INTERVAL_MS = AZURE_DEVOPS_QUEUED_POLL_INTERVAL_MS;
+
+  let prData = null;
+  let mergeStatus = null;
+  let lastMergeSourceCommit = undefined;
+
+  for (let poll = 0; poll <= MAX_QUEUED_POLLS; poll++) {
+    if (poll > 0) {
+      await sleep(QUEUED_POLL_INTERVAL_MS);
+    }
+
+    try {
+      const getResponse = await fetch(prApiUrl, { method: "GET", headers: azureDevOpsHeaders() });
+      if (getResponse.ok) {
+        prData = await getResponse.json();
+        mergeStatus = prData.mergeStatus;
+        lastMergeSourceCommit = prData.lastMergeSourceCommit;
+      }
+    } catch {
+      // Non-fatal — proceed without mergeStatus
+    }
+
+    if (mergeStatus !== "queued") {
+      break;
+    }
+    // Still queued — wait and re-poll (unless we've hit the limit)
+  }
+
+  // Inspect mergeStatus and return early for terminal non-ready states.
+  if (mergeStatus === "conflicts") {
+    return {
+      success: false,
+      error: "merge_conflict",
+      message: "PR has merge conflicts that must be resolved before completing.",
+    };
+  }
+
+  if (mergeStatus === "rejectedByPolicy") {
+    return {
+      success: false,
+      error: "rejected_by_policy",
+      message: "PR completion was rejected by a branch policy. Review the policy requirements and try again.",
+    };
+  }
+
+  if (mergeStatus === "failure") {
+    return {
+      success: false,
+      error: "merge_failed",
+      message: "PR merge failed (mergeStatus: failure). Check the PR for details.",
+    };
+  }
+
+  if (mergeStatus === "queued") {
+    // Still queued after all polls — Azure DevOps hasn't finished computing
+    return {
+      success: false,
+      error: "not_ready",
+      message: "PR merge status is still being computed (mergeStatus: queued). Try again shortly.",
+    };
+  }
+
+  // mergeStatus is 'succeeded', 'notSet', or unknown/null — proceed with PATCH.
+
+  // ---------------------------------------------------------------------------
+  // Step 2: PATCH to complete the PR.
+  // Falls back from squash to noFastForward if squash is disallowed (400).
+  // On failure, does NOT infer conflict from 409 message text — the pre-check
+  // already validated mergeStatus, so a 409 here indicates a different condition.
+  // ---------------------------------------------------------------------------
   const strategies = ["squash", "noFastForward"];
 
   for (const strategy of strategies) {
     for (let attempt = 0; attempt < 3; attempt++) {
-      const url =
-        `https://dev.azure.com/${encodeURIComponent(org)}/${encodeURIComponent(project)}` +
-        `/_apis/git/repositories/${encodeURIComponent(repo)}/pullrequests/${prId}` +
-        `?api-version=7.1`;
-
-      // Azure DevOps requires the last merge source commit for completion
-      let lastMergeSourceCommit;
-      try {
-        const getResponse = await fetch(url, { method: "GET", headers: azureDevOpsHeaders() });
-        if (getResponse.ok) {
-          const prData = await getResponse.json();
-          lastMergeSourceCommit = prData.lastMergeSourceCommit;
-        }
-      } catch {
-        // Non-fatal — proceed without it
-      }
-
       const body = {
         status: "completed",
         lastMergeSourceCommit,
@@ -250,7 +326,7 @@ async function completeAzureDevOpsPr(org, project, repo, prId) {
         },
       };
 
-      const response = await fetch(url, {
+      const response = await fetch(prApiUrl, {
         method: "PATCH",
         headers: azureDevOpsHeaders(),
         body: JSON.stringify(body),
@@ -265,20 +341,14 @@ async function completeAzureDevOpsPr(org, project, repo, prId) {
 
       const responseBody = await response.json().catch(() => ({}));
 
-      // 409 = conflict (merge conflicts or already completed)
+      // 409: do NOT infer conflict from message text — mergeStatus pre-check
+      // already determined mergeStatus was ready. This 409 reflects some other
+      // Azure DevOps condition (e.g. PR already completed, concurrent completion).
       if (response.status === 409) {
-        const msg = responseBody?.message || "PR has conflicts or is already completed.";
-        if (msg.toLowerCase().includes("conflict")) {
-          return {
-            success: false,
-            error: "merge_conflict",
-            message: "PR has merge conflicts that must be resolved before merging.",
-          };
-        }
         return {
           success: false,
           error: "merge_failed",
-          message: `Azure DevOps 409: ${msg}`,
+          message: `Azure DevOps 409 during PATCH: ${responseBody?.message || "Completion failed."}`,
         };
       }
 
@@ -486,6 +556,9 @@ async function handleToolCall(id, params) {
         content: [{ type: "text", text: result.message }],
       });
     } else {
+      // merge_conflict and rejected_by_policy are not MCP errors — the agent can act on them.
+      // not_ready and merge_failed are MCP errors (unexpected/terminal conditions).
+      const isActionable = result.error === "merge_conflict" || result.error === "rejected_by_policy";
       respond(id, {
         content: [
           {
@@ -493,7 +566,7 @@ async function handleToolCall(id, params) {
             text: JSON.stringify({ error: result.error, message: result.message }),
           },
         ],
-        isError: result.error !== "merge_conflict",
+        isError: !isActionable,
       });
     }
   } else {
