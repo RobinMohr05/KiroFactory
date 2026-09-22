@@ -10,7 +10,7 @@
     "wait-for-backend": "wait-on http://localhost:3500/api/health",
     "build": "npm run build -w backend && npm run build -w frontend",
     "start": "npm run start -w backend",
-    "prepare": "husky"
+    "prepare": "husky || true"
   },
   "devDependencies": {
     "@commitlint/cli": "21.2.3",

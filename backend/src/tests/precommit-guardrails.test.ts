@@ -71,6 +71,22 @@ describe("Layer 1 pre-commit guardrail stack (coding_guidelines §25)", () => {
       expect(scripts.prepare).toBeDefined();
       expect(scripts.prepare).toMatch(/husky/);
     });
+
+    // The production Docker stage runs `npm ci --omit=dev`, which does NOT install
+    // husky (a devDependency) but STILL executes the `prepare` lifecycle script.
+    // A bare `husky` invocation there fails with "command not found", exiting
+    // non-zero and breaking `docker build`. The prepare script must therefore
+    // tolerate husky being absent (e.g. `husky || true`) so it's a no-op in
+    // production/CI installs.
+    it("is a no-op when husky is unavailable (production/CI safe)", () => {
+      expect(scripts.prepare).toBeDefined();
+      expect(
+        /\|\|\s*true\b/.test(scripts.prepare),
+        `prepare script "${scripts.prepare}" must not fail when husky is absent ` +
+          `(e.g. "husky || true") — otherwise "npm ci --omit=dev" breaks the ` +
+          `production Docker build`,
+      ).toBe(true);
+    });
   });
 
   describe("Prettier config", () => {
