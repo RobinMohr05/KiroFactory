@@ -8,19 +8,22 @@ import type { AutoScaler, Session, TurnRecord, OutputEntry } from '../types';
 /**
  * Auto-Scaler controls panel — rendered inside the SessionsPanel sidebar only when
  * the user's uiViewMode is 'looper'. Shows a compact list of existing Auto-Scalers
- * with start/stop controls and a button to open the create form in the detail panel.
+ * with start/stop controls, plus a "+ New Auto-Scaler" button that opens the
+ * AutoScalerCreateView in the right-hand detail panel (see SessionsPanel).
  *
  * Props:
- *   selectedId      — currently selected auto-scaler id (controlled by SessionsPanel)
- *   onSelect        — callback when the user clicks a card (passes the auto-scaler id)
- *   onRequestCreate — callback when the user clicks "+ New Auto-Scaler"
+ *   selectedId       — currently selected auto-scaler id, or 'new' when the create
+ *                       form is open, or null when nothing is selected (controlled
+ *                       by SessionsPanel)
+ *   onSelect         — callback when the user clicks a card (passes the auto-scaler id)
+ *   onRequestCreate  — callback when the user clicks "+ New Auto-Scaler"
  */
 export function AutoScalerPanel({
   selectedId,
   onSelect,
   onRequestCreate,
 }: {
-  selectedId: number | null;
+  selectedId: number | 'new' | null;
   onSelect: (id: number) => void;
   onRequestCreate: () => void;
 }) {

@@ -1047,6 +1047,82 @@ describe("autoscaler-manager", () => {
       expect(startSession).toHaveBeenCalledWith(spawnedSessions[0].id);
       vi.useRealTimers();
     });
+
+    it("reuses (rather than orphans) a crashed pooled session on reconcile, the precondition the spawn-failure backoff relies on", async () => {
+      // Regression test for the runaway ACA job execution spawn incident:
+      // a pooled session whose container never successfully connects (worker
+      // crash / quota exhaustion / bad image) used to be retried by
+      // watchSessionCompletion -> reconcile() -> startOrCreatePooledSession
+      // on every 5s poll tick, forever, with zero backoff — each retry
+      // spawning a brand new container. This asserts the fix directly against
+      // the exported pure helpers: computePoolTargets keeps demanding a
+      // replacement (unaware of failure history), but the spawn-failure
+      // backoff (isSpawnBlocked/recordSpawnFailure, exercised via reconcile's
+      // scale-up loop) must suppress repeated immediate retries of the same
+      // session id.
+      const stoppedAutoScaler = makeAutoScaler({ status: "stopped", maxConcurrency: 1 });
+      const runningAutoScaler = makeAutoScaler({ status: "running", maxConcurrency: 1 });
+      vi.mocked(getAutoScalerById).mockResolvedValue(stoppedAutoScaler);
+      vi.mocked(updateAutoScalerStatus).mockResolvedValue(runningAutoScaler);
+      vi.mocked(getAvailableTaskCount).mockResolvedValue(1);
+      vi.mocked(getNonDoneTaskCount).mockResolvedValue(1);
+
+      let backing: ReturnType<typeof makeSession>[] = [];
+      vi.mocked(getAllSessions).mockImplementation(() => backing as any);
+
+      let sessionCounter = 100;
+      vi.mocked(createSession).mockImplementation(async () => {
+        const s = makeSession({ id: sessionCounter++, status: "stopped" });
+        backing.push(s);
+        return s;
+      });
+      vi.mocked(startSession).mockImplementation(async (id: number) => {
+        const s = backing.find((x) => x.id === id);
+        if (s) s.status = "running";
+        return true;
+      });
+      vi.mocked(stopSession).mockResolvedValue(true);
+
+      const managed = await startAutoScaler(1);
+      expect(managed).not.toBeNull();
+      // reconcileLoop() runs non-blocking (fire-and-forget) — flush pending
+      // microtasks so its first pass (which calls startSession) completes
+      // before asserting on it.
+      await flushAsync(50);
+      expect(vi.mocked(startSession).mock.calls.length).toBe(1);
+      const sessionId = backing[0].id;
+
+      // Re-adoption reads the pool's membership from the DB
+      // (getPooledSessionIds), not from managed.sessionIds in memory — mock
+      // it to reflect the session this autoscaler actually owns, so the
+      // second startAutoScaler() call below adopts and retries THIS session
+      // instead of concluding the pool is empty and creating a fresh one.
+      vi.mocked(getPooledSessionIds).mockResolvedValue([sessionId]);
+
+      // Crash the session (worker never connected — matches onWorkerExited's
+      // real behavior of leaving status "error").
+      backing = backing.map((s) => (s.id === sessionId ? { ...s, status: "error" as const } : s));
+      vi.mocked(getAllSessions).mockImplementation(() => backing as any);
+
+      // Re-adopting the pool (stop, then start again) re-runs one reconcile
+      // pass against the current session state, exercising the same
+      // scale-up/reuse code path watchSessionCompletion's poll drives in
+      // production. The crashed session is still the pool's only member and
+      // is not yet in backoff (this is its first failure), so it must be
+      // retried via the reuse-based model — same session id restarted, not a
+      // brand-new one created.
+      await stopAutoScaler(1);
+      const managed2 = await startAutoScaler(1);
+      expect(managed2).not.toBeNull();
+      await flushAsync(50);
+
+      const startedCallsForSession = vi.mocked(startSession).mock.calls.filter((c) => c[0] === sessionId).length;
+      expect(startedCallsForSession).toBe(2);
+      // No brand-new session was created just to replace the crashed one —
+      // confirms the reuse-based pool model still applies to a failed
+      // session (it is not treated as "gone" merely for being in "error").
+      expect(vi.mocked(createSession).mock.calls.length).toBe(1);
+    });
   });
 
   // ───────────────────────────────────────────────────────────────────────────

@@ -127,7 +127,27 @@ interface ManagedAutoScaler {
   idleIntervals: Set<ReturnType<typeof setInterval>>;
   /** Hourly reaper timer handle, so stopAutoScaler can clear it immediately. */
   reaperInterval: ReturnType<typeof setInterval> | null;
+  /**
+   * Per-session consecutive spawn-failure tracking, keyed by session ID.
+   * A "spawn failure" is a pooled session that started (startSession()
+   * returned successfully — it does not wait for the worker to actually
+   * connect) but then transitioned away from "running" without ever
+   * completing a turn — i.e. the worker/container died or never connected.
+   * watchSessionCompletion() reports this via recordSpawnFailure() so the
+   * next reconcile() pass backs off exponentially instead of immediately
+   * retrying the same session, which otherwise spawns a brand new container
+   * every few seconds forever (see the runaway-spawn incident this guards
+   * against — task tracked separately).
+   */
+  spawnFailures: Map<number, { count: number; nextRetryAt: number }>;
 }
+
+/** Base backoff for a session's first spawn failure (30s), doubling per consecutive failure, capped. */
+const SPAWN_FAILURE_BASE_BACKOFF_MS = 30_000;
+/** Upper bound on the backoff so a chronically-broken session still gets retried eventually. */
+const SPAWN_FAILURE_MAX_BACKOFF_MS = 15 * 60_000;
+/** After this many consecutive failures, stop retrying the session at all until reconcile is re-triggered by config/manual action. */
+const SPAWN_FAILURE_MAX_ATTEMPTS = 6;
 
 const autoScalers = new Map<number, ManagedAutoScaler>();
 
@@ -273,6 +293,7 @@ export async function startAutoScaler(autoScalerId: number): Promise<AutoScaler 
     pendingReconcile: false,
     idleIntervals: new Set(),
     reaperInterval: null,
+    spawnFailures: new Map(),
   };
 
   // Adopt any persisted pooled sessions (from a previous run of this
@@ -588,7 +609,17 @@ async function reconcile(managed: ManagedAutoScaler, stages?: { claimState: stri
         if (managed.abortController.signal.aborted) break;
         try {
           const session = await startOrCreatePooledSession(managed);
-          if (session) managed.sessionIds.add(session.id);
+          if (session) {
+            managed.sessionIds.add(session.id);
+          } else {
+            // startOrCreatePooledSession returned null — every ready session
+            // currently in the pool is spawn-blocked (backoff or exceeded
+            // SPAWN_FAILURE_MAX_ATTEMPTS) and a fresh one wasn't created
+            // either. Stop this pass rather than looping through the same
+            // blocked sessions toStart more times; the next task-available
+            // event or timer will retry once backoffs expire.
+            break;
+          }
         } catch (err) {
           log.warn("autoscaler-spawn-error", {
             component: "autoscaler-manager",
@@ -633,6 +664,59 @@ function countRunning(managed: ManagedAutoScaler): number {
     if (getSession(sessionId)?.status === "running") count++;
   }
   return count;
+}
+
+/**
+ * Record a spawn failure for a session: bumps its consecutive-failure count
+ * and schedules the earliest time it may be retried, with exponential
+ * backoff capped at SPAWN_FAILURE_MAX_BACKOFF_MS. Beyond
+ * SPAWN_FAILURE_MAX_ATTEMPTS consecutive failures, the session is left
+ * blocked (nextRetryAt effectively infinite) — see isSpawnBlocked's caller
+ * for how this surfaces to an operator via logs rather than silently
+ * retrying forever.
+ */
+function recordSpawnFailure(managed: ManagedAutoScaler, sessionId: number): void {
+  const existing = managed.spawnFailures.get(sessionId);
+  const count = (existing?.count ?? 0) + 1;
+
+  if (count > SPAWN_FAILURE_MAX_ATTEMPTS) {
+    log.warn("autoscaler-session-spawn-blocked", {
+      component: "autoscaler-manager",
+      autoScalerId: managed.autoScaler.id,
+      sessionId,
+      consecutiveFailures: count,
+      msg: `Session ${sessionId} failed to spawn/connect ${count} times in a row — blocking further automatic retries for this session. Investigate the worker/container startup (image pull, quota, credentials) before manually restarting it.`,
+    });
+    managed.spawnFailures.set(sessionId, { count, nextRetryAt: Infinity });
+    return;
+  }
+
+  const backoffMs = Math.min(
+    SPAWN_FAILURE_BASE_BACKOFF_MS * 2 ** (count - 1),
+    SPAWN_FAILURE_MAX_BACKOFF_MS
+  );
+  const nextRetryAt = Date.now() + backoffMs;
+  managed.spawnFailures.set(sessionId, { count, nextRetryAt });
+
+  log.warn("autoscaler-session-spawn-failed", {
+    component: "autoscaler-manager",
+    autoScalerId: managed.autoScaler.id,
+    sessionId,
+    consecutiveFailures: count,
+    backoffMs,
+    msg: `Session ${sessionId} failed to spawn/connect (consecutive failure ${count}/${SPAWN_FAILURE_MAX_ATTEMPTS}) — backing off ${Math.round(backoffMs / 1000)}s before retrying.`,
+  });
+}
+
+/**
+ * True if `sessionId` is currently within its spawn-failure backoff window
+ * (or permanently blocked after exceeding SPAWN_FAILURE_MAX_ATTEMPTS) and
+ * must not be retried by this reconcile pass.
+ */
+function isSpawnBlocked(managed: ManagedAutoScaler, sessionId: number): boolean {
+  const entry = managed.spawnFailures.get(sessionId);
+  if (!entry) return false;
+  return Date.now() < entry.nextRetryAt;
 }
 
 /**
@@ -774,10 +858,14 @@ async function createPooledSession(managed: ManagedAutoScaler): Promise<Session 
 async function startOrCreatePooledSession(managed: ManagedAutoScaler): Promise<Session | null> {
   const { autoScaler } = managed;
 
-  // Find a ready (non-running) session already in the pool to reuse.
+  // Find a ready (non-running) session already in the pool to reuse — but
+  // skip any currently within its spawn-failure backoff window (or blocked
+  // outright), so a session that just failed to connect isn't immediately
+  // retried again this same pass. If every ready member is blocked, fall
+  // through to creating a fresh session below (which has no failure history).
   const readyId = [...managed.sessionIds].find((id) => {
     const s = getSession(id);
-    return s && s.status !== "running";
+    return s && s.status !== "running" && !isSpawnBlocked(managed, id);
   });
 
   if (readyId !== undefined) {
@@ -794,6 +882,24 @@ async function startOrCreatePooledSession(managed: ManagedAutoScaler): Promise<S
     }
     armSessionWatchers(managed, readyId);
     return getSession(readyId) ?? null;
+  }
+
+  // Every ready pool member (if any) is currently spawn-blocked. Rather than
+  // unconditionally creating yet another fresh session — which would let the
+  // pool grow without bound while the underlying cause (bad image, quota,
+  // credentials) keeps failing every new container too — only create one if
+  // the pool hasn't already reached its effective target size. The caller
+  // (reconcile's scale-up loop) tracks toStart against targetRunning, so
+  // returning null here when there's nothing safe to try is the correct
+  // signal to stop this pass rather than spawn indefinitely.
+  const allReadyBlocked =
+    managed.sessionIds.size > 0 &&
+    [...managed.sessionIds].every((id) => {
+      const s = getSession(id);
+      return !s || s.status === "running" || isSpawnBlocked(managed, id);
+    });
+  if (allReadyBlocked && [...managed.sessionIds].some((id) => isSpawnBlocked(managed, id))) {
+    return null;
   }
 
   // No ready session available — create a new one and start it immediately.
@@ -858,6 +964,19 @@ function watchSessionCompletion(managed: ManagedAutoScaler, sessionId: number): 
 
     if (!session || session.status !== "running") {
       clearInterval(pollInterval);
+
+      // A session that lands in "error" (or vanished outright before ever
+      // reporting a clean status) failed to spawn/connect/run — record it so
+      // the next reconcile() pass backs off instead of immediately retrying
+      // the same session forever. A deliberate wind-down ("stopped" from
+      // watchSessionIdle, or "completed") is not a failure — clear any prior
+      // backoff so a session that later runs successfully isn't penalized by
+      // an old failure streak.
+      if (!session || session.status === "error") {
+        recordSpawnFailure(managed, sessionId);
+      } else {
+        managed.spawnFailures.delete(sessionId);
+      }
 
       // Only untrack if the session is truly gone — a stopped/ready session
       // remains a pool member.
