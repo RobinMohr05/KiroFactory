@@ -101,7 +101,8 @@ silently work around.
 The same data also exists in kiro-cli's local session metadata file
 (`$KIRO_HOME/sessions/cli/<session-uuid>.json`,
 `session_state.conversation_metadata.user_turn_metadatas[N].metering_usage`), readable from
-inside the ACA worker container at `/root/.kiro/sessions/cli/` (runs as root). KiroFactory does
+inside the ACA worker container at `~/.kiro/sessions/cli/` (i.e. `/home/node/.kiro/sessions/cli/`
+— the worker container runs as the non-root `node` user). KiroFactory does
 not use this path — the stdio notification is simpler, real-time, and doesn't require knowing
 the session UUID in advance. Documented here only so it isn't "rediscovered" later; prefer the
 stdio path if extending this feature.
