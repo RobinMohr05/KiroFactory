@@ -20,6 +20,11 @@ vi.mock("../agent/task-claimer.js", () => ({
   notifyTaskAvailable: vi.fn(),
 }));
 
+// Mock db/tabs.js — getTabById used to validate the target tab exists
+vi.mock("../db/tabs.js", () => ({
+  getTabById: vi.fn(),
+}));
+
 // Mock logger
 vi.mock("../logger.js", () => ({
   log: { error: vi.fn(), info: vi.fn(), warn: vi.fn() },
@@ -28,9 +33,15 @@ vi.mock("../logger.js", () => ({
 
 import { createTask } from "../db/tasks.js";
 import { notifyTaskAvailable } from "../agent/task-claimer.js";
+import { getTabById } from "../db/tabs.js";
 import webhookTasksRouter from "./webhook-tasks.js";
 
 const VALID_SECRET = "test-webhook-secret-123";
+
+// A minimal Tab-shaped object for getTabById mock returns.
+function fakeTab(id: number) {
+  return { id, name: `Tab ${id}`, sortOrder: 0, userId: 1 } as any;
+}
 
 function createApp() {
   const app = express();
@@ -43,10 +54,14 @@ describe("POST /api/webhooks/tasks", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     process.env.WEBHOOK_SECRET = VALID_SECRET;
+    process.env.WEBHOOK_DEFAULT_TAB_ID = "2";
+    // By default, any tab id resolves to an existing tab.
+    vi.mocked(getTabById).mockImplementation(async (id: number) => fakeTab(id));
   });
 
   afterEach(() => {
     delete process.env.WEBHOOK_SECRET;
+    delete process.env.WEBHOOK_DEFAULT_TAB_ID;
   });
 
   // ─── Auth: missing/wrong secret ──────────────────────────────────────────
@@ -372,5 +387,140 @@ describe("POST /api/webhooks/tasks", () => {
     expect(res.body.error).toContain("cycle");
     expect(res.body.fromId).toBe(1);
     expect(res.body.toId).toBe(2);
+  });
+
+  // ─── Tab routing: explicit tabId in generic payload ──────────────────────
+
+  it("routes to an explicit tabId provided in a generic flat payload", async () => {
+    vi.mocked(createTask).mockResolvedValue({ id: 60 } as any);
+
+    const app = createApp();
+    const res = await request(app)
+      .post("/api/webhooks/tasks")
+      .set("X-Webhook-Secret", VALID_SECRET)
+      .send({ title: "Routed task", tabId: 7 });
+
+    expect(res.status).toBe(201);
+    expect(getTabById).toHaveBeenCalledWith(7);
+    expect(createTask).toHaveBeenCalledWith(
+      expect.objectContaining({ tabIds: [7] }),
+    );
+  });
+
+  // ─── Tab routing: explicit tabId in ADO payload fields ───────────────────
+
+  it("routes to an explicit tabId provided in an ADO payload's fields", async () => {
+    vi.mocked(createTask).mockResolvedValue({ id: 61 } as any);
+
+    const app = createApp();
+    const res = await request(app)
+      .post("/api/webhooks/tasks")
+      .set("X-Webhook-Secret", VALID_SECRET)
+      .send({
+        tabId: 9,
+        resource: {
+          fields: {
+            "System.Title": "ADO routed task",
+            "System.WorkItemType": "Bug",
+          },
+        },
+      });
+
+    expect(res.status).toBe(201);
+    expect(getTabById).toHaveBeenCalledWith(9);
+    expect(createTask).toHaveBeenCalledWith(
+      expect.objectContaining({ tabIds: [9] }),
+    );
+  });
+
+  // ─── Tab routing: env-configurable default when no explicit tabId ────────
+
+  it("falls back to WEBHOOK_DEFAULT_TAB_ID when no tabId is in the payload", async () => {
+    process.env.WEBHOOK_DEFAULT_TAB_ID = "5";
+    vi.mocked(createTask).mockResolvedValue({ id: 62 } as any);
+
+    const app = createApp();
+    const res = await request(app)
+      .post("/api/webhooks/tasks")
+      .set("X-Webhook-Secret", VALID_SECRET)
+      .send({ title: "Default tab task" });
+
+    expect(res.status).toBe(201);
+    expect(getTabById).toHaveBeenCalledWith(5);
+    expect(createTask).toHaveBeenCalledWith(
+      expect.objectContaining({ tabIds: [5] }),
+    );
+  });
+
+  // ─── Tab routing: hardcoded fallback 2 when env var unset ────────────────
+
+  it("falls back to tab 2 when neither payload tabId nor WEBHOOK_DEFAULT_TAB_ID is set", async () => {
+    delete process.env.WEBHOOK_DEFAULT_TAB_ID;
+    vi.mocked(createTask).mockResolvedValue({ id: 63 } as any);
+
+    const app = createApp();
+    const res = await request(app)
+      .post("/api/webhooks/tasks")
+      .set("X-Webhook-Secret", VALID_SECRET)
+      .send({ title: "Legacy default task" });
+
+    expect(res.status).toBe(201);
+    expect(getTabById).toHaveBeenCalledWith(2);
+    expect(createTask).toHaveBeenCalledWith(
+      expect.objectContaining({ tabIds: [2] }),
+    );
+  });
+
+  // ─── Tab validation: 400 when tabId is not a valid integer ───────────────
+
+  it("returns 400 when payload tabId is not a valid positive integer", async () => {
+    const app = createApp();
+    const res = await request(app)
+      .post("/api/webhooks/tasks")
+      .set("X-Webhook-Secret", VALID_SECRET)
+      .send({ title: "Bad tab", tabId: "not-a-number" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("tabId must be a positive integer");
+    expect(getTabById).not.toHaveBeenCalled();
+    expect(createTask).not.toHaveBeenCalled();
+  });
+
+  // ─── Tab validation: 400 when the target tab does not exist ──────────────
+
+  it("returns 400 when the resolved tab does not exist", async () => {
+    vi.mocked(getTabById).mockResolvedValue(null);
+
+    const app = createApp();
+    const res = await request(app)
+      .post("/api/webhooks/tasks")
+      .set("X-Webhook-Secret", VALID_SECRET)
+      .send({ title: "Orphan task", tabId: 999 });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Target tab 999 does not exist");
+    expect(getTabById).toHaveBeenCalledWith(999);
+    expect(createTask).not.toHaveBeenCalled();
+  });
+
+  // ─── Tab validation: 500 when WEBHOOK_DEFAULT_TAB_ID is malformed ─────────
+
+  it("returns 500 (server misconfiguration) when WEBHOOK_DEFAULT_TAB_ID is set to a non-integer", async () => {
+    // The caller provided a perfectly valid request (no tabId); the bad value
+    // came from the server's own env var. This is an operator-facing config
+    // error, not a caller payload error, so it must surface as 5xx — never 400.
+    process.env.WEBHOOK_DEFAULT_TAB_ID = "abc";
+    const app = createApp();
+    const res = await request(app)
+      .post("/api/webhooks/tasks")
+      .set("X-Webhook-Secret", VALID_SECRET)
+      .send({ title: "Bad default" });
+
+    expect(res.status).toBe(500);
+    expect(res.body.error).toBe(
+      "Server misconfiguration: WEBHOOK_DEFAULT_TAB_ID is not a valid positive integer",
+    );
+    expect(getTabById).not.toHaveBeenCalled();
+    expect(createTask).not.toHaveBeenCalled();
   });
 });

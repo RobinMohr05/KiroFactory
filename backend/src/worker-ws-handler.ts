@@ -472,6 +472,12 @@ export interface WorkerTaskMeta {
   autoMergePrs?: boolean;
   /** Whether all sibling tasks in the group are done (for pr-complete group guard). */
   allGroupTasksDone?: boolean;
+  /**
+   * Whether the task's branch is still referenced by another currently-active (non-done)
+   * task. When true, the pr-complete MCP server will skip branch deletion after merging,
+   * since the branch is still needed by the other task.
+   */
+  branchHasActiveTasks?: boolean;
 }
 
 /**

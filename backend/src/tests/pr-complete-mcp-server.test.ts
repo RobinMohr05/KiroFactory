@@ -801,3 +801,353 @@ describe("pr-complete-mcp-server — GitHub mergeable_state pre-check", () => {
     expect(result.content[0].text).toContain("merged successfully");
   });
 });
+
+
+// ---------------------------------------------------------------------------
+// GitHub branch delete retry and BRANCH_HAS_ACTIVE_TASKS tests
+// ---------------------------------------------------------------------------
+
+interface MockGitHubServerWithDeleteOpts extends MockGitHubServerOpts {
+  /**
+   * Sequence of HTTP status codes to return for DELETE requests (one per call).
+   * Defaults to [204] (success) if not provided.
+   */
+  deleteStatuses?: number[];
+}
+
+function createMockGitHubServerWithDelete(
+  opts: MockGitHubServerWithDeleteOpts
+): Promise<{ server: HttpServer; port: number; getDeleteCallCount: () => number }> {
+  return new Promise((resolve, reject) => {
+    let getCallIndex = 0;
+    let deleteCallIndex = 0;
+
+    const server = createHttpServer((req: IncomingMessage, res: ServerResponse) => {
+      let body = "";
+      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+      req.on("end", () => {
+        const url = req.url || "";
+
+        if (req.method === "GET" && /\/pulls\/\d+$/.test(url)) {
+          const idx = Math.min(getCallIndex, opts.getMergeableStates.length - 1);
+          const mergeableState = opts.getMergeableStates[idx];
+          const mergeable = opts.getMergeable
+            ? opts.getMergeable[Math.min(getCallIndex, opts.getMergeable.length - 1)]
+            : mergeableState === "clean" || mergeableState === "unstable" || mergeableState === "has_hooks";
+          getCallIndex++;
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({
+            number: 7,
+            state: "open",
+            mergeable,
+            mergeable_state: mergeableState,
+          }));
+        } else if (req.method === "PUT" && /\/pulls\/\d+\/merge$/.test(url)) {
+          const mergeStatus = opts.mergeStatus ?? 200;
+          const responseBody = opts.mergeBody ?? { merged: true, message: "Pull Request successfully merged" };
+          res.writeHead(mergeStatus, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(mergeStatus === 200 ? responseBody : { message: "Merge conflict" }));
+        } else if (req.method === "DELETE") {
+          const deleteStatuses = opts.deleteStatuses ?? [204];
+          const status = deleteStatuses[Math.min(deleteCallIndex, deleteStatuses.length - 1)];
+          deleteCallIndex++;
+          res.writeHead(status, { "Content-Type": "application/json" });
+          res.end(status === 204 ? "" : JSON.stringify({ message: "Reference cannot be updated." }));
+        } else {
+          res.writeHead(404);
+          res.end("Not found");
+        }
+      });
+    });
+
+    server.listen(0, "127.0.0.1", () => {
+      const addr = server.address();
+      if (!addr || typeof addr === "string") {
+        reject(new Error("Unexpected server address"));
+        return;
+      }
+      resolve({ server, port: addr.port, getDeleteCallCount: () => deleteCallIndex });
+    });
+  });
+}
+
+describe("pr-complete-mcp-server — GitHub branch delete retry and BRANCH_HAS_ACTIVE_TASKS", () => {
+  let proc: ChildProcess | null = null;
+  let mockServer: HttpServer | null = null;
+
+  afterEach(async () => {
+    if (proc) {
+      proc.kill();
+      proc = null;
+    }
+    if (mockServer) {
+      await stopServer(mockServer);
+      mockServer = null;
+    }
+  });
+
+  function startGitHubServerWithBranchActive(port: number, extraEnv: Record<string, string> = {}): ChildProcess {
+    return startServer({
+      PR_URL: "https://github.com/owner/repo/pull/7",
+      PR_BRANCH: "feature/test",
+      REPO_URL: "https://github.com/owner/repo",
+      GITHUB_PAT: "ghp_test",
+      ALL_GROUP_TASKS_DONE: "true",
+      GITHUB_BASE_URL: `http://127.0.0.1:${port}`,
+      GITHUB_DELETE_RETRY_DELAY_MS: "10", // fast retries for tests
+      ...extraEnv,
+    });
+  }
+
+  async function callCompletePr(p: ChildProcess): Promise<{ result: { content: Array<{ type: string; text: string }>; isError?: boolean } }> {
+    await sendRequestCollectAll(p, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} }, 1);
+    const responses = await sendRequestCollectAll(p, {
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: {
+        name: "complete_pull_request",
+        arguments: { reason: "QA passed" },
+      },
+    }, 2);
+    const response = responses.find(r => r.id === 2)!;
+    return response as any;
+  }
+
+  it("should succeed when branch delete initially fails (409) but succeeds on retry", async () => {
+    // Delete fails with 409 on first attempt, succeeds on second (retry)
+    const { server, port, getDeleteCallCount } = await createMockGitHubServerWithDelete({
+      getMergeableStates: ["clean"],
+      mergeStatus: 200,
+      deleteStatuses: [409, 204], // fail once, then succeed
+    });
+    mockServer = server;
+    proc = startGitHubServerWithBranchActive(port);
+
+    const response = await callCompletePr(proc);
+    expect(response.result).toBeDefined();
+
+    const result = response.result;
+    // Merge + delete both succeeded (delete via retry) → success
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).toContain("merged successfully");
+    expect(result.content[0].text).toContain("deleted");
+    // Should have retried delete at least once
+    expect(getDeleteCallCount()).toBeGreaterThanOrEqual(2);
+  });
+
+  it("should return branch_delete_failed (not success:true) when delete fails all retries", async () => {
+    // Delete always fails with 409 — all retry attempts exhausted
+    const { server, port } = await createMockGitHubServerWithDelete({
+      getMergeableStates: ["clean"],
+      mergeStatus: 200,
+      deleteStatuses: [409, 409, 409, 409], // always fail
+    });
+    mockServer = server;
+    proc = startGitHubServerWithBranchActive(port);
+
+    const response = await callCompletePr(proc);
+    expect(response.result).toBeDefined();
+
+    const result = response.result;
+    // PR merged successfully but branch deletion failed — must NOT be success:true
+    // Must surface as an error so the QA agent and orchestrator see the problem
+    expect(result.isError).toBe(true);
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed.error).toBe("branch_delete_failed");
+    expect(parsed.message).toContain("feature/test");
+  });
+
+  it("should skip branch deletion and report it in the message when BRANCH_HAS_ACTIVE_TASKS is true", async () => {
+    // Branch has other active tasks — deletion must be skipped, not attempted
+    const { server, port, getDeleteCallCount } = await createMockGitHubServerWithDelete({
+      getMergeableStates: ["clean"],
+      mergeStatus: 200,
+      deleteStatuses: [204], // would succeed, but should never be called
+    });
+    mockServer = server;
+    proc = startGitHubServerWithBranchActive(port, {
+      BRANCH_HAS_ACTIVE_TASKS: "true",
+    });
+
+    const response = await callCompletePr(proc);
+    expect(response.result).toBeDefined();
+
+    const result = response.result;
+    // Overall success (merge worked), no error because deletion was intentionally skipped
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).toContain("merged successfully");
+    // Message must note that branch deletion was skipped
+    expect(result.content[0].text).toContain("not deleted");
+    // No DELETE request should have been sent
+    expect(getDeleteCallCount()).toBe(0);
+  });
+
+  it("should attempt branch deletion when BRANCH_HAS_ACTIVE_TASKS is false (or absent)", async () => {
+    const { server, port, getDeleteCallCount } = await createMockGitHubServerWithDelete({
+      getMergeableStates: ["clean"],
+      mergeStatus: 200,
+      deleteStatuses: [204],
+    });
+    mockServer = server;
+    proc = startGitHubServerWithBranchActive(port, {
+      BRANCH_HAS_ACTIVE_TASKS: "false",
+    });
+
+    const response = await callCompletePr(proc);
+    expect(response.result).toBeDefined();
+
+    const result = response.result;
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).toContain("merged successfully");
+    // Delete should have been attempted
+    expect(getDeleteCallCount()).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Azure DevOps BRANCH_HAS_ACTIVE_TASKS tests
+// ---------------------------------------------------------------------------
+
+describe("pr-complete-mcp-server — Azure DevOps BRANCH_HAS_ACTIVE_TASKS", () => {
+  let proc: ChildProcess | null = null;
+  let mockServer: HttpServer | null = null;
+
+  afterEach(async () => {
+    if (proc) {
+      proc.kill();
+      proc = null;
+    }
+    if (mockServer) {
+      await stopServer(mockServer);
+      mockServer = null;
+    }
+  });
+
+  interface MockAzureServerWithFlagOpts extends MockAzureServerOpts {
+    /** Capture whether the PATCH body requested deleteSourceBranch */
+    captureDeleteSourceBranch?: boolean;
+  }
+
+  let capturedDeleteSourceBranch: boolean | undefined;
+
+  function createMockAzureServerCapturingDelete(opts: MockAzureServerOpts): Promise<{ server: HttpServer; port: number }> {
+    return new Promise((resolve, reject) => {
+      let getCallIndex = 0;
+      capturedDeleteSourceBranch = undefined;
+
+      const server = createHttpServer((req: IncomingMessage, res: ServerResponse) => {
+        let body = "";
+        req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+        req.on("end", () => {
+          const patchStatus = opts.patchStatus ?? 200;
+
+          if (req.method === "GET") {
+            const mergeStatus = opts.getMergeStatuses[Math.min(getCallIndex, opts.getMergeStatuses.length - 1)];
+            getCallIndex++;
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({
+              pullRequestId: 42,
+              status: "active",
+              mergeStatus,
+              lastMergeSourceCommit: { commitId: "abc123" },
+            }));
+          } else if (req.method === "PATCH") {
+            try {
+              const parsed = JSON.parse(body);
+              capturedDeleteSourceBranch = parsed.completionOptions?.deleteSourceBranch;
+            } catch { /* noop */ }
+            const responseBody = opts.patchBody ?? {
+              pullRequestId: 42,
+              status: "completed",
+              mergeStatus: "succeeded",
+            };
+            res.writeHead(patchStatus, { "Content-Type": "application/json" });
+            res.end(JSON.stringify(patchStatus === 200 ? responseBody : { message: "Conflict." }));
+          } else {
+            res.writeHead(404);
+            res.end("Not found");
+          }
+        });
+      });
+
+      server.listen(0, "127.0.0.1", () => {
+        const addr = server.address();
+        if (!addr || typeof addr === "string") {
+          reject(new Error("Unexpected server address"));
+          return;
+        }
+        resolve({ server, port: addr.port });
+      });
+    });
+  }
+
+  function startAzureServerWithBranchActive(port: number, extraEnv: Record<string, string> = {}): ChildProcess {
+    return startServer({
+      PR_URL: "https://dev.azure.com/myorg/myproject/_git/myrepo/pullrequest/42",
+      PR_BRANCH: "feature/test",
+      REPO_URL: "https://dev.azure.com/myorg/myproject/_git/myrepo",
+      AZURE_DEVOPS_PAT: "test-pat",
+      ALL_GROUP_TASKS_DONE: "true",
+      AZURE_DEVOPS_BASE_URL: `http://127.0.0.1:${port}`,
+      ...extraEnv,
+    });
+  }
+
+  async function callCompletePr(p: ChildProcess): Promise<{ result: { content: Array<{ type: string; text: string }>; isError?: boolean } }> {
+    await sendRequestCollectAll(p, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} }, 1);
+    const responses = await sendRequestCollectAll(p, {
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: {
+        name: "complete_pull_request",
+        arguments: { reason: "QA passed" },
+      },
+    }, 2);
+    const response = responses.find(r => r.id === 2)!;
+    return response as any;
+  }
+
+  it("should use deleteSourceBranch=false when BRANCH_HAS_ACTIVE_TASKS is true", async () => {
+    const { server, port } = await createMockAzureServerCapturingDelete({
+      getMergeStatuses: ["succeeded"],
+      patchStatus: 200,
+    });
+    mockServer = server;
+    proc = startAzureServerWithBranchActive(port, {
+      BRANCH_HAS_ACTIVE_TASKS: "true",
+    });
+
+    const response = await callCompletePr(proc);
+    expect(response.result).toBeDefined();
+
+    const result = response.result;
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).toContain("completed successfully");
+    // Branch deletion must have been suppressed (false) in the PATCH body
+    expect(capturedDeleteSourceBranch).toBe(false);
+    // Message should indicate branch was not deleted
+    expect(result.content[0].text).toContain("not deleted");
+  });
+
+  it("should use deleteSourceBranch=true when BRANCH_HAS_ACTIVE_TASKS is false", async () => {
+    const { server, port } = await createMockAzureServerCapturingDelete({
+      getMergeStatuses: ["succeeded"],
+      patchStatus: 200,
+    });
+    mockServer = server;
+    proc = startAzureServerWithBranchActive(port, {
+      BRANCH_HAS_ACTIVE_TASKS: "false",
+    });
+
+    const response = await callCompletePr(proc);
+    expect(response.result).toBeDefined();
+
+    const result = response.result;
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).toContain("completed successfully");
+    // Branch deletion should be enabled (true) in the PATCH body
+    expect(capturedDeleteSourceBranch).toBe(true);
+  });
+});

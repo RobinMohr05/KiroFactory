@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import { timingSafeEqual } from "crypto";
 import { createTask } from "../db/tasks.js";
+import { getTabById } from "../db/tabs.js";
 import { notifyTaskAvailable } from "../agent/task-claimer.js";
 import type { CreateTaskInput } from "../types.js";
 import { DependencyCycleError } from "../types.js";
@@ -16,6 +17,18 @@ function parseValidPriority(value: unknown): 1 | 2 | 3 | 4 | null {
   const num = Number(value);
   if (Number.isInteger(num) && num >= 1 && num <= 4) {
     return num as 1 | 2 | 3 | 4;
+  }
+  return null;
+}
+
+/**
+ * Parses a tab id value into a positive integer, or null if it isn't one.
+ * Accepts numbers and numeric strings (e.g. from an env var or JSON payload).
+ */
+function parseValidTabId(value: unknown): number | null {
+  const num = Number(value);
+  if (Number.isInteger(num) && num > 0) {
+    return num;
   }
   return null;
 }
@@ -81,6 +94,10 @@ router.post("/", async (req: Request, res: Response) => {
       type = "improvement";
     }
 
+    // A caller can explicitly route the task to a board via a top-level
+    // `tabId` (works for both the generic and ADO payload shapes).
+    const rawTabId = body.tabId;
+
     // 4. Validate title
     if (!title || (typeof title === "string" && title.trim() === "")) {
       res.status(400).json({ error: "title is required" });
@@ -91,6 +108,50 @@ router.post("/", async (req: Request, res: Response) => {
     const priority = parseValidPriority(rawPriority) ?? 3;
     const desc = description ?? "";
 
+    // 5b. Resolve the target tab.
+    //   - An explicit `tabId` in the payload wins.
+    //   - Otherwise fall back to WEBHOOK_DEFAULT_TAB_ID (per-deployment config),
+    //     then to tab 2 (the KiroFactory/VCH board) to preserve prior behavior.
+    // The resolved id must be a positive integer, and the tab must actually
+    // exist — otherwise webhook tasks would silently orphan onto a missing or
+    // renumbered tab (the bug this endpoint had). Both failure modes surface a
+    // clear 400 to the caller instead.
+    let tabId: number;
+    if (rawTabId !== undefined && rawTabId !== null && rawTabId !== "") {
+      // Explicitly supplied by the caller — validate strictly.
+      const parsed = parseValidTabId(rawTabId);
+      if (parsed === null) {
+        res.status(400).json({ error: "tabId must be a positive integer" });
+        return;
+      }
+      tabId = parsed;
+    } else {
+      // No explicit tab — resolve the default. If WEBHOOK_DEFAULT_TAB_ID is set
+      // but malformed, that's an operator-facing server configuration error
+      // (the caller's request is valid), so surface it as 500 — never 400 —
+      // mirroring how an unset WEBHOOK_SECRET returns 503 rather than 401.
+      const envDefault = process.env.WEBHOOK_DEFAULT_TAB_ID;
+      if (envDefault !== undefined && envDefault !== "") {
+        const parsed = parseValidTabId(envDefault);
+        if (parsed === null) {
+          res.status(500).json({
+            error:
+              "Server misconfiguration: WEBHOOK_DEFAULT_TAB_ID is not a valid positive integer",
+          });
+          return;
+        }
+        tabId = parsed;
+      } else {
+        tabId = 2;
+      }
+    }
+
+    const tab = await getTabById(tabId);
+    if (!tab) {
+      res.status(400).json({ error: `Target tab ${tabId} does not exist` });
+      return;
+    }
+
     // 6. Build CreateTaskInput
     const input: CreateTaskInput = {
       title,
@@ -99,7 +160,7 @@ router.post("/", async (req: Request, res: Response) => {
       type,
       files: [],
       origin: "ai",
-      tabIds: [2],
+      tabIds: [tabId],
       dependsOn: [],
       groupId: null,
     };
