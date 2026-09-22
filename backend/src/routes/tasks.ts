@@ -102,6 +102,9 @@ router.post("/", async (req: Request, res: Response) => {
       const userTabs = await getAllTabs(userId);
       if (userTabs.length > 0) {
         input.tabIds = [userTabs[0].id];
+      } else {
+        res.status(400).json({ error: "Create a tab before adding tasks" });
+        return;
       }
     }
 

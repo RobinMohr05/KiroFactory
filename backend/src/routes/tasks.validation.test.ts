@@ -54,6 +54,7 @@ vi.mock("../logger.js", () => ({
 }));
 
 import { createTask, updateTask } from "../db/tasks.js";
+import { getAllTabs } from "../db/tabs.js";
 import tasksRouter from "./tasks.js";
 import {
   TASK_TYPES,
@@ -173,6 +174,18 @@ describe("POST /api/tasks validation", () => {
 
     expect(res.status).toBe(201);
     expect(createTask).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns 400 when user owns no tabs and no tabIds are provided", async () => {
+    vi.mocked(getAllTabs).mockResolvedValueOnce([]);
+    const app = createApp();
+    const res = await request(app)
+      .post("/api/tasks")
+      .send({ title: "T", priority: 2, type: "bug" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/tab/i);
+    expect(createTask).not.toHaveBeenCalled();
   });
 });
 
