@@ -7,7 +7,7 @@ import { getUserId } from "../middleware/auth.js";
 import type { CreateUserInput, AuthenticatedRequest, GitProvider } from "../types.js";
 import { GIT_PROVIDERS, isGitProvider, UI_VIEW_MODES, isUiViewMode } from "../types.js";
 import { log, toErrorFields } from "../logger.js";
-import { JWT_SECRET } from "../config.js";
+import { getJwtSecret } from "../config.js";
 
 const router = Router();
 
@@ -19,7 +19,7 @@ const COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days in ms
  * Signs a JWT with the user's ID.
  */
 export function signToken(userId: number): string {
-  return jwt.sign({ userId }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+  return jwt.sign({ userId }, getJwtSecret(), { expiresIn: JWT_EXPIRES_IN });
 }
 
 /**
@@ -205,7 +205,7 @@ router.get("/me", async (req: Request, res: Response) => {
 
     let payload: { userId: number };
     try {
-      payload = jwt.verify(token, JWT_SECRET) as { userId: number };
+      payload = jwt.verify(token, getJwtSecret()) as { userId: number };
     } catch {
       res.status(401).json({ error: "Invalid or expired session" });
       return;

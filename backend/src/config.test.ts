@@ -8,8 +8,8 @@
  * so the local dev server and the test suite keep working without extra setup.
  */
 
-import { describe, it, expect } from "vitest";
-import { resolveJwtSecret } from "./config.js";
+import { describe, it, expect, afterEach } from "vitest";
+import { resolveJwtSecret, getJwtSecret } from "./config.js";
 
 describe("resolveJwtSecret", () => {
   it("returns the configured secret when JWT_SECRET is set", () => {
@@ -42,6 +42,38 @@ describe("resolveJwtSecret", () => {
 
   it("falls back to a dev secret when NODE_ENV is undefined (local/test)", () => {
     const secret = resolveJwtSecret({});
+    expect(secret).toBeTruthy();
+    expect(typeof secret).toBe("string");
+  });
+});
+
+describe("getJwtSecret", () => {
+  const originalJwtSecret = process.env.JWT_SECRET;
+
+  afterEach(() => {
+    if (originalJwtSecret === undefined) {
+      delete process.env.JWT_SECRET;
+    } else {
+      process.env.JWT_SECRET = originalJwtSecret;
+    }
+  });
+
+  it("reads process.env at call time, not at module-load time", () => {
+    // Simulates dotenv populating process.env AFTER config.ts was first imported.
+    // A lazy getter must reflect the value set now, proving it did not capture
+    // an eager module-load-time snapshot (which would ignore a .env-configured
+    // JWT_SECRET and silently keep the dev fallback).
+    process.env.JWT_SECRET = "loaded-after-import-secret";
+    expect(getJwtSecret()).toBe("loaded-after-import-secret");
+
+    // And a subsequent change is picked up too — confirming it re-reads each call.
+    process.env.JWT_SECRET = "changed-again-secret";
+    expect(getJwtSecret()).toBe("changed-again-secret");
+  });
+
+  it("returns a non-empty string when JWT_SECRET is unset outside production", () => {
+    delete process.env.JWT_SECRET;
+    const secret = getJwtSecret();
     expect(secret).toBeTruthy();
     expect(typeof secret).toBe("string");
   });

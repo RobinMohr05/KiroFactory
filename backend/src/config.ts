@@ -52,11 +52,24 @@ export function resolveJwtSecret(env: SecretEnv = process.env): string {
 }
 
 /**
- * The validated JWT secret for the running process. All auth code paths
- * (REST sign/verify and WebSocket verify) MUST import this rather than
- * re-reading process.env with their own literal fallback.
+ * Returns the validated JWT secret, resolved against the CURRENT process.env
+ * on every call. All auth code paths (REST sign/verify and WebSocket verify)
+ * MUST call this rather than re-reading process.env with their own literal
+ * fallback.
+ *
+ * This is intentionally a lazy getter, not an eagerly-evaluated `const`. ES
+ * module imports are hoisted and fully evaluated before the importing module's
+ * body runs, so a top-level `const JWT_SECRET = resolveJwtSecret()` here would
+ * execute before index.ts's `dotenv.config()` had a chance to populate
+ * process.env (config.ts is transitively imported by middleware/auth.ts,
+ * routes/auth.ts and websocket-handler.ts, all imported by index.ts). That
+ * would silently ignore a `.env`-configured JWT_SECRET and fall back to the dev
+ * literal — reintroducing the very forgeable-secret vulnerability this module
+ * exists to prevent. Resolving lazily guarantees we read the fully-loaded env.
  */
-export const JWT_SECRET = resolveJwtSecret();
+export function getJwtSecret(): string {
+  return resolveJwtSecret();
+}
 
 /**
  * Validate required secrets at startup, failing fast on misconfiguration.

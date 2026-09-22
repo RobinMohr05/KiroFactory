@@ -1,7 +1,7 @@
 import type { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import type { AuthenticatedRequest } from "../types.js";
-import { JWT_SECRET } from "../config.js";
+import { getJwtSecret } from "../config.js";
 
 const COOKIE_NAME = "kf_session";
 
@@ -53,7 +53,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
   }
 
   try {
-    const payload = jwt.verify(token, JWT_SECRET) as { userId: number };
+    const payload = jwt.verify(token, getJwtSecret()) as { userId: number };
 
     if (!payload.userId || typeof payload.userId !== "number") {
       res.status(401).json({ error: "Invalid token payload" });

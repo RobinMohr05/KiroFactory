@@ -4,7 +4,7 @@ import jwt from "jsonwebtoken";
 import type { WsServerMessage, WsClientMessage } from "./types.js";
 import { startSession, stopSession, sendPrompt, getSessionOutput, getSession } from "./session-manager.js";
 import { log } from "./logger.js";
-import { JWT_SECRET } from "./config.js";
+import { getJwtSecret } from "./config.js";
 
 const COOKIE_NAME = "kf_session";
 
@@ -48,7 +48,7 @@ function extractWsToken(req: IncomingMessage): string | null {
  */
 function verifyWsToken(token: string): number | null {
   try {
-    const payload = jwt.verify(token, JWT_SECRET) as { userId: number };
+    const payload = jwt.verify(token, getJwtSecret()) as { userId: number };
     if (payload.userId && typeof payload.userId === "number") {
       return payload.userId;
     }
