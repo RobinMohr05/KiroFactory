@@ -121,11 +121,18 @@ router.post("/:id/create-task", async (req: Request, res: Response) => {
         return;
       }
     } else {
-      // Default: assign to all user's tabs if none specified
+      // Default: assign to the user's first tab if none specified.
       const userTabs = await getAllTabs(userId);
-      if (userTabs.length > 0) {
-        tabIds = [userTabs[0].id];
+      if (userTabs.length === 0) {
+        // A task must belong to at least one tab (createTask enforces this to
+        // prevent orphaned tasks). Surface an actionable 409 here rather than
+        // letting createTask throw into the generic 500 path.
+        res.status(409).json({
+          error: "Create a board/tab before turning an error into a task",
+        });
+        return;
       }
+      tabIds = [userTabs[0].id];
     }
 
     const task = await createTask({
