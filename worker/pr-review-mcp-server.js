@@ -127,7 +127,7 @@ function detectProvider() {
  * Handles https://github.com/owner/repo and git@github.com:owner/repo.git
  */
 export function parseGitHubRepo(url) {
-  const match = url.match(/github\.com[/:]([^/]+)\/([^/]+)/);
+  const match = url.match(/github\.com[/:]([^/]+)\/([^/?#]+)/);
   if (!match) return null;
   return { owner: match[1], repo: match[2].replace(/\.git$/, "") };
 }

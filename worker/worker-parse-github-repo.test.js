@@ -72,4 +72,24 @@ describe("worker.js GitHub owner/repo parsing keeps dotted repo names", () => {
     assert.ok(match, "regex should match a dotted repo URL");
     assert.equal(match[2], "my.repo", "repo capture group must keep the dot");
   });
+
+  it("the repo-parsing regex in worker.js stops at a ?query", () => {
+    const source = readSource("worker.js");
+    const m = source.match(/REPO_URL\.match\((\/github\\\.com\[\/:\].*?\/)\)/);
+    assert.ok(m, "expected a REPO_URL.match(/github.com.../) call in worker.js");
+    const re = new RegExp(m[1].slice(1, -1));
+    const match = "https://github.com/org/repo?tab=readme".match(re);
+    assert.ok(match, "regex should match a URL with a query string");
+    assert.equal(match[2], "repo", "repo capture group must stop at ?");
+  });
+
+  it("the repo-parsing regex in worker.js stops at a #fragment", () => {
+    const source = readSource("worker.js");
+    const m = source.match(/REPO_URL\.match\((\/github\\\.com\[\/:\].*?\/)\)/);
+    assert.ok(m, "expected a REPO_URL.match(/github.com.../) call in worker.js");
+    const re = new RegExp(m[1].slice(1, -1));
+    const match = "https://github.com/org/repo#anchor".match(re);
+    assert.ok(match, "regex should match a URL with a fragment");
+    assert.equal(match[2], "repo", "repo capture group must stop at #");
+  });
 });
