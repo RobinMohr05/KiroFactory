@@ -6,7 +6,8 @@
   "description": "Per-session MCP proxy sidecar — spawns and multiplexes MCP servers with session-isolated credentials",
   "main": "proxy.js",
   "scripts": {
-    "start": "node proxy.js"
+    "start": "node proxy.js",
+    "test": "node --test"
   },
   "dependencies": {}
 }
