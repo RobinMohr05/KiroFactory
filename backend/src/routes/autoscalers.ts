@@ -7,7 +7,9 @@
 import { Router, type Request, type Response } from "express";
 import { requireAuth, getUserId } from "../middleware/auth.js";
 import { createAutoScalerRecord, getAllAutoScalers, startAutoScaler, stopAutoScaler, deleteAutoScalerRecord, updateAutoScalerRecord, getAutoScalerSessionCounts } from "../autoscaler-manager.js";
-import { getAutoScalerById } from "../db/autoscalers.js";
+import { getAutoScalerById, getPooledSessionIds } from "../db/autoscalers.js";
+import { getSession } from "../session-manager.js";
+import { getSessionFromDb } from "../db/sessions.js";
 import { log, toErrorFields } from "../logger.js";
 
 const router = Router();
@@ -278,6 +280,51 @@ router.patch("/:id", async (req: Request, res: Response) => {
       msg: "Failed to update autoScaler",
     });
     res.status(500).json({ error: "Failed to update autoScaler" });
+  }
+});
+
+// GET /api/autoscalers/:id/sessions — list pooled sessions owned by this auto-scaler.
+router.get("/:id/sessions", async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const id = Number(req.params.id);
+    if (isNaN(id)) {
+      res.status(400).json({ error: "Invalid autoScaler id" });
+      return;
+    }
+
+    // Verify ownership.
+    const existing = await getAutoScalerById(id);
+    if (!existing || existing.userId !== userId) {
+      res.status(404).json({ error: "AutoScaler not found" });
+      return;
+    }
+
+    const sessionIds = await getPooledSessionIds(id);
+
+    // For each pooled session ID, prefer the in-memory record (fast, has live
+    // status) and fall back to the DB for sessions that have been stopped and
+    // evicted from memory.
+    const sessions = (
+      await Promise.all(
+        sessionIds.map(async (sessionId) => {
+          const inMemory = getSession(sessionId);
+          if (inMemory) return inMemory;
+          return getSessionFromDb(sessionId);
+        })
+      )
+    ).filter((s): s is NonNullable<typeof s> => s !== null && s !== undefined);
+
+    res.json(sessions);
+  } catch (err) {
+    log.error("route-error", {
+      component: "autoscalers",
+      method: "GET",
+      path: "/api/autoscalers/:id/sessions",
+      ...toErrorFields(err),
+      msg: "Failed to list autoscaler sessions",
+    });
+    res.status(500).json({ error: "Failed to list autoscaler sessions" });
   }
 });
 

@@ -3,7 +3,7 @@ import { useApp } from '../context/AppContext';
 import { apiFetch } from '../utils/api';
 import { ModelSelect } from './ModelSelect';
 import { useConfirmAction } from '../hooks/useConfirmAction';
-import type { AutoScaler } from '../types';
+import type { AutoScaler, Session, TurnRecord, OutputEntry } from '../types';
 
 /**
  * Auto-Scaler controls panel — rendered inside the SessionsPanel sidebar only when
@@ -27,7 +27,14 @@ export function AutoScalerPanel({
   onSelect: (id: number) => void;
   onRequestCreate: () => void;
 }) {
-  const { autoScalers } = useApp();
+  const { autoScalers, currentTabId } = useApp();
+
+  // Scope the list to the currently active tab: only show auto-scalers whose
+  // tabIds includes the current tab. When no tab is active, fall back to the
+  // full list.
+  const visibleAutoScalers = currentTabId
+    ? autoScalers.filter(a => a.tabIds.includes(currentTabId))
+    : autoScalers;
 
   const handleStart = async (autoScalerId: number) => {
     try {
@@ -67,7 +74,7 @@ export function AutoScalerPanel({
       <p className="autoscaler-panel-tagline">Auto-scaling pool of agent sessions that scales to match the task queue.</p>
 
       <ul className="autoscaler-list">
-        {autoScalers.map(autoScaler => (
+        {visibleAutoScalers.map(autoScaler => (
           <AutoScalerCard
             key={autoScaler.id}
             autoScaler={autoScaler}
@@ -77,7 +84,7 @@ export function AutoScalerPanel({
             onStop={() => handleStop(autoScaler.id)}
           />
         ))}
-        {autoScalers.length === 0 && (
+        {visibleAutoScalers.length === 0 && (
           <li className="autoscaler-empty-hint">No auto-scalers yet. Create one to auto-scale sessions.</li>
         )}
       </ul>
@@ -140,152 +147,6 @@ function AutoScalerCard({
 }
 
 /**
- * Create form for a new auto-scaler. Rendered in the right-hand
- * session-detail-panel by SessionsPanel when the "+ New Auto-Scaler" button is
- * clicked. The tab is fixed to the currently active tab (currentTabId from
- * useApp), shown read-only rather than as a selector.
- *
- * Props:
- *   onClose   — called when the user cancels; SessionsPanel returns to empty state
- *   onCreated — called with the new auto-scaler's id after a successful create;
- *               SessionsPanel auto-selects it in the detail panel
- */
-export function AutoScalerCreateView({
-  onClose,
-  onCreated,
-}: {
-  onClose: () => void;
-  onCreated: (id: number) => void;
-}) {
-  const { agents, tabs, currentTabId, fetchAutoScalers } = useApp();
-  const [name, setName] = useState('');
-  const [agentName, setAgentName] = useState('');
-  const [model, setModel] = useState('');
-  const [maxConcurrency, setMaxConcurrency] = useState(5);
-  const [idleTimeoutSeconds, setIdleTimeoutSeconds] = useState(30);
-  const [formError, setFormError] = useState<string | null>(null);
-
-  const currentTabName = currentTabId != null
-    ? (tabs.find(t => t.id === currentTabId)?.name || `#${currentTabId}`)
-    : null;
-
-  const handleCreate = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setFormError(null);
-
-    if (currentTabId == null) {
-      setFormError('Select a tab before creating an auto-scaler');
-      return;
-    }
-    if (!name.trim()) {
-      setFormError('Name is required');
-      return;
-    }
-    if (!agentName) {
-      setFormError('Agent is required');
-      return;
-    }
-
-    try {
-      const res = await apiFetch('/api/autoscalers', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: name.trim(),
-          agentName,
-          tabIds: [currentTabId],
-          model: (() => {
-            const trimmed = model.trim();
-            return trimmed && trimmed !== 'auto' ? trimmed : undefined;
-          })(),
-          maxConcurrency,
-          idleTimeoutSeconds,
-        }),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        setFormError(data.error || 'Failed to create auto-scaler');
-        return;
-      }
-      const newAutoScaler = await res.json().catch(() => ({}));
-      await fetchAutoScalers();
-      onCreated(newAutoScaler.id);
-    } catch (err) {
-      setFormError('Network error');
-    }
-  };
-
-  return (
-    <div className="autoscaler-create-panel" data-testid="autoscaler-create-panel">
-      <div className="autoscaler-detail-header">
-        <div className="autoscaler-detail-title">
-          <h3>New Auto-Scaler</h3>
-        </div>
-      </div>
-      <form className="autoscaler-create-form" onSubmit={handleCreate}>
-        <div className="form-group">
-          <label htmlFor="autoScalerName">Name</label>
-          <input
-            id="autoScalerName"
-            type="text"
-            value={name}
-            onChange={e => setName(e.target.value)}
-            placeholder="My Auto-Scaler"
-          />
-        </div>
-        <div className="form-group">
-          <label htmlFor="autoScalerAgent">Agent</label>
-          <select id="autoScalerAgent" value={agentName} onChange={e => setAgentName(e.target.value)}>
-            <option value="">Select agent...</option>
-            {agents.map(a => (
-              <option key={a.id} value={a.name}>{a.name}</option>
-            ))}
-          </select>
-        </div>
-        <div className="form-group">
-          <label>Tab</label>
-          <div className="autoscaler-create-tab-display" data-testid="autoscaler-create-tab">
-            {currentTabName ?? '—'}
-          </div>
-        </div>
-        <div className="form-group">
-          <label htmlFor="autoScalerModel">Model (optional)</label>
-          <ModelSelect id="autoScalerModel" value={model} onChange={setModel} placeholder="e.g. claude-sonnet-4-20250514" />
-        </div>
-        <div className="form-group">
-          <label htmlFor="autoScalerMaxConcurrency">Max Concurrency (0 = unlimited)</label>
-          <input
-            id="autoScalerMaxConcurrency"
-            type="number"
-            min={0}
-            value={maxConcurrency}
-            onChange={e => setMaxConcurrency(Number(e.target.value))}
-          />
-        </div>
-        <div className="form-group">
-          <label htmlFor="autoScalerIdleTimeout">Keep-alive / idle timeout (seconds)</label>
-          <input
-            id="autoScalerIdleTimeout"
-            type="number"
-            min={0}
-            value={idleTimeoutSeconds}
-            onChange={e => setIdleTimeoutSeconds(Number(e.target.value))}
-          />
-        </div>
-        {currentTabId == null && (
-          <div className="form-message error">Select a tab before creating an auto-scaler</div>
-        )}
-        {formError && <div className="form-message error">{formError}</div>}
-        <div className="form-actions">
-          <button type="submit" className="btn btn-primary btn-sm" disabled={currentTabId == null}>Create Auto-Scaler</button>
-          <button type="button" className="btn btn-secondary btn-sm" onClick={onClose}>Cancel</button>
-        </div>
-      </form>
-    </div>
-  );
-}
-
-/**
  * Full detail + edit view for a selected auto-scaler. Rendered in the
  * right-hand session-detail-panel by SessionsPanel.
  */
@@ -299,6 +160,9 @@ export function AutoScalerDetailView({
   const { tabs, agents, setAutoScalers, fetchAutoScalers } = useApp();
   const isRunning = autoScaler.status === 'running';
 
+  // View vs. edit mode toggle
+  const [editMode, setEditMode] = useState(false);
+
   // Edit form state — initialised from the auto-scaler
   const [editName, setEditName] = useState(autoScaler.name);
   const [editAgentName, setEditAgentName] = useState(autoScaler.agentName);
@@ -310,6 +174,13 @@ export function AutoScalerDetailView({
   const [saving, setSaving] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [startStopError, setStartStopError] = useState<string | null>(null);
+
+  // Child sessions state
+  const [childSessions, setChildSessions] = useState<Session[]>([]);
+  const [expandedSessionId, setExpandedSessionId] = useState<number | null>(null);
+  const [sessionTurns, setSessionTurns] = useState<Record<number, TurnRecord[]>>({});
+  const [sessionOutput, setSessionOutput] = useState<Record<number, OutputEntry[]>>({});
+  const [selectedTurn, setSelectedTurn] = useState<Record<number, number | null>>({});
 
   // Re-sync form state when the autoScaler prop changes (e.g. via WS autoscaler-updated event).
   // This ensures the edit form shows up-to-date values even if a WS event arrives while the
@@ -327,6 +198,24 @@ export function AutoScalerDetailView({
   useEffect(() => { setEditModel(autoScaler.model ?? ''); }, [autoScaler.model]);
   useEffect(() => { setEditMaxConcurrency(autoScaler.maxConcurrency); }, [autoScaler.maxConcurrency]);
   useEffect(() => { setEditIdleTimeoutSeconds(autoScaler.idleTimeoutSeconds); }, [autoScaler.idleTimeoutSeconds]);
+
+  // Fetch child sessions on mount and when the autoscaler id changes
+  useEffect(() => {
+    let cancelled = false;
+    async function fetchChildSessions() {
+      try {
+        const res = await apiFetch(`/api/autoscalers/${autoScaler.id}/sessions`);
+        if (!cancelled && res.ok) {
+          const data = await res.json();
+          setChildSessions(Array.isArray(data) ? data : []);
+        }
+      } catch {
+        // Silently ignore fetch errors; the section will show the empty hint
+      }
+    }
+    fetchChildSessions();
+    return () => { cancelled = true; };
+  }, [autoScaler.id]);
 
   const handleDetailStart = async () => {
     setStartStopError(null);
@@ -391,6 +280,7 @@ export function AutoScalerDetailView({
     if (editIdleTimeoutSeconds !== autoScaler.idleTimeoutSeconds) patch.idleTimeoutSeconds = editIdleTimeoutSeconds;
 
     if (Object.keys(patch).length === 0) {
+      setEditMode(false);
       return; // nothing changed — setSaving is never called, so no spurious re-render
     }
 
@@ -406,12 +296,25 @@ export function AutoScalerDetailView({
         setSaveError(data.error || 'Failed to save');
         return;
       }
+      setEditMode(false);
       await fetchAutoScalers();
     } catch {
       setSaveError('Network error');
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleCancelEdit = () => {
+    // Reset form fields back to current autoScaler values
+    setEditName(autoScaler.name);
+    setEditAgentName(autoScaler.agentName);
+    setEditTabId(autoScaler.tabIds[0] ?? null);
+    setEditModel(autoScaler.model ?? '');
+    setEditMaxConcurrency(autoScaler.maxConcurrency);
+    setEditIdleTimeoutSeconds(autoScaler.idleTimeoutSeconds);
+    setSaveError(null);
+    setEditMode(false);
   };
 
   const handleDelete = async () => {
@@ -440,6 +343,70 @@ export function AutoScalerDetailView({
   const displayMax = autoScaler.maxConcurrency === 0 ? '∞' : String(autoScaler.maxConcurrency);
   const displayCreatedAt = new Date(autoScaler.createdAt).toLocaleString();
 
+  // Expand a child session (accordion): fetch turns + output lazily
+  const handleExpandSession = async (sessionId: number) => {
+    if (expandedSessionId === sessionId) {
+      setExpandedSessionId(null);
+      return;
+    }
+    setExpandedSessionId(sessionId);
+
+    // Fetch turns if not already loaded
+    if (!sessionTurns[sessionId]) {
+      try {
+        const res = await apiFetch(`/api/sessions/${sessionId}/turns`);
+        if (res.ok) {
+          const turns: TurnRecord[] = await res.json();
+          setSessionTurns(prev => ({ ...prev, [sessionId]: turns }));
+          // Default-select the most recent turn
+          if (turns.length > 0) {
+            setSelectedTurn(prev => ({ ...prev, [sessionId]: turns[turns.length - 1].number }));
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    // Fetch output if not already loaded
+    if (!sessionOutput[sessionId]) {
+      try {
+        const res = await apiFetch(`/api/sessions/${sessionId}/output`);
+        if (res.ok) {
+          const output: OutputEntry[] = await res.json();
+          setSessionOutput(prev => ({ ...prev, [sessionId]: output }));
+        }
+      } catch {
+        // ignore
+      }
+    }
+  };
+
+  // Slice output to the selected turn's time range
+  function getTurnOutput(sessionId: number, turnNumber: number | null): OutputEntry[] {
+    if (turnNumber === null) return [];
+    const turns = sessionTurns[sessionId] ?? [];
+    const turn = turns.find(t => t.number === turnNumber);
+    if (!turn) return [];
+    const allOutput = sessionOutput[sessionId] ?? [];
+    const startMs = new Date(turn.startedAt).getTime();
+    const endMs = turn.endedAt ? new Date(turn.endedAt).getTime() : Infinity;
+    return allOutput.filter(entry => {
+      if (!entry.timestamp) return false;
+      const ts = new Date(entry.timestamp).getTime();
+      return ts >= startMs && ts <= endMs;
+    });
+  }
+
+  function formatDurationMs(ms: number): string {
+    if (ms < 1000) return `${ms}ms`;
+    const s = Math.round(ms / 1000);
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60);
+    const rem = s % 60;
+    return rem > 0 ? `${m}m ${rem}s` : `${m}m`;
+  }
+
   return (
     <div className="autoscaler-detail-panel" data-testid="autoscaler-detail-panel">
       <div className="autoscaler-detail-header">
@@ -465,45 +432,318 @@ export function AutoScalerDetailView({
           >
             Stop
           </button>
+          {editMode ? (
+            <button
+              className="btn btn-secondary btn-sm"
+              onClick={handleCancelEdit}
+              aria-label="Cancel edit"
+            >
+              Cancel
+            </button>
+          ) : (
+            <button
+              className="btn btn-secondary btn-sm"
+              disabled={isRunning}
+              onClick={() => setEditMode(true)}
+              aria-label="Edit"
+            >
+              Edit
+            </button>
+          )}
         </div>
         {startStopError && <div className="form-message error">{startStopError}</div>}
-        <div className="autoscaler-detail-meta-grid">
-          <span className="autoscaler-meta-label">Agent</span><span>{autoScaler.agentName}</span>
-          <span className="autoscaler-meta-label">Tabs</span><span>{tabNames}</span>
-          <span className="autoscaler-meta-label">Model</span><span>{displayModel}</span>
-          <span className="autoscaler-meta-label">Max Concurrency</span><span>{displayMax}</span>
-          <span className="autoscaler-meta-label">Idle Timeout</span><span>{autoScaler.idleTimeoutSeconds}s</span>
-          <span className="autoscaler-meta-label">Created</span><span>{displayCreatedAt}</span>
-        </div>
+
+        {/* View mode: read-only meta grid */}
+        {!editMode && (
+          <div className="autoscaler-detail-meta-grid">
+            <span className="autoscaler-meta-label">Agent</span><span>{autoScaler.agentName}</span>
+            <span className="autoscaler-meta-label">Tabs</span><span>{tabNames}</span>
+            <span className="autoscaler-meta-label">Model</span><span>{displayModel}</span>
+            <span className="autoscaler-meta-label">Max Concurrency</span><span>{displayMax}</span>
+            <span className="autoscaler-meta-label">Idle Timeout</span><span>{autoScaler.idleTimeoutSeconds}s</span>
+            <span className="autoscaler-meta-label">Created</span><span>{displayCreatedAt}</span>
+          </div>
+        )}
       </div>
 
-      {isRunning && (
-        <div className="autoscaler-edit-disabled-hint">
-          Stop this auto-scaler first to edit its settings.
-        </div>
+      {/* Edit mode: show the form */}
+      {editMode && (
+        <>
+          {isRunning && (
+            <div className="autoscaler-edit-disabled-hint">
+              Stop this auto-scaler first to edit its settings.
+            </div>
+          )}
+
+          <form className="autoscaler-edit-form" onSubmit={handleSave}>
+            <h4>Edit</h4>
+            <div className="form-group">
+              <label htmlFor="editAutoScalerName">Name</label>
+              <input
+                id="editAutoScalerName"
+                type="text"
+                name="name"
+                value={editName}
+                disabled={isRunning}
+                onChange={e => setEditName(e.target.value)}
+              />
+            </div>
+            <div className="form-group">
+              <label htmlFor="editAutoScalerAgent">Agent</label>
+              <select
+                id="editAutoScalerAgent"
+                value={editAgentName}
+                disabled={isRunning}
+                onChange={e => setEditAgentName(e.target.value)}
+              >
+                <option value="">Select agent...</option>
+                {agents.map(a => (
+                  <option key={a.id} value={a.name}>{a.name}</option>
+                ))}
+              </select>
+            </div>
+            <div className="form-group">
+              <label htmlFor="editAutoScalerTab">Tabs</label>
+              <select
+                id="editAutoScalerTab"
+                value={editTabId ?? ''}
+                disabled={isRunning}
+                onChange={e => setEditTabId(e.target.value ? Number(e.target.value) : null)}
+              >
+                <option value="">Select tab...</option>
+                {tabs.map(t => (
+                  <option key={t.id} value={t.id}>{t.name}</option>
+                ))}
+              </select>
+            </div>
+            <div className="form-group">
+              <label htmlFor="editAutoScalerModel">Model</label>
+              <ModelSelect id="editAutoScalerModel" value={editModel} onChange={setEditModel} disabled={isRunning} />
+            </div>
+            <div className="form-group">
+              <label htmlFor="editAutoScalerMaxConcurrency">Max Concurrency (0 = unlimited)</label>
+              <input
+                id="editAutoScalerMaxConcurrency"
+                type="number"
+                min={0}
+                value={editMaxConcurrency}
+                disabled={isRunning}
+                onChange={e => setEditMaxConcurrency(Number(e.target.value))}
+              />
+            </div>
+            <div className="form-group">
+              <label htmlFor="editAutoScalerIdleTimeout">Idle Timeout (seconds)</label>
+              <input
+                id="editAutoScalerIdleTimeout"
+                type="number"
+                min={0}
+                value={editIdleTimeoutSeconds}
+                disabled={isRunning}
+                onChange={e => setEditIdleTimeoutSeconds(Number(e.target.value))}
+              />
+            </div>
+            {saveError && <div className="form-message error">{saveError}</div>}
+            <div className="form-actions">
+              <button
+                type="submit"
+                className="btn btn-primary btn-sm"
+                disabled={isRunning || saving || !hasChanges}
+              >
+                Save
+              </button>
+              <button
+                type="button"
+                className={`btn btn-secondary btn-sm${deleteConfirmPending ? ' btn-confirm-pending' : ''}`}
+                disabled={isRunning}
+                onClick={handleDeleteClick}
+              >
+                {deleteConfirmPending ? 'Confirm?' : 'Delete'}
+              </button>
+            </div>
+            {deleteError && <div className="form-message error">{deleteError}</div>}
+          </form>
+        </>
       )}
 
-      <form className="autoscaler-edit-form" onSubmit={handleSave}>
-        <h4>Edit</h4>
+      {/* Child sessions section */}
+      <div className="autoscaler-sessions-section">
+        <h4 className="autoscaler-sessions-heading">Sessions</h4>
+        {childSessions.length === 0 ? (
+          <p className="autoscaler-sessions-empty">No sessions spawned yet.</p>
+        ) : (
+          <ul className="autoscaler-sessions-list">
+            {childSessions.map(session => {
+              const isExpanded = expandedSessionId === session.id;
+              const sessionIsRunning = session.status === 'running';
+              const turns = sessionTurns[session.id] ?? [];
+              const selTurn = selectedTurn[session.id] ?? null;
+              const turnOutput = getTurnOutput(session.id, selTurn);
+
+              return (
+                <li key={session.id} className={`autoscaler-session-row${isExpanded ? ' autoscaler-session-row--expanded' : ''}`}>
+                  <button
+                    className="autoscaler-session-row-header"
+                    onClick={() => handleExpandSession(session.id)}
+                    aria-expanded={isExpanded}
+                  >
+                    <span className={`autoscaler-status-dot${sessionIsRunning ? ' autoscaler-status-dot--running' : ''}`} aria-hidden="true" />
+                    <span className="autoscaler-session-name">{session.name}</span>
+                    <span className={`autoscaler-session-badge${sessionIsRunning ? ' badge-running' : ' badge-stopped'}`}>
+                      {sessionIsRunning ? 'running' : 'stopped'}
+                    </span>
+                    <span className="autoscaler-session-chevron" aria-hidden="true">{isExpanded ? '▾' : '▸'}</span>
+                  </button>
+
+                  {isExpanded && (
+                    <div className="autoscaler-session-turn-browser">
+                      <div className="autoscaler-turn-list">
+                        {turns.length === 0 ? (
+                          <p className="autoscaler-turns-empty">No turns yet.</p>
+                        ) : (
+                          <ul>
+                            {turns.map(turn => (
+                              <li
+                                key={turn.number}
+                                className={`autoscaler-turn-item${selTurn === turn.number ? ' autoscaler-turn-item--selected' : ''}`}
+                                onClick={() => setSelectedTurn(prev => ({ ...prev, [session.id]: turn.number }))}
+                                role="button"
+                                tabIndex={0}
+                                onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSelectedTurn(prev => ({ ...prev, [session.id]: turn.number })); } }}
+                              >
+                                <span className="autoscaler-turn-number">#{turn.number}</span>
+                                <span className="autoscaler-turn-task">{turn.taskTitle ?? '—'}</span>
+                                <span className="autoscaler-turn-verdict">{turn.verdict ?? '—'}</span>
+                                <span className="autoscaler-turn-duration">{formatDurationMs(turn.durationMs)}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                      <div className="autoscaler-turn-output">
+                        {selTurn === null ? (
+                          <p className="autoscaler-turn-output-hint">Select a turn to see its output.</p>
+                        ) : turnOutput.length === 0 ? (
+                          <p className="autoscaler-turn-output-hint">No output for this turn.</p>
+                        ) : (
+                          <div className="session-output" role="log" aria-label="Turn output">
+                            <pre className="output-pre">
+                              {turnOutput.map((entry, i) => {
+                                const ts = entry.timestamp ? `[${new Date(entry.timestamp).toLocaleTimeString()}] ` : '';
+                                return (
+                                  <span key={i} className={`output-line output-${entry.stream}`}>
+                                    {ts}{entry.text}{'\n'}
+                                  </span>
+                                );
+                              })}
+                            </pre>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Create form for a new auto-scaler, rendered in the right-hand detail panel.
+ * The tab is read-only, derived from the currently active tab in the app context.
+ * On success, calls onCreated(newId); on cancel, calls onClose().
+ */
+export function AutoScalerCreateView({
+  onClose,
+  onCreated,
+}: {
+  onClose: () => void;
+  onCreated: (id: number) => void;
+}) {
+  const { agents, tabs, currentTabId, fetchAutoScalers } = useApp();
+  const [name, setName] = useState('');
+  const [agentName, setAgentName] = useState('');
+  const [model, setModel] = useState('');
+  const [maxConcurrency, setMaxConcurrency] = useState(5);
+  const [idleTimeoutSeconds, setIdleTimeoutSeconds] = useState(30);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  const currentTab = currentTabId !== null ? tabs.find(t => t.id === currentTabId) : undefined;
+
+  const handleCreate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setFormError(null);
+
+    if (!name.trim()) {
+      setFormError('Name is required');
+      return;
+    }
+    if (!agentName) {
+      setFormError('Agent is required');
+      return;
+    }
+    if (!currentTabId) {
+      setFormError('Select a tab before creating an auto-scaler');
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const res = await apiFetch('/api/autoscalers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: name.trim(),
+          agentName,
+          tabIds: [currentTabId],
+          model: (() => {
+            const trimmed = model.trim();
+            return trimmed && trimmed !== 'auto' ? trimmed : undefined;
+          })(),
+          maxConcurrency,
+          idleTimeoutSeconds,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setFormError(data.error || 'Failed to create auto-scaler');
+        return;
+      }
+      const newAutoScaler = await res.json();
+      await fetchAutoScalers();
+      onCreated(newAutoScaler.id);
+    } catch {
+      setFormError('Network error');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="autoscaler-detail-panel" data-testid="autoscaler-create-view">
+      <div className="autoscaler-detail-header">
+        <div className="autoscaler-detail-title">
+          <h3>New Auto-Scaler</h3>
+        </div>
+      </div>
+      <form className="autoscaler-edit-form" onSubmit={handleCreate}>
         <div className="form-group">
-          <label htmlFor="editAutoScalerName">Name</label>
+          <label htmlFor="createAutoScalerName">Name</label>
           <input
-            id="editAutoScalerName"
+            id="createAutoScalerName"
             type="text"
-            name="name"
-            value={editName}
-            disabled={isRunning}
-            onChange={e => setEditName(e.target.value)}
+            value={name}
+            onChange={e => setName(e.target.value)}
+            placeholder="My Auto-Scaler"
           />
         </div>
         <div className="form-group">
-          <label htmlFor="editAutoScalerAgent">Agent</label>
-          <select
-            id="editAutoScalerAgent"
-            value={editAgentName}
-            disabled={isRunning}
-            onChange={e => setEditAgentName(e.target.value)}
-          >
+          <label htmlFor="createAutoScalerAgent">Agent</label>
+          <select id="createAutoScalerAgent" value={agentName} onChange={e => setAgentName(e.target.value)}>
             <option value="">Select agent...</option>
             {agents.map(a => (
               <option key={a.id} value={a.name}>{a.name}</option>
@@ -511,64 +751,52 @@ export function AutoScalerDetailView({
           </select>
         </div>
         <div className="form-group">
-          <label htmlFor="editAutoScalerTab">Tabs</label>
-          <select
-            id="editAutoScalerTab"
-            value={editTabId ?? ''}
-            disabled={isRunning}
-            onChange={e => setEditTabId(e.target.value ? Number(e.target.value) : null)}
-          >
-            <option value="">Select tab...</option>
-            {tabs.map(t => (
-              <option key={t.id} value={t.id}>{t.name}</option>
-            ))}
-          </select>
+          <label>Tab</label>
+          <div className="autoscaler-create-tab-display">
+            {currentTab ? currentTab.name : <span className="form-message error" style={{ display: 'inline' }}>Select a tab before creating an auto-scaler</span>}
+          </div>
         </div>
         <div className="form-group">
-          <label htmlFor="editAutoScalerModel">Model</label>
-          <ModelSelect id="editAutoScalerModel" value={editModel} onChange={setEditModel} disabled={isRunning} />
+          <label htmlFor="createAutoScalerModel">Model (optional)</label>
+          <ModelSelect id="createAutoScalerModel" value={model} onChange={setModel} placeholder="e.g. claude-sonnet-4-20250514" />
         </div>
         <div className="form-group">
-          <label htmlFor="editAutoScalerMaxConcurrency">Max Concurrency (0 = unlimited)</label>
+          <label htmlFor="createAutoScalerMaxConcurrency">Max Concurrency (0 = unlimited)</label>
           <input
-            id="editAutoScalerMaxConcurrency"
+            id="createAutoScalerMaxConcurrency"
             type="number"
             min={0}
-            value={editMaxConcurrency}
-            disabled={isRunning}
-            onChange={e => setEditMaxConcurrency(Number(e.target.value))}
+            value={maxConcurrency}
+            onChange={e => setMaxConcurrency(Number(e.target.value))}
           />
         </div>
         <div className="form-group">
-          <label htmlFor="editAutoScalerIdleTimeout">Idle Timeout (seconds)</label>
+          <label htmlFor="createAutoScalerIdleTimeout">Keep-alive / idle timeout (seconds)</label>
           <input
-            id="editAutoScalerIdleTimeout"
+            id="createAutoScalerIdleTimeout"
             type="number"
             min={0}
-            value={editIdleTimeoutSeconds}
-            disabled={isRunning}
-            onChange={e => setEditIdleTimeoutSeconds(Number(e.target.value))}
+            value={idleTimeoutSeconds}
+            onChange={e => setIdleTimeoutSeconds(Number(e.target.value))}
           />
         </div>
-        {saveError && <div className="form-message error">{saveError}</div>}
+        {formError && <div className="form-message error">{formError}</div>}
         <div className="form-actions">
           <button
             type="submit"
             className="btn btn-primary btn-sm"
-            disabled={isRunning || saving || !hasChanges}
+            disabled={submitting || !currentTabId}
           >
-            Save
+            Create Auto-Scaler
           </button>
           <button
             type="button"
-            className={`btn btn-secondary btn-sm${deleteConfirmPending ? ' btn-confirm-pending' : ''}`}
-            disabled={isRunning}
-            onClick={handleDeleteClick}
+            className="btn btn-secondary btn-sm"
+            onClick={onClose}
           >
-            {deleteConfirmPending ? 'Confirm?' : 'Delete'}
+            Cancel
           </button>
         </div>
-        {deleteError && <div className="form-message error">{deleteError}</div>}
       </form>
     </div>
   );
