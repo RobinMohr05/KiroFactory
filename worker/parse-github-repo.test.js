@@ -66,6 +66,20 @@ for (const [name, parseGitHubRepo] of [
       });
     });
 
+    it("strips a trailing ?query from the repo name", () => {
+      assert.deepEqual(parseGitHubRepo("https://github.com/org/repo?tab=readme"), {
+        owner: "org",
+        repo: "repo",
+      });
+    });
+
+    it("strips a trailing #fragment from the repo name", () => {
+      assert.deepEqual(parseGitHubRepo("https://github.com/org/repo#anchor"), {
+        owner: "org",
+        repo: "repo",
+      });
+    });
+
     it("returns null for a non-GitHub URL", () => {
       assert.equal(parseGitHubRepo("https://example.com/org/repo"), null);
     });
