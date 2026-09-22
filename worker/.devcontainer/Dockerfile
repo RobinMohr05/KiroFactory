@@ -32,6 +32,7 @@ RUN npm ci --omit=dev
 COPY worker.js ./
 COPY spawn-env.js ./
 COPY shared-branch-utils.js ./
+COPY workspace-utils.js ./
 COPY verdict-mcp-server.js ./
 COPY agent-error-mcp-server.js ./
 COPY task-create-mcp-server.js ./
