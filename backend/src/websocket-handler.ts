@@ -8,6 +8,69 @@ import { getJwtSecret } from "./config.js";
 
 const COOKIE_NAME = "kf_session";
 
+/**
+ * Determine whether a WebSocket upgrade request's Origin header is acceptable.
+ *
+ * Browsers automatically attach cookies to cross-origin WebSocket handshake
+ * requests, making the /ws endpoint vulnerable to Cross-Site WebSocket
+ * Hijacking (CSWSH) unless the Origin is validated. This function implements
+ * the allowlist logic:
+ *
+ *  - Outside production (development/test): all origins are allowed, mirroring
+ *    the existing CORS behavior (`corsOrigin = true` in index.ts).
+ *  - In production: only origins that share the same host as the request
+ *    (`req.headers.host`) are accepted. If a `PUBLIC_URL` env var is configured
+ *    (e.g. a custom domain in front of the ACA internal hostname), its host is
+ *    also accepted. An absent/empty origin is rejected in production so that
+ *    non-browser connections without an Origin header are blocked from
+ *    bypassing the check.
+ *
+ * @param origin   The value of `req.headers.origin` (string or undefined).
+ * @param host     The value of `req.headers.host` (string or undefined).
+ * @param env      Dependency-injectable environment bag (defaults to process.env).
+ */
+export function isOriginAllowed(
+  origin: string | undefined,
+  host: string | undefined,
+  env: { NODE_ENV?: string; PUBLIC_URL?: string } = process.env
+): boolean {
+  // Outside production, allow everything (same as CORS behavior).
+  if (env.NODE_ENV !== "production") {
+    return true;
+  }
+
+  // In production, a missing or empty Origin is rejected.
+  if (!origin) {
+    return false;
+  }
+
+  // Build the set of allowed hostnames from the upgrade request's Host header
+  // and from the optional PUBLIC_URL env var.
+  const allowedHosts = new Set<string>();
+
+  if (host) {
+    allowedHosts.add(host.toLowerCase());
+  }
+
+  if (env.PUBLIC_URL) {
+    try {
+      const publicUrl = new URL(env.PUBLIC_URL);
+      allowedHosts.add(publicUrl.host.toLowerCase());
+    } catch {
+      // Malformed PUBLIC_URL — skip it; do not accidentally allow everything.
+    }
+  }
+
+  // Extract the host from the incoming Origin header and compare.
+  try {
+    const originHost = new URL(origin).host.toLowerCase();
+    return allowedHosts.has(originHost);
+  } catch {
+    // Malformed Origin header — reject.
+    return false;
+  }
+}
+
 // Maps each connected socket to the userId it authenticated as. Every
 // broadcast() call MUST pass the target user(s) — sessions, tabs, tasks,
 // agents, and errors are all single-tenant, so a message meant for one

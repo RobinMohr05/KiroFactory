@@ -1,0 +1,181 @@
+{
+  "src/__tests__/AutoScalerSessionCard.test.tsx": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "src/__tests__/Header.test.tsx": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "src/__tests__/HeaderMobile.test.tsx": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "src/__tests__/ModelSelect.test.tsx": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 2
+    }
+  },
+  "src/__tests__/SessionTimeline.test.tsx": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "src/__tests__/SessionsPanelMobile.test.tsx": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "src/__tests__/TaskCard.test.tsx": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "src/__tests__/TaskCardDisableInteraction.test.tsx": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "src/__tests__/TaskPlannerModal.test.tsx": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    },
+    "eqeqeq": {
+      "count": 1
+    }
+  },
+  "src/__tests__/TasksPanelMobile.test.tsx": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "src/__tests__/ViewModeSlider.test.tsx": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "src/components/AgentsPanel.tsx": {
+    "@typescript-eslint/no-floating-promises": {
+      "count": 3
+    }
+  },
+  "src/components/AutoScalerPanel.tsx": {
+    "@typescript-eslint/no-floating-promises": {
+      "count": 1
+    }
+  },
+  "src/components/EasySessionsView.tsx": {
+    "@typescript-eslint/no-floating-promises": {
+      "count": 3
+    }
+  },
+  "src/components/ErrorsPanel.tsx": {
+    "@typescript-eslint/no-floating-promises": {
+      "count": 1
+    }
+  },
+  "src/components/Header.tsx": {
+    "@typescript-eslint/no-floating-promises": {
+      "count": 3
+    }
+  },
+  "src/components/MobileDrawer.tsx": {
+    "@typescript-eslint/no-floating-promises": {
+      "count": 1
+    }
+  },
+  "src/components/MobileTabSelector.tsx": {
+    "@typescript-eslint/no-floating-promises": {
+      "count": 1
+    }
+  },
+  "src/components/ModelSelect.tsx": {
+    "@typescript-eslint/no-floating-promises": {
+      "count": 1
+    }
+  },
+  "src/components/SessionModal.tsx": {
+    "@typescript-eslint/no-floating-promises": {
+      "count": 1
+    }
+  },
+  "src/components/SessionTimeline.tsx": {
+    "@typescript-eslint/no-floating-promises": {
+      "count": 1
+    },
+    "eqeqeq": {
+      "count": 1
+    }
+  },
+  "src/components/SessionsPanel.tsx": {
+    "@typescript-eslint/no-floating-promises": {
+      "count": 6
+    }
+  },
+  "src/components/SettingsModal.tsx": {
+    "@typescript-eslint/no-floating-promises": {
+      "count": 1
+    }
+  },
+  "src/components/TabBar.tsx": {
+    "@typescript-eslint/no-floating-promises": {
+      "count": 2
+    }
+  },
+  "src/components/TabModal.tsx": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 1
+    }
+  },
+  "src/components/TaskModal.tsx": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 1
+    },
+    "@typescript-eslint/no-floating-promises": {
+      "count": 1
+    }
+  },
+  "src/components/TaskPlannerModal.tsx": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 9
+    },
+    "@typescript-eslint/no-floating-promises": {
+      "count": 4
+    },
+    "eqeqeq": {
+      "count": 1
+    }
+  },
+  "src/components/TasksPanel.tsx": {
+    "@typescript-eslint/no-floating-promises": {
+      "count": 3
+    },
+    "eqeqeq": {
+      "count": 1
+    }
+  },
+  "src/components/UsagePanel.tsx": {
+    "@typescript-eslint/no-floating-promises": {
+      "count": 3
+    }
+  },
+  "src/components/WslDiagnosticsPanel.tsx": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 1
+    },
+    "@typescript-eslint/no-floating-promises": {
+      "count": 1
+    }
+  },
+  "src/context/AppContext.tsx": {
+    "@typescript-eslint/no-floating-promises": {
+      "count": 15
+    },
+    "@typescript-eslint/no-unused-vars": {
+      "count": 2
+    }
+  }
+}
