@@ -311,8 +311,10 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
 }
 
 // ─── Worker Job + RBAC ────────────────────────────────────────────────────────
-// Deploy the worker Job as code and grant this app's managed identity the least-privilege
-// "Container Apps Jobs Operator" role scoped to it. The role assignment lives inside the
+// Deploy the worker Job as code and grant this app's managed identity the "Contributor"
+// role scoped to the job resource. "Container Apps Jobs Operator" is too narrow — it lacks
+// Microsoft.App/jobs/write, which aca-worker-spawner.ts needs to PATCH job secrets before
+// each execution (for secretRef injection). The role assignment lives inside the
 // worker-job module (scoped to the job), so ordering is guaranteed: job first, then grant.
 
 module workerJob 'worker-job.bicep' = {

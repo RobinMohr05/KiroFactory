@@ -144,10 +144,18 @@ The `kirofactory-api` Container App uses a **system-assigned managed identity** 
 Azure Container Apps management API and start/stop worker Job executions (via
 `DefaultAzureCredential` in `aca-worker-spawner.ts`).
 
-That identity must hold the built-in **Container Apps Jobs Operator** role
-(`b9a307c4-5aa3-4b52-ba60-2b17c136cd7b`), **scoped to the `kirofactory-worker` job**. This is the
-least-privilege role that covers exactly `Microsoft.App/jobs/read` + `Microsoft.App/jobs/*/action`
-(start and stop). Do **not** grant Contributor — it is far broader than needed.
+That identity must hold the built-in **Contributor** role
+(`b24988ac-6180-42a0-ab88-20f7382dd24c`), **scoped to the `kirofactory-worker` job resource**
+(not the resource group). Contributor scoped to a single resource is still least-privilege in
+practice — the identity cannot touch any other Azure resource.
+
+> **Why Contributor instead of the narrower "Container Apps Jobs Operator"?**
+> `Container Apps Jobs Operator` only grants `read + start + stopExecution` — it does NOT
+> include `Microsoft.App/jobs/write`, which is required to PATCH the job's
+> `configuration.secrets` before each execution. This PATCH is how `aca-worker-spawner.ts`
+> registers session-scoped secrets (e.g., `kiro-api-key-sess-42`) so they can be referenced
+> via `secretRef` in the execution env, keeping them out of `az containerapp job execution show`
+> output. Scoping Contributor to the one job resource is a deliberate, documented tradeoff.
 
 > This is NOT a user-credential concern. The Azure DevOps PAT, Atlassian, and AWS credentials are
 > injected into the worker container *after* it starts, so they can never cause a start failure.
@@ -159,7 +167,7 @@ least-privilege role that covers exactly `Microsoft.App/jobs/read` + `Microsoft.
 - On boot the log shows `[startup] ⚠ ACA preflight FAILED — …` (see the preflight in `index.ts`).
 
 **Fix (portal):** Container App Job `kirofactory-worker` → **Access control (IAM)** → **Add role
-assignment** → role **Container Apps Jobs Operator** → assign to **Managed identity →
+assignment** → role **Contributor** → assign to **Managed identity →
 `kirofactory-api`** → Review + assign. Propagation takes a few minutes.
 
 **Fix (CLI):**
@@ -169,7 +177,7 @@ JOB_ID=$(az containerapp job show -g SandboxForRM -n kirofactory-worker --query 
 az role assignment create \
   --assignee-object-id "$PRINCIPAL_ID" \
   --assignee-principal-type ServicePrincipal \
-  --role b9a307c4-5aa3-4b52-ba60-2b17c136cd7b \
+  --role b24988ac-6180-42a0-ab88-20f7382dd24c \
   --scope "$JOB_ID"
 ```
 
@@ -315,7 +323,7 @@ The backend keeps a lightweight error log surfaced in the UI under the **Errors*
 | `/api/health` shows `database: unavailable` | Wrong/expired `NEO4J_PASSWORD`, the AuraDB instance was deleted/renamed, or (most common) the Free-tier instance auto-paused after 72h of inactivity and needs a moment to resume | Verify `NEO4J_URI`/`NEO4J_USERNAME`/`NEO4J_PASSWORD` are current in the Aura Console; on auto-pause, the first connection triggers a resume — `connection.ts` uses a generous 60s `connectionTimeout` for exactly this, so retry after ~a minute. |
 | Container crashes on boot with `spawn kiro-cli ENOENT` | Orchestrator tried to run kiro-cli locally (local mode) but it's not in the image | Set `WORKER_MODE=remote`. |
 | `Fatal: ACA mode enabled but configuration is missing` | An `ACA_*` env var is missing (often `ACA_WORKER_IMAGE`) | Add all required ACA vars, restart. |
-| `ACA job start was denied by Azure (HTTP 403 … AuthorizationFailed)` | Orchestrator managed identity lacks the role on the worker job (often after an `az containerapp update`-only deploy or an app recreation) | Grant **Container Apps Jobs Operator** scoped to `kirofactory-worker` — see §4 "Managed Identity & permissions". NOT a credential issue. |
+| `ACA job start was denied by Azure (HTTP 403 … AuthorizationFailed)` | Orchestrator managed identity lacks the role on the worker job (often after an `az containerapp update`-only deploy or an app recreation) | Grant **Contributor** scoped to `kirofactory-worker` — see §4 "Managed Identity & permissions". NOT a credential issue. |
 | `ChainedTokenCredential authentication failed` | System-assigned identity disabled/missing on `kirofactory-api` | Enable system-assigned identity on `kirofactory-api`, then grant Container Apps Jobs Operator on the job. |
 | `ACA job start failed … 404 Not Found` | Worker job missing, or `ACA_JOB_NAME`/`ACA_RESOURCE_GROUP`/`ACA_SUBSCRIPTION_ID` wrong | Verify the job exists (`az containerapp job show -g SandboxForRM -n kirofactory-worker`) and the env vars match. |
 | WebSocket `Invalid frame header` | ACA ingress transport wrong | Ingress transport must be `http` (HTTP/1.1). `http2` breaks WebSockets. |
