@@ -41,11 +41,19 @@ router.post("/", async (req: Request, res: Response) => {
 
     // 2. Validate the shared secret header (timing-safe to prevent timing attacks)
     const headerSecret = req.headers["x-webhook-secret"];
+    if (!headerSecret || typeof headerSecret !== "string") {
+      res.status(401).json({ error: "Invalid or missing webhook secret" });
+      return;
+    }
+    // Compare byte lengths (not string lengths) before calling timingSafeEqual.
+    // String.prototype.length counts UTF-16 code units; Buffer.from(str) uses UTF-8,
+    // so multibyte characters make the two measures differ. timingSafeEqual throws a
+    // RangeError when buffer sizes don't match, so the guard must use byte length.
+    const headerBuf = Buffer.from(headerSecret);
+    const secretBuf = Buffer.from(webhookSecret);
     if (
-      !headerSecret ||
-      typeof headerSecret !== "string" ||
-      headerSecret.length !== webhookSecret.length ||
-      !timingSafeEqual(Buffer.from(headerSecret), Buffer.from(webhookSecret))
+      headerBuf.length !== secretBuf.length ||
+      !timingSafeEqual(headerBuf, secretBuf)
     ) {
       res.status(401).json({ error: "Invalid or missing webhook secret" });
       return;
