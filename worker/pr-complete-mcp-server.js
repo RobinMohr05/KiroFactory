@@ -32,6 +32,10 @@ const REPO_URL = process.env.REPO_URL || "";
 const GITHUB_PAT = process.env.GITHUB_PAT || "";
 const AZURE_DEVOPS_PAT = process.env.AZURE_DEVOPS_PAT || "";
 const ALL_GROUP_TASKS_DONE = process.env.ALL_GROUP_TASKS_DONE || "true";
+// Override for testing: redirect GitHub API calls to a local mock server.
+const GITHUB_BASE_URL = process.env.GITHUB_BASE_URL || "https://api.github.com";
+// Override for testing: reduce the poll interval for 'unknown' mergeability checks (ms).
+const GITHUB_UNKNOWN_POLL_INTERVAL_MS = parseInt(process.env.GITHUB_UNKNOWN_POLL_INTERVAL_MS || "2000", 10);
 // Override for testing: redirect Azure DevOps API calls to a local mock server.
 const AZURE_DEVOPS_BASE_URL = process.env.AZURE_DEVOPS_BASE_URL || "https://dev.azure.com";
 // Override for testing: reduce the poll interval for queued merge status checks (ms).
@@ -114,11 +118,27 @@ function githubHeaders() {
 }
 
 /**
+ * GET a GitHub PR and return its mergeability signals.
+ * Returns { ok, status, mergeable, mergeableState }.
+ */
+async function githubGetPr(owner, repo, number) {
+  const url = `${GITHUB_BASE_URL}/repos/${owner}/${repo}/pulls/${number}`;
+  const response = await fetch(url, { method: "GET", headers: githubHeaders() });
+  const body = await response.json().catch(() => ({}));
+  return {
+    ok: response.status === 200,
+    status: response.status,
+    mergeable: body?.mergeable,
+    mergeableState: body?.mergeable_state,
+  };
+}
+
+/**
  * Attempt to merge a GitHub PR with the given method.
  * Returns { success, status, body }.
  */
 async function githubMergePr(owner, repo, number, method) {
-  const url = `https://api.github.com/repos/${owner}/${repo}/pulls/${number}/merge`;
+  const url = `${GITHUB_BASE_URL}/repos/${owner}/${repo}/pulls/${number}/merge`;
   const response = await fetch(url, {
     method: "PUT",
     headers: githubHeaders(),
@@ -134,7 +154,7 @@ async function githubMergePr(owner, repo, number, method) {
 async function githubDeleteBranch(owner, repo, branch) {
   // Encode each path segment individually to preserve slashes (e.g. "feature/#544_...")
   const refPath = branch.split("/").map(encodeURIComponent).join("/");
-  const url = `https://api.github.com/repos/${owner}/${repo}/git/refs/heads/${refPath}`;
+  const url = `${GITHUB_BASE_URL}/repos/${owner}/${repo}/git/refs/heads/${refPath}`;
   const response = await fetch(url, {
     method: "DELETE",
     headers: githubHeaders(),
@@ -145,8 +165,78 @@ async function githubDeleteBranch(owner, repo, branch) {
 /**
  * Full GitHub merge flow: squash → merge → rebase fallback.
  * Retries up to 2 times on transient failures per method.
+ *
+ * Before attempting the merge, GETs the PR and inspects `mergeable_state` to
+ * determine whether/when the PR can be merged:
+ *   - 'dirty'                 → merge_conflict (don't attempt merge)
+ *   - 'blocked' / 'behind'    → rejected_by_policy (don't attempt merge)
+ *   - 'unknown'               → poll GET until it resolves; not_ready if exhausted
+ *   - 'clean'/'has_hooks'/'unstable'/null → proceed with merge
  */
 async function completeGitHubPr(owner, repo, number, branch) {
+  // ---------------------------------------------------------------------------
+  // Step 1: GET the PR and check mergeable_state before attempting the merge.
+  // 'unknown' means GitHub is still computing mergeability asynchronously —
+  // poll until it resolves (up to MAX_UNKNOWN_POLLS attempts with
+  // UNKNOWN_POLL_INTERVAL_MS delay) rather than racing that computation.
+  // ---------------------------------------------------------------------------
+  const MAX_UNKNOWN_POLLS = 3;
+  const UNKNOWN_POLL_INTERVAL_MS = GITHUB_UNKNOWN_POLL_INTERVAL_MS;
+
+  let mergeableState = undefined;
+
+  for (let poll = 0; poll <= MAX_UNKNOWN_POLLS; poll++) {
+    if (poll > 0) {
+      await sleep(UNKNOWN_POLL_INTERVAL_MS);
+    }
+
+    try {
+      const pr = await githubGetPr(owner, repo, number);
+      if (pr.ok) {
+        mergeableState = pr.mergeableState;
+      }
+    } catch {
+      // Non-fatal — proceed without mergeable_state
+      mergeableState = undefined;
+    }
+
+    if (mergeableState !== "unknown") {
+      break;
+    }
+    // Still 'unknown' — wait and re-poll (unless we've hit the limit)
+  }
+
+  // Inspect mergeable_state and return early for terminal non-ready states.
+  if (mergeableState === "dirty") {
+    return {
+      success: false,
+      error: "merge_conflict",
+      message: "PR has merge conflicts that must be resolved before merging.",
+    };
+  }
+
+  if (mergeableState === "blocked" || mergeableState === "behind") {
+    return {
+      success: false,
+      error: "rejected_by_policy",
+      message:
+        mergeableState === "behind"
+          ? "PR is behind the base branch and blocked by branch protection (update required before merging)."
+          : "PR is blocked by branch protection (required reviews or status checks not satisfied).",
+    };
+  }
+
+  if (mergeableState === "unknown") {
+    // Still 'unknown' after all polls — GitHub hasn't finished computing mergeability
+    return {
+      success: false,
+      error: "not_ready",
+      message: "PR mergeability is still being computed by GitHub (mergeable_state: unknown). Try again shortly.",
+    };
+  }
+
+  // mergeable_state is 'clean', 'has_hooks', 'unstable', or unknown/null — proceed with merge.
+
   const methods = ["squash", "merge", "rebase"];
 
   for (const method of methods) {
@@ -518,6 +608,9 @@ async function handleToolCall(id, params) {
         content: [{ type: "text", text: result.message }],
       });
     } else {
+      // merge_conflict and blocked_by_policy are not MCP errors — the agent can act on them.
+      // not_ready and merge_failed are MCP errors (unexpected/terminal conditions).
+      const isActionable = result.error === "merge_conflict" || result.error === "blocked_by_policy";
       respond(id, {
         content: [
           {
@@ -525,7 +618,7 @@ async function handleToolCall(id, params) {
             text: JSON.stringify({ error: result.error, message: result.message }),
           },
         ],
-        isError: result.error !== "merge_conflict", // merge_conflict is not an MCP error — agent can act on it
+        isError: !isActionable,
       });
     }
   } else if (provider === "azure-devops") {

@@ -7,80 +7,25 @@ import type { AutoScaler } from '../types';
 
 /**
  * Auto-Scaler controls panel — rendered inside the SessionsPanel sidebar only when
- * the user's uiViewMode is 'looper'. Shows a form to create a new Auto-Scaler and
- * a compact list of existing Auto-Scalers with start/stop controls.
+ * the user's uiViewMode is 'looper'. Shows a compact list of existing Auto-Scalers
+ * with start/stop controls, plus a "+ New Auto-Scaler" button that opens the
+ * AutoScalerCreateView in the right-hand detail panel (see SessionsPanel).
  *
  * Props:
- *   selectedId    — currently selected auto-scaler id (controlled by SessionsPanel)
- *   onSelect      — callback when the user clicks a card (passes the auto-scaler id)
+ *   selectedId       — currently selected auto-scaler id (controlled by SessionsPanel)
+ *   onSelect         — callback when the user clicks a card (passes the auto-scaler id)
+ *   onRequestCreate  — callback when the user clicks "+ New Auto-Scaler"
  */
 export function AutoScalerPanel({
   selectedId,
   onSelect,
+  onRequestCreate,
 }: {
   selectedId: number | null;
   onSelect: (id: number) => void;
+  onRequestCreate: () => void;
 }) {
-  const { autoScalers, agents, tabs, fetchAutoScalers } = useApp();
-  const [showForm, setShowForm] = useState(false);
-  const [name, setName] = useState('');
-  const [agentName, setAgentName] = useState('');
-  const [selectedTabId, setSelectedTabId] = useState<number | null>(null);
-  const [model, setModel] = useState('');
-  const [maxConcurrency, setMaxConcurrency] = useState(5);
-  const [idleTimeoutSeconds, setIdleTimeoutSeconds] = useState(30);
-  const [formError, setFormError] = useState<string | null>(null);
-
-  const handleCreate = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setFormError(null);
-
-    if (!name.trim()) {
-      setFormError('Name is required');
-      return;
-    }
-    if (!agentName) {
-      setFormError('Agent is required');
-      return;
-    }
-    if (!selectedTabId) {
-      setFormError('At least one tab is required');
-      return;
-    }
-
-    try {
-      const res = await apiFetch('/api/autoscalers', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: name.trim(),
-          agentName,
-          tabIds: [selectedTabId],
-          model: (() => {
-            const trimmed = model.trim();
-            return trimmed && trimmed !== 'auto' ? trimmed : undefined;
-          })(),
-          maxConcurrency,
-          idleTimeoutSeconds,
-        }),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        setFormError(data.error || 'Failed to create auto-scaler');
-        return;
-      }
-      setShowForm(false);
-      setName('');
-      setAgentName('');
-      setSelectedTabId(null);
-      setModel('');
-      setMaxConcurrency(5);
-      setIdleTimeoutSeconds(30);
-      await fetchAutoScalers();
-    } catch (err) {
-      setFormError('Network error');
-    }
-  };
+  const { autoScalers } = useApp();
 
   const handleStart = async (autoScalerId: number) => {
     try {
@@ -112,77 +57,12 @@ export function AutoScalerPanel({
         <h4>Auto-Scalers</h4>
         <button
           className="btn btn-primary btn-sm"
-          onClick={() => setShowForm(!showForm)}
+          onClick={onRequestCreate}
         >
-          {showForm ? 'Cancel' : '+ New Auto-Scaler'}
+          + New Auto-Scaler
         </button>
       </div>
       <p className="autoscaler-panel-tagline">Auto-scaling pool of agent sessions that scales to match the task queue.</p>
-
-      {showForm && (
-        <form className="autoscaler-create-form" onSubmit={handleCreate}>
-          <div className="form-group">
-            <label htmlFor="autoScalerName">Name</label>
-            <input
-              id="autoScalerName"
-              type="text"
-              value={name}
-              onChange={e => setName(e.target.value)}
-              placeholder="My Auto-Scaler"
-            />
-          </div>
-          <div className="form-group">
-            <label htmlFor="autoScalerAgent">Agent</label>
-            <select id="autoScalerAgent" value={agentName} onChange={e => setAgentName(e.target.value)}>
-              <option value="">Select agent...</option>
-              {agents.map(a => (
-                <option key={a.id} value={a.name}>{a.name}</option>
-              ))}
-            </select>
-          </div>
-          <div className="form-group">
-            <label htmlFor="autoScalerTab">Tabs</label>
-            <select
-              id="autoScalerTab"
-              value={selectedTabId ?? ''}
-              onChange={e => setSelectedTabId(e.target.value ? Number(e.target.value) : null)}
-            >
-              <option value="">Select tab...</option>
-              {tabs.map(t => (
-                <option key={t.id} value={t.id}>{t.name}</option>
-              ))}
-            </select>
-          </div>
-          <div className="form-group">
-            <label htmlFor="autoScalerModel">Model (optional)</label>
-            <ModelSelect id="autoScalerModel" value={model} onChange={setModel} placeholder="e.g. claude-sonnet-4-20250514" />
-          </div>
-          <div className="form-group">
-            <label htmlFor="autoScalerMaxConcurrency">Max Concurrency (0 = unlimited)</label>
-            <input
-              id="autoScalerMaxConcurrency"
-              type="number"
-              min={0}
-              value={maxConcurrency}
-              onChange={e => setMaxConcurrency(Number(e.target.value))}
-            />
-          </div>
-          <div className="form-group">
-            <label htmlFor="autoScalerIdleTimeout">Keep-alive / idle timeout (seconds)</label>
-            <input
-              id="autoScalerIdleTimeout"
-              type="number"
-              min={0}
-              value={idleTimeoutSeconds}
-              onChange={e => setIdleTimeoutSeconds(Number(e.target.value))}
-            />
-          </div>
-          {formError && <div className="form-message error">{formError}</div>}
-          <div className="form-actions">
-            <button type="submit" className="btn btn-primary btn-sm">Create Auto-Scaler</button>
-          </div>
-        </form>
-      )}
 
       <ul className="autoscaler-list">
         {autoScalers.map(autoScaler => (
@@ -195,7 +75,7 @@ export function AutoScalerPanel({
             onStop={() => handleStop(autoScaler.id)}
           />
         ))}
-        {autoScalers.length === 0 && !showForm && (
+        {autoScalers.length === 0 && (
           <li className="autoscaler-empty-hint">No auto-scalers yet. Create one to auto-scale sessions.</li>
         )}
       </ul>
@@ -254,6 +134,152 @@ function AutoScalerCard({
         </div>
       </div>
     </li>
+  );
+}
+
+/**
+ * Create form for a new auto-scaler. Rendered in the right-hand
+ * session-detail-panel by SessionsPanel when the "+ New Auto-Scaler" button is
+ * clicked. The tab is fixed to the currently active tab (currentTabId from
+ * useApp), shown read-only rather than as a selector.
+ *
+ * Props:
+ *   onClose   — called when the user cancels; SessionsPanel returns to empty state
+ *   onCreated — called with the new auto-scaler's id after a successful create;
+ *               SessionsPanel auto-selects it in the detail panel
+ */
+export function AutoScalerCreateView({
+  onClose,
+  onCreated,
+}: {
+  onClose: () => void;
+  onCreated: (id: number) => void;
+}) {
+  const { agents, tabs, currentTabId, fetchAutoScalers } = useApp();
+  const [name, setName] = useState('');
+  const [agentName, setAgentName] = useState('');
+  const [model, setModel] = useState('');
+  const [maxConcurrency, setMaxConcurrency] = useState(5);
+  const [idleTimeoutSeconds, setIdleTimeoutSeconds] = useState(30);
+  const [formError, setFormError] = useState<string | null>(null);
+
+  const currentTabName = currentTabId != null
+    ? (tabs.find(t => t.id === currentTabId)?.name || `#${currentTabId}`)
+    : null;
+
+  const handleCreate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setFormError(null);
+
+    if (currentTabId == null) {
+      setFormError('Select a tab before creating an auto-scaler');
+      return;
+    }
+    if (!name.trim()) {
+      setFormError('Name is required');
+      return;
+    }
+    if (!agentName) {
+      setFormError('Agent is required');
+      return;
+    }
+
+    try {
+      const res = await apiFetch('/api/autoscalers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: name.trim(),
+          agentName,
+          tabIds: [currentTabId],
+          model: (() => {
+            const trimmed = model.trim();
+            return trimmed && trimmed !== 'auto' ? trimmed : undefined;
+          })(),
+          maxConcurrency,
+          idleTimeoutSeconds,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setFormError(data.error || 'Failed to create auto-scaler');
+        return;
+      }
+      const newAutoScaler = await res.json().catch(() => ({}));
+      await fetchAutoScalers();
+      onCreated(newAutoScaler.id);
+    } catch (err) {
+      setFormError('Network error');
+    }
+  };
+
+  return (
+    <div className="autoscaler-create-panel" data-testid="autoscaler-create-panel">
+      <div className="autoscaler-detail-header">
+        <div className="autoscaler-detail-title">
+          <h3>New Auto-Scaler</h3>
+        </div>
+      </div>
+      <form className="autoscaler-create-form" onSubmit={handleCreate}>
+        <div className="form-group">
+          <label htmlFor="autoScalerName">Name</label>
+          <input
+            id="autoScalerName"
+            type="text"
+            value={name}
+            onChange={e => setName(e.target.value)}
+            placeholder="My Auto-Scaler"
+          />
+        </div>
+        <div className="form-group">
+          <label htmlFor="autoScalerAgent">Agent</label>
+          <select id="autoScalerAgent" value={agentName} onChange={e => setAgentName(e.target.value)}>
+            <option value="">Select agent...</option>
+            {agents.map(a => (
+              <option key={a.id} value={a.name}>{a.name}</option>
+            ))}
+          </select>
+        </div>
+        <div className="form-group">
+          <label>Tab</label>
+          <div className="autoscaler-create-tab-display" data-testid="autoscaler-create-tab">
+            {currentTabName ?? '—'}
+          </div>
+        </div>
+        <div className="form-group">
+          <label htmlFor="autoScalerModel">Model (optional)</label>
+          <ModelSelect id="autoScalerModel" value={model} onChange={setModel} placeholder="e.g. claude-sonnet-4-20250514" />
+        </div>
+        <div className="form-group">
+          <label htmlFor="autoScalerMaxConcurrency">Max Concurrency (0 = unlimited)</label>
+          <input
+            id="autoScalerMaxConcurrency"
+            type="number"
+            min={0}
+            value={maxConcurrency}
+            onChange={e => setMaxConcurrency(Number(e.target.value))}
+          />
+        </div>
+        <div className="form-group">
+          <label htmlFor="autoScalerIdleTimeout">Keep-alive / idle timeout (seconds)</label>
+          <input
+            id="autoScalerIdleTimeout"
+            type="number"
+            min={0}
+            value={idleTimeoutSeconds}
+            onChange={e => setIdleTimeoutSeconds(Number(e.target.value))}
+          />
+        </div>
+        {currentTabId == null && (
+          <div className="form-message error">Select a tab before creating an auto-scaler</div>
+        )}
+        {formError && <div className="form-message error">{formError}</div>}
+        <div className="form-actions">
+          <button type="submit" className="btn btn-primary btn-sm" disabled={currentTabId == null}>Create Auto-Scaler</button>
+          <button type="button" className="btn btn-secondary btn-sm" onClick={onClose}>Cancel</button>
+        </div>
+      </form>
+    </div>
   );
 }
 
