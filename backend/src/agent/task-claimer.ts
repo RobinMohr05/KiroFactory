@@ -50,6 +50,7 @@ import neo4j, { type ManagedTransaction } from "neo4j-driver";
 import { readQuery, writeQuery } from "../db/connection.js";
 import type { Task } from "../types.js";
 import { getTaskById, getTasksByBranch, getTasksByGroupId } from "../db/tasks.js";
+import { getAllAgents } from "../db/agents.js";
 import { sanitizeBranchName } from "./repo-url-parser.js";
 
 // ---------------------------------------------------------------------------
@@ -473,14 +474,46 @@ export async function resetTask(
  * Used on server restart to recover tasks that were being worked on
  * when the kiro-cli process was killed (e.g., by tsx watch restarting the server).
  *
+ * Stage-aware: resets a task orphaned in ANY pipeline stage's workingState
+ * (e.g. "in-progress", "in-code-review", "in-qa" for the seeded 3-stage
+ * pipeline — derived from every :Agent's workingState, not hardcoded, so a
+ * custom/extra pipeline stage is covered automatically), not just the
+ * literal "in-progress" string. Before this fix, a task orphaned mid-review
+ * or mid-QA (its session/worker died without the normal
+ * resetTask/resolveTask path running) stayed stuck forever even across a
+ * server restart — only a task orphaned mid-development was ever recovered.
+ * Each stage resets to ITS OWN workingState's task back to "todo": this
+ * mirrors resetTask()'s normal failure path resetting to the agent's own
+ * claimState would be more precise per-stage, but "todo" is the safe,
+ * always-claimable fallback appropriate for a startup-time sweep where the
+ * original claiming agent's identity is not being tracked here — a
+ * mid-review/mid-QA task simply re-enters the front of the pipeline rather
+ * than resuming its specific stage, which is an acceptable simplification
+ * for a rare crash-recovery path (avoids the complexity of resolving which
+ * specific claimState each workingState value maps back to without a stored
+ * per-task stage pointer).
+ *
  * @returns The number of tasks that were reset.
  */
 export async function resetOrphanedTasks(): Promise<number> {
+  let workingStates = ["in-progress"];
+  try {
+    const agents = await getAllAgents();
+    const distinctWorkingStates = [...new Set(agents.map((a) => a.workingState).filter(Boolean))];
+    if (distinctWorkingStates.length > 0) {
+      workingStates = distinctWorkingStates;
+    }
+  } catch {
+    // Agent lookup failed (e.g. DB unreachable) — fall back to the single
+    // hardcoded state rather than failing the whole startup recovery sweep.
+  }
+
   return writeQuery(async (tx: ManagedTransaction) => {
     const result = await tx.run(
-      `MATCH (t:Task {state: 'in-progress'})
+      `MATCH (t:Task) WHERE t.state IN $workingStates
        SET t.state = 'todo', t.updatedAt = datetime()
-       RETURN count(t) AS resetCount`
+       RETURN count(t) AS resetCount`,
+      { workingStates }
     );
     return result.records[0].get("resetCount") as number;
   });
