@@ -80,13 +80,21 @@ describe("POST /api/auth/login account lockout", () => {
     vi.mocked(verifyPassword).mockResolvedValue(null); // always wrong password
     const app = createApp();
 
-    // The first THRESHOLD attempts return 401 (invalid credentials).
-    for (let i = 0; i < THRESHOLD; i++) {
+    // The first THRESHOLD - 1 attempts return 401 (invalid credentials, still
+    // under the threshold).
+    for (let i = 0; i < THRESHOLD - 1; i++) {
       const res = await request(app).post("/api/auth/login").send({ email: EMAIL, password: "wrong" });
       expect(res.status).toBe(401);
     }
 
-    // The next attempt is refused with 429 regardless of credentials.
+    // The attempt that crosses the threshold is itself refused with 429 —
+    // recordFailedLogin() reports the account is now locked, so the response
+    // matches the top-of-handler lockout branch instead of a misleading 401.
+    const tripping = await request(app).post("/api/auth/login").send({ email: EMAIL, password: "wrong" });
+    expect(tripping.status).toBe(429);
+    expect(tripping.headers["retry-after"]).toBe("900");
+
+    // The next attempt is still refused with 429 regardless of credentials.
     const locked = await request(app).post("/api/auth/login").send({ email: EMAIL, password: "wrong" });
     expect(locked.status).toBe(429);
     expect(locked.headers["retry-after"]).toBeDefined();

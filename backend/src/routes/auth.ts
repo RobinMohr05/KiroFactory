@@ -174,8 +174,19 @@ router.post("/login", async (req: Request, res: Response) => {
     // Verify credentials
     const user = await verifyPassword(email, password);
     if (!user) {
-      // Record the failure; the tracker locks the account once the threshold is hit.
-      recordFailedLogin(email);
+      // Record the failure; the tracker locks the account once the threshold is
+      // hit. When this very attempt crosses the threshold, surface the lockout
+      // immediately (same 429 + Retry-After shape as the top-of-handler check)
+      // instead of a misleading 401, so the locking attempt and subsequent ones
+      // respond consistently.
+      const nowLocked = recordFailedLogin(email);
+      if (nowLocked) {
+        res.setHeader("Retry-After", "900"); // 15-minute cooldown (see DEFAULT_LOCKOUT_OPTIONS)
+        res.status(429).json({
+          error: "Account temporarily locked due to too many failed login attempts. Try again later.",
+        });
+        return;
+      }
       res.status(401).json({ error: "Invalid email or password" });
       return;
     }
