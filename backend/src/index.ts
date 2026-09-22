@@ -16,6 +16,7 @@ import { isWslModeEnabled, loadWslConfig } from "./wsl-worker-spawner.js";
 import { startWslDiagnosticsCollector, stopWslDiagnosticsCollector } from "./wsl-diagnostics-collector.js";
 import { requireAuth, isPublicPath } from "./middleware/auth.js";
 import { applySecurityHeaders } from "./middleware/security-headers.js";
+import { createAuthRateLimiter, createGlobalRateLimiter } from "./middleware/rate-limit.js";
 import authRouter from "./routes/auth.js";
 import tasksRouter from "./routes/tasks.js";
 import tabsRouter from "./routes/tabs.js";
@@ -42,6 +43,15 @@ import { validateStartupSecrets } from "./config.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app = express();
+
+// Trust a single proxy hop. In production the app sits behind Azure Container
+// Apps ingress (one hop), so `req.ip`/`X-Forwarded-For` must be honored for
+// per-client IP rate limiting to work — otherwise every request appears to
+// originate from the ingress IP and the limiters below would throttle all
+// clients as one. A numeric hop count (not `true`) is the non-permissive
+// setting express-rate-limit expects, so a client can't spoof X-Forwarded-For
+// to dodge the limit.
+app.set("trust proxy", 1);
 
 // Security response headers (helmet) + remove X-Powered-By. Registered FIRST
 // so every response — including the SPA HTML served from frontend/dist — carries
@@ -82,6 +92,13 @@ function requireDb(req: Request, res: Response, next: NextFunction): void {
   next();
 }
 
+// Global rate limiter for the entire /api/* surface (OWASP A07 —
+// coding_guidelines.MD §2). A generous per-IP ceiling that only blunts abusive
+// floods, not normal interactive use. Registered before the auth guard so it
+// applies to public and authenticated routes alike. Stricter per-endpoint
+// limiters (below) protect the brute-forceable auth/webhook paths.
+app.use("/api", createGlobalRateLimiter());
+
 // Global auth guard for /api/* routes — skips public paths
 app.use("/api", (req: Request, res: Response, next: NextFunction) => {
   // Strip the /api prefix to get the relative path for public path checking
@@ -101,6 +118,15 @@ app.get("/api/health", (_req, res) => {
   });
 });
 
+// Strict rate limiter on the brute-forceable, public auth endpoints
+// (OWASP A07 — coding_guidelines.MD §2). Mounted on the exact login/register
+// paths (not the whole /api/auth router) so authenticated self-service routes
+// like /api/auth/me and /me/password aren't needlessly throttled. Registered
+// BEFORE the auth router so the limiter runs first.
+const authRateLimiter = createAuthRateLimiter();
+app.use("/api/auth/login", authRateLimiter);
+app.use("/api/auth/register", authRateLimiter);
+
 app.use("/api/auth", requireDb, authRouter);
 app.use("/api/tasks", requireDb, tasksRouter);
 app.use("/api/tabs", requireDb, tabsRouter);
@@ -114,7 +140,9 @@ app.use("/api/task-planner", requireDb, taskPlannerRouter);
 app.use("/api/task-planner-board-mcp", requireDb, taskPlannerBoardMcpRouter);
 app.use("/api/autoscalers", requireDb, autoscalersRouter);
 app.use("/api/usage", requireDb, usageRouter);
-app.use("/api/webhooks/tasks", requireDb, webhookTasksRouter);
+// Strict rate limiter on the public webhook endpoint — it's an unauthenticated
+// path (guarded only by a shared secret) that could otherwise be hammered.
+app.use("/api/webhooks/tasks", createAuthRateLimiter(), requireDb, webhookTasksRouter);
 
 // Error-handling middleware — catches unhandled errors from route handlers and logs them
 // as structured JSON for Azure Monitor (must be registered AFTER all route handlers).

@@ -8,6 +8,7 @@ import type { CreateUserInput, AuthenticatedRequest, GitProvider } from "../type
 import { GIT_PROVIDERS, isGitProvider, UI_VIEW_MODES, isUiViewMode } from "../types.js";
 import { log, toErrorFields } from "../logger.js";
 import { getJwtSecret } from "../config.js";
+import { recordFailedLogin, clearFailedLogins, isAccountLockedOut } from "../account-lockout.js";
 
 const router = Router();
 
@@ -159,12 +160,28 @@ router.post("/login", async (req: Request, res: Response) => {
       return;
     }
 
+    // Per-account lockout (OWASP A07). Complements the per-IP rate limiter on
+    // this route: refuse further attempts on an account that has already had too
+    // many consecutive failures, even from a fresh IP, until the cooldown lapses.
+    if (isAccountLockedOut(email)) {
+      res.setHeader("Retry-After", "900"); // 15-minute cooldown (see DEFAULT_LOCKOUT_OPTIONS)
+      res.status(429).json({
+        error: "Account temporarily locked due to too many failed login attempts. Try again later.",
+      });
+      return;
+    }
+
     // Verify credentials
     const user = await verifyPassword(email, password);
     if (!user) {
+      // Record the failure; the tracker locks the account once the threshold is hit.
+      recordFailedLogin(email);
       res.status(401).json({ error: "Invalid email or password" });
       return;
     }
+
+    // Successful login clears any accumulated failure count for this account.
+    clearFailedLogins(email);
 
     // Issue session token
     const token = signToken(user.id);
