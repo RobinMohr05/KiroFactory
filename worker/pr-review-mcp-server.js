@@ -167,6 +167,7 @@ function githubHeaders() {
     Accept: "application/vnd.github+json",
     "Content-Type": "application/json",
     "X-GitHub-Api-Version": "2022-11-28",
+    "User-Agent": "KiroFactory-Worker",
   };
 }
 
@@ -186,6 +187,7 @@ async function githubGraphQL(query, variables) {
     headers: {
       Authorization: `Bearer ${GITHUB_PAT}`,
       "Content-Type": "application/json",
+      "User-Agent": "KiroFactory-Worker",
     },
     body: JSON.stringify({ query, variables }),
   });
