@@ -63,6 +63,13 @@ RUN mkdir -p /workspace
 # compromise root inside the container. Hand ownership of both the app dir and
 # the clone workspace to `node` so the worker can still write to them at runtime.
 RUN chown -R node:node /app /workspace
+# Docker's USER instruction switches uid/gid but does NOT populate $HOME, so it
+# would be unset at runtime (it was /root while running as root). This image's
+# job is to run npm ci/install (uses $HOME/.npm cache) inside cloned repos and
+# spawn kiro-cli acp (reads/writes $HOME/.local config); spawn-env.js forwards
+# HOME from process.env into the child. The official node: image ships
+# /home/node owned by UID 1000.
+ENV HOME=/home/node
 USER node
 
 CMD ["node", "worker.js"]

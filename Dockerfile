@@ -78,6 +78,12 @@ EXPOSE 3500
 # COPY/npm ci steps above, so hand it to `node` before switching. This limits
 # the blast radius of any RCE in the orchestrator process.
 RUN chown -R node:node /app
+# Docker's USER instruction switches uid/gid but does NOT populate $HOME, so it
+# would be unset at runtime (it was /root while running as root). kiro-cli and
+# npm both rely on a writable $HOME (kiro-cli config, npm's $HOME/.npm cache),
+# and the local-planner path forwards HOME from process.env into the spawned
+# kiro-cli child. The official node: image ships /home/node owned by UID 1000.
+ENV HOME=/home/node
 USER node
 
 # Health check
