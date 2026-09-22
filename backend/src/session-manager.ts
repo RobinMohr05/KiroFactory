@@ -187,7 +187,7 @@ interface ContainerWorkerSpawner {
     model: string | null | undefined,
     createTasksEnabled?: boolean
   ): Promise<ContainerWorkerExecution>;
-  stop(executionName: string): Promise<void>;
+  stop(executionName: string, sessionId?: number): Promise<void>;
   status(executionName: string): Promise<ContainerWorkerStatus>;
   /** Whether this backend's MCP proxy sidecar image is configured (gates sidecar setup). */
   hasProxyImage(): boolean;
@@ -210,7 +210,7 @@ function makeAcaSpawner(config: AcaWorkerConfig): ContainerWorkerSpawner {
         model,
         createTasksEnabled
       ),
-    stop: (executionName) => stopAcaWorkerJob(config, executionName),
+    stop: (executionName, sessionId) => stopAcaWorkerJob(config, executionName, sessionId),
     status: (executionName) => getAcaWorkerJobStatus(config, executionName),
     hasProxyImage: () => !!config.proxyImage,
   };
@@ -250,7 +250,7 @@ function makeWslSpawner(config: WslWorkerConfig): ContainerWorkerSpawner {
 
       return execution;
     },
-    stop: (executionName) => stopWslWorkerJob(config, executionName),
+    stop: (executionName, _sessionId) => stopWslWorkerJob(config, executionName),
     status: (executionName) => getWslWorkerJobStatus(config, executionName),
     hasProxyImage: () => !!config.proxyImage,
   };
@@ -1625,7 +1625,7 @@ export async function stopSession(id: number): Promise<boolean> {
     const executionName = session.acaExecutionName;
     const spawner = session.containerSpawner;
     try {
-      await spawner.stop(executionName);
+      await spawner.stop(executionName, id);
     } catch (err) {
       log.warn("stop-worker-failed", {
         component: "session-manager",

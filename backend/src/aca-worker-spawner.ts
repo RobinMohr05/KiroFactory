@@ -10,6 +10,21 @@
  * in the same ACA Job revision, sharing localhost networking.
  *
  * ACA Jobs are event-driven: they scale to zero and you only pay while running.
+ *
+ * ## Secret handling
+ *
+ * Sensitive values (WORKER_SECRET, KIRO_API_KEY, GITHUB_PAT, AZURE_DEVOPS_PAT)
+ * are NOT passed as plaintext `value` entries in the per-execution env override.
+ * Doing so exposes them in `az containerapp job execution show` and the Azure
+ * Portal's execution detail blade, readable by anyone with Reader on the job.
+ *
+ * Instead, before each execution start we PATCH the job's `configuration.secrets`
+ * array to register session-scoped secrets (named `<base>-sess-<sessionId>`), then
+ * reference them via `secretRef` in the execution's container env. After stopping
+ * we remove those secrets by PATCHing the job again to clear the session entries.
+ *
+ * Session-scoped names (e.g., `kiro-api-key-sess-42`) prevent name collisions
+ * between concurrent sessions that may have different per-user credentials.
  */
 
 import { getUserKiroApiKey } from "./db/users.js";
@@ -102,6 +117,206 @@ async function getAzureAccessToken(): Promise<string> {
   const credential = new DefaultAzureCredential();
   const tokenResponse = await credential.getToken("https://management.azure.com/.default");
   return tokenResponse.token;
+}
+
+// ---------------------------------------------------------------------------
+// ACA env-var types
+// ---------------------------------------------------------------------------
+
+/**
+ * An ACA container environment variable.
+ *
+ * Exactly one of `value` or `secretRef` should be set:
+ * - `value`     — plaintext, visible in execution metadata (for non-sensitive vars).
+ * - `secretRef` — references a secret in the job's `configuration.secrets` array;
+ *                 the secret value is never returned in execution metadata.
+ */
+interface EnvironmentVar {
+  name: string;
+  value?: string;
+  secretRef?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Session-scoped secret management
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a session-scoped ACA secret name for a given base name.
+ *
+ * ACA secret names must be lowercase alphanumeric + hyphens, so we lower-case
+ * the base and append the session ID to guarantee uniqueness across concurrent
+ * sessions (each session may have different per-user credentials).
+ *
+ * Examples: workerSecretName(42) = "worker-secret-sess-42"
+ */
+function sessionSecretName(base: string, sessionId: number): string {
+  return `${base}-sess-${sessionId}`;
+}
+
+/**
+ * One secret entry in the job's `configuration.secrets` array.
+ */
+interface AcaJobSecret {
+  name: string;
+  value: string;
+}
+
+/**
+ * PATCH the job's `configuration.secrets` array.
+ *
+ * Azure Container Apps Jobs require the *full* secrets list on every PATCH —
+ * it replaces the existing list entirely. We therefore GET the current list
+ * first to preserve any existing secrets (e.g., the ACR password added by
+ * Bicep), then merge in the new entries.
+ *
+ * Note: the "Container Apps Jobs Operator" built-in role covers both
+ * `Microsoft.App/jobs/read` and `Microsoft.App/jobs/write`, so the managed
+ * identity that starts executions can also PATCH secrets.
+ */
+async function patchJobSecrets(
+  config: AcaWorkerConfig,
+  token: string,
+  secretsToMerge: AcaJobSecret[]
+): Promise<void> {
+  const apiVersion = "2024-03-01";
+  const jobUrl =
+    `https://management.azure.com/subscriptions/${config.subscriptionId}` +
+    `/resourceGroups/${config.resourceGroup}` +
+    `/providers/Microsoft.App/jobs/${config.jobName}` +
+    `?api-version=${apiVersion}`;
+
+  // GET current job definition so we can preserve existing secrets
+  const getResponse = await fetch(jobUrl, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  let existingSecrets: AcaJobSecret[] = [];
+  if (getResponse.ok) {
+    const current = await getResponse.json() as {
+      properties?: {
+        configuration?: {
+          secrets?: AcaJobSecret[];
+        };
+      };
+    };
+    existingSecrets = current.properties?.configuration?.secrets ?? [];
+  }
+  // If GET fails (e.g., RBAC issue), we proceed with only the new secrets —
+  // the start call will fail anyway if RBAC is wrong.
+
+  // Merge: new entries override any existing entry with the same name
+  const mergedSecretMap = new Map<string, AcaJobSecret>();
+  for (const s of existingSecrets) {
+    mergedSecretMap.set(s.name, s);
+  }
+  for (const s of secretsToMerge) {
+    mergedSecretMap.set(s.name, s);
+  }
+  const mergedSecrets = Array.from(mergedSecretMap.values());
+
+  const patchResponse = await fetch(jobUrl, {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      properties: {
+        configuration: {
+          secrets: mergedSecrets,
+        },
+      },
+    }),
+  });
+
+  if (!patchResponse.ok) {
+    const errorText = await patchResponse.text();
+    // Non-fatal warning — if the PATCH fails, the subsequent start will fail too
+    // (secretRef would point at a non-existent secret), so the error surfaces there.
+    console.warn(
+      `[aca-spawner] Failed to patch job secrets (HTTP ${patchResponse.status}): ${errorText.slice(0, 200)}`
+    );
+  }
+}
+
+/**
+ * Remove session-scoped secrets from the job after the execution has completed.
+ *
+ * ACA secrets can only be removed by PATCHing the full list without them — there
+ * is no single-secret delete endpoint. We set the value to an empty string rather
+ * than omitting the entry, which is the documented approach for "blanking" a secret
+ * without removing the name (Azure validates that listed secrets are non-empty on
+ * some API versions, so we omit session entries entirely from the next PATCH).
+ *
+ * Best-effort: failures are logged but do not throw, since the execution is already
+ * done and missing cleanup is preferable to an unhandled rejection here.
+ */
+async function removeSessionSecrets(
+  config: AcaWorkerConfig,
+  token: string,
+  sessionId: number
+): Promise<void> {
+  const apiVersion = "2024-03-01";
+  const jobUrl =
+    `https://management.azure.com/subscriptions/${config.subscriptionId}` +
+    `/resourceGroups/${config.resourceGroup}` +
+    `/providers/Microsoft.App/jobs/${config.jobName}` +
+    `?api-version=${apiVersion}`;
+
+  // GET current job definition
+  const getResponse = await fetch(jobUrl, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  if (!getResponse.ok) {
+    console.warn(
+      `[aca-spawner] Could not GET job to clean up session ${sessionId} secrets (HTTP ${getResponse.status})`
+    );
+    return;
+  }
+
+  const current = await getResponse.json() as {
+    properties?: {
+      configuration?: {
+        secrets?: AcaJobSecret[];
+      };
+    };
+  };
+  const existingSecrets = current.properties?.configuration?.secrets ?? [];
+
+  // Keep only secrets that are NOT session-scoped to this session
+  const sessionSuffix = `-sess-${sessionId}`;
+  const filteredSecrets = existingSecrets.filter((s) => !s.name.endsWith(sessionSuffix));
+
+  if (filteredSecrets.length === existingSecrets.length) {
+    // Nothing to remove — already cleaned up or never registered
+    return;
+  }
+
+  const patchResponse = await fetch(jobUrl, {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      properties: {
+        configuration: {
+          secrets: filteredSecrets,
+        },
+      },
+    }),
+  });
+
+  if (!patchResponse.ok) {
+    const errorText = await patchResponse.text();
+    console.warn(
+      `[aca-spawner] Failed to remove session ${sessionId} secrets (HTTP ${patchResponse.status}): ${errorText.slice(0, 200)}`
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -252,12 +467,46 @@ export async function startWorkerJob(
     `/providers/Microsoft.App/jobs/${config.jobName}/start` +
     `?api-version=${apiVersion}`;
 
-  // Build environment variables for the worker container
-  const envVars: Array<{ name: string; value: string }> = [
+  // ── Step 1: register session-scoped secrets on the job ─────────────────
+  //
+  // Sensitive values must never appear as plaintext `value` entries in the
+  // per-execution env override — they would be returned verbatim by
+  // `az containerapp job execution show` (and the equivalent ARM GET).
+  //
+  // We instead PATCH the job's configuration.secrets list with
+  // session-scoped names (e.g., "kiro-api-key-sess-42") and then reference
+  // them via secretRef in the execution. Session-scoped names prevent
+  // collisions between concurrent sessions with different per-user creds.
+  const sessionSecrets: AcaJobSecret[] = [
+    { name: sessionSecretName("worker-secret", sessionId), value: config.workerSecret },
+    { name: sessionSecretName("kiro-api-key", sessionId), value: kiroApiKey },
+  ];
+
+  // Add git credential secrets if they will be needed
+  if (gitOptions) {
+    const effectiveAdoPat = gitOptions.azureDevOpsPat || config.azureDevOpsPat;
+    if (effectiveAdoPat) {
+      sessionSecrets.push({ name: sessionSecretName("ado-pat", sessionId), value: effectiveAdoPat });
+    }
+    if (gitOptions.githubPat) {
+      sessionSecrets.push({ name: sessionSecretName("github-pat", sessionId), value: gitOptions.githubPat });
+    }
+  }
+
+  await patchJobSecrets(config, token, sessionSecrets);
+
+  // ── Step 2: build env vars — sensitive ones use secretRef ───────────────
+
+  // Helper: build a secretRef env var entry
+  function secretEnv(envName: string, secretBase: string): EnvironmentVar {
+    return { name: envName, secretRef: sessionSecretName(secretBase, sessionId) };
+  }
+
+  const envVars: EnvironmentVar[] = [
     { name: "SESSION_ID", value: String(sessionId) },
     { name: "ORCHESTRATOR_URL", value: config.orchestratorUrl },
-    { name: "WORKER_SECRET", value: config.workerSecret },
-    { name: "KIRO_API_KEY", value: kiroApiKey },
+    secretEnv("WORKER_SECRET", "worker-secret"),
+    secretEnv("KIRO_API_KEY", "kiro-api-key"),
     { name: "AGENT_NAME", value: agentName },
     { name: "AGENT_KIND", value: agentKind || "editor" },
     { name: "GIT_USER_NAME", value: config.gitUserName },
@@ -308,10 +557,12 @@ export async function startWorkerJob(
     // deployments that use a single service account for all Azure DevOps access.
     const effectiveAdoPat = gitOptions.azureDevOpsPat || config.azureDevOpsPat;
     if (effectiveAdoPat) {
-      envVars.push({ name: "AZURE_DEVOPS_PAT", value: effectiveAdoPat });
+      // Registered as a session secret above; reference via secretRef
+      envVars.push(secretEnv("AZURE_DEVOPS_PAT", "ado-pat"));
     }
     if (gitOptions.githubPat) {
-      envVars.push({ name: "GITHUB_PAT", value: gitOptions.githubPat });
+      // Registered as a session secret above; reference via secretRef
+      envVars.push(secretEnv("GITHUB_PAT", "github-pat"));
     }
   }
 
@@ -319,7 +570,7 @@ export async function startWorkerJob(
   const containers: Array<{
     name: string;
     image: string;
-    env: Array<{ name: string; value: string }>;
+    env: EnvironmentVar[];
     resources: { cpu: number; memory: string };
   }> = [
     {
@@ -335,7 +586,7 @@ export async function startWorkerJob(
 
   // Add MCP proxy sidecar container if configured
   if (mcpSidecar && config.proxyImage) {
-    const proxyEnvVars: Array<{ name: string; value: string }> = [
+    const proxyEnvVars: EnvironmentVar[] = [
       { name: "MCP_PROXY_PORT", value: "9090" },
       { name: "MCP_SERVERS_JSON_B64", value: encodeServersConfigBase64(mcpSidecar.serversConfig) },
     ];
@@ -388,13 +639,19 @@ export async function startWorkerJob(
 }
 
 /**
- * Stop/cancel a running ACA Job execution.
+ * Stop/cancel a running ACA Job execution and clean up its session-scoped secrets.
  *
  * DELETE /subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.App/jobs/{job}/executions/{exec}/stop
+ *
+ * When `sessionId` is provided, the session-scoped secrets registered by
+ * startWorkerJob (see "Secret handling" in the module doc) are removed from
+ * the job's configuration.secrets list after the execution is stopped. This
+ * is best-effort — a cleanup failure never throws.
  */
 export async function stopWorkerJob(
   config: AcaWorkerConfig,
-  executionName: string
+  executionName: string,
+  sessionId?: number
 ): Promise<void> {
   const token = await getAzureAccessToken();
   const apiVersion = "2024-03-01";
@@ -427,6 +684,16 @@ export async function stopWorkerJob(
     console.warn(
       `[aca-spawner] ${explainAcaHttpError(`stop of execution ${executionName}`, response.status, errorText, config)}`
     );
+  }
+
+  // Clean up session-scoped secrets after stopping (best-effort)
+  if (sessionId !== undefined) {
+    try {
+      await removeSessionSecrets(config, token, sessionId);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[aca-spawner] Failed to clean up session ${sessionId} secrets: ${msg}`);
+    }
   }
 }
 

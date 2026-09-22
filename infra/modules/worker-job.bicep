@@ -53,10 +53,18 @@ param tags object = {
 
 var workerImage = '${acrLoginServer}/kirofactory-worker:${workerImageTag}'
 
-// Built-in role "Container Apps Jobs Operator" — read + start/stop on ACA jobs
-// (Microsoft.App/jobs/read + Microsoft.App/jobs/*/action). Least privilege for the
-// orchestrator; do NOT use Contributor.
+// Built-in role "Container Apps Jobs Operator" — read + start/stop actions on ACA jobs
+// (Microsoft.App/jobs/read, start/action, stopExecution/action, listSecrets/action).
+// NOTE: this role does NOT include Microsoft.App/jobs/write, so it cannot be used to
+// update the job's configuration.secrets via PATCH (needed for secretRef injection).
+// We therefore grant the broader "Contributor" role — but scoped ONLY to this specific
+// job resource, not to the resource group. Contributor on one job = manage that job
+// exclusively; the identity still cannot touch any other Azure resource.
+//
+// Do NOT expand this to a resource-group-scoped or subscription-scoped grant.
 var jobsOperatorRoleId = 'b9a307c4-5aa3-4b52-ba60-2b17c136cd7b'
+// Built-in "Contributor" role — full CRUD on the job + its secrets (PATCH supported)
+var contributorRoleId = 'b24988ac-6180-42a0-ab88-20f7382dd24c'
 
 // ─── ACR Credential Reference ────────────────────────────────────────────────
 
@@ -114,15 +122,24 @@ resource workerJob 'Microsoft.App/jobs@2024-03-01' = {
 }
 
 // ─── RBAC: orchestrator → this Job (optional) ────────────────────────────────
-// Grants the orchestrator identity permission to start/stop this job. Scoped to the job
-// (least privilege). Created here — alongside the job — so ordering is guaranteed and the
+// Grants the orchestrator identity permission to start/stop AND update this job's
+// configuration (including secrets for secretRef injection). Scoped to this specific
+// job resource only — the identity cannot touch any other Azure resource.
+//
+// Previously this was "Container Apps Jobs Operator" (b9a307c4-5aa3-4b52-ba60-2b17c136cd7b),
+// but that role lacks Microsoft.App/jobs/write which is needed to PATCH the job's
+// configuration.secrets before each execution (see backend/src/aca-worker-spawner.ts
+// "Secret handling" section). "Contributor" scoped to a single resource is still
+// least-privilege in practice — narrower than Contributor on the resource group.
+//
+// Created here — alongside the job — so ordering is guaranteed and the
 // grant can never point at a non-existent job.
 
-resource jobsOperatorAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(orchestratorPrincipalId)) {
-  name: guid(workerJob.id, orchestratorPrincipalId, jobsOperatorRoleId)
+resource jobContributorAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(orchestratorPrincipalId)) {
+  name: guid(workerJob.id, orchestratorPrincipalId, contributorRoleId)
   scope: workerJob
   properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', jobsOperatorRoleId)
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', contributorRoleId)
     principalId: orchestratorPrincipalId
     principalType: 'ServicePrincipal'
   }
