@@ -39,6 +39,7 @@ import { initAutoScalers } from "./autoscaler-manager.js";
 import { apiErrorLogger, uncaughtErrorLogger } from "./middleware/error-logger.js";
 import { log } from "./logger.js";
 import { validateStartupSecrets } from "./config.js";
+import { createShutdownHandler } from "./shutdown-handler.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -352,23 +353,29 @@ async function start(): Promise<void> {
 }
 
 // ─── Graceful Shutdown ───────────────────────────────────────────────────────
+//
+// Shutdown order per coding_guidelines.MD §19:
+//   1. server.close()  — stop accepting new connections immediately.
+//   2. shutdownAllSessions / plannerPool.shutdown()  — drain in-flight work.
+//   3. closePool()  — close DB connections.
+//   4. process.exit(0)  — clean exit.
+//
+// The entire async sequence is raced against a 30s timeout. If it fires,
+// process.exit(1) is called so the OS/ACA orchestrator knows it wasn't clean.
+// A boolean flag makes the handler idempotent (double-SIGTERM is a no-op).
 
-async function shutdown(): Promise<void> {
-  log.info("shutdown", { component: "startup", msg: "Shutting down..." });
-
-  stopWslDiagnosticsCollector();
-  stopZombieDetectionSweep();
-  disarmAllScheduled();
-  await shutdownAllSessions();
-  await plannerPool.shutdown();
-  server.close();
-  try {
-    await closePool();
-  } catch {
-    // Pool may not be connected
-  }
-  process.exit(0);
-}
+const shutdown = createShutdownHandler({
+  serverClose: () => server.close(),
+  shutdownAllSessions: async () => {
+    log.info("shutdown", { component: "startup", msg: "Shutting down..." });
+    stopWslDiagnosticsCollector();
+    stopZombieDetectionSweep();
+    disarmAllScheduled();
+    await shutdownAllSessions();
+  },
+  plannerShutdown: () => plannerPool.shutdown(),
+  closePool,
+});
 
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
