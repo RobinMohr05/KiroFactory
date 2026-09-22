@@ -108,6 +108,15 @@ function setupFetchMock() {
       if (urlStr.includes("/start")) return defaultStartOk();
       if (urlStr.includes("/stop")) return defaultStopOk();
 
+      // listSecrets POST action — returns the REAL secret values. A plain GET
+      // (below) redacts them, matching real Azure behavior.
+      if (init?.method === "POST" && urlStr.includes("/listSecrets")) {
+        return new Response(JSON.stringify({ value: simulatedJobSecrets }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+
       // PATCH job (for secrets management) — update simulated state
       if (init?.method === "PATCH" && !urlStr.includes("/executions/")) {
         const body = parsedBody as Record<string, unknown> | undefined;
@@ -117,21 +126,26 @@ function setupFetchMock() {
         if (newSecrets !== undefined) {
           simulatedJobSecrets = newSecrets;
         }
+        // Real Azure redacts secret values in the PATCH response body too.
         return new Response(
           JSON.stringify({
             name: "test-worker-job",
-            properties: { configuration: { secrets: simulatedJobSecrets } },
+            properties: {
+              configuration: { secrets: simulatedJobSecrets.map((s) => ({ name: s.name, value: "" })) },
+            },
           }),
           { status: 200, headers: { "Content-Type": "application/json" } }
         );
       }
 
-      // GET job — return current simulated state
+      // GET job — return current secret NAMES with values REDACTED (as Azure does).
       if ((!init?.method || init.method === "GET") && !urlStr.includes("/executions/")) {
         return new Response(
           JSON.stringify({
             name: "test-worker-job",
-            properties: { configuration: { secrets: simulatedJobSecrets } },
+            properties: {
+              configuration: { secrets: simulatedJobSecrets.map((s) => ({ name: s.name, value: "" })) },
+            },
           }),
           { status: 200, headers: { "Content-Type": "application/json" } }
         );
@@ -514,6 +528,19 @@ describe("aca-worker-spawner — concurrent secret PATCHes must not clobber each
 
         const isJobLevel = !urlStr.includes("/executions/");
 
+        // listSecrets POST — return the REAL values, snapshotted NOW then delayed.
+        // A later-launched caller whose listSecrets fires while an earlier caller's
+        // PATCH has not yet landed therefore receives the SAME stale snapshot —
+        // exactly the read-modify-write window the race exploits.
+        if (init?.method === "POST" && urlStr.includes("/listSecrets")) {
+          const snapshot = secretsState;
+          await new Promise((r) => setTimeout(r, 50));
+          return new Response(JSON.stringify({ value: snapshot }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+
         // PATCH secrets — enforce If-Match optimistic concurrency
         if (init?.method === "PATCH" && isJobLevel) {
           const ifMatch = (init.headers as Record<string, string> | undefined)?.["If-Match"];
@@ -531,27 +558,29 @@ describe("aca-worker-spawner — concurrent secret PATCHes must not clobber each
             secretsState = newSecrets;
             etag = `W/"${Number(etag.match(/\d+/)?.[0] ?? 0) + 1}"`;
           }
+          // Redact values in the PATCH response body (as Azure does).
           return new Response(
             JSON.stringify({
               name: "job",
-              properties: { configuration: { secrets: secretsState } },
+              properties: {
+                configuration: { secrets: secretsState.map((s) => ({ name: s.name, value: "" })) },
+              },
             }),
             { status: 200, headers: { "Content-Type": "application/json", ETag: etag } }
           );
         }
 
-        // GET job — snapshot the list NOW (at request time), then delay before
-        // returning it. A later-launched caller whose GET fires while an earlier
-        // caller's PATCH has not yet landed therefore receives the SAME stale
-        // snapshot — exactly the read-modify-write window the race exploits.
+        // GET job — return the ETag with REDACTED secret values (as Azure does).
+        // The real values are resolved separately via listSecrets above.
         if ((!init?.method || init.method === "GET") && isJobLevel) {
-          const snapshot = secretsState;
           const snapshotEtag = etag;
-          await new Promise((r) => setTimeout(r, 50));
+          const snapshot = secretsState;
           return new Response(
             JSON.stringify({
               name: "job",
-              properties: { configuration: { secrets: snapshot } },
+              properties: {
+                configuration: { secrets: snapshot.map((s) => ({ name: s.name, value: "" })) },
+              },
             }),
             { status: 200, headers: { "Content-Type": "application/json", ETag: snapshotEtag } }
           );
@@ -799,5 +828,214 @@ describe("aca-worker-spawner — MCP proxy sidecar credentials use secretRef", (
 
     // All session-42 secrets (including proxy creds) removed.
     expect(simulatedJobSecrets.some((s) => s.name.endsWith("-sess-42"))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR review #1: the ARM GET redacts existing secret values, so a naive
+// read-modify-write must not re-PATCH those secrets with an empty value.
+// ---------------------------------------------------------------------------
+//
+// Regression guard for the KF-1939 PR review: a plain ARM GET on
+// Microsoft.App/jobs/{job} returns each secret's `name` but REDACTS its `value`
+// (Azure never returns secret values on GET — they're only retrievable via the
+// separate `listSecrets` POST action). If patchJobSecrets merges the redacted
+// GET result and re-PATCHes it, it clobbers pre-existing secrets like
+// `acr-password` with an empty value, breaking ACR image pulls for every
+// subsequent execution. The fix must resolve real values (via listSecrets)
+// before merging, so preserved secrets keep their true value.
+
+describe("aca-worker-spawner — GET redacts secret values (must not clobber acr-password)", () => {
+  /**
+   * Stateful ARM-like mock that mimics real Azure redaction:
+   * - GET returns secret NAMES with `value: ""` (redacted), never the real value.
+   * - The `listSecrets` POST action returns the real name/value pairs.
+   * - PATCH replaces the stored list wholesale (as ACA does).
+   */
+  function setupRedactingFetchMock(initialSecrets: Array<{ name: string; value: string }>) {
+    fetchCalls = [];
+    let secretsState = [...initialSecrets];
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit): Promise<Response> => {
+        let parsedBody: unknown = undefined;
+        if (init?.body && typeof init.body === "string") {
+          try {
+            parsedBody = JSON.parse(init.body);
+          } catch {
+            parsedBody = init.body;
+          }
+        }
+        fetchCalls.push({ method: init?.method ?? "GET", url: String(url), body: parsedBody });
+
+        const urlStr = String(url);
+        if (urlStr.includes("/start"))
+          return new Response(
+            JSON.stringify({ name: "exec", properties: { status: "Running" } }),
+            { status: 202, headers: { "Content-Type": "application/json" } }
+          );
+        if (urlStr.includes("/stop")) return new Response(null, { status: 202 });
+
+        // listSecrets POST action — returns the REAL values.
+        if (init?.method === "POST" && urlStr.includes("/listSecrets")) {
+          return new Response(JSON.stringify({ value: secretsState }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+
+        const isJobLevel = !urlStr.includes("/executions/");
+
+        // PATCH secrets — replace the list wholesale.
+        if (init?.method === "PATCH" && isJobLevel) {
+          const body = parsedBody as Record<string, unknown> | undefined;
+          const newSecrets = (
+            (body?.properties as Record<string, unknown>)?.configuration as Record<string, unknown>
+          )?.secrets as Array<{ name: string; value: string }> | undefined;
+          if (newSecrets !== undefined) {
+            secretsState = newSecrets;
+          }
+          return new Response(
+            JSON.stringify({
+              name: "job",
+              properties: { configuration: { secrets: secretsState.map((s) => ({ name: s.name, value: "" })) } },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
+        }
+
+        // GET job — REDACT the values (this is the real Azure behavior).
+        if ((!init?.method || init.method === "GET") && isJobLevel) {
+          return new Response(
+            JSON.stringify({
+              name: "job",
+              properties: {
+                configuration: { secrets: secretsState.map((s) => ({ name: s.name, value: "" })) },
+              },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
+        }
+
+        return new Response(
+          JSON.stringify({ name: "job", properties: { status: "Running" } }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      })
+    );
+
+    return { getState: () => secretsState };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getUserKiroApiKey).mockResolvedValue("per-user-kiro-key");
+  });
+
+  it("preserves the pre-existing acr-password value after registering session secrets", async () => {
+    const mock = setupRedactingFetchMock([{ name: "acr-password", value: "real-acr-pw" }]);
+
+    await startWorkerJob(baseConfig, 42, "developer-agent", 1, 900);
+
+    const acr = mock.getState().find((s) => s.name === "acr-password");
+    expect(acr, "acr-password must survive the secret PATCH").toBeDefined();
+    // The bug: acr-password gets re-PATCHed with the redacted empty value.
+    expect(acr!.value).toBe("real-acr-pw");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR review #2: a failed secret PATCH must surface as an early throw, not a
+// dangling secretRef at execution start.
+// ---------------------------------------------------------------------------
+//
+// Regression guard for the KF-1939 PR review: patchJobSecrets returns a boolean
+// (it does not throw), and if secret registration fails (e.g. jobs/write RBAC
+// gap, or exhausted 412 retries) startWorkerJob previously proceeded to POST
+// /start anyway with secretRef entries pointing at secrets that were never
+// registered. ACA then rejects the start with an opaque "secret not found"
+// error instead of the actionable RBAC message. The fix: check the result and
+// throw before the start POST.
+
+describe("aca-worker-spawner — failed secret registration surfaces early", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getUserKiroApiKey).mockResolvedValue("per-user-kiro-key");
+  });
+
+  function setupPatchFailsFetchMock(patchStatus: number) {
+    fetchCalls = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit): Promise<Response> => {
+        let parsedBody: unknown = undefined;
+        if (init?.body && typeof init.body === "string") {
+          try {
+            parsedBody = JSON.parse(init.body);
+          } catch {
+            parsedBody = init.body;
+          }
+        }
+        fetchCalls.push({ method: init?.method ?? "GET", url: String(url), body: parsedBody });
+
+        const urlStr = String(url);
+        if (urlStr.includes("/start"))
+          return new Response(
+            JSON.stringify({ name: "exec", properties: { status: "Running" } }),
+            { status: 202, headers: { "Content-Type": "application/json" } }
+          );
+        if (urlStr.includes("/stop")) return new Response(null, { status: 202 });
+
+        const isJobLevel = !urlStr.includes("/executions/");
+
+        // listSecrets — succeeds (empty list) so the merge path is reached.
+        if (init?.method === "POST" && urlStr.includes("/listSecrets")) {
+          return new Response(JSON.stringify({ value: [] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+
+        // PATCH always fails (e.g. jobs/write RBAC gap → 403).
+        if (init?.method === "PATCH" && isJobLevel) {
+          return new Response(
+            JSON.stringify({ error: { code: "AuthorizationFailed" } }),
+            { status: patchStatus, headers: { "Content-Type": "application/json" } }
+          );
+        }
+
+        // GET job — empty secrets list.
+        if ((!init?.method || init.method === "GET") && isJobLevel) {
+          return new Response(
+            JSON.stringify({ name: "job", properties: { configuration: { secrets: [] } } }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
+        }
+
+        return new Response(
+          JSON.stringify({ name: "job", properties: { status: "Running" } }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      })
+    );
+  }
+
+  it("throws before issuing the start POST when the secret PATCH fails", async () => {
+    setupPatchFailsFetchMock(403);
+
+    await expect(startWorkerJob(baseConfig, 42, "developer-agent", 1, 900)).rejects.toThrow();
+
+    // The failure must be surfaced BEFORE the start POST — no dangling-secretRef start.
+    const startCall = fetchCalls.find((c) => c.method === "POST" && c.url.includes("/start"));
+    expect(startCall).toBeUndefined();
+  });
+
+  it("the thrown error is routed through explainAcaHttpError (mentions RBAC / jobs/write)", async () => {
+    setupPatchFailsFetchMock(403);
+
+    await expect(
+      startWorkerJob(baseConfig, 42, "developer-agent", 1, 900)
+    ).rejects.toThrow(/register|secret|RBAC|jobs\/write/i);
   });
 });

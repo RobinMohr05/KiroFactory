@@ -188,17 +188,19 @@ interface AcaJobSecret {
 // The autoscaler runs a POOL of concurrent worker sessions against the SAME
 // Container Apps Job resource. Registering / removing session-scoped secrets is
 // a read-modify-write on that job's single `configuration.secrets` list
-// (GET full list → merge/filter in memory → PATCH full list). Without
-// coordination, two sessions starting (or one starting while another stops) can
-// interleave so that the losing writer merges onto a STALE snapshot and silently
-// drops the other session's just-registered secrets — whose `secretRef` then
-// dangles and the execution start fails / the worker boots without its creds.
+// (listSecrets to read the real values + GET for the ETag → merge/filter in
+// memory → PATCH full list). Without coordination, two sessions starting (or one
+// starting while another stops) can interleave so that the losing writer merges
+// onto a STALE snapshot and silently drops the other session's just-registered
+// secrets — whose `secretRef` then dangles and the execution start fails / the
+// worker boots without its creds.
 //
 // We defend against this on two levels (coding_guidelines §26):
 //   1. An in-process async mutex serialises all secret mutations for a given job
 //      within this orchestrator process (the common case — one orchestrator).
-//   2. ARM optimistic concurrency: each mutation GETs the current list + its
-//      ETag, then PATCHes with `If-Match: <etag>`. If ARM reports 412
+//   2. ARM optimistic concurrency: each mutation reads the current list (values
+//      via `listSecrets`, ETag via GET — a plain GET redacts secret values),
+//      then PATCHes with `If-Match: <etag>`. If ARM reports 412
 //      (Precondition Failed) — e.g. another orchestrator instance wrote
 //      concurrently — we re-read and re-apply, up to a bounded number of retries.
 
@@ -245,6 +247,49 @@ function jobResourceUrl(config: AcaWorkerConfig): string {
 const SECRET_MUTATION_MAX_ATTEMPTS = 5;
 
 /**
+ * Fetch the job's secrets *with their real values* via the `listSecrets` POST
+ * action.
+ *
+ * A plain ARM `GET` on `Microsoft.App/jobs/{job}` returns each secret's `name`
+ * but REDACTS/omits its `value` — Azure never returns secret values on GET.
+ * The values are only retrievable via this separate `listSecrets` action
+ * (which is exactly why the "Container Apps Jobs Operator" role carries
+ * `Microsoft.App/jobs/listSecrets/action`).
+ *
+ * We need the real values because ACA requires the *full* secrets list on every
+ * PATCH (it replaces the list wholesale). Merging onto the redacted GET result
+ * would re-PATCH pre-existing secrets (e.g. the Bicep-seeded `acr-password`)
+ * with an empty value, breaking ACR image pulls for every subsequent execution.
+ *
+ * Returns the resolved list, or `null` if the action failed (so callers can
+ * abort rather than clobber the list with redacted values).
+ */
+async function listJobSecrets(
+  config: AcaWorkerConfig,
+  token: string
+): Promise<AcaJobSecret[] | null> {
+  const apiVersion = "2024-03-01";
+  const url =
+    `https://management.azure.com/subscriptions/${config.subscriptionId}` +
+    `/resourceGroups/${config.resourceGroup}` +
+    `/providers/Microsoft.App/jobs/${config.jobName}` +
+    `/listSecrets` +
+    `?api-version=${apiVersion}`;
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  if (!response.ok) {
+    return null;
+  }
+
+  const result = (await response.json()) as { value?: AcaJobSecret[] };
+  return result.value ?? [];
+}
+
+/**
  * Atomically read-modify-write the job's `configuration.secrets` list.
  *
  * Serialised per-job via {@link AsyncMutex} and guarded with ARM's `If-Match`
@@ -252,6 +297,12 @@ const SECRET_MUTATION_MAX_ATTEMPTS = 5;
  * produce the next list, then PATCH with `If-Match: <etag>`. On HTTP 412 we
  * re-read and retry (up to {@link SECRET_MUTATION_MAX_ATTEMPTS}) so a losing
  * writer re-merges onto fresh state instead of clobbering it.
+ *
+ * Because a plain GET redacts secret VALUES (Azure only returns names on GET),
+ * we resolve the current secrets' real values via the `listSecrets` action
+ * (see {@link listJobSecrets}) and pass those to `transform` — otherwise a
+ * merge would re-PATCH pre-existing secrets (e.g. `acr-password`) with empty
+ * values. The GET is still used to obtain the ETag for optimistic concurrency.
  *
  * `transform` receives the current list and returns the desired next list, or
  * `null` to indicate "no change needed" (the PATCH is then skipped).
@@ -270,7 +321,7 @@ async function mutateJobSecrets(
 
   return mutex.runExclusive(async () => {
     for (let attempt = 1; attempt <= SECRET_MUTATION_MAX_ATTEMPTS; attempt++) {
-      // ── GET current list + ETag ──────────────────────────────────────
+      // ── GET current job (for the ETag; secret values are redacted here) ──
       const getResponse = await fetch(jobUrl, {
         method: "GET",
         headers: { Authorization: `Bearer ${token}` },
@@ -285,11 +336,19 @@ async function mutateJobSecrets(
         return false;
       }
 
-      const current = (await getResponse.json()) as {
-        properties?: { configuration?: { secrets?: AcaJobSecret[] } };
-      };
-      const existingSecrets = current.properties?.configuration?.secrets ?? [];
       const etag = getResponse.headers.get("ETag") ?? undefined;
+
+      // ── Resolve the current secrets' REAL values via listSecrets ────────
+      // The GET above redacts secret values, so merging onto it would clobber
+      // pre-existing secrets (e.g. acr-password) with empty values on PATCH.
+      const existingSecrets = await listJobSecrets(config, token);
+      if (existingSecrets === null) {
+        console.warn(
+          `[aca-spawner] Could not listSecrets to ${opContext} (values redacted on GET); ` +
+            `aborting to avoid clobbering existing secrets`
+        );
+        return false;
+      }
 
       const nextSecrets = transform(existingSecrets);
       if (nextSecrets === null) {
@@ -352,13 +411,19 @@ async function mutateJobSecrets(
  * orchestrator's managed identity therefore needs a role that includes
  * `jobs/write` — see `infra/modules/worker-job.bicep`, which assigns
  * "Contributor" scoped to this single job for exactly this reason.
+ *
+ * Returns `true` if the merge PATCH succeeded, `false` otherwise (GET/listSecrets
+ * failure, PATCH failure, or exhausted 412 retries). Callers MUST check this and
+ * refuse to start the execution on `false` — otherwise the start body's
+ * `secretRef` entries would dangle (point at secrets that were never registered)
+ * and ACA would reject the start with an opaque "secret not found" error.
  */
 async function patchJobSecrets(
   config: AcaWorkerConfig,
   token: string,
   secretsToMerge: AcaJobSecret[]
-): Promise<void> {
-  await mutateJobSecrets(
+): Promise<boolean> {
+  return mutateJobSecrets(
     config,
     token,
     (existingSecrets) => {
@@ -603,7 +668,24 @@ export async function startWorkerJob(
     }
   }
 
-  await patchJobSecrets(config, token, sessionSecrets);
+  const registered = await patchJobSecrets(config, token, sessionSecrets);
+  if (!registered) {
+    // Secret registration failed (RBAC gap on Microsoft.App/jobs/write, a
+    // listSecrets failure, or exhausted 412 retries). Do NOT proceed to /start:
+    // the env below references these secrets via secretRef, and starting with
+    // dangling refs yields an opaque "secret not found" error instead of the
+    // actionable RBAC message below. Fail fast and clearly.
+    throw new Error(
+      `Could not register session ${sessionId} secrets on ` +
+        `job "${config.jobName}" (resource group "${config.resourceGroup}", ` +
+        `subscription ${config.subscriptionId}) before starting the execution. ` +
+        `This is typically an Azure RBAC problem: the orchestrator's managed identity ` +
+        `lacks \`Microsoft.App/jobs/write\` (required to PATCH the job's configuration.secrets ` +
+        `for secretRef injection). The built-in "Container Apps Jobs Operator" role does NOT ` +
+        `include jobs/write — grant "Contributor" scoped to the job, matching ` +
+        `infra/modules/worker-job.bicep. The execution was NOT started.`
+    );
+  }
 
   // ── Step 2: build env vars — sensitive ones use secretRef ───────────────
 
