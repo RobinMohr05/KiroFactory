@@ -285,6 +285,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setTasks(prev => {
           const idx = prev.findIndex(t => t.id === message.task.id);
           if (idx !== -1) {
+            // Re-check tab membership: a task can be reassigned off the current
+            // tab (e.g. moved to another board), in which case the update
+            // arrives with a tabs array that no longer includes it — drop it.
+            const belongsToTab = message.task.tabs?.some((b: { id: number }) => b.id === currentTabIdRef.current);
+            if (!belongsToTab) return prev.filter(t => t.id !== message.task.id);
             const next = [...prev];
             next[idx] = message.task;
             return next;
