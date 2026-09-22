@@ -1,0 +1,16 @@
+# Build output & dependencies
+**/dist/
+**/build/
+**/node_modules/
+**/coverage/
+**/playwright-report/
+**/test-results/
+
+# Lockfiles & generated
+package-lock.json
+**/*.min.js
+**/*.min.css
+
+# Frontend bundled/duplicated static assets
+frontend/public/
+frontend/src/style.css
