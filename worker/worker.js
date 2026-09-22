@@ -112,9 +112,14 @@ const PERSISTENT_BRANCH_NAME = process.env.PERSISTENT_BRANCH_NAME || "";
  * chat transcript, and the task bounces back to "todo" with no way for the
  * next agent to see what needs fixing (see steering notes on task 155).
  *
- * Reset to "0" at the start of every prompt turn in deliverPrompt() — the MCP
- * servers themselves are spawned once per session, not per turn, so nothing
- * else clears it between turns.
+ * The file uses an append-only format: each post_review_comment call appends
+ * one sentinel byte ("x"); verdict-mcp-server counts the file's byte length
+ * as the comment count. This avoids the non-atomic read-modify-write race
+ * that numeric strings had under concurrent async tool calls.
+ *
+ * Reset to "" (empty) at the start of every prompt turn in deliverPrompt() —
+ * the MCP servers themselves are spawned once per session, not per turn, so
+ * nothing else clears it between turns.
  */
 const REVIEW_MARKER_PATH = `/tmp/kirofactory-review-comments-${SESSION_ID || "local"}.count`;
 
@@ -3346,7 +3351,7 @@ function deliverPrompt(text) {
   turnVerdict = null;
   verdictToolCallId = null;
   try {
-    writeFileSync(REVIEW_MARKER_PATH, "0");
+    writeFileSync(REVIEW_MARKER_PATH, "");
   } catch (err) {
     logError("Failed to reset review-comment marker file", { error: err?.message || String(err) });
   }

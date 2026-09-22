@@ -20,7 +20,7 @@ const VALID_VERDICTS = ["resolved", "no_action_needed", "changes_requested"];
 
 /**
  * Path to the review-comment counter file shared with pr-review-mcp-server.js
- * (set by worker.js's buildMcpServers(), reset to "0" at the start of every
+ * (set by worker.js's buildMcpServers(), reset to "" at the start of every
  * turn in deliverPrompt()). Absent for editor-kind sessions, which never need
  * this check since they never report "changes_requested".
  */
@@ -28,6 +28,8 @@ const REVIEW_MARKER_PATH = process.env.REVIEW_MARKER_PATH || "";
 
 /**
  * Read how many review comments were posted so far this turn.
+ * The counter file is append-only: pr-review-mcp-server appends one sentinel
+ * byte ("x") per comment, so the file's byte length is the comment count.
  * Fails open (returns null, meaning "unknown, don't block") on any read
  * error — a missing/corrupt counter file must never make a legitimate
  * verdict call fail.
@@ -35,9 +37,8 @@ const REVIEW_MARKER_PATH = process.env.REVIEW_MARKER_PATH || "";
 function getReviewCommentCount() {
   if (!REVIEW_MARKER_PATH) return null;
   try {
-    const raw = readFileSync(REVIEW_MARKER_PATH, "utf-8").trim();
-    const n = Number(raw);
-    return Number.isFinite(n) ? n : null;
+    const raw = readFileSync(REVIEW_MARKER_PATH, "utf-8");
+    return raw.length;
   } catch {
     return null;
   }

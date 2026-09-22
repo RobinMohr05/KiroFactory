@@ -30,16 +30,18 @@
  */
 
 import { createInterface } from "node:readline";
-import { readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync } from "node:fs";
 
 const SERVER_NAME = "pr-review-mcp-server";
 const SERVER_VERSION = "1.0.0";
 
 /**
  * Path to the review-comment counter file shared with verdict-mcp-server.js
- * (set by worker.js's buildMcpServers(), reset to "0" at the start of every
- * turn in deliverPrompt()). The verdict server reads this to refuse a
+ * (set by worker.js's buildMcpServers(), reset to "" at the start of every
+ * turn in deliverPrompt()). The verdict server reads it to refuse a
  * "changes_requested" verdict when zero comments were posted this turn.
+ * Uses an append-only format: this server appends one sentinel byte ("x")
+ * per posted comment; the verdict server counts the file's byte length.
  */
 const REVIEW_MARKER_PATH = process.env.REVIEW_MARKER_PATH || "";
 
@@ -53,10 +55,13 @@ const ALLOW_RESOLVE_COMMENT = process.env.ALLOW_RESOLVE_COMMENT !== "false";
 function incrementReviewCommentCount() {
   if (!REVIEW_MARKER_PATH) return;
   try {
-    const raw = readFileSync(REVIEW_MARKER_PATH, "utf-8").trim();
-    const current = Number(raw);
-    const next = (Number.isFinite(current) ? current : 0) + 1;
-    writeFileSync(REVIEW_MARKER_PATH, String(next));
+    // Use appendFileSync so each call atomically appends one sentinel byte.
+    // This avoids the non-atomic read-modify-write race: two overlapping
+    // calls can both read the same value and each write value+1, losing an
+    // increment. With O_APPEND each write lands separately regardless of
+    // interleaving. The verdict server counts file length (number of bytes)
+    // rather than parsing a numeric value.
+    appendFileSync(REVIEW_MARKER_PATH, "x");
   } catch (err) {
     // Non-fatal — worst case the verdict guard fails open and doesn't block.
     process.stderr.write(`[pr-review-mcp-server] Failed to update comment counter: ${err?.message || err}\n`);
