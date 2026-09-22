@@ -123,6 +123,7 @@ describe("db/planner-conversations", () => {
                       shortDescription: "Add a login page",
                       createdAt: "2026-09-21T10:00:00.000Z",
                       lastMessageAt: "2026-09-21T10:00:00.000Z",
+                      taskCreated: false,
                     };
                     return data[key];
                   },
@@ -148,6 +149,7 @@ describe("db/planner-conversations", () => {
       expect(capturedCypher).toContain("PlannerConversation");
       expect(result.id).toBe(100);
       expect(result.shortDescription).toBe("Add a login page");
+      expect(result.taskCreated).toBe(false);
     });
 
     it("derives a truncated shortDescription from the first user message", async () => {
@@ -156,7 +158,7 @@ describe("db/planner-conversations", () => {
         const mockTx = {
           run: vi.fn().mockImplementation((_c: string, params: any) => {
             capturedParams = params;
-            return { records: [{ get: (k: string) => ({ id: 100, shortDescription: params.shortDescription, createdAt: "x", lastMessageAt: "x" } as any)[k] }] };
+            return { records: [{ get: (k: string) => ({ id: 100, shortDescription: params.shortDescription, createdAt: "x", lastMessageAt: "x", taskCreated: false } as any)[k] }] };
           }),
         };
         return fn(mockTx);
@@ -213,8 +215,8 @@ describe("db/planner-conversations", () => {
     it("returns conversations for a user, newest first", async () => {
       let capturedCypher = "";
       const rows = [
-        { id: 2, shortDescription: "Newer", createdAt: "2026-09-21T12:00:00.000Z", lastMessageAt: "2026-09-21T12:30:00.000Z" },
-        { id: 1, shortDescription: "Older", createdAt: "2026-09-20T09:00:00.000Z", lastMessageAt: "2026-09-20T09:10:00.000Z" },
+        { id: 2, shortDescription: "Newer", createdAt: "2026-09-21T12:00:00.000Z", lastMessageAt: "2026-09-21T12:30:00.000Z", taskCreated: false },
+        { id: 1, shortDescription: "Older", createdAt: "2026-09-20T09:00:00.000Z", lastMessageAt: "2026-09-20T09:10:00.000Z", taskCreated: false },
       ];
       (readQuery as any).mockImplementation(async (fn: any) => {
         const mockTx = {
@@ -230,6 +232,8 @@ describe("db/planner-conversations", () => {
       expect(result).toHaveLength(2);
       expect(result[0].id).toBe(2);
       expect(result[1].id).toBe(1);
+      expect(result[0].taskCreated).toBe(false);
+      expect(result[1].taskCreated).toBe(false);
       // Ordering must be by lastMessageAt DESC (newest first)
       expect(capturedCypher).toContain("ORDER BY");
       expect(capturedCypher).toContain("DESC");
@@ -255,6 +259,7 @@ describe("db/planner-conversations", () => {
                     shortDescription: "Add login",
                     createdAt: "2026-09-21T10:00:00.000Z",
                     lastMessageAt: "2026-09-21T10:05:00.000Z",
+                    taskCreated: false,
                     messages: [
                       { role: "user", text: "Add login", position: 0, createdAt: "2026-09-21T10:00:00.000Z" },
                       { role: "assistant", text: "Sure", position: 1, createdAt: "2026-09-21T10:01:00.000Z" },
@@ -272,6 +277,7 @@ describe("db/planner-conversations", () => {
       const result = await getPlannerConversation(100, 1);
       expect(result).not.toBeNull();
       expect(result!.id).toBe(100);
+      expect(result!.taskCreated).toBe(false);
       expect(result!.messages).toHaveLength(2);
       expect(result!.messages[0].role).toBe("user");
       expect(result!.messages[1].role).toBe("assistant");

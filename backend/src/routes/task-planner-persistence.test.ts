@@ -257,4 +257,78 @@ describe("task-planner taskCreated flag wiring — POST /:sessionId/create-task"
 
     expect(db.markPlannerConversationTaskCreated).not.toHaveBeenCalled();
   });
+
+  it("still calls markPlannerConversationTaskCreated on partial failure (at least one task created)", async () => {
+    // Map the session to a conversation (conversationId = 42) via a first message.
+    await supertest(app)
+      .post("/api/task-planner/5/message")
+      .send({ message: "plan two features" })
+      .expect(200);
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Simulate a partial batch: first task succeeds, second throws.
+    const tasksModule = await import("../db/tasks.js");
+    (tasksModule.createTask as any)
+      .mockResolvedValueOnce({
+        id: 99,
+        title: "Good Task",
+        priority: 2,
+        type: "feature",
+        state: "todo",
+        description: "",
+        files: [],
+        origin: "user-assisted",
+        dependsOn: [],
+        isBlocked: false,
+        blockedBy: [],
+        branch: null,
+        pullRequestUrl: null,
+        groupId: null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        tabs: [{ id: 2, name: "Test Tab" }],
+      })
+      .mockRejectedValueOnce(new Error("boom"));
+
+    const res = await supertest(app)
+      .post("/api/task-planner/5/create-task")
+      .send({
+        tasks: [
+          { title: "Good Task", priority: 2, type: "feature" },
+          { title: "Bad Task", priority: 2, type: "feature" },
+        ],
+      })
+      .expect(201);
+
+    // Partial success: one created, one failed.
+    expect(res.body.created).toHaveLength(1);
+    expect(res.body.failed).toHaveLength(1);
+
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Flag must still be set — a task genuinely came from this conversation.
+    expect(db.markPlannerConversationTaskCreated).toHaveBeenCalledWith(42);
+  });
+
+  it("does NOT call markPlannerConversationTaskCreated when no task was created", async () => {
+    // Map the session to a conversation via a first message.
+    await supertest(app)
+      .post("/api/task-planner/5/message")
+      .send({ message: "plan a feature" })
+      .expect(200);
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Every task creation fails → createdTasks.length === 0.
+    const tasksModule = await import("../db/tasks.js");
+    (tasksModule.createTask as any).mockRejectedValueOnce(new Error("boom"));
+
+    await supertest(app)
+      .post("/api/task-planner/5/create-task")
+      .send({ tasks: [{ title: "Bad Task", priority: 2, type: "feature" }] })
+      .expect(201);
+
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(db.markPlannerConversationTaskCreated).not.toHaveBeenCalled();
+  });
 });

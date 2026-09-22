@@ -1122,27 +1122,28 @@ router.post("/:sessionId/create-task", async (req: Request, res: Response) => {
       }
     }
 
+    // If at least one task was created, flag the conversation durably —
+    // even on partial failure, since a task genuinely came from it.
+    // Best-effort / fire-and-forget (mirrors planner-persist-* pattern) —
+    // a flag failure must never break the response.
+    if (createdTasks.length > 0) {
+      const conversationId = sessionToConversation.get(sessionId);
+      if (conversationId !== undefined) {
+        markPlannerConversationTaskCreated(conversationId).catch((err) => {
+          log.warn("planner-task-created-flag-failed", {
+            component: "task-planner",
+            sessionId,
+            conversationId,
+            ...toErrorFields(err),
+            msg: "Failed to set taskCreated flag on planner conversation",
+          });
+        });
+      }
+    }
+
     // Only clean up the planner session on full success — partial failure
     // leaves the session open so the user can see failures in the modal.
     if (failedTasks.length === 0) {
-      // If at least one task was created, flag the conversation durably.
-      // Best-effort / fire-and-forget (mirrors planner-persist-* pattern) —
-      // a flag failure must never break the response.
-      if (createdTasks.length > 0) {
-        const conversationId = sessionToConversation.get(sessionId);
-        if (conversationId !== undefined) {
-          markPlannerConversationTaskCreated(conversationId).catch((err) => {
-            log.warn("planner-task-created-flag-failed", {
-              component: "task-planner",
-              sessionId,
-              conversationId,
-              ...toErrorFields(err),
-              msg: "Failed to set taskCreated flag on planner conversation",
-            });
-          });
-        }
-      }
-
       try {
         await stopSession(sessionId);
         deleteSession(sessionId);
