@@ -12,7 +12,9 @@ import type { AutoScaler } from '../types';
  * AutoScalerCreateView in the right-hand detail panel (see SessionsPanel).
  *
  * Props:
- *   selectedId       — currently selected auto-scaler id (controlled by SessionsPanel)
+ *   selectedId       — currently selected auto-scaler id, or 'new' when the create
+ *                       form is open, or null when nothing is selected (controlled
+ *                       by SessionsPanel)
  *   onSelect         — callback when the user clicks a card (passes the auto-scaler id)
  *   onRequestCreate  — callback when the user clicks "+ New Auto-Scaler"
  */
@@ -21,7 +23,7 @@ export function AutoScalerPanel({
   onSelect,
   onRequestCreate,
 }: {
-  selectedId: number | null;
+  selectedId: number | 'new' | null;
   onSelect: (id: number) => void;
   onRequestCreate: () => void;
 }) {
