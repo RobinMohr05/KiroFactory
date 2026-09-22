@@ -54,6 +54,7 @@ vi.mock("../logger.js", () => ({
 }));
 
 import { createTask, updateTask } from "../db/tasks.js";
+import { getAllTabs } from "../db/tabs.js";
 import tasksRouter from "./tasks.js";
 import {
   TASK_TYPES,
@@ -173,6 +174,29 @@ describe("POST /api/tasks validation", () => {
 
     expect(res.status).toBe(201);
     expect(createTask).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("POST /api/tasks — no user tabs", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(createTask).mockResolvedValue({ id: 1 } as any);
+  });
+
+  it("returns 409 (not 500) when the user owns no tabs and no tabIds are provided", async () => {
+    // A task must belong to at least one tab (createTask throws otherwise to
+    // prevent orphaned tasks). When the user owns no tabs and provides none,
+    // the route should surface an actionable 409 rather than letting createTask
+    // throw into the generic 500 path — mirroring POST /api/errors/:id/create-task.
+    vi.mocked(getAllTabs).mockResolvedValueOnce([]);
+    const app = createApp();
+    const res = await request(app)
+      .post("/api/tasks")
+      .send({ title: "T", priority: 2, type: "bug" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/board\/tab/i);
+    expect(createTask).not.toHaveBeenCalled();
   });
 });
 
