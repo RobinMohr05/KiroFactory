@@ -277,8 +277,16 @@ export function handleConnection(socket) {
         }
       });
 
-      // If there was data after the handshake newline, forward it to the MCP server
-      if (remainder.length > 0) {
+      // Attach an error handler on stdin so that write-after-end / EPIPE errors
+      // never become unhandled 'error' events that crash the proxy process.
+      serverProc.stdin.on("error", (err) => {
+        log("debug", `MCP server "${serverName}" stdin error: ${err.message}`);
+      });
+
+      // If there was data after the handshake newline, forward it to the MCP
+      // server — but only if stdin is still writable (the process may have
+      // died immediately after spawn, making its stdin non-writable).
+      if (remainder.length > 0 && serverProc.stdin.writable) {
         serverProc.stdin.write(remainder);
       }
     } else {
