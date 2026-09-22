@@ -101,6 +101,27 @@ describe('renderPlannerMarkdown', () => {
       const result = renderPlannerMarkdown('[click](https://example.com/path?a=1&b=2)');
       expect(result).toContain('href="https://example.com/path?a=1&amp;b=2"');
     });
+
+    it('does not inject raw HTML smuggled through link text', () => {
+      // marked v15 passes the RAW markdown source as Tokens.Link.text; if the
+      // renderer interpolates it directly, HTML in the link text executes when
+      // the output is injected via dangerouslySetInnerHTML.
+      const result = renderPlannerMarkdown(
+        '[<img src=x onerror=alert(document.cookie)>](https://example.com)',
+      );
+      // The image tag must not survive as live HTML — its angle brackets must
+      // be escaped so it renders as inert text, not an executable element.
+      expect(result).not.toContain('<img');
+      expect(result).toContain('&lt;img');
+      // The anchor itself should still be produced
+      expect(result).toContain('href="https://example.com"');
+    });
+
+    it('escapes angle brackets in link text', () => {
+      const result = renderPlannerMarkdown('[<b>bold</b>](https://example.com)');
+      expect(result).not.toContain('<b>bold</b>');
+      expect(result).toContain('&lt;b&gt;');
+    });
   });
 
   describe('stripped elements', () => {
