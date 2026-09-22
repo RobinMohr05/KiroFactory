@@ -151,8 +151,23 @@ function mapRecordToSession(record: Neo4jRecord): Session {
         }))
       : undefined;
 
-  const rawMcpServers: unknown[] | undefined =
-    rawMcpServersJson.length > 0 ? rawMcpServersJson.map((j) => JSON.parse(j)) : undefined;
+  // Parse each stored raw-MCP-server JSON string defensively: a single
+  // corrupt/unparseable row must not throw out of the mapper and crash the
+  // whole enclosing query (session list, boot-time pool rehydration, etc.).
+  // Matches the fallback semantics in agents.ts's mapToAgent — skip the bad
+  // entry rather than throw. If nothing survives, fall back to undefined.
+  let rawMcpServers: unknown[] | undefined;
+  if (rawMcpServersJson.length > 0) {
+    const parsed: unknown[] = [];
+    for (const j of rawMcpServersJson) {
+      try {
+        parsed.push(JSON.parse(j));
+      } catch {
+        // Corrupted/unparseable — skip this entry (no server).
+      }
+    }
+    rawMcpServers = parsed.length > 0 ? parsed : undefined;
+  }
 
   let currentActivity: Activity | undefined;
   const activityType = props.activityType as Activity["type"] | undefined;
