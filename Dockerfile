@@ -43,8 +43,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl unzip ca-c
 
 # Install kiro-cli — needed for forceLocal sessions (e.g. task planner)
 # that run as local KiroRunner child processes inside the orchestrator container.
+# The installer drops the binary in root's ~/.local/bin; move it to a system-wide
+# location so the non-root `node` user (set below) can still execute it — a symlink
+# into /root wouldn't work because /root isn't traversable by other users.
 RUN curl -fsSL https://cli.kiro.dev/install | bash && \
-    ln -sf /root/.local/bin/kiro-cli /usr/local/bin/kiro-cli
+    mv /root/.local/bin/kiro-cli /usr/local/bin/kiro-cli && \
+    chmod 755 /usr/local/bin/kiro-cli
 
 # Copy root workspace files
 COPY package.json package-lock.json ./
@@ -68,6 +72,19 @@ COPY frontend/public ./frontend/public
 ENV NODE_ENV=production
 ENV PORT=3500
 EXPOSE 3500
+
+# Drop root: run the Node process as the unprivileged `node` user (UID 1000)
+# that the official node: images ship. The app dir is owned by root after the
+# COPY/npm ci steps above, so hand it to `node` before switching. This limits
+# the blast radius of any RCE in the orchestrator process.
+RUN chown -R node:node /app
+# Docker's USER instruction switches uid/gid but does NOT populate $HOME, so it
+# would be unset at runtime (it was /root while running as root). kiro-cli and
+# npm both rely on a writable $HOME (kiro-cli config, npm's $HOME/.npm cache),
+# and the local-planner path forwards HOME from process.env into the spawned
+# kiro-cli child. The official node: image ships /home/node owned by UID 1000.
+ENV HOME=/home/node
+USER node
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

@@ -11,20 +11,28 @@ FROM node:22-slim
 RUN apt-get update && apt-get install -y --no-install-recommends git curl ca-certificates unzip netcat-openbsd && \
     rm -rf /var/lib/apt/lists/*
 
-# Install kiro-cli
+# Install kiro-cli. The installer drops the binary in root's ~/.local/bin; move
+# it to a system-wide location so the non-root `node` user (set below) can still
+# execute it — a symlink into /root wouldn't work because /root isn't traversable
+# by other users.
 RUN curl -fsSL https://cli.kiro.dev/install | bash && \
-    ln -sf /root/.local/bin/kiro-cli /usr/local/bin/kiro-cli
+    mv /root/.local/bin/kiro-cli /usr/local/bin/kiro-cli && \
+    chmod 755 /usr/local/bin/kiro-cli
 
 WORKDIR /app
 
-# Install worker dependencies
-COPY package.json ./
-RUN npm install --omit=dev
+# Install worker dependencies. Use `npm ci` (not `npm install`) against the
+# worker's own committed lockfile so the build is reproducible — this installs
+# THIS image's deps, not the cloned target repo's (that happens at runtime in
+# setupRepo(), which needs devDependencies, hence no NODE_ENV=production below).
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
 
 # Copy worker script
 COPY worker.js ./
 COPY spawn-env.js ./
 COPY shared-branch-utils.js ./
+COPY workspace-utils.js ./
 COPY verdict-mcp-server.js ./
 COPY agent-error-mcp-server.js ./
 COPY task-create-mcp-server.js ./
@@ -49,5 +57,20 @@ RUN mkdir -p /workspace
 # made vitest/typescript disappear from every agent session's node_modules.
 # Nothing in worker.js itself reads process.env.NODE_ENV, so there is no
 # runtime behavior here that depends on it — do not re-add it.
+
+# Drop root: run as the unprivileged `node` user (UID 1000) shipped by the
+# official node: images. This container executes arbitrary CLONED target-repo
+# code (npm ci/test/build in setupRepo()), so running as root would give any
+# compromise root inside the container. Hand ownership of both the app dir and
+# the clone workspace to `node` so the worker can still write to them at runtime.
+RUN chown -R node:node /app /workspace
+# Docker's USER instruction switches uid/gid but does NOT populate $HOME, so it
+# would be unset at runtime (it was /root while running as root). This image's
+# job is to run npm ci/install (uses $HOME/.npm cache) inside cloned repos and
+# spawn kiro-cli acp (reads/writes $HOME/.local config); spawn-env.js forwards
+# HOME from process.env into the child. The official node: image ships
+# /home/node owned by UID 1000.
+ENV HOME=/home/node
+USER node
 
 CMD ["node", "worker.js"]

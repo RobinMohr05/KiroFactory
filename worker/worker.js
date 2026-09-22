@@ -23,6 +23,7 @@ import { mkdirSync, existsSync, writeFileSync, appendFileSync, readFileSync, unl
 import { createServer as createNetServer } from "node:net";
 import { buildGroupPrContent, findSiblingPrUrl, neutralizeIssueLinks } from "./shared-branch-utils.js";
 import { buildSpawnEnv } from "./spawn-env.js";
+import { clearWorkspaceContents } from "./workspace-utils.js";
 
 // ---------------------------------------------------------------------------
 // Configuration (from environment variables injected by orchestrator)
@@ -968,9 +969,14 @@ async function setupRepo() {
       clonedBranch = branch;
       break;
     } catch {
-      // Branch doesn't exist on remote, try next
+      // Branch doesn't exist on remote, try next. Clear the workspace's
+      // *contents* rather than removing the directory itself: the worker runs
+      // as the non-root `node` user (task #1985), which cannot recreate
+      // /workspace as a direct child of root-owned `/`, so a subsequent
+      // `git clone <url> /workspace` would fail with EACCES instead of the
+      // intended "branch not found".
       try {
-        execFileArgs("rm", ["-rf", WORKSPACE]);
+        clearWorkspaceContents(WORKSPACE);
       } catch { /* ignore cleanup errors */ }
     }
   }
