@@ -4,8 +4,8 @@ import jwt from "jsonwebtoken";
 import type { WsServerMessage, WsClientMessage } from "./types.js";
 import { startSession, stopSession, sendPrompt, getSessionOutput, getSession } from "./session-manager.js";
 import { log } from "./logger.js";
+import { JWT_SECRET } from "./config.js";
 
-const JWT_SECRET = process.env.JWT_SECRET || "vibecode-heaven-dev-secret-change-in-production";
 const COOKIE_NAME = "kf_session";
 
 // Maps each connected socket to the userId it authenticated as. Every

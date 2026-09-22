@@ -7,10 +7,10 @@ import { getUserId } from "../middleware/auth.js";
 import type { CreateUserInput, AuthenticatedRequest, GitProvider } from "../types.js";
 import { GIT_PROVIDERS, isGitProvider, UI_VIEW_MODES, isUiViewMode } from "../types.js";
 import { log, toErrorFields } from "../logger.js";
+import { JWT_SECRET } from "../config.js";
 
 const router = Router();
 
-const JWT_SECRET = process.env.JWT_SECRET || "vibecode-heaven-dev-secret-change-in-production";
 const JWT_EXPIRES_IN = "30d"; // 30-day long-lived token
 const COOKIE_NAME = "kf_session";
 const COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days in ms
