@@ -14,7 +14,16 @@ import { broadcastToUser } from "../websocket-handler.js";
 import { notifyTaskAvailable } from "../agent/task-claimer.js";
 import { requireAuth, getUserId } from "../middleware/auth.js";
 import type { CreateTaskInput, UpdateTaskInput } from "../types.js";
-import { DependencyCycleError } from "../types.js";
+import {
+  DependencyCycleError,
+  TASK_TYPES,
+  TASK_STATES,
+  TASK_ORIGINS,
+  isTaskType,
+  isTaskState,
+  isTaskOrigin,
+  isValidPriority,
+} from "../types.js";
 import { log, toErrorFields } from "../logger.js";
 
 const router = Router();
@@ -64,6 +73,18 @@ router.post("/", async (req: Request, res: Response) => {
     const input: CreateTaskInput = req.body;
     if (!input.title || !input.priority || !input.type) {
       res.status(400).json({ error: "title, priority, and type are required" });
+      return;
+    }
+    if (!isTaskType(input.type)) {
+      res.status(400).json({ error: `type must be one of: ${TASK_TYPES.join(", ")}` });
+      return;
+    }
+    if (!isValidPriority(input.priority)) {
+      res.status(400).json({ error: "priority must be an integer between 1 and 4" });
+      return;
+    }
+    if (input.origin !== undefined && !isTaskOrigin(input.origin)) {
+      res.status(400).json({ error: `origin must be one of: ${TASK_ORIGINS.join(", ")}` });
       return;
     }
 
@@ -157,6 +178,18 @@ router.put("/:id", async (req: Request, res: Response) => {
     }
 
     const input: UpdateTaskInput = req.body;
+    if (input.type !== undefined && !isTaskType(input.type)) {
+      res.status(400).json({ error: `type must be one of: ${TASK_TYPES.join(", ")}` });
+      return;
+    }
+    if (input.priority !== undefined && !isValidPriority(input.priority)) {
+      res.status(400).json({ error: "priority must be an integer between 1 and 4" });
+      return;
+    }
+    if (input.state !== undefined && !isTaskState(input.state)) {
+      res.status(400).json({ error: `state must be one of: ${TASK_STATES.join(", ")}` });
+      return;
+    }
     const task = await updateTask(id, input);
     if (!task) {
       res.status(404).json({ error: "Task not found" });

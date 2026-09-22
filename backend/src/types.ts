@@ -273,6 +273,65 @@ export interface UpdateAgentInput {
   tabIds?: number[];
 }
 
+// ─── Task domain guards ──────────────────────────────────────────────────────
+
+/** The allowed values for a task's `type`. Mirrors `Task.type`. */
+export type TaskType = "improvement" | "bug" | "feature";
+
+export const TASK_TYPES: TaskType[] = ["bug", "feature", "improvement"];
+
+export function isTaskType(value: unknown): value is TaskType {
+  return typeof value === "string" && (TASK_TYPES as string[]).includes(value);
+}
+
+/**
+ * The allowed values for a task's `state`. Mirrors the frontend `TaskState`
+ * union in frontend/src/types.ts. A task set to any value outside this domain
+ * disappears from every board column and becomes un-claimable — hence the
+ * routes reject unknown states rather than persisting them.
+ */
+export type TaskState =
+  | "todo"
+  | "in-progress"
+  | "developed"
+  | "in-code-review"
+  | "reviewed"
+  | "in-qa"
+  | "done";
+
+export const TASK_STATES: TaskState[] = [
+  "todo",
+  "in-progress",
+  "developed",
+  "in-code-review",
+  "reviewed",
+  "in-qa",
+  "done",
+];
+
+export function isTaskState(value: unknown): value is TaskState {
+  return typeof value === "string" && (TASK_STATES as string[]).includes(value);
+}
+
+/** The allowed values for a task's `origin`. Mirrors `Task.origin`. */
+export type TaskOrigin = "user" | "ai" | "user-assisted";
+
+export const TASK_ORIGINS: TaskOrigin[] = ["user", "ai", "user-assisted"];
+
+export function isTaskOrigin(value: unknown): value is TaskOrigin {
+  return typeof value === "string" && (TASK_ORIGINS as string[]).includes(value);
+}
+
+/**
+ * True when `value` is a valid task priority: an integer in the range 1–4.
+ * Mirrors the `parseValidPriority` check used by the webhook route, but as a
+ * type guard rather than a coercing parser (task routes reject invalid
+ * priorities outright instead of defaulting them).
+ */
+export function isValidPriority(value: unknown): value is 1 | 2 | 3 | 4 {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 4;
+}
+
 // ─── API Request/Response types ──────────────────────────────────────────────
 
 export interface CreateTaskInput {
