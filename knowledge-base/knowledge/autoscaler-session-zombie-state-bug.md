@@ -1,5 +1,17 @@
 # AutoScaler / Session Zombie-State Bug — No Dead-Worker Detection, No Stop Verification
 
+**Status: fixed and shipped 2026-09-22.** The heartbeat, zombie-detection, and stage-aware
+orphan-reset work described below was implemented on `bug/#1827_...` but sat unmerged for a
+while — `develop`/`main` kept running the old code, which is why the bug was still reproducing
+live (ACA job thrashing: 15-34+ concurrent `kirofactory-worker` executions for the same session
+ID observed on 2026-09-22 at both 11:57 and 13:24 UTC) well after this analysis was written.
+Verified before merging: `backend/src/tests/zombie-session-detection.test.ts` (11 tests) and
+`backend/src/tests/worker-ws-heartbeat.test.ts` (6 tests) pass, full backend suite (620 tests)
+passes, frontend build succeeds. Merged `bug/#1827_...` → `develop` (commit `7981e64`) → `main`
+(commit `9c33f4d`). Lesson reinforcing `research-first-and-knowledge-capture.md`: a fix branch
+existing with passing tests is still not evidence it's live — check whether it's actually merged
+into the deployed branch before concluding a symptom should be resolved.
+
 Investigated 2026-09-22 following a user report: "autoscalers pick up tasks, leave them in
 'doing', sessions die and tasks are left unattended; stopping an autoscaler doesn't actually
 stop its sessions."
