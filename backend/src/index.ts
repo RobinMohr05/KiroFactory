@@ -36,6 +36,7 @@ import { initScheduledSessions, disarmAll as disarmAllScheduled } from "./schedu
 import { initAutoScalers } from "./autoscaler-manager.js";
 import { apiErrorLogger, uncaughtErrorLogger } from "./middleware/error-logger.js";
 import { log } from "./logger.js";
+import { validateStartupSecrets } from "./config.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -179,6 +180,11 @@ server.on("upgrade", (req, socket, head) => {
 const PORT = Number(process.env.PORT) || 3500;
 
 async function start(): Promise<void> {
+  // Fail fast on secret misconfiguration before binding the port. In production
+  // a missing/empty JWT_SECRET throws here rather than silently falling back to
+  // a public, committed literal (which would allow session-token forgery).
+  validateStartupSecrets();
+
   // Bind the port immediately rather than waiting on DB connect + migration +
   // session restore first. Those steps talk to AuraDB over the network and can
   // legitimately take 10-20+ seconds (cold start, retries in tryConnect()) —

@@ -7,10 +7,10 @@ import { getUserId } from "../middleware/auth.js";
 import type { CreateUserInput, AuthenticatedRequest, GitProvider } from "../types.js";
 import { GIT_PROVIDERS, isGitProvider, UI_VIEW_MODES, isUiViewMode } from "../types.js";
 import { log, toErrorFields } from "../logger.js";
+import { getJwtSecret } from "../config.js";
 
 const router = Router();
 
-const JWT_SECRET = process.env.JWT_SECRET || "vibecode-heaven-dev-secret-change-in-production";
 const JWT_EXPIRES_IN = "30d"; // 30-day long-lived token
 const COOKIE_NAME = "kf_session";
 const COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days in ms
@@ -19,7 +19,7 @@ const COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days in ms
  * Signs a JWT with the user's ID.
  */
 export function signToken(userId: number): string {
-  return jwt.sign({ userId }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+  return jwt.sign({ userId }, getJwtSecret(), { expiresIn: JWT_EXPIRES_IN });
 }
 
 /**
@@ -205,7 +205,7 @@ router.get("/me", async (req: Request, res: Response) => {
 
     let payload: { userId: number };
     try {
-      payload = jwt.verify(token, JWT_SECRET) as { userId: number };
+      payload = jwt.verify(token, getJwtSecret()) as { userId: number };
     } catch {
       res.status(401).json({ error: "Invalid or expired session" });
       return;
