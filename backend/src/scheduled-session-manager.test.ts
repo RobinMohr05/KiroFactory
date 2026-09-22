@@ -9,7 +9,7 @@
  * KiroRunner / worker / DB is needed.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // scheduled-session-manager imports session-manager at module load, which
 // pulls in the DB/worker/runner layers. Mock those so the import is cheap and
@@ -88,9 +88,16 @@ vi.mock("./session-manager.js", () => ({
   recordScheduledAttemptError: vi.fn(),
 }));
 
-import { runScheduledSessionOnce, initScheduledSessions, armSession, disarmSession, disarmAll } from "./scheduled-session-manager.js";
+// Mock cron-schedule so tests can drive computeNextFireDelayMs to arbitrary
+// (including >24.8-day) delays without depending on real clock/cron math.
+vi.mock("./cron-schedule.js", () => ({
+  computeNextFireDelayMs: vi.fn().mockReturnValue(0),
+}));
+
+import { runScheduledSessionOnce, initScheduledSessions, armSession, disarmSession, disarmAll, MAX_TIMEOUT_MS } from "./scheduled-session-manager.js";
 import type { ScheduledRunDeps } from "./scheduled-session-manager.js";
-import { getScheduledSessions } from "./session-manager.js";
+import { getScheduledSessions, runOneShotTurn } from "./session-manager.js";
+import { computeNextFireDelayMs } from "./cron-schedule.js";
 
 function makeDeps(overrides: Partial<ScheduledRunDeps> = {}): ScheduledRunDeps {
   return {
@@ -242,5 +249,62 @@ describe("initScheduledSessions — arms only sessions with cronExpression AND s
     setTimeoutSpy.mockRestore();
     // Clean up the timer that was actually armed so it can't fire later.
     disarmSession(42);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// scheduleNext — setTimeout 32-bit overflow clamp/chunk (bug #2027)
+// ---------------------------------------------------------------------------
+
+describe("scheduleNext — clamps far-future delays to avoid setTimeout 32-bit overflow", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    disarmAll();
+  });
+
+  afterEach(() => {
+    disarmAll();
+    vi.useRealTimers();
+  });
+
+  it("exposes a MAX_TIMEOUT_MS that does not exceed the 32-bit setTimeout limit", () => {
+    expect(MAX_TIMEOUT_MS).toBeLessThanOrEqual(2_147_483_647);
+    expect(MAX_TIMEOUT_MS).toBeGreaterThan(0);
+  });
+
+  it("arms setTimeout with a clamped delay when the next fire is > 24.8 days away", () => {
+    // ~100 days out — well past the 2^31-1 ms (~24.8 day) signed-32-bit limit.
+    const farDelay = 100 * 24 * 60 * 60 * 1000;
+    vi.mocked(computeNextFireDelayMs).mockReturnValue(farDelay);
+
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+
+    armSession(7, "0 0 29 2 *", "UTC", 0);
+
+    expect(setTimeoutSpy).toHaveBeenCalledTimes(1);
+    const armedDelay = setTimeoutSpy.mock.calls[0][1] as number;
+    expect(armedDelay).toBeLessThanOrEqual(MAX_TIMEOUT_MS);
+    expect(armedDelay).toBeGreaterThan(0);
+
+    setTimeoutSpy.mockRestore();
+    disarmSession(7);
+  });
+
+  it("does NOT fire early: re-arms instead of running when the clamped timer elapses before the real fire time", async () => {
+    vi.useFakeTimers();
+    // ~100 days out; stays far in the future across the whole test.
+    const farDelay = 100 * 24 * 60 * 60 * 1000;
+    vi.mocked(computeNextFireDelayMs).mockReturnValue(farDelay);
+
+    armSession(8, "0 0 29 2 *", "UTC", 0);
+
+    // Advance well past the clamped ceiling but nowhere near the real fire time.
+    await vi.advanceTimersByTimeAsync(MAX_TIMEOUT_MS + 1);
+
+    // The one-shot run must NOT have happened yet — the timer should have
+    // re-armed for the remaining delay instead of firing.
+    expect(runOneShotTurn).not.toHaveBeenCalled();
+
+    disarmSession(8);
   });
 });

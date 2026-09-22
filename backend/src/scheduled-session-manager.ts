@@ -105,6 +105,19 @@ interface ScheduledEntry {
 const armed = new Map<number, ScheduledEntry>();
 
 /**
+ * Maximum delay we ever pass to a single `setTimeout` call.
+ *
+ * Node stores the delay as a signed 32-bit integer; anything above
+ * 2,147,483,647 ms (~24.8 days) overflows, triggers a TimeoutOverflowWarning,
+ * and is silently coerced to 1 ms — firing the timer almost immediately. For
+ * cron schedules whose next occurrence is further out than this (e.g.
+ * `0 0 29 2 *` — Feb 29, up to ~4 years away), we instead chunk the wait: arm
+ * at most MAX_TIMEOUT_MS at a time, re-arming (without firing) each time a
+ * capped timer elapses early, until the real fire time is actually reached.
+ */
+export const MAX_TIMEOUT_MS = 2_147_483_647;
+
+/**
  * Arm (or re-arm) the timer for a scheduled session. A session with no valid
  * cronExpression/cronTimezone is disarmed instead. Safe to call repeatedly —
  * any existing timer for the session is cleared first.
@@ -153,8 +166,16 @@ function scheduleNext(entry: ScheduledEntry): void {
   }
 
   entry.timer = setTimeout(() => {
+    // If the real fire time was further out than a single setTimeout can
+    // represent, we only waited a capped chunk. Re-arm for the remaining
+    // delay instead of firing early; only fire once we've actually reached
+    // (or passed) the target time.
+    if (delayMs > MAX_TIMEOUT_MS) {
+      if (armed.has(entry.sessionId)) scheduleNext(entry);
+      return;
+    }
     void fire(entry);
-  }, delayMs);
+  }, Math.min(delayMs, MAX_TIMEOUT_MS));
 }
 
 async function fire(entry: ScheduledEntry): Promise<void> {
