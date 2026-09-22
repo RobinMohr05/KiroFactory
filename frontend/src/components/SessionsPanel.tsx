@@ -51,7 +51,7 @@ export function SessionsPanel() {
   useEffect(() => {
     if (typeof selectedAutoScalerId !== 'number') return;
     const visibleAutoScalers = currentTabId
-      ? autoScalers.filter(a => a.tabIds.includes(Number(currentTabId)))
+      ? autoScalers.filter(a => a.tabIds.includes(currentTabId))
       : autoScalers;
     if (!visibleAutoScalers.find(a => a.id === selectedAutoScalerId)) {
       setSelectedAutoScalerId(null);
