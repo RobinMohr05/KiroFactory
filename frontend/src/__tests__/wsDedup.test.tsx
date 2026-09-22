@@ -265,6 +265,78 @@ describe('task-created dedup — WS handler', () => {
 });
 
 // ---------------------------------------------------------------------------
+// task-updated — reassignment off the current tab (task #2022)
+// ---------------------------------------------------------------------------
+
+describe('task-updated tab-membership — WS handler', () => {
+  it('removes a displayed task when it is reassigned off the current tab', async () => {
+    const stateRef = renderApp();
+    await waitFor(() => expect(stateRef.current).not.toBeNull());
+
+    const currentTabId = TASK_1.tabs![0].id;
+
+    // Select the tab first and let the tab-tasks refetch settle before we
+    // seed the task (setCurrentTabId triggers a fetchTabTasks that would
+    // otherwise clobber the list we set up).
+    act(() => {
+      stateRef.current!.setCurrentTabId(currentTabId);
+    });
+    await waitFor(() => expect(stateRef.current!.tasks).toHaveLength(0));
+
+    // The task is displayed on the current tab's board.
+    act(() => {
+      stateRef.current!.setTasks(prev => [...prev, TASK_1]);
+    });
+    await waitFor(() => expect(stateRef.current!.tasks).toHaveLength(1));
+
+    // Backend broadcasts task-updated with a tabs array that no longer
+    // includes the current tab (task moved to another board).
+    act(() => {
+      fireWsMessage({
+        type: 'task-updated',
+        task: { ...TASK_1, tabs: [{ id: 999, name: 'Other Tab' }] },
+      });
+    });
+
+    // The now-foreign task must be dropped from the board immediately.
+    await waitFor(() => {
+      expect(stateRef.current!.tasks.filter(t => t.id === TASK_1.id)).toHaveLength(0);
+    });
+    expect(stateRef.current!.tasks).toHaveLength(0);
+  });
+
+  it('keeps and updates a displayed task that still belongs to the current tab', async () => {
+    const stateRef = renderApp();
+    await waitFor(() => expect(stateRef.current).not.toBeNull());
+
+    const currentTabId = TASK_1.tabs![0].id;
+
+    act(() => {
+      stateRef.current!.setCurrentTabId(currentTabId);
+    });
+    await waitFor(() => expect(stateRef.current!.tasks).toHaveLength(0));
+
+    act(() => {
+      stateRef.current!.setTasks(prev => [...prev, TASK_1]);
+    });
+    await waitFor(() => expect(stateRef.current!.tasks).toHaveLength(1));
+
+    // task-updated that still belongs to the current tab — should update in place.
+    act(() => {
+      fireWsMessage({
+        type: 'task-updated',
+        task: { ...TASK_1, title: 'Updated title' },
+      });
+    });
+
+    await waitFor(() => {
+      expect(stateRef.current!.tasks[0]?.title).toBe('Updated title');
+    });
+    expect(stateRef.current!.tasks.filter(t => t.id === TASK_1.id)).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // session-created
 // ---------------------------------------------------------------------------
 
