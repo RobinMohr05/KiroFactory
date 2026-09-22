@@ -60,11 +60,25 @@ export default tseslint.config(
   ...tseslint.configs.recommendedTypeChecked,
 
   // Enable the type-aware parser + project service for TS files only.
+  // allowDefaultProject lets files that are not included in any tsconfig
+  // (e.g. backend/scripts/, or the ephemeral backend/eslint-fixtures/ dirs
+  // created by the ESLint behaviour tests) still be type-checked using the
+  // nearest tsconfig as a fallback, so `npm run lint -w backend` does not emit
+  // "was not found by the project service" parse errors for those files.
+  //
+  // Note: allowDefaultProject globs must not contain '**' (too wide) —
+  // single-level wildcards only. The fixture dirs are one level deep
+  // (backend/eslint-fixtures/<tmpdir>/fixture.ts), so `*/*` is sufficient.
   {
     files: ["**/*.ts", "**/*.tsx", "**/*.mts", "**/*.cts"],
     languageOptions: {
       parserOptions: {
-        projectService: true,
+        projectService: {
+          allowDefaultProject: [
+            "backend/scripts/*.ts",
+            "backend/eslint-fixtures/*/*.ts",
+          ],
+        },
         tsconfigRootDir: import.meta.dirname,
       },
     },

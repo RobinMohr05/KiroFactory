@@ -24,9 +24,22 @@ import { tmpdir } from "node:os";
 
 const rootDir = dirname(dirname(fileURLToPath(import.meta.url)));
 
-/** Lint a TS snippet written into the backend workspace so type-aware rules have a real program. */
+/**
+ * Lint a TS snippet by writing it into backend/eslint-fixtures/ (gitignored,
+ * not tracked source) so the type-aware rules have a real TypeScript program.
+ *
+ * Using a gitignored directory (rather than backend/src/) avoids two problems:
+ *  1. If the test run is killed before the `finally` block executes, a leaked
+ *     fixture directory cannot be staged or committed (it's in .gitignore).
+ *  2. Fixtures containing intentionally bad code cannot end up in the build
+ *     output (dist/) because they are outside every tsconfig include.
+ *
+ * The directory is created on first use so the parent path always exists.
+ */
 async function lintBackendSnippet(code) {
-  const dir = mkdtempSync(join(rootDir, "backend", "src", "eslint-fixture-"));
+  const fixturesBase = join(rootDir, "backend", "eslint-fixtures");
+  mkdirSync(fixturesBase, { recursive: true });
+  const dir = mkdtempSync(join(fixturesBase, "eslint-fixture-"));
   const file = join(dir, "fixture.ts");
   writeFileSync(file, code, "utf8");
   try {

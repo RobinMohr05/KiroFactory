@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "./dist-fixtures"
+  },
+  "include": ["src/**/*", "eslint-fixtures/**/*"],
+  "exclude": ["node_modules", "dist", "dist-fixtures"]
+}
