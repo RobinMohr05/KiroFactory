@@ -14,9 +14,14 @@ import prettier from "eslint-config-prettier";
  * `tsconfig.json` so the type-aware rules can locate the TS project.
  *
  * @param {string} tsconfigRootDir absolute path to the workspace root
+ * @param {string[]} [allowDefaultProject] relative globs for files that are
+ *   NOT covered by any `tsconfig.json` (root-level config files, one-off
+ *   scripts) but should still be linted via the default program. Passing a
+ *   file that IS already in a tsconfig here is an error, so this is
+ *   workspace-specific.
  * @returns {import("typescript-eslint").ConfigArray}
  */
-export function baseConfig(tsconfigRootDir) {
+export function baseConfig(tsconfigRootDir, allowDefaultProject = []) {
   return tseslint.config(
     js.configs.recommended,
     // Register the TypeScript parser/plugin (so `.ts`/`.tsx` parse and the
@@ -31,8 +36,15 @@ export function baseConfig(tsconfigRootDir) {
       languageOptions: {
         parser: tseslint.parser,
         parserOptions: {
-          // Type-aware parsing is required for `no-floating-promises`.
-          projectService: true,
+          // Type-aware parsing is required for `no-floating-promises`. The
+          // `projectService` picks up each workspace's `tsconfig.json`
+          // automatically; `allowDefaultProject` lets the handful of files
+          // that live outside that tsconfig still be linted via the default
+          // program instead of erroring out or spinning up an expensive
+          // per-file program.
+          projectService: {
+            allowDefaultProject,
+          },
           tsconfigRootDir,
         },
       },

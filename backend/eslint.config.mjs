@@ -8,7 +8,12 @@ export default [
   {
     ignores: ["dist/**", "node_modules/**"],
   },
-  ...baseConfig(import.meta.dirname),
+  ...baseConfig(import.meta.dirname, [
+    // Files that aren't in backend/tsconfig.json (which only includes src/**)
+    // but should still be linted.
+    "vitest.config.ts",
+    "scripts/*.ts",
+  ]),
   {
     languageOptions: {
       globals: {
