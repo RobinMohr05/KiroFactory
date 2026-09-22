@@ -96,27 +96,16 @@ Two contributing mechanisms, not mutually exclusive:
   a slow or failing `docker stop`/ACA stop call is invisible to the operator — the UI/DB already
   says "stopped" before the container teardown is confirmed, let alone completed.
 
-## Fix directions (not yet implemented as of this writing)
+## Fix directions (implemented as of task #1827, 2026-09-22)
 
-1. **Add WS ping/pong heartbeat** to `/internal/worker` (both directions) with a reasonable
-   timeout (e.g. 30-60s no-pong → treat as `onWorkerExited("disconnected")`). This is the
-   foundational fix — without it, every other mitigation is papering over an undetectable failure
-   mode.
-2. **Periodic runtime reconciliation**, not just startup-time: a sweep (e.g. every few minutes)
-   that cross-checks every session with `status: "running"` against its actual container/job
-   status via the spawner's `status()` method (already exists, used only during connect-wait) and
-   corrects both the session and its claimed task if the container is gone.
-3. **Make `resetOrphanedTasks()` stage-aware** — reset tasks in ANY working state whose owning
-   session is gone, not just the hardcoded `"in-progress"`. Consider driving this from the actual
-   claimState/workingState pairs of seeded agents rather than a hardcoded string.
-4. **Make `stopSession()`/`stopAutoScaler()` verify teardown**, at minimum logging (structured,
-   not `console.warn`) a clear operator-visible signal when a stop call fails, and ideally
-   confirming via a status poll that the container actually reached a terminal state before
-   reporting the stop as successful.
-5. When a session's container is found to be a zombie (health check fails) and it has a
-   `currentTaskId`, that task must be reset to its stage's `claimState` as part of the same
-   correction — this is the piece that actually closes the "task left unattended" loop for the
-   user's board.
+1. **WS ping/pong heartbeat** — Added to `worker-ws-handler.ts`'s `attachWorkerConnectionHandlers()`.
+   After a worker authenticates, a 30s/15s ping/pong heartbeat starts. No pong → `onWorkerExited(sessionId, null, "disconnected")` + `ws.terminate()`. Stopped on clean close/error. Tested via `_heartbeatForTest()` export.
+
+2. **Periodic runtime reconciliation** — `startZombieDetectionSweep()` / `stopZombieDetectionSweep()` added to `session-manager.ts`; called from `index.ts` after `initAutoScalers()`. Every 3 minutes, checks all `status: "running"` sessions with a `containerSpawner` against their actual container status via `spawner.status(executionName)`. Terminal status → mark session `"error"`, reset `currentTaskId` to `"todo"`, notify waiters.
+
+3. **`resetOrphanedTasks()` stage-awareness** — Already implemented before this task. Uses all `:Agent` `workingState` values, not just hardcoded `"in-progress"`. Tested in `task-claimer-reset-orphaned.test.ts`.
+
+4. **`stopSession()` teardown verification** — The `containerSpawner.stop()` call is now `await`ed (not fire-and-forget). Failures log via structured `log.warn("stop-worker-failed", ...)` instead of `console.warn`. The session still reports stopped on failure (best-effort), but the structured log makes failures operator-visible in Azure Monitor / log aggregation.
 
 ## How to re-check this state in the future
 

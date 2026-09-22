@@ -31,7 +31,7 @@ import usageRouter from "./routes/usage.js";
 import webhookTasksRouter from "./routes/webhook-tasks.js";
 import { runMigration } from "./db/migrate.js";
 import { tryConnect, isDbAvailable, closePool } from "./db/connection.js";
-import { shutdownAllSessions, initSessions } from "./session-manager.js";
+import { shutdownAllSessions, initSessions, startZombieDetectionSweep, stopZombieDetectionSweep } from "./session-manager.js";
 import { initScheduledSessions, disarmAll as disarmAllScheduled } from "./scheduled-session-manager.js";
 import { initAutoScalers } from "./autoscaler-manager.js";
 import { apiErrorLogger, uncaughtErrorLogger } from "./middleware/error-logger.js";
@@ -236,6 +236,14 @@ async function start(): Promise<void> {
     // pool — see autoscaler-manager.ts's initAutoScalers() doc comment.
     await initAutoScalers();
 
+    // Start the periodic zombie detection sweep: checks all 'running' sessions
+    // against their actual container/job status every 3 minutes and resets any
+    // orphaned tasks. This is the runtime complement to the startup-time
+    // resetOrphanedTasks() sweep — it catches worker deaths between restarts
+    // (e.g. WSL VM reset, container OOM-kill) that the WS heartbeat also covers
+    // per-connection but which this sweep catches for any survivors.
+    startZombieDetectionSweep();
+
     // Start the AI Task Planner conversation TTL sweeper (immediate sweep +
     // hourly). Only meaningful with a DB connection, so it lives inside the
     // isDbAvailable() guard alongside the other boot-time initializers.
@@ -290,6 +298,7 @@ async function shutdown(): Promise<void> {
   log.info("shutdown", { component: "startup", msg: "Shutting down..." });
 
   stopWslDiagnosticsCollector();
+  stopZombieDetectionSweep();
   disarmAllScheduled();
   await shutdownAllSessions();
   await plannerPool.shutdown();
