@@ -326,6 +326,10 @@ module workerJob 'worker-job.bicep' = {
     jobName: workerJobName
     replicaTimeout: workerReplicaTimeout
     orchestratorPrincipalId: containerApp.identity.principalId
+    // Pass the same worker secret that the orchestrator reads as ACA_WORKER_SECRET,
+    // so the job has it as a job-level secret that aca-worker-spawner.ts can reference
+    // via secretRef in per-execution env overrides (instead of plaintext value).
+    workerSecret: workerSecret
     tags: tags
   }
 }

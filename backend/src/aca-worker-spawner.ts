@@ -252,11 +252,39 @@ export async function startWorkerJob(
     `/providers/Microsoft.App/jobs/${config.jobName}/start` +
     `?api-version=${apiVersion}`;
 
-  // Build environment variables for the worker container
-  const envVars: Array<{ name: string; value: string }> = [
+  // ACA EnvironmentVar: either { name, value } for non-secret values, or
+  // { name, secretRef } for secrets already defined on the job's configuration.
+  // Using secretRef prevents plaintext secrets from appearing in the execution
+  // detail blade (`az containerapp job execution show` / Azure Portal), where
+  // they are visible to anyone with Reader RBAC on the job.
+  type EnvVar =
+    | { name: string; value: string; secretRef?: never }
+    | { name: string; secretRef: string; value?: never };
+
+  // Build environment variables for the worker container.
+  //
+  // WORKER_SECRET uses secretRef ("worker-secret") — it references the job-level
+  // secret defined in infra/modules/worker-job.bicep (the same static value the
+  // orchestrator reads as ACA_WORKER_SECRET). This keeps the secret out of the
+  // execution manifest visible in Azure Portal / az cli.
+  //
+  // KIRO_API_KEY, GITHUB_PAT, AZURE_DEVOPS_PAT are per-user dynamic values fetched
+  // at execution time. The ACA Jobs API does not support defining new secrets
+  // per-execution — secretRef can only reference secrets already registered on the
+  // job's configuration at deploy time, and per-user secrets are not known at deploy
+  // time. Updating job-level secrets before each start would cause race conditions
+  // across concurrent executions for different users. Until a Key Vault–based
+  // credential injection mechanism is implemented (where the worker fetches its own
+  // credentials from Key Vault at startup using managed identity), these remain
+  // plaintext value entries. Limit exposure by tightening Azure RBAC on the job
+  // resource: grant "Container Apps Jobs Operator" (not Reader or Contributor) to
+  // only the orchestrator's managed identity.
+  const envVars: EnvVar[] = [
     { name: "SESSION_ID", value: String(sessionId) },
     { name: "ORCHESTRATOR_URL", value: config.orchestratorUrl },
-    { name: "WORKER_SECRET", value: config.workerSecret },
+    // secretRef — value kept out of execution manifest; secret defined in worker-job.bicep
+    { name: "WORKER_SECRET", secretRef: "worker-secret" },
+    // plaintext — per-user dynamic value; cannot use secretRef (see note above)
     { name: "KIRO_API_KEY", value: kiroApiKey },
     { name: "AGENT_NAME", value: agentName },
     { name: "AGENT_KIND", value: agentKind || "editor" },
@@ -319,7 +347,7 @@ export async function startWorkerJob(
   const containers: Array<{
     name: string;
     image: string;
-    env: Array<{ name: string; value: string }>;
+    env: EnvVar[];
     resources: { cpu: number; memory: string };
   }> = [
     {

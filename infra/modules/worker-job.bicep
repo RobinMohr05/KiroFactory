@@ -42,6 +42,17 @@ Leave empty to deploy the job without touching RBAC (e.g. when deploying the job
 ''')
 param orchestratorPrincipalId string = ''
 
+@description('''
+Shared secret for worker ↔ orchestrator authentication (ACA_WORKER_SECRET on the orchestrator
+side, WORKER_SECRET in the worker execution). Defined here as a job-level secret so that
+aca-worker-spawner.ts can reference it via { secretRef: "worker-secret" } in per-execution
+env overrides — preventing the value from appearing in plaintext in execution detail (az
+containerapp job execution show / Azure Portal). Must match the orchestrator's ACA_WORKER_SECRET.
+Leave empty to omit (e.g. when deploying the job in isolation without setting up the secret yet).
+''')
+@secure()
+param workerSecret string = ''
+
 @description('Tags applied to resources')
 param tags object = {
   project: 'KiroFactory'
@@ -88,12 +99,25 @@ resource workerJob 'Microsoft.App/jobs@2024-03-01' = {
           passwordSecretRef: 'acr-password'
         }
       ]
-      secrets: [
-        {
-          name: 'acr-password'
-          value: acr.listCredentials().passwords[0].value
-        }
-      ]
+      secrets: concat(
+        [
+          {
+            name: 'acr-password'
+            value: acr.listCredentials().passwords[0].value
+          }
+        ],
+        // Define worker-secret as a job-level secret so per-execution env overrides
+        // can reference it via { secretRef: "worker-secret" } (see aca-worker-spawner.ts)
+        // instead of passing the raw value. Omit when workerSecret is not provided.
+        empty(workerSecret)
+          ? []
+          : [
+              {
+                name: 'worker-secret'
+                value: workerSecret
+              }
+            ]
+      )
     }
     template: {
       // Placeholder container. The orchestrator overrides image/env/resources on every
