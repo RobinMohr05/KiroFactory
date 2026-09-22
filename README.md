@@ -10,7 +10,7 @@ For the full picture (Azure resources, deploy commands, data model, troubleshoot
 ## Architecture
 
 ```
-Browser (vanilla HTML/CSS/JS)
+Browser (React + TypeScript SPA, built with Vite)
     │ HTTP + WebSocket (port 3500)
     ▼
 Express + WebSocket Server (backend/, Node.js / TypeScript)
@@ -87,9 +87,10 @@ KiroFactory/
 │   ├── README.md              ← backend-specific guide
 │   └── src/                   ← TypeScript source
 │
-├── frontend/                  ← the static web UI
+├── frontend/                  ← the React + TypeScript SPA (built with Vite)
 │   ├── README.md              ← frontend-specific guide
-│   └── public/                ← HTML/CSS/JS served by the backend
+│   ├── src/                   ← React/TSX components, router, context, hooks
+│   └── public/                ← static auxiliary pages (login.html, etc.) served by the backend
 │
 ├── worker/                    ← the Kiro session worker (ACA Job image)
 │   ├── Dockerfile             ← builds kirofactory-worker image
