@@ -76,6 +76,18 @@ const DETECTION_TIMEOUT_MS = Number(process.env.MODEL_DETECTION_TIMEOUT_MS) || 4
 let cachedModels: DetectedModel[] | null = null;
 
 /**
+ * The currently-running detection, if any. On a cache miss, overlapping
+ * callers (concurrent `GET /api/models`, `GET /api/models/diagnostics`,
+ * `getDetectedModelIds()`, or the startup `warmModelsCache()` warm-up) share
+ * this single Promise instead of each spawning their own costly `kiro-cli acp`
+ * subprocess. It is set when detection starts and cleared in a `finally` once
+ * detection settles — so a failed detection leaves nothing behind and a later
+ * caller starts a fresh attempt, mirroring the not-yet-cached behavior of
+ * `cachedModels`.
+ */
+let inFlightDetection: Promise<DetectedModel[]> | null = null;
+
+/**
  * The last detection failure detail, held for the process lifetime (reset on
  * each detection attempt). Used by GET /api/models/diagnostics to report the
  * last observed failure code without requiring a new spawn.
@@ -222,6 +234,29 @@ async function detectModelsWithRetry(
 }
 
 /**
+ * Run a model detection with in-flight deduplication. If a detection is
+ * already running (started by any caller — `GET /api/models`,
+ * `GET /api/models/diagnostics`, `getDetectedModelIds()`, or the startup
+ * warm-up), await that shared Promise instead of spawning a second
+ * `kiro-cli acp` subprocess. The in-flight Promise is cleared once it settles
+ * (success or failure) so a later caller can retry after a failure, exactly
+ * like the not-yet-populated `cachedModels`.
+ *
+ * The caller is still responsible for reading/writing `cachedModels` and for
+ * error classification — this only shares the expensive detection work.
+ */
+function detectModelsDeduped(): Promise<DetectedModel[]> {
+  if (inFlightDetection) return inFlightDetection;
+  const detection = detectModelsWithRetry().finally(() => {
+    // Clear only if this is still the current in-flight detection (it always
+    // is here, since a new one can't start until this one settles).
+    inFlightDetection = null;
+  });
+  inFlightDetection = detection;
+  return detection;
+}
+
+/**
  * Resolve the absolute path of `kiro-cli` by searching PATH entries.
  * Returns `null` if not found or if the lookup fails.
  * Never throws.
@@ -249,7 +284,7 @@ router.get("/", async (_req: Request, res: Response) => {
   lastSessionNewModelsInfo = null;
 
   try {
-    const models = await detectModelsWithRetry();
+    const models = await detectModelsDeduped();
     cachedModels = models;
     res.json({ default: "auto", models } satisfies ModelsResponse);
   } catch (err) {
@@ -314,7 +349,7 @@ router.get("/diagnostics", async (_req: Request, res: Response) => {
     // Reset last detection state before this attempt
     lastSessionNewModelsInfo = null;
     try {
-      const models = await detectModelsWithRetry();
+      const models = await detectModelsDeduped();
       cachedModels = models;
     } catch (err) {
       if (err instanceof Error && "_detectionCode" in err) {
@@ -358,7 +393,7 @@ router.get("/diagnostics", async (_req: Request, res: Response) => {
 export async function getDetectedModelIds(): Promise<string[]> {
   if (cachedModels) return cachedModels.map((m) => m.id);
   try {
-    const models = await detectModelsWithRetry();
+    const models = await detectModelsDeduped();
     cachedModels = models;
     return models.map((m) => m.id);
   } catch (err) {

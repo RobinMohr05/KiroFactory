@@ -314,6 +314,113 @@ describe("GET /api/models", () => {
   });
 });
 
+describe("in-flight detection dedup", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // A runner whose creation only resolves when we tell it to, so we can hold
+  // multiple callers in-flight simultaneously before the first completes.
+  function makeDeferredRunner(
+    availableModels: Array<{ modelId: string; name: string; description?: string | null }>
+  ) {
+    const runner = makeRunner(availableModels);
+    let resolveRunner: (r: typeof runner) => void = () => {};
+    const ready = new Promise<typeof runner>((resolve) => {
+      resolveRunner = resolve;
+    });
+    return { runner, ready, resolve: () => resolveRunner(runner) };
+  }
+
+  it("shares a single detection when two getDetectedModelIds() calls overlap", async () => {
+    const deferred = makeDeferredRunner([{ modelId: "m1", name: "Model One" }]);
+    createMock.mockReturnValue(deferred.ready);
+
+    vi.resetModules();
+    const mod = await import("./models.js");
+
+    // Two overlapping callers while detection is still pending.
+    const p1 = mod.getDetectedModelIds();
+    const p2 = mod.getDetectedModelIds();
+
+    deferred.resolve();
+    const [ids1, ids2] = await Promise.all([p1, p2]);
+
+    expect(ids1).toEqual(["m1"]);
+    expect(ids2).toEqual(["m1"]);
+    // Only ONE detection subprocess was spawned for both overlapping callers.
+    expect(createMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("shares a single detection across getDetectedModelIds() and GET /api/models", async () => {
+    const deferred = makeDeferredRunner([{ modelId: "m1", name: "Model One" }]);
+    createMock.mockReturnValue(deferred.ready);
+
+    vi.resetModules();
+    const mod = await import("./models.js");
+    const app = express();
+    app.use("/api/models", mod.default);
+
+    // Kick off the helper first (synchronously enters detection), then a
+    // request that lands while detection is still in-flight.
+    const idsPromise = mod.getDetectedModelIds();
+    const reqPromise = request(app).get("/api/models");
+
+    await new Promise((r) => setImmediate(r));
+
+    deferred.resolve();
+    const [ids, res] = await Promise.all([idsPromise, reqPromise]);
+
+    expect(ids).toEqual(["m1"]);
+    expect(res.status).toBe(200);
+    expect(res.body.models).toEqual([{ id: "m1", name: "Model One", description: null }]);
+    // Only one detection subprocess shared between the helper and the route.
+    expect(createMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("shares a single detection across getDetectedModelIds() and GET /api/models/diagnostics", async () => {
+    const deferred = makeDeferredRunner([{ modelId: "m1", name: "Model One" }]);
+    createMock.mockReturnValue(deferred.ready);
+
+    vi.resetModules();
+    const mod = await import("./models.js");
+    const app = express();
+    app.use("/api/models", mod.default);
+
+    const idsPromise = mod.getDetectedModelIds();
+    const diagPromise = request(app).get("/api/models/diagnostics");
+
+    await new Promise((r) => setImmediate(r));
+
+    deferred.resolve();
+    const [ids, diag] = await Promise.all([idsPromise, diagPromise]);
+
+    expect(ids).toEqual(["m1"]);
+    expect(diag.status).toBe(200);
+    // Only one detection subprocess shared between the helper and diagnostics.
+    expect(createMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears the in-flight promise after failure so a later caller retries", async () => {
+    // First detection fails; nothing should be cached and the in-flight promise
+    // must be cleared so a subsequent caller starts a fresh detection.
+    createMock.mockRejectedValueOnce(new Error("kiro-cli not found on PATH"));
+
+    vi.resetModules();
+    const mod = await import("./models.js");
+
+    const firstIds = await mod.getDetectedModelIds();
+    expect(firstIds).toEqual([]);
+
+    // Second caller must be able to detect again (in-flight promise cleared).
+    createMock.mockResolvedValueOnce(makeRunner([{ modelId: "m1", name: "Model One" }]));
+    const secondIds = await mod.getDetectedModelIds();
+
+    expect(createMock).toHaveBeenCalledTimes(2);
+    expect(secondIds).toEqual(["m1"]);
+  });
+});
+
 describe("GET /api/models/diagnostics", () => {
   beforeEach(() => {
     vi.clearAllMocks();
