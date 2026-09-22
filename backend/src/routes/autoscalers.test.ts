@@ -19,6 +19,15 @@ vi.mock("../autoscaler-manager.js", () => ({
 
 vi.mock("../db/autoscalers.js", () => ({
   getAutoScalerById: vi.fn(),
+  getPooledSessionIds: vi.fn(),
+}));
+
+vi.mock("../session-manager.js", () => ({
+  getSession: vi.fn(),
+}));
+
+vi.mock("../db/sessions.js", () => ({
+  getSessionFromDb: vi.fn(),
 }));
 
 vi.mock("../middleware/auth.js", () => ({
@@ -32,7 +41,9 @@ vi.mock("../logger.js", () => ({
 }));
 
 import { createAutoScalerRecord, getAllAutoScalers, startAutoScaler, stopAutoScaler, deleteAutoScalerRecord, updateAutoScalerRecord } from "../autoscaler-manager.js";
-import { getAutoScalerById } from "../db/autoscalers.js";
+import { getAutoScalerById, getPooledSessionIds } from "../db/autoscalers.js";
+import { getSession } from "../session-manager.js";
+import { getSessionFromDb } from "../db/sessions.js";
 import autoScalersRouter from "./autoscalers.js";
 
 function createApp() {
@@ -432,6 +443,96 @@ describe("AutoScaler routes", () => {
 
       expect(res.status).toBe(400);
       expect(res.body.error).toContain("agentName");
+    });
+  });
+
+  describe("GET /api/autoscalers/:id/sessions", () => {
+    const SESSION_FIXTURE = {
+      id: 10,
+      name: "pool-session-1",
+      status: "stopped" as const,
+      userId: 1,
+      agent: "developer-agent",
+      model: undefined,
+      prompt: undefined,
+      cwd: undefined,
+      interactive: false,
+      loop: true,
+      tabIds: [1],
+    };
+
+    it("returns 200 with session array for the autoscaler owner", async () => {
+      vi.mocked(getAutoScalerById).mockResolvedValue(AUTOSCALER_FIXTURE);
+      vi.mocked(getPooledSessionIds).mockResolvedValue([10]);
+      vi.mocked(getSession).mockReturnValue(SESSION_FIXTURE as any);
+
+      const res = await request(createApp()).get("/api/autoscalers/1/sessions");
+
+      expect(res.status).toBe(200);
+      expect(res.body).toHaveLength(1);
+      expect(res.body[0].id).toBe(10);
+      expect(res.body[0].name).toBe("pool-session-1");
+    });
+
+    it("returns 200 with empty array when no pooled sessions exist", async () => {
+      vi.mocked(getAutoScalerById).mockResolvedValue(AUTOSCALER_FIXTURE);
+      vi.mocked(getPooledSessionIds).mockResolvedValue([]);
+
+      const res = await request(createApp()).get("/api/autoscalers/1/sessions");
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual([]);
+    });
+
+    it("returns 404 for unknown autoscaler id", async () => {
+      vi.mocked(getAutoScalerById).mockResolvedValue(null);
+
+      const res = await request(createApp()).get("/api/autoscalers/999/sessions");
+
+      expect(res.status).toBe(404);
+    });
+
+    it("returns 404 for an autoscaler owned by another user", async () => {
+      vi.mocked(getAutoScalerById).mockResolvedValue({ ...AUTOSCALER_FIXTURE, userId: 2 });
+
+      const res = await request(createApp()).get("/api/autoscalers/1/sessions");
+
+      expect(res.status).toBe(404);
+    });
+
+    it("falls back to DB when getSession returns undefined (stopped session not in memory)", async () => {
+      vi.mocked(getAutoScalerById).mockResolvedValue(AUTOSCALER_FIXTURE);
+      vi.mocked(getPooledSessionIds).mockResolvedValue([10]);
+      vi.mocked(getSession).mockReturnValue(undefined);
+      vi.mocked(getSessionFromDb).mockResolvedValue(SESSION_FIXTURE as any);
+
+      const res = await request(createApp()).get("/api/autoscalers/1/sessions");
+
+      expect(res.status).toBe(200);
+      expect(res.body).toHaveLength(1);
+      expect(res.body[0].id).toBe(10);
+      expect(getSessionFromDb).toHaveBeenCalledWith(10);
+    });
+
+    it("omits sessions that are not found in memory or DB", async () => {
+      vi.mocked(getAutoScalerById).mockResolvedValue(AUTOSCALER_FIXTURE);
+      vi.mocked(getPooledSessionIds).mockResolvedValue([10, 11]);
+      vi.mocked(getSession).mockReturnValue(undefined);
+      vi.mocked(getSessionFromDb)
+        .mockResolvedValueOnce(SESSION_FIXTURE as any)
+        .mockResolvedValueOnce(null);
+
+      const res = await request(createApp()).get("/api/autoscalers/1/sessions");
+
+      expect(res.status).toBe(200);
+      expect(res.body).toHaveLength(1);
+      expect(res.body[0].id).toBe(10);
+    });
+
+    it("returns 400 for invalid (NaN) id", async () => {
+      const res = await request(createApp()).get("/api/autoscalers/abc/sessions");
+
+      expect(res.status).toBe(400);
     });
   });
 });
