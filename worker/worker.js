@@ -1427,6 +1427,7 @@ async function fetchExistingGitHubPullRequest(owner, repo, branchName) {
         "Authorization": `Bearer ${GITHUB_PAT}`,
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "KiroFactory-Worker",
       },
     });
     if (!response.ok) return null;
@@ -1466,6 +1467,7 @@ async function updateGitHubPullRequest(prUrl, title, body) {
           "Accept": "application/vnd.github+json",
           "Content-Type": "application/json",
           "X-GitHub-Api-Version": "2022-11-28",
+          "User-Agent": "KiroFactory-Worker",
         },
         body: JSON.stringify({ title, body }),
       }
@@ -1560,6 +1562,7 @@ async function createGitHubPullRequest(branchName) {
         "Accept": "application/vnd.github+json",
         "Content-Type": "application/json",
         "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "KiroFactory-Worker",
       },
       body: JSON.stringify({
         title,
