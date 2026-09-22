@@ -20,6 +20,8 @@ import {
   clearFailedLogins,
   isAccountLockedOut,
   __resetLockoutState,
+  __lockoutEntryCount,
+  __sweepExpiredLockouts,
 } from "../account-lockout.js";
 
 const EMAIL = "victim@example.com";
@@ -88,5 +90,43 @@ describe("Account lockout tracker", () => {
       recordFailedLogin("Victim@Example.com", opts);
     }
     expect(isAccountLockedOut("victim@example.com", opts)).toBe(true);
+  });
+
+  describe("bounded growth (reaper for failed-only emails)", () => {
+    it("evicts an expired entry on read via isAccountLockedOut", () => {
+      vi.useFakeTimers();
+      const opts = { maxAttempts: 5, lockoutMs: 60_000 };
+      recordFailedLogin("only-fails@example.com", opts);
+      expect(__lockoutEntryCount()).toBe(1);
+
+      // Advance past the cooldown window so the entry is logically dead.
+      vi.advanceTimersByTime(60_001);
+      isAccountLockedOut("only-fails@example.com", opts);
+      expect(__lockoutEntryCount()).toBe(0);
+    });
+
+    it("removes expired entries via a periodic sweep", () => {
+      vi.useFakeTimers();
+      const opts = { maxAttempts: 5, lockoutMs: 60_000 };
+      // Many distinct emails that only ever fail — an attacker's traffic.
+      for (let i = 0; i < 50; i++) {
+        recordFailedLogin(`attacker-${i}@example.com`, opts);
+      }
+      expect(__lockoutEntryCount()).toBe(50);
+
+      // Once the cooldown window elapses, a sweep must reclaim them all.
+      vi.advanceTimersByTime(60_001);
+      __sweepExpiredLockouts(opts);
+      expect(__lockoutEntryCount()).toBe(0);
+    });
+
+    it("does not evict a still-active entry during a sweep", () => {
+      vi.useFakeTimers();
+      const opts = { maxAttempts: 5, lockoutMs: 60_000 };
+      recordFailedLogin("recent@example.com", opts);
+      vi.advanceTimersByTime(30_000); // within the window
+      __sweepExpiredLockouts(opts);
+      expect(__lockoutEntryCount()).toBe(1);
+    });
   });
 });
