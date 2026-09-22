@@ -24,12 +24,16 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // Mock Azure Identity — we just need a token.
 // The module uses dynamic import("@azure/identity") internally so we must
 // mock it at the module level with vi.mock, which vitest hoists.
+//
+// Use a plain class (not vi.fn().mockImplementation) so the token stub survives
+// vi.clearAllMocks() in every describe's beforeEach and behaves deterministically
+// even when two startWorkerJob flows acquire a token concurrently (Promise.all).
 vi.mock("@azure/identity", () => {
-  const DefaultAzureCredential = vi.fn().mockImplementation(function (this: unknown) {
-    return {
-      getToken: vi.fn().mockResolvedValue({ token: "fake-azure-token" }),
-    };
-  });
+  class DefaultAzureCredential {
+    async getToken() {
+      return { token: "fake-azure-token" };
+    }
+  }
   return { DefaultAzureCredential };
 });
 
@@ -459,3 +463,165 @@ describe("aca-worker-spawner — secretRef for sensitive env vars", () => {
     expect(adoPatEntry?.value).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Concurrency: the job's shared configuration.secrets list must not be
+// clobbered when multiple sessions start (or stop) at the same time.
+//
+// Regression guard for the KF-1939 review follow-up: patchJobSecrets and
+// removeSessionSecrets do GET-merge-PATCH against the *same* job resource. The
+// autoscaler runs a pool of concurrent worker sessions, so two startWorkerJob
+// calls race against the one job. Without serialization, both read the same
+// snapshot, then the second PATCH overwrites the first session's just-added
+// secrets — so its secretRef points at a secret that no longer exists.
+//
+// These tests use a fetch mock whose GET resolves on a deferred microtask,
+// which deterministically interleaves the two flows (both would GET the shared
+// list before either PATCHes, if the flows were allowed to run concurrently).
+// ---------------------------------------------------------------------------
+
+describe("aca-worker-spawner — concurrent secret PATCHes do not clobber each other", () => {
+  /** The single shared secrets list, as the real ACA job would hold it. */
+  let sharedSecrets: Array<{ name: string; value: string }> = [];
+  let concurrentFetchCalls: FetchCall[] = [];
+  /**
+   * Barrier: how many GETs must be in flight before any GET resolves. Set to 2
+   * to force the two racing flows to BOTH read the pre-PATCH snapshot before
+   * either can PATCH — a deterministic reproduction of the read-modify-write
+   * race, independent of wall-clock timing.
+   */
+  let getBarrierSize = 1;
+
+  /**
+   * Fetch mock that models one shared job resource. The GET response is gated on
+   * a party barrier so concurrent flows deterministically observe the same
+   * pre-PATCH snapshot when getBarrierSize > 1 (see above).
+   */
+  function setupRaceFetchMock() {
+    sharedSecrets = [];
+    concurrentFetchCalls = [];
+    let pendingGets: Array<() => void> = [];
+
+    const arriveAtBarrier = (): Promise<void> =>
+      new Promise<void>((resolve) => {
+        pendingGets.push(resolve);
+        const release = () => {
+          if (pendingGets.length === 0) return;
+          const toRelease = pendingGets;
+          pendingGets = [];
+          for (const r of toRelease) r();
+        };
+        if (pendingGets.length >= getBarrierSize) {
+          release();
+        } else {
+          // Fallback: don't deadlock if the expected number of concurrent GETs
+          // never materialises — release shortly after the first arrival.
+          setTimeout(release, 50);
+        }
+      });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit): Promise<Response> => {
+        const urlStr = String(url);
+        let parsedBody: unknown = undefined;
+        if (init?.body && typeof init.body === "string") {
+          try {
+            parsedBody = JSON.parse(init.body);
+          } catch {
+            parsedBody = init.body;
+          }
+        }
+        concurrentFetchCalls.push({ method: init?.method ?? "GET", url: urlStr, body: parsedBody });
+
+        if (urlStr.includes("/start")) {
+          return new Response(
+            JSON.stringify({ name: "exec-1", properties: { status: "Running" } }),
+            { status: 202, headers: { "Content-Type": "application/json" } }
+          );
+        }
+
+        // PATCH job secrets — replaces the shared list entirely (as ACA does).
+        if (init?.method === "PATCH" && !urlStr.includes("/executions/")) {
+          const newSecrets = (
+            ((parsedBody as Record<string, unknown>)?.properties as Record<string, unknown>)
+              ?.configuration as Record<string, unknown>
+          )?.secrets as Array<{ name: string; value: string }> | undefined;
+          if (newSecrets !== undefined) sharedSecrets = newSecrets;
+          return new Response(
+            JSON.stringify({ properties: { configuration: { secrets: sharedSecrets } } }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
+        }
+
+        // GET job — gate on the barrier so racing flows read the same snapshot.
+        if ((!init?.method || init.method === "GET") && !urlStr.includes("/executions/")) {
+          await arriveAtBarrier();
+          const snapshot = [...sharedSecrets];
+          return new Response(
+            JSON.stringify({ properties: { configuration: { secrets: snapshot } } }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
+        }
+
+        return new Response(JSON.stringify({ properties: { status: "Running" } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      })
+    );
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getUserKiroApiKey).mockResolvedValue("per-user-kiro-key");
+    getBarrierSize = 1;
+    setupRaceFetchMock();
+  });
+
+  it("two concurrent startWorkerJob calls both leave their secrets on the job", async () => {
+    // Both flows must read the shared secrets list before either writes it back:
+    // the 2-party GET barrier guarantees that interleaving deterministically.
+    getBarrierSize = 2;
+
+    await Promise.all([
+      startWorkerJob(baseConfig, 42, "developer-agent", 1, 900),
+      startWorkerJob(baseConfig, 99, "developer-agent", 1, 900),
+    ]);
+
+    const names = sharedSecrets.map((s) => s.name);
+
+    // Both sessions' secrets must survive — neither may have been clobbered.
+    expect(names).toContain(sessionName("worker-secret", 42));
+    expect(names).toContain(sessionName("kiro-api-key", 42));
+    expect(names).toContain(sessionName("worker-secret", 99));
+    expect(names).toContain(sessionName("kiro-api-key", 99));
+  });
+
+  it("a concurrent stop does not clobber another live session's secrets", async () => {
+    // Session 42 is already running with its secrets registered (single GET, so
+    // barrier size stays 1 for this warm-up call).
+    await startWorkerJob(baseConfig, 42, "developer-agent", 1, 900);
+
+    // Now a start (session 99) and a stop (session 42) race: both GET the shared
+    // list, then each PATCHes. The 2-party barrier forces the interleave.
+    getBarrierSize = 2;
+    await Promise.all([
+      startWorkerJob(baseConfig, 99, "developer-agent", 1, 900),
+      stopWorkerJob(baseConfig, "exec-42", 42),
+    ]);
+
+    const names = sharedSecrets.map((s) => s.name);
+
+    // Session 42's secrets should be gone (it stopped)...
+    expect(names).not.toContain(sessionName("worker-secret", 42));
+    // ...but session 99's must NOT have been clobbered by the stop's PATCH.
+    expect(names).toContain(sessionName("worker-secret", 99));
+    expect(names).toContain(sessionName("kiro-api-key", 99));
+  });
+});
+
+/** Local mirror of the module's session-scoped secret naming for assertions. */
+function sessionName(base: string, sessionId: number): string {
+  return `${base}-sess-${sessionId}`;
+}

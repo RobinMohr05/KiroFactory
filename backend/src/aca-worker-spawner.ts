@@ -111,12 +111,57 @@ export function loadAcaConfig(): AcaWorkerConfig | null {
  *
  * Uses the Azure REST management API scope.
  */
+// Cache the dynamic import promise. Beyond avoiding redundant module loads when
+// many sessions start concurrently, sharing a single import() settles a race in
+// which two concurrent `await import("@azure/identity")` calls could observe the
+// module mid-initialisation — a real-world flake surfaced by concurrent
+// startWorkerJob calls (and their tests).
+let azureIdentityModulePromise: Promise<typeof import("@azure/identity")> | null = null;
+
 async function getAzureAccessToken(): Promise<string> {
   // Dynamic import to avoid hard dependency — only needed when ACA mode is active
-  const { DefaultAzureCredential } = await import("@azure/identity");
+  if (!azureIdentityModulePromise) {
+    azureIdentityModulePromise = import("@azure/identity");
+  }
+  const { DefaultAzureCredential } = await azureIdentityModulePromise;
   const credential = new DefaultAzureCredential();
   const tokenResponse = await credential.getToken("https://management.azure.com/.default");
   return tokenResponse.token;
+}
+
+// ---------------------------------------------------------------------------
+// Job-secrets serialization
+// ---------------------------------------------------------------------------
+
+/**
+ * All secret mutations (patchJobSecrets / removeSessionSecrets) target the ONE
+ * shared `configuration.secrets` array on the single worker job, via a
+ * GET-merge-PATCH cycle. Because a pool of worker sessions starts and stops
+ * concurrently against that same job, two overlapping cycles would each GET the
+ * same snapshot and the later PATCH would clobber the earlier one's just-added
+ * entries — leaving a live session's `secretRef` pointing at a secret that no
+ * longer exists.
+ *
+ * This orchestrator process is the sole writer of the job's secrets, so a simple
+ * in-process promise chain (async mutex) is sufficient to serialize the cycles:
+ * each mutation waits for the previous one to finish before its own GET, so no
+ * two cycles interleave. (If the orchestrator ever scaled to multiple replicas
+ * that all start worker jobs, this would need a distributed lock or optimistic
+ * concurrency via ETag/If-Match instead — noted for the future; today
+ * minReplicas/maxReplicas keep a single writer.)
+ */
+let jobSecretsMutex: Promise<unknown> = Promise.resolve();
+
+/** Run `fn` exclusively with respect to all other job-secret mutations. */
+function withJobSecretsLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = jobSecretsMutex.then(fn, fn);
+  // Keep the chain alive regardless of individual outcomes; swallow to avoid
+  // an unhandled rejection propagating into the next waiter.
+  jobSecretsMutex = run.then(
+    () => undefined,
+    () => undefined
+  );
+  return run;
 }
 
 // ---------------------------------------------------------------------------
@@ -170,15 +215,23 @@ interface AcaJobSecret {
  * first to preserve any existing secrets (e.g., the ACR password added by
  * Bicep), then merge in the new entries.
  *
- * Note: the "Container Apps Jobs Operator" built-in role covers both
- * `Microsoft.App/jobs/read` and `Microsoft.App/jobs/write`, so the managed
- * identity that starts executions can also PATCH secrets.
+ * Note: PATCHing `configuration.secrets` needs `Microsoft.App/jobs/write`. The
+ * built-in "Container Apps Jobs Operator" role does NOT grant that — it only
+ * covers job read plus the start/stop action permissions. infra/modules/worker-job.bicep
+ * therefore assigns the managed identity the built-in "Contributor" role scoped
+ * to this single job resource, which is what makes both this PATCH and the GET
+ * above succeed. Keep the bicep and this note in sync: reverting the grant back
+ * to Jobs Operator would make every start fail with 403 on the secret PATCH.
  */
 async function patchJobSecrets(
   config: AcaWorkerConfig,
   token: string,
   secretsToMerge: AcaJobSecret[]
 ): Promise<void> {
+  // Serialize with every other secret mutation on this job so concurrent
+  // sessions' GET-merge-PATCH cycles can't clobber each other (see
+  // withJobSecretsLock).
+  return withJobSecretsLock(async () => {
   const apiVersion = "2024-03-01";
   const jobUrl =
     `https://management.azure.com/subscriptions/${config.subscriptionId}` +
@@ -239,6 +292,7 @@ async function patchJobSecrets(
       `[aca-spawner] Failed to patch job secrets (HTTP ${patchResponse.status}): ${errorText.slice(0, 200)}`
     );
   }
+  });
 }
 
 /**
@@ -258,6 +312,10 @@ async function removeSessionSecrets(
   token: string,
   sessionId: number
 ): Promise<void> {
+  // Serialize with every other secret mutation on this job (see
+  // withJobSecretsLock) so this cleanup's GET-merge-PATCH can't race a
+  // concurrent session's registration and drop its just-added secrets.
+  return withJobSecretsLock(async () => {
   const apiVersion = "2024-03-01";
   const jobUrl =
     `https://management.azure.com/subscriptions/${config.subscriptionId}` +
@@ -317,6 +375,7 @@ async function removeSessionSecrets(
       `[aca-spawner] Failed to remove session ${sessionId} secrets (HTTP ${patchResponse.status}): ${errorText.slice(0, 200)}`
     );
   }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -333,11 +392,15 @@ function truncate(text: string, max = 400): string {
  * Turn a failed Azure management API response into an actionable error message.
  *
  * The most common failure by far is an RBAC problem: the orchestrator's managed
- * identity is missing the "Container Apps Jobs Operator" role on the worker job.
- * That surfaces as HTTP 403 with code "AuthorizationFailed" and is NOT a user
- * credential problem — the Azure DevOps / Atlassian / AWS credentials are injected
- * into the worker only AFTER it starts, so they cannot cause this. This helper makes
- * the distinction explicit so the failure is self-explanatory in the UI.
+ * identity lacks the required role on the worker job. Because starting an execution
+ * also PATCHes the job's `configuration.secrets` (for secretRef injection), the
+ * identity needs `Microsoft.App/jobs/write` — which the built-in "Container Apps
+ * Jobs Operator" role does NOT grant. It is therefore assigned the broader
+ * "Contributor" role scoped to this single job (see infra/modules/worker-job.bicep).
+ * A missing/insufficient grant surfaces as HTTP 403 with code "AuthorizationFailed"
+ * and is NOT a user credential problem — the Azure DevOps / Atlassian / AWS credentials
+ * are injected into the worker only AFTER it starts, so they cannot cause this. This
+ * helper makes the distinction explicit so the failure is self-explanatory in the UI.
  */
 function explainAcaHttpError(
   operation: string,
@@ -355,7 +418,9 @@ function explainAcaHttpError(
       `ACA ${operation} was denied by Azure (HTTP ${status}) for ${jobRef}. ` +
       `This is an Azure RBAC problem, not a user credential problem: the orchestrator's ` +
       `managed identity lacks permission to act on the job. Grant it the built-in ` +
-      `"Container Apps Jobs Operator" role scoped to the job (least privilege — avoid Contributor). ` +
+      `"Contributor" role scoped to the job — narrower than resource-group Contributor, ` +
+      `and required (over "Container Apps Jobs Operator") because starting an execution ` +
+      `also PATCHes the job's secrets, which needs Microsoft.App/jobs/write. ` +
       `See ARCHITECTURE.md → "Managed Identity & permissions". Azure detail: ${truncate(errorText)}`
     );
   }
