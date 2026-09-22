@@ -22,6 +22,96 @@ vi.mock('../utils/api', () => ({
   },
 }));
 
+// antd's Select uses CSS selectors that jsdom (nwsapi) doesn't support,
+// causing SyntaxError crashes in tests. We replace it with a lightweight
+// functional stub that exposes the same props the history combobox relies on.
+vi.mock('antd', async () => {
+  const React = await import('react');
+
+  /**
+   * Stub for antd Select used by the planner history combobox.
+   *
+   * - `showSearch`: renders a search input; typing filters via `filterOption`.
+   * - Collapsed by default: the option list is only rendered once the dropdown
+   *   is "open". We model opening by focusing the search input (mousedown/focus)
+   *   — before that, NO options are in the DOM (matches antd's collapsed state).
+   * - Each option's `label` (arbitrary JSX: a status dot, text, and an inline
+   *   delete button) is rendered inside its list row, so tests can query them.
+   * - Selecting an option (click on the row, excluding the inline delete
+   *   button which stops propagation) fires `onChange(value)`.
+   */
+  const Select = ({
+    id,
+    value,
+    onChange,
+    options = [],
+    filterOption,
+    placeholder,
+    showSearch,
+    className,
+    style,
+    'aria-label': ariaLabel,
+  }: any) => {
+    const [search, setSearch] = React.useState('');
+    const [open, setOpen] = React.useState(false);
+
+    const visible = search
+      ? options.filter((opt: any) => (filterOption ? filterOption(search, opt) : true))
+      : options;
+
+    return React.createElement(
+      'div',
+      { 'data-testid': 'antd-select', className, style },
+      showSearch
+        ? React.createElement('input', {
+            id,
+            className: 'ant-select-selection-search-input',
+            'aria-label': ariaLabel ?? placeholder ?? 'search',
+            placeholder,
+            value: search,
+            onFocus: () => setOpen(true),
+            onMouseDown: () => setOpen(true),
+            onChange: (e: React.ChangeEvent<HTMLInputElement>) => {
+              setOpen(true);
+              setSearch(e.target.value);
+            },
+          })
+        : null,
+      React.createElement(
+        'span',
+        { className: 'ant-select-selection-item' },
+        value != null && value !== ''
+          ? (options.find((o: any) => o.value === value)?.label ?? String(value))
+          : ''
+      ),
+      open
+        ? React.createElement(
+            'div',
+            { className: 'ant-select-dropdown', role: 'listbox' },
+            visible.map((opt: any) =>
+              React.createElement(
+                'div',
+                {
+                  key: opt.value,
+                  className: 'ant-select-item-option',
+                  role: 'option',
+                  'data-value': String(opt.value),
+                  onClick: () => {
+                    if (onChange) onChange(opt.value);
+                    setSearch('');
+                  },
+                },
+                opt.label,
+              ),
+            ),
+          )
+        : null,
+    );
+  };
+
+  return { Select };
+});
+
 import { TaskPlannerModal } from '../components/TaskPlannerModal';
 
 function mockUseApp(overrides: Partial<ReturnType<typeof AppContext.useApp>> = {}) {
@@ -2018,12 +2108,12 @@ describe('TaskPlannerModal - Enter key behavior by pointer type', () => {
   });
 });
 
-describe('TaskPlannerModal - conversation-history selector', () => {
+describe('TaskPlannerModal - conversation-history combobox', () => {
   let apiFetchMock: ReturnType<typeof vi.fn>;
 
   const CONVERSATIONS = [
-    { id: 20, shortDescription: 'Add pagination to users API', createdAt: '2026-09-21T15:34:00.000Z', lastMessageAt: '2026-09-21T15:40:00.000Z' },
-    { id: 11, shortDescription: 'Fix login redirect bug', createdAt: '2026-09-20T09:00:00.000Z', lastMessageAt: '2026-09-20T09:05:00.000Z' },
+    { id: 20, shortDescription: 'Add pagination to users API', createdAt: '2026-09-21T20:10:00.000Z', lastMessageAt: '2026-09-21T20:15:00.000Z', taskCreated: true },
+    { id: 11, shortDescription: 'Fix login redirect bug', createdAt: '2026-09-20T09:00:00.000Z', lastMessageAt: '2026-09-20T09:05:00.000Z', taskCreated: false },
   ];
 
   beforeEach(() => {
@@ -2048,7 +2138,14 @@ describe('TaskPlannerModal - conversation-history selector', () => {
     cleanup();
   });
 
-  it('fetches conversations on mount and renders one option per conversation (newest-first order preserved)', async () => {
+  /** Open the collapsed combobox by focusing its search input. */
+  function openCombobox(container: HTMLElement) {
+    const searchInput = container.querySelector('.planner-history-combobox .ant-select-selection-search-input') as HTMLInputElement;
+    fireEvent.focus(searchInput);
+    return searchInput;
+  }
+
+  it('renders an AntD Select combobox (searchable) with the resume placeholder, collapsed by default', async () => {
     const { container } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
     await act(async () => { await new Promise(r => setTimeout(r, 10)); });
 
@@ -2058,52 +2155,89 @@ describe('TaskPlannerModal - conversation-history selector', () => {
     );
     expect(listCalls.length).toBeGreaterThanOrEqual(1);
 
-    // A dedicated history selector exists.
-    const select = container.querySelector('.planner-history-select') as HTMLSelectElement;
-    expect(select).toBeTruthy();
+    // A dedicated history combobox exists with a search input and placeholder.
+    const combobox = container.querySelector('.planner-history-combobox');
+    expect(combobox).toBeTruthy();
+    const searchInput = container.querySelector('.planner-history-combobox .ant-select-selection-search-input') as HTMLInputElement;
+    expect(searchInput).toBeTruthy();
+    expect(searchInput.getAttribute('placeholder')).toBe('Resume a past conversation…');
 
-    // Each conversation shows up as an option in the same (newest-first) order
-    // the endpoint returned, with the date + shortDescription in the label.
-    const optionLabels = Array.from(select.options).map(o => o.textContent || '');
-    const convLabels = optionLabels.filter(l => l.includes('Add pagination') || l.includes('Fix login'));
-    expect(convLabels.length).toBe(2);
-    expect(convLabels[0]).toContain('Add pagination to users API');
-    expect(convLabels[1]).toContain('Fix login redirect bug');
-    // Date is formatted into the label (month abbreviation present).
-    expect(convLabels[0]).toMatch(/Sep/);
+    // Collapsed by default: no option rows are rendered until opened.
+    expect(container.querySelector('.planner-history-combobox .ant-select-item-option')).toBeNull();
   });
 
-  it('shows an empty-state option when there are no past conversations', async () => {
-    apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
-      if (url === '/api/task-planner/conversations' && (!opts || opts.method === undefined || opts.method === 'GET')) {
-        return { ok: true, json: async () => ({ conversations: [] }) };
-      }
-      if (url === '/api/task-planner/start' && opts?.method === 'POST') {
-        return { ok: true, json: async () => ({ sessionId: 900 }) };
-      }
-      if (opts?.method === 'DELETE') {
-        return { ok: true, status: 204, json: async () => ({}) };
-      }
-      return { ok: true, json: async () => ({}) };
-    });
-
-    const { container, getByText } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
+  it('shows one option per conversation (newest-first order preserved) with date + title once opened', async () => {
+    const { container } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
     await act(async () => { await new Promise(r => setTimeout(r, 10)); });
 
-    const select = container.querySelector('.planner-history-select') as HTMLSelectElement;
-    expect(select).toBeTruthy();
-    expect(getByText('No past conversations')).toBeTruthy();
+    await act(async () => { openCombobox(container); });
+
+    const optionRows = Array.from(container.querySelectorAll('.planner-history-combobox .ant-select-item-option'));
+    expect(optionRows.length).toBe(2);
+    expect(optionRows[0].textContent).toContain('Add pagination to users API');
+    expect(optionRows[1].textContent).toContain('Fix login redirect bug');
+    // Date is formatted into the label (month abbreviation present).
+    expect(optionRows[0].textContent).toMatch(/Sep/);
   });
 
-  it('selecting a past conversation fetches its transcript, replays it read-only, and starts a fresh planner with resumeConversationId', async () => {
+  it('renders a green dot for taskCreated=true and orange dot for taskCreated=false, each with a tooltip', async () => {
+    const { container } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    await act(async () => { openCombobox(container); });
+
+    const created = container.querySelector('[data-conversation-id="20"] .planner-history-dot') as HTMLElement;
+    const notCreated = container.querySelector('[data-conversation-id="11"] .planner-history-dot') as HTMLElement;
+    expect(created).toBeTruthy();
+    expect(notCreated).toBeTruthy();
+
+    // Green (--status-connected) for created, orange (--ta-mango) for not created.
+    expect(created.style.background).toContain('status-connected');
+    expect(notCreated.style.background).toContain('ta-mango');
+
+    // Tooltips.
+    expect(created.getAttribute('title')).toBe('Task created from this conversation');
+    expect(notCreated.getAttribute('title')).toBe('No task created from this conversation');
+  });
+
+  it('filters by a date fragment (e.g. "Sep 21") typed into the search', async () => {
+    const { container } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    const searchInput = openCombobox(container);
+    await act(async () => {
+      fireEvent.change(searchInput, { target: { value: 'Sep 21' } });
+    });
+
+    const rows = Array.from(container.querySelectorAll('.planner-history-combobox .ant-select-item-option'));
+    expect(rows.length).toBe(1);
+    expect(rows[0].textContent).toContain('Add pagination to users API');
+  });
+
+  it('filters by a title word (case-insensitive) typed into the search', async () => {
+    const { container } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+    const searchInput = openCombobox(container);
+    await act(async () => {
+      fireEvent.change(searchInput, { target: { value: 'LOGIN' } });
+    });
+
+    const rows = Array.from(container.querySelectorAll('.planner-history-combobox .ant-select-item-option'));
+    expect(rows.length).toBe(1);
+    expect(rows[0].textContent).toContain('Fix login redirect bug');
+  });
+
+  it('selecting an option fetches its transcript, replays it read-only, and starts a fresh planner with resumeConversationId', async () => {
     const TRANSCRIPT = {
       id: 20,
       shortDescription: 'Add pagination to users API',
-      createdAt: '2026-09-21T15:34:00.000Z',
-      lastMessageAt: '2026-09-21T15:40:00.000Z',
+      createdAt: '2026-09-21T20:10:00.000Z',
+      lastMessageAt: '2026-09-21T20:15:00.000Z',
+      taskCreated: true,
       messages: [
-        { role: 'user', text: 'I want to add pagination', position: 0, createdAt: '2026-09-21T15:34:00.000Z' },
-        { role: 'assistant', text: 'Great, how many per page?', position: 1, createdAt: '2026-09-21T15:35:00.000Z' },
+        { role: 'user', text: 'I want to add pagination', position: 0, createdAt: '2026-09-21T20:10:00.000Z' },
+        { role: 'assistant', text: 'Great, how many per page?', position: 1, createdAt: '2026-09-21T20:11:00.000Z' },
       ],
     };
     apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
@@ -2125,9 +2259,11 @@ describe('TaskPlannerModal - conversation-history selector', () => {
     const { container, getByText } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
     await act(async () => { await new Promise(r => setTimeout(r, 10)); });
 
-    const select = container.querySelector('.planner-history-select') as HTMLSelectElement;
+    await act(async () => { openCombobox(container); });
+    const option20 = container.querySelector('.planner-history-combobox [data-value="20"]') as HTMLElement;
+    expect(option20).toBeTruthy();
     await act(async () => {
-      fireEvent.change(select, { target: { value: '20' } });
+      option20.click();
       await new Promise(r => setTimeout(r, 10));
     });
 
@@ -2141,7 +2277,6 @@ describe('TaskPlannerModal - conversation-history selector', () => {
     const startCalls = apiFetchMock.mock.calls.filter(
       ([url, opts]) => url === '/api/task-planner/start' && opts?.method === 'POST'
     );
-    // First start is the initial mount; the last one must carry the resume id.
     const resumeStart = startCalls[startCalls.length - 1];
     const startBody = JSON.parse(resumeStart[1].body as string);
     expect(startBody.resumeConversationId).toBe(20);
@@ -2152,12 +2287,11 @@ describe('TaskPlannerModal - conversation-history selector', () => {
     expect(getByText('Great, how many per page?')).toBeTruthy();
   });
 
-  it('deleting a history entry (after confirmation) calls DELETE and refreshes the list — WITHOUT resuming/tearing down the current session', async () => {
+  it('the inline per-option delete button calls DELETE, refreshes the list, and does NOT resume/select', async () => {
     let listCallCount = 0;
     apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
       if (url === '/api/task-planner/conversations' && (!opts || opts.method === undefined || opts.method === 'GET')) {
         listCallCount++;
-        // After the delete, the list no longer contains conversation 20.
         const list = listCallCount === 1 ? CONVERSATIONS : CONVERSATIONS.filter(c => c.id !== 20);
         return { ok: true, json: async () => ({ conversations: list }) };
       }
@@ -2176,25 +2310,19 @@ describe('TaskPlannerModal - conversation-history selector', () => {
     const { container } = render(<TaskPlannerModal onClose={vi.fn()} onSwitchToManual={vi.fn()} />);
     await act(async () => { await new Promise(r => setTimeout(r, 10)); });
 
-    // A per-entry delete control is rendered for conversation 20 WITHOUT having
-    // to select/resume it first — decoupled from the resume dropdown.
-    const deleteBtn = container.querySelector('[data-conversation-id="20"] .planner-history-delete') as HTMLButtonElement;
-    expect(deleteBtn).toBeTruthy();
+    await act(async () => { openCombobox(container); });
 
-    // Baseline: only the initial-mount /start POST has fired so far.
+    // Baseline before deleting.
     const startsBefore = apiFetchMock.mock.calls.filter(
       ([url, opts]) => url === '/api/task-planner/start' && opts?.method === 'POST'
     ).length;
-    // ...and the transcript endpoint was never hit (no resume/replay triggered).
-    const transcriptCallsBefore = apiFetchMock.mock.calls.filter(
-      ([url]) => url === '/api/task-planner/conversations/20' && true
-    ).filter(([, opts]) => !opts || opts.method === undefined || opts.method === 'GET').length;
-    expect(transcriptCallsBefore).toBe(0);
 
-    // Click the delete control — this asks for confirmation first (two-click).
+    // The inline delete lives INSIDE the option row for conversation 20.
+    const deleteBtn = container.querySelector('[data-conversation-id="20"] .planner-history-delete') as HTMLButtonElement;
+    expect(deleteBtn).toBeTruthy();
+
+    // Two-click confirm pattern.
     await act(async () => { deleteBtn.click(); });
-
-    // The button swaps to a confirm state; a second click confirms the delete.
     const confirmBtn = container.querySelector('[data-conversation-id="20"] .planner-history-delete') as HTMLButtonElement;
     expect(confirmBtn.textContent).toContain('Confirm?');
     await act(async () => {
@@ -2208,11 +2336,11 @@ describe('TaskPlannerModal - conversation-history selector', () => {
     );
     expect(deleteCalls.length).toBe(1);
 
-    // The list was refreshed (fetched again) after the delete.
+    // The list was refreshed after the delete.
     expect(listCallCount).toBeGreaterThanOrEqual(2);
 
-    // Crucially: deleting must NOT have resumed the conversation. No extra
-    // /start POST (beyond the initial mount) and no transcript GET happened.
+    // Deleting must NOT have resumed the conversation — no extra /start POST
+    // and no transcript GET.
     const startsAfter = apiFetchMock.mock.calls.filter(
       ([url, opts]) => url === '/api/task-planner/start' && opts?.method === 'POST'
     ).length;

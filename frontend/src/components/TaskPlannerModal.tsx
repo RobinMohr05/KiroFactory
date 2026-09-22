@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { Select } from 'antd';
 import { useApp } from '../context/AppContext';
 import { apiFetch } from '../utils/api';
 import { useConfirmAction } from '../hooks/useConfirmAction';
@@ -36,6 +37,12 @@ interface PlannerConversationSummary {
   shortDescription: string;
   createdAt: string;
   lastMessageAt: string;
+  /**
+   * Whether at least one task was ever created from this conversation.
+   * Provided by the backend (dependency task); older payloads may omit it,
+   * in which case it's treated as false.
+   */
+  taskCreated?: boolean;
 }
 
 /** A single stored message in a persisted conversation transcript. */
@@ -108,9 +115,11 @@ function isTouchDevice(): boolean {
 }
 
 /**
- * Delete control for a selected history entry. Uses the shared two-click
- * confirm pattern (useConfirmAction): the first click swaps the label to
- * "Confirm?"; a second click within the timeout runs the delete.
+ * Delete control for a history entry, rendered inside each combobox option.
+ * Uses the shared two-click confirm pattern (useConfirmAction): the first
+ * click swaps the label to "Confirm?"; a second click within the timeout runs
+ * the delete. Click events are stopped from propagating so clicking it never
+ * triggers the surrounding option's resume/select handler.
  */
 function HistoryDeleteButton({
   conversationId,
@@ -126,10 +135,36 @@ function HistoryDeleteButton({
       className={`btn btn-secondary btn-sm planner-history-delete${isPending ? ' btn-confirm-pending' : ''}`}
       title={isPending ? 'Confirm delete?' : 'Delete this conversation'}
       aria-label={isPending ? 'Confirm delete?' : 'Delete this conversation'}
-      onClick={handleClick}
+      // Stop propagation (and mousedown, which antd Select uses to select an
+      // option) so deleting never triggers the option's resume/select flow.
+      onMouseDown={(e) => { e.stopPropagation(); }}
+      onClick={(e) => { e.stopPropagation(); handleClick(); }}
     >
       {isPending ? 'Confirm?' : '🗑'}
     </button>
+  );
+}
+
+/**
+ * Small colored status dot shown in each history option. Green
+ * (--status-connected) when a task was created from the conversation, TecAlliance
+ * orange (--ta-mango) otherwise, with a matching tooltip.
+ */
+function HistoryStatusDot({ taskCreated }: { taskCreated: boolean }) {
+  return (
+    <span
+      className="planner-history-dot"
+      title={taskCreated ? 'Task created from this conversation' : 'No task created from this conversation'}
+      aria-hidden="true"
+      style={{
+        display: 'inline-block',
+        width: 8,
+        height: 8,
+        borderRadius: '50%',
+        flexShrink: 0,
+        background: taskCreated ? 'var(--status-connected)' : 'var(--ta-mango)',
+      }}
+    />
   );
 }
 
@@ -931,47 +966,56 @@ export function TaskPlannerModal({ onClose, onSwitchToManual, hidden = false, on
         <div className="task-planner-history">
           <div className="task-planner-history-resume">
             <label className="planner-history-label" htmlFor="plannerHistorySelect">History</label>
-            <select
+            <Select
               id="plannerHistorySelect"
-              className="planner-history-select"
+              className="planner-history-combobox"
+              showSearch
+              // Collapsed by default: no options are rendered until the user
+              // opens/types. antd's Select is closed on mount.
               aria-label="Resume a past conversation"
-              value={selectedConversationId ?? ''}
-              onChange={(e) => {
-                const val = e.target.value;
-                if (val === '') return;
+              placeholder="Resume a past conversation…"
+              value={selectedConversationId ?? undefined}
+              style={{ minWidth: 240 }}
+              // Case-insensitive substring match against a searchable string
+              // built from BOTH the formatted date and the shortDescription, so
+              // typing either a date fragment or a title word filters correctly.
+              filterOption={(input, option) =>
+                ((option?.searchText as string) ?? '').toLowerCase().includes(input.toLowerCase())
+              }
+              onChange={(val) => {
+                if (val == null) return;
                 void handleSelectConversation(Number(val));
               }}
-            >
-              <option value="">
-                {conversations.length === 0 ? 'No past conversations' : 'Resume a past conversation…'}
-              </option>
-              {conversations.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {formatConversationDate(c.createdAt)} — {c.shortDescription}
-                </option>
-              ))}
-            </select>
+              options={conversations.map((c) => {
+                const dateLabel = formatConversationDate(c.createdAt);
+                return {
+                  value: c.id,
+                  // Searchable across date + title.
+                  searchText: `${dateLabel} ${c.shortDescription}`,
+                  label: (
+                    <span
+                      className="planner-history-option"
+                      data-conversation-id={c.id}
+                      style={{ display: 'flex', alignItems: 'center', gap: 8 }}
+                    >
+                      <HistoryStatusDot taskCreated={!!c.taskCreated} />
+                      <span
+                        className="planner-history-option-label"
+                        style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                        title={c.shortDescription}
+                      >
+                        {dateLabel} — {c.shortDescription}
+                      </span>
+                      <HistoryDeleteButton
+                        conversationId={c.id}
+                        onDelete={handleDeleteConversation}
+                      />
+                    </span>
+                  ),
+                };
+              })}
+            />
           </div>
-          {/* Per-entry delete list. Kept separate from the resume <select> above
-              because a native <option> can't hold a button — and, more
-              importantly, so deleting an entry never has to go through the
-              resume/teardown flow. Each row's delete targets exactly that
-              conversation id with no side effect on the live session. */}
-          {conversations.length > 0 && (
-            <ul className="planner-history-list" aria-label="Manage saved conversations">
-              {conversations.map((c) => (
-                <li key={c.id} className="planner-history-item" data-conversation-id={c.id}>
-                  <span className="planner-history-item-label" title={c.shortDescription}>
-                    {formatConversationDate(c.createdAt)} — {c.shortDescription}
-                  </span>
-                  <HistoryDeleteButton
-                    conversationId={c.id}
-                    onDelete={handleDeleteConversation}
-                  />
-                </li>
-              ))}
-            </ul>
-          )}
         </div>
         {/* Wrapper spans ONLY the messages area (flex: 1). The read-only
             detail panel is absolutely positioned to fill this wrapper, so its
