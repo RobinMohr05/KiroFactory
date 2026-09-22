@@ -33,6 +33,7 @@ import {
   getPlannerConversation,
   deletePlannerConversation,
   deleteExpiredPlannerConversations,
+  markPlannerConversationTaskCreated,
   derivePlannerShortDescription,
   sanitizePlannerMessageText,
 } from "./planner-conversations.js";
@@ -359,6 +360,249 @@ describe("db/planner-conversations", () => {
       expect(capturedCypher).toContain("<");
       // Must DETACH DELETE conversation + messages
       expect(capturedCypher).toContain("DETACH DELETE");
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // taskCreated flag: listPlannerConversations
+  // ---------------------------------------------------------------------------
+
+  describe("listPlannerConversations — taskCreated field", () => {
+    it("returns taskCreated: false for conversations that have never created a task", async () => {
+      const rows = [
+        {
+          id: 1,
+          shortDescription: "A session",
+          createdAt: "2026-09-21T10:00:00.000Z",
+          lastMessageAt: "2026-09-21T10:10:00.000Z",
+          taskCreated: false,
+        },
+      ];
+      (readQuery as any).mockImplementation(async (fn: any) => {
+        const mockTx = {
+          run: vi.fn().mockImplementation(() => ({
+            records: rows.map((r) => ({ get: (k: string) => (r as any)[k] })),
+          })),
+        };
+        return fn(mockTx);
+      });
+
+      const result = await listPlannerConversations(1);
+      expect(result).toHaveLength(1);
+      expect(result[0].taskCreated).toBe(false);
+    });
+
+    it("returns taskCreated: true after a task was created", async () => {
+      const rows = [
+        {
+          id: 2,
+          shortDescription: "Session with task",
+          createdAt: "2026-09-21T11:00:00.000Z",
+          lastMessageAt: "2026-09-21T11:15:00.000Z",
+          taskCreated: true,
+        },
+      ];
+      (readQuery as any).mockImplementation(async (fn: any) => {
+        const mockTx = {
+          run: vi.fn().mockImplementation(() => ({
+            records: rows.map((r) => ({ get: (k: string) => (r as any)[k] })),
+          })),
+        };
+        return fn(mockTx);
+      });
+
+      const result = await listPlannerConversations(1);
+      expect(result).toHaveLength(1);
+      expect(result[0].taskCreated).toBe(true);
+    });
+
+    it("uses coalesce in the Cypher so absent property defaults to false", async () => {
+      let capturedCypher = "";
+      (readQuery as any).mockImplementation(async (fn: any) => {
+        const mockTx = {
+          run: vi.fn().mockImplementation((cypher: string) => {
+            capturedCypher = cypher;
+            return { records: [] };
+          }),
+        };
+        return fn(mockTx);
+      });
+
+      await listPlannerConversations(1);
+      expect(capturedCypher.toLowerCase()).toContain("coalesce");
+      expect(capturedCypher.toLowerCase()).toContain("taskcreated");
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // taskCreated flag: getPlannerConversation
+  // ---------------------------------------------------------------------------
+
+  describe("getPlannerConversation — taskCreated field", () => {
+    it("returns taskCreated: false when property is absent (pre-existing node)", async () => {
+      (readQuery as any).mockImplementation(async (fn: any) => {
+        const mockTx = {
+          run: vi.fn().mockResolvedValue({
+            records: [
+              {
+                get: (k: string) => {
+                  const data: Record<string, any> = {
+                    id: 100,
+                    shortDescription: "Old session",
+                    createdAt: "2026-09-21T10:00:00.000Z",
+                    lastMessageAt: "2026-09-21T10:05:00.000Z",
+                    taskCreated: false,
+                    messages: [],
+                  };
+                  return data[k];
+                },
+              },
+            ],
+          }),
+        };
+        return fn(mockTx);
+      });
+
+      const result = await getPlannerConversation(100, 1);
+      expect(result).not.toBeNull();
+      expect(result!.taskCreated).toBe(false);
+    });
+
+    it("returns taskCreated: true when property is set", async () => {
+      (readQuery as any).mockImplementation(async (fn: any) => {
+        const mockTx = {
+          run: vi.fn().mockResolvedValue({
+            records: [
+              {
+                get: (k: string) => {
+                  const data: Record<string, any> = {
+                    id: 101,
+                    shortDescription: "Session with task",
+                    createdAt: "2026-09-21T10:00:00.000Z",
+                    lastMessageAt: "2026-09-21T10:05:00.000Z",
+                    taskCreated: true,
+                    messages: [],
+                  };
+                  return data[k];
+                },
+              },
+            ],
+          }),
+        };
+        return fn(mockTx);
+      });
+
+      const result = await getPlannerConversation(101, 1);
+      expect(result).not.toBeNull();
+      expect(result!.taskCreated).toBe(true);
+    });
+
+    it("uses coalesce in the Cypher so absent property defaults to false", async () => {
+      let capturedCypher = "";
+      (readQuery as any).mockImplementation(async (fn: any) => {
+        const mockTx = {
+          run: vi.fn().mockImplementation((cypher: string) => {
+            capturedCypher = cypher;
+            return { records: [] };
+          }),
+        };
+        return fn(mockTx);
+      });
+
+      await getPlannerConversation(100, 1);
+      expect(capturedCypher.toLowerCase()).toContain("coalesce");
+      expect(capturedCypher.toLowerCase()).toContain("taskcreated");
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // markPlannerConversationTaskCreated
+  // ---------------------------------------------------------------------------
+
+  describe("markPlannerConversationTaskCreated", () => {
+    it("sets taskCreated = true on the conversation node", async () => {
+      let capturedCypher = "";
+      let capturedParams: any = null;
+      (writeQuery as any).mockImplementation(async (fn: any) => {
+        const mockTx = {
+          run: vi.fn().mockImplementation((cypher: string, params: any) => {
+            capturedCypher = cypher;
+            capturedParams = params;
+            return { records: [] };
+          }),
+        };
+        return fn(mockTx);
+      });
+
+      await markPlannerConversationTaskCreated(42);
+
+      expect(capturedParams).toHaveProperty("conversationId", 42);
+      expect(capturedCypher).toContain("taskCreated");
+      expect(capturedCypher.toLowerCase()).toContain("true");
+    });
+
+    it("is idempotent — does not throw when called twice", async () => {
+      (writeQuery as any).mockImplementation(async (fn: any) => {
+        const mockTx = {
+          run: vi.fn().mockResolvedValue({ records: [] }),
+        };
+        return fn(mockTx);
+      });
+
+      await expect(markPlannerConversationTaskCreated(42)).resolves.toBeUndefined();
+      await expect(markPlannerConversationTaskCreated(42)).resolves.toBeUndefined();
+    });
+
+    it("does not throw when the conversation does not exist (zero rows matched)", async () => {
+      (writeQuery as any).mockImplementation(async (fn: any) => {
+        const mockTx = {
+          run: vi.fn().mockResolvedValue({ records: [] }),
+        };
+        return fn(mockTx);
+      });
+
+      // Should resolve without throwing even if no node was found
+      await expect(markPlannerConversationTaskCreated(999)).resolves.toBeUndefined();
+    });
+
+    it("sets taskCreatedAt via datetime() on the node", async () => {
+      let capturedCypher = "";
+      (writeQuery as any).mockImplementation(async (fn: any) => {
+        const mockTx = {
+          run: vi.fn().mockImplementation((cypher: string) => {
+            capturedCypher = cypher;
+            return { records: [] };
+          }),
+        };
+        return fn(mockTx);
+      });
+
+      await markPlannerConversationTaskCreated(42);
+
+      expect(capturedCypher).toContain("taskCreatedAt");
+      expect(capturedCypher).toContain("datetime()");
+    });
+
+    it("uses MATCH (not MERGE/CREATE) so non-existent conversations are a no-op", async () => {
+      let capturedCypher = "";
+      (writeQuery as any).mockImplementation(async (fn: any) => {
+        const mockTx = {
+          run: vi.fn().mockImplementation((cypher: string) => {
+            capturedCypher = cypher;
+            return { records: [] };
+          }),
+        };
+        return fn(mockTx);
+      });
+
+      await markPlannerConversationTaskCreated(999);
+
+      // Must use MATCH (not CREATE/MERGE as standalone Cypher clauses) — zero rows matched is fine
+      expect(capturedCypher.trim().toUpperCase()).toMatch(/^MATCH/);
+      // No standalone CREATE clause (i.e. CREATE followed by whitespace or end of string)
+      expect(capturedCypher).not.toMatch(/\bCREATE\s+\(/i);
+      // No MERGE clause
+      expect(capturedCypher.toUpperCase()).not.toMatch(/\bMERGE\b/);
     });
   });
 });
